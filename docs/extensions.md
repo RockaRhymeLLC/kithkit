@@ -125,18 +125,23 @@ scheduler:
         requires_session: false
 ```
 
-**Step 2 — Register a handler in your extension:**
+**Step 2 — Register a handler in your extension's `onInit`:**
 
 ```typescript
-import type { TaskHandler } from 'kithkit/daemon/automation/scheduler';
+import type { Scheduler, TaskHandler } from '../../automation/scheduler.js';
 
-// The scheduler instance is passed via the daemon's onInit call.
-// Extensions receive it as part of the context object.
 const myTaskHandler: TaskHandler = async ({ taskName, config }) => {
   console.log(`[${taskName}] Running with config:`, config);
   // Your task logic here — fetch data, update DB, send notifications, etc.
 };
+
+// In your extension's register function:
+export function register(scheduler: Scheduler): void {
+  scheduler.registerHandler('my-custom-task', myTaskHandler);
+}
 ```
+
+Call your `register(scheduler)` function from within the extension's `onInit` hook. The scheduler instance is available via the daemon's module-level export. See `daemon/src/automation/tasks/` for examples of built-in task handlers.
 
 **`TaskHandlerContext` fields:**
 
