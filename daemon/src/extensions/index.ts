@@ -20,6 +20,12 @@ import { setScheduler, _getSchedulerForTesting } from '../api/tasks.js';
 import { Scheduler } from '../automation/scheduler.js';
 import type { Extension } from '../core/extensions.js';
 import { asBmoConfig, type BmoConfig } from './config.js';
+import {
+  initComms,
+  shutdownComms,
+  createTelegramRouteHandler,
+  createShortcutRouteHandler,
+} from './comms/index.js';
 
 const log = createLogger('bmo-extension');
 
@@ -29,18 +35,41 @@ let _config: BmoConfig | null = null;
 let _scheduler: Scheduler | null = null;
 let _initialized = false;
 
-// ── Route Handlers (stubs — replaced by s-m24 through s-m27) ─
+// ── Route Handlers ──────────────────────────────────────────
+
+// Telegram webhook — real handler from comms extensions (s-m24)
+// Created lazily in onInit() after comms are initialized.
+let _telegramRouteHandler: ReturnType<typeof createTelegramRouteHandler> | null = null;
+let _shortcutRouteHandler: ReturnType<typeof createShortcutRouteHandler> | null = null;
 
 async function handleTelegramWebhook(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  _pathname: string,
-  _searchParams: URLSearchParams,
+  pathname: string,
+  searchParams: URLSearchParams,
 ): Promise<boolean> {
+  if (_telegramRouteHandler) {
+    return _telegramRouteHandler(req, res, pathname, searchParams);
+  }
+  // Fallback if comms not initialized
   if (req.method !== 'POST') return false;
-  // Stub — real implementation in s-m24 (comms extensions)
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: true, stub: true }));
+  return true;
+}
+
+async function handleShortcut(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  pathname: string,
+  searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (_shortcutRouteHandler) {
+    return _shortcutRouteHandler(req, res, pathname, searchParams);
+  }
+  if (req.method !== 'POST') return false;
+  res.writeHead(503, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ error: 'Not initialized' }));
   return true;
 }
 
@@ -137,8 +166,14 @@ const BMO_TASK_HANDLERS = [
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
   _config = asBmoConfig(config);
 
+  // Initialize BMO comms (Telegram, email adapters)
+  await initComms(_config);
+  _telegramRouteHandler = createTelegramRouteHandler();
+  _shortcutRouteHandler = createShortcutRouteHandler();
+
   // Register BMO-specific routes
   registerRoute('/telegram', handleTelegramWebhook);
+  registerRoute('/shortcut', handleShortcut);
   registerRoute('/agent/p2p', handleAgentP2P);
   registerRoute('/agent/status', handleAgentStatus);
   registerRoute('/api/context', handleContextApi);
@@ -178,10 +213,13 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 }
 
 async function onShutdown(): Promise<void> {
+  shutdownComms();
   if (_scheduler) {
     _scheduler.stop();
     _scheduler = null;
   }
+  _telegramRouteHandler = null;
+  _shortcutRouteHandler = null;
   _initialized = false;
   log.info('BMO extension shut down');
 }
