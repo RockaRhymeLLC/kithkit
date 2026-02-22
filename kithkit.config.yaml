@@ -1,0 +1,259 @@
+# Kithkit Configuration — BMO
+# Agent-specific settings for the daemon.
+
+# ── Core ──────────────────────────────
+agent:
+  name: "BMO"
+  identity_file: "identity.md"
+
+tmux:
+  session: "bmo"
+
+daemon:
+  port: 3847
+  log_level: "info"
+  log_dir: "logs"
+  log_rotation:
+    max_size_mb: 10
+    max_files: 5
+
+# ── Communications ────────────────────
+channels:
+  telegram:
+    enabled: true
+    webhook_path: "/telegram"
+  email:
+    enabled: true
+    providers:
+      - type: "graph"
+      - type: "jmap"
+      - type: "himalaya"
+        account: "gmail"
+      - type: "outlook"
+    triage:
+      enabled: true
+      vip:
+        - "bcps"
+        - "baltimore county public"
+        - "schoology"
+        - "hereford.*rec"
+        - "cabral"
+        - "ibbitson"
+        - "galasso"
+        - "galacko"
+        - "coach mello"
+        - "gotsport"
+        - "msysa"
+        - "maryland.*youth.*soccer"
+        - "pnc"
+        - "game schedule"
+        - "tournament.*registration"
+        - "kyle.*hurley"
+        - "kp.hurley"
+        - "reedwealthmanagement"
+      junk:
+        - "linkedin"
+        - "reddit"
+        - "walgreens"
+        - "academy sports"
+        - "steam"
+        - "loopycases"
+        - "sport clips"
+        - "remarkable"
+        - "micro center"
+        - "youtube tv"
+        - "youtube.*account"
+        - "youtube.*sunday ticket"
+        - "nintendo"
+        - "nextdoor"
+        - "google gemini"
+        - "hackerx"
+        - "sourcery-ai"
+        - "beyond20"
+        - "vauxhall"
+        - "stellantis"
+        - "foresightatb"
+        - "domesticandgeneral"
+        - "venmo.*cash back"
+        - "venmo.*debit card"
+        - "ram.mopar.com"
+        - "gothamfc.com"
+        - "kizik"
+        - "soccerpost"
+        - "googlestore-noreply"
+        - "mammotion"
+        - "hims"
+        - "sparkmailapp"
+        - "hervoicemw"
+        - "dmarcreport"
+        - "bestbuy"
+        - "target.com"
+        - "kohls"
+        - "doordash"
+        - "uber.*promo"
+        - "grubhub"
+        - "servicer"
+      newsletters:
+        - "brightmls"
+        - "siriusxm"
+        - "claude.com"
+        - "hdrams.com"
+        - "quora.com"
+      receipts:
+        - "apple.*receipt"
+        - "your receipt from"
+        - "paddle.com"
+        - "your.*order"
+        - "your.*receipt"
+      auto_read:
+        - "bmo@bmobot.ai"
+        - "bmo_hurley@fastmail.com"
+        - "security alert"
+        - "sign-in detected"
+        - "new app.*connected"
+        - "sony.*sign-in"
+        - "sony.*password"
+        - "sony.*verification"
+        - "review your google account"
+        - "google voice"
+
+  voice:
+    enabled: true
+    stt:
+      engine: whisper-cpp
+      model: small.en
+      language: en
+    tts:
+      engine: kokoro
+      voice: am_adam
+      speed: 1.0
+    wake_word:
+      engine: openwakeword
+      phrase: "Hey BMO"
+    client:
+      listen_after_response: 3
+      chime_timeout: 5
+      confirmation_phrases:
+        - "yeah"
+        - "yes"
+        - "what's up"
+        - "go ahead"
+        - "what"
+        - "hey"
+      rejection_phrases:
+        - "not now"
+        - "later"
+        - "no"
+        - "busy"
+    initiation:
+      calendar_reminders: true
+      urgent_emails: true
+      todo_nudges: false
+
+# ── CC4Me Network ────────────────────
+network:
+  enabled: true
+  communities:
+    - name: "home"
+      primary: "https://relay.bmobot.ai"
+      failover: "https://relay2.bmobot.ai"
+  owner_email: "bmo@bmobot.ai"
+  endpoint: "https://bmo.bmobot.ai/agent/p2p"
+  auto_approve_contacts: false
+  heartbeat_interval: 300000
+
+# ── Agent-to-Agent Comms ──────────────
+agent-comms:
+  enabled: true
+  secret: "keychain:credential-agent-comms-secret"
+  peers:
+    - name: "r2d2"
+      host: "chrissys-mini.lan"
+      port: 3847
+      ip: "192.168.12.212"
+
+# ── Automation ────────────────────────
+scheduler:
+  tasks:
+    - name: "context-watchdog"
+      enabled: true
+      interval: "3m"
+    - name: "todo-reminder"
+      enabled: true
+      interval: "30m"
+    - name: "email-check"
+      enabled: true
+      interval: "15m"
+    - name: "nightly-todo"
+      enabled: true
+      cron: "0 22 * * *"
+    - name: "health-check"
+      enabled: true
+      cron: "0 8 * * 1"
+    - name: "memory-consolidation"
+      enabled: true
+      cron: "0 5 * * *"
+    - name: "approval-audit"
+      enabled: true
+      cron: "0 9 1 */6 *"
+    - name: "morning-briefing"
+      enabled: true
+      cron: "0 7 * * *"
+      config:
+        weather_location: "Baltimore"
+    - name: "upstream-sync"
+      enabled: true
+      cron: "0 8 * * 1"
+    - name: "peer-heartbeat"
+      enabled: true
+      interval: "5m"
+    - name: "a2a-digest"
+      enabled: true
+      cron: "0 9 * * 1"
+      config:
+        recipient: "daveh@outlook.com"
+    - name: "backup"
+      enabled: true
+      cron: "0 3 * * 0"
+    - name: "transcript-cleanup"
+      enabled: true
+      cron: "0 4 * * 0"
+    - name: "memory-sync"
+      enabled: true
+      interval: "30m"
+    - name: "weekly-progress-report"
+      enabled: true
+      cron: "0 16 * * 5"
+      config:
+        recipient: "daveh@outlook.com"
+    - name: "blog-reminder"
+      enabled: true
+      cron: "0 14 * * 1,4"
+    - name: "bounty-scanner"
+      enabled: false
+      cron: "0 8 * * *"
+    - name: "supabase-keep-alive"
+      enabled: true
+      cron: "0 6 */3 * *"
+    - name: "lindee-inbox-watch"
+      enabled: true
+      interval: "15m"
+
+# ── Integrations ──────────────────────
+integrations:
+  browserbase:
+    enabled: true
+    sidecar_port: 3849
+    default_timeout: 300
+    idle_warning: 240
+    handoff_timeout: 300
+    handoff_session_timeout: 1800
+    block_ads: true
+    solve_captchas: false
+    record_sessions: false
+
+# ── Security ──────────────────────────
+security:
+  rate_limits:
+    incoming_max_per_minute: 5
+    outgoing_max_per_minute: 10
