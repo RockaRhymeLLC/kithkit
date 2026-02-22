@@ -383,13 +383,6 @@ export async function handleStateRoute(
       }
     }
 
-    // ── Agents ─────────────────────────────────────────────
-    if (pathname === '/api/agents' && method === 'GET') {
-      const agents = list<Agent>('agents', undefined, 'created_at ASC');
-      json(res, 200, withTimestamp({ data: agents }));
-      return true;
-    }
-
     // ── Usage ──────────────────────────────────────────────
     if (pathname === '/api/usage' && method === 'GET') {
       const rows = query<WorkerJob>('SELECT tokens_in, tokens_out, cost_usd FROM worker_jobs');

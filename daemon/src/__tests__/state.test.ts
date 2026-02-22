@@ -12,6 +12,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { openDatabase, _resetDbForTesting } from '../core/db.js';
 import { handleStateRoute } from '../api/state.js';
+import { handleAgentsRoute } from '../api/agents.js';
 
 const TEST_PORT = 19860;
 
@@ -55,9 +56,13 @@ function setup(): Promise<void> {
   server = http.createServer((inReq, res) => {
     const url = new URL(inReq.url ?? '/', `http://localhost:${TEST_PORT}`);
     res.setHeader('X-Timestamp', new Date().toISOString());
-    handleStateRoute(inReq, res, url.pathname, url.searchParams)
+    handleAgentsRoute(inReq, res, url.pathname)
       .then((handled) => {
-        if (!handled) {
+        if (handled) return;
+        return handleStateRoute(inReq, res, url.pathname, url.searchParams);
+      })
+      .then((handled) => {
+        if (handled === false) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
         }
