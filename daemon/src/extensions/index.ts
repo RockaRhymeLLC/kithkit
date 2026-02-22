@@ -41,6 +41,7 @@ import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P } from './comms/netwo
 import { registerWithRelay } from './comms/network/registration.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { initVoice, stopVoice } from './voice/index.js';
+import { registerBmoTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
 
 const log = createLogger('bmo-extension');
 
@@ -329,8 +330,12 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     tickIntervalMs: 1000,
   });
 
-  // Register in-process handlers for BMO tasks
+  // Register real BMO task handlers (s-m29)
+  registerBmoTasks(_scheduler);
+
+  // Register stub handlers for remaining BMO tasks (not yet implemented)
   for (const taskName of BMO_TASK_HANDLERS) {
+    if (REAL_TASK_NAMES.has(taskName)) continue; // Already registered by registerBmoTasks
     if (_scheduler.getTask(taskName)) {
       _scheduler.registerHandler(taskName, stubHandler(taskName));
     }
