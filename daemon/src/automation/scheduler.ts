@@ -19,6 +19,8 @@ export interface ScheduledTask {
   command: string;
   args: string[];
   config: Record<string, unknown>;
+  idleOnly: boolean;
+  idleAfterMs: number;
   nextRunAt: Date | null;
   lastRunAt: Date | null;
   running: boolean;
@@ -28,6 +30,8 @@ export interface SchedulerOptions {
   tasks: TaskScheduleConfig[];
   tickIntervalMs?: number;
   onTaskComplete?: (result: TaskResult) => void;
+  /** Returns the timestamp of the last human message (for idle detection). */
+  getLastHumanActivity?: () => Date | null;
 }
 
 // ── Scheduler ────────────────────────────────────────────────
@@ -37,11 +41,13 @@ export class Scheduler {
   private _tickTimer: ReturnType<typeof setInterval> | null = null;
   private _tickIntervalMs: number;
   private _onTaskComplete?: (result: TaskResult) => void;
+  private _getLastHumanActivity?: () => Date | null;
   private _started = false;
 
   constructor(options: SchedulerOptions) {
     this._tickIntervalMs = options.tickIntervalMs ?? 1000;
     this._onTaskComplete = options.onTaskComplete;
+    this._getLastHumanActivity = options.getLastHumanActivity;
     this._loadTasks(options.tasks);
   }
 
@@ -169,6 +175,8 @@ export class Scheduler {
       command,
       args,
       config: taskConfig,
+      idleOnly: (taskConfig.idle_only as boolean) ?? false,
+      idleAfterMs: (taskConfig.idle_after_ms as number) ?? 300_000, // 5 min default
       nextRunAt: null,
       lastRunAt: null,
       running: false,
@@ -203,6 +211,16 @@ export class Scheduler {
     return null;
   }
 
+  /**
+   * Check if the agent is idle (no human activity within the configured window).
+   */
+  private _isIdle(idleAfterMs: number): boolean {
+    if (!this._getLastHumanActivity) return true; // No tracker = assume idle
+    const lastActivity = this._getLastHumanActivity();
+    if (!lastActivity) return true; // No activity recorded = assume idle
+    return Date.now() - lastActivity.getTime() >= idleAfterMs;
+  }
+
   private _tick(): void {
     const now = new Date();
 
@@ -210,6 +228,9 @@ export class Scheduler {
       if (!task.enabled || task.running || !task.nextRunAt) continue;
 
       if (now >= task.nextRunAt) {
+        // Skip idle-only tasks when agent is not idle
+        if (task.idleOnly && !this._isIdle(task.idleAfterMs)) continue;
+
         // Fire and forget — don't await in the tick loop
         this._runTask(task).catch(() => {
           // Error already captured in task result
