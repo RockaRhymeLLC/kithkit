@@ -12,6 +12,7 @@ import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
 import { handleMemoryRoute } from './api/memory.js';
+import { handleAgentsRoute } from './api/agents.js';
 
 export const VERSION = '0.1.0';
 
@@ -73,7 +74,11 @@ const server = http.createServer((req, res) => {
 
   // Async routes
   if (url.pathname.startsWith('/api/')) {
-    handleStateRoute(req, res, url.pathname, url.searchParams)
+    handleAgentsRoute(req, res, url.pathname)
+      .then((handled) => {
+        if (handled) return;
+        return handleStateRoute(req, res, url.pathname, url.searchParams);
+      })
       .then((handled) => {
         if (handled) return;
         return handleMemoryRoute(req, res, url.pathname);
