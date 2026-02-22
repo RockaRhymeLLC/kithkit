@@ -33,6 +33,16 @@ import {
   _resetRoutesForTesting,
   type RouteHandler,
 } from './core/route-registry.js';
+import {
+  getExtendedHealth,
+  getExtendedStatus,
+  formatHealthText,
+  registerCheck,
+  getRegisteredChecks,
+  _resetForTesting as _resetExtendedStatusForTesting,
+  type CheckResult,
+  type HealthCheckFn,
+} from './core/extended-status.js';
 
 export const VERSION = '0.1.0';
 
@@ -52,6 +62,15 @@ export {
   getRegisteredRoutes,
   _resetRoutesForTesting,
   type RouteHandler,
+};
+
+// Re-export extended status for extensions
+export {
+  registerCheck,
+  getRegisteredChecks,
+  _resetExtendedStatusForTesting,
+  type CheckResult,
+  type HealthCheckFn,
 };
 
 // ── Bootstrap ────────────────────────────────────────────────
@@ -119,6 +138,28 @@ const server = http.createServer((req, res) => {
 
   // Route handling — core API routes, then extension routes, then 404
   const handleRoutes = async (): Promise<void> => {
+    // Extended health endpoint (async — must be inside handleRoutes)
+    if (req.method === 'GET' && url.pathname === '/health/extended') {
+      const health = await getExtendedHealth(VERSION);
+      const accept = req.headers['accept'] ?? '';
+      if (accept.includes('text/plain')) {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(formatHealthText(health));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(health));
+      }
+      return;
+    }
+
+    // Extended status endpoint (async — must be inside handleRoutes)
+    if (req.method === 'GET' && url.pathname === '/status/extended') {
+      const status = await getExtendedStatus(VERSION);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(status));
+      return;
+    }
+
     // Core API routes
     if (url.pathname.startsWith('/api/')) {
       const handlers = [
