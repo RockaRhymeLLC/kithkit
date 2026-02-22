@@ -1,0 +1,169 @@
+{
+  "title": "BMO's Dungeon of Forgotten Games",
+  "intro": "You blink. The world around you is made of pixels — chunky, warm, 8-bit pixels. You're INSIDE BMO. Somewhere in the tangled circuits and forgotten save files, three lost game cartridges are waiting to be found. Bring them back to the Main Menu and plug them in to win!\n\nType 'help' for commands. Type 'look' to see where you are.",
+  "win_message": "The three cartridges click into place. The title screen BLAZES to life — colors cascading, chiptune music swelling. You did it! BMO's game library is restored!\n\n  ==========================================\n  |    B M O ' s   G A M E   L I B R A R Y   |\n  |                                        |\n  |   [1] Kompy's Castle                   |\n  |   [2] Adventure Master                 |\n  |   [3] Guardians of Sunshine            |\n  |                                        |\n  |       *** YOU WIN! ***                 |\n  ==========================================\n\nThanks for playing! Type 'play' to start over.",
+  "rooms": {
+    "main-menu": {
+      "name": "The Main Menu",
+      "description": "A grand hall bathed in soft pixel-light. Three empty cartridge slots glow faintly on the far wall, waiting to be filled. A flickering sign reads: 'INSERT GAMES TO CONTINUE.' The air hums with 8-bit anticipation.",
+      "exits": {
+        "south": "loading-screen"
+      },
+      "items_here": [],
+      "slot_message_0": "The three cartridge slots are dark and empty. Sad.",
+      "slot_message_1": "One slot glows with warm light! Two more to go.",
+      "slot_message_2": "Two slots are lit up! Just one more cartridge...",
+      "slot_message_3": "All three slots are blazing with color!"
+    },
+    "loading-screen": {
+      "name": "The Loading Screen",
+      "description": "A long corridor of flickering progress bars and spinning hourglasses. The walls pulse with loading animations that never quite finish. A rusty sword leans against a half-loaded texture.",
+      "exits": {
+        "north": "main-menu",
+        "east": "pixel-plains",
+        "south": "memory-palace"
+      },
+      "items_here": [
+        "rusty-sword"
+      ]
+    },
+    "pixel-plains": {
+      "name": "Pixel Plains",
+      "description": "A vast green field made of enormous pixel blocks. Blocky flowers sway in a digital breeze. A suspicious bush sits in the corner, looking very interact-able. To the east, dark cave mouths yawn open.",
+      "exits": {
+        "west": "loading-screen",
+        "east": "code-caves"
+      },
+      "items_here": [],
+      "features": {
+        "bush": {
+          "description": "A chunky green bush, rendered in about 6 pixels total. It's rustling suspiciously.",
+          "search_text": "You push aside the pixelated leaves and find... a torch! It was hiding in the one bush in the entire game. Classic.",
+          "hidden_item": "torch",
+          "searched": false
+        }
+      }
+    },
+    "code-caves": {
+      "name": "The Code Caves",
+      "description_dark": "Pitch black. You can hear dripping... is that binary? Ones and zeros, splashing into puddles. You can't see anything without a light source.",
+      "description_lit": "Your torch illuminates walls covered in cascading green code. Stalactites of crystallized data hang from the ceiling. In a small alcove, a game cartridge gleams — it's 'Kompy's Castle'!",
+      "exits": {
+        "west": "pixel-plains"
+      },
+      "requires_light": true,
+      "items_here": [
+        "cartridge-1"
+      ]
+    },
+    "memory-palace": {
+      "name": "The Memory Palace",
+      "description": "A serene chamber filled with floating, translucent memory orbs. Each one holds a tiny scene — a birthday, a rainy afternoon, a really good sandwich. A small sprite made of sparkles hovers nearby, humming a tune. There's a curious crack in the north-east wall.",
+      "exits": {
+        "north": "loading-screen",
+        "east": "glitch-zone"
+      },
+      "secret_exit": {
+        "direction": "crack",
+        "destination": "secret-room",
+        "hint": "You squeeze through the crack in the wall..."
+      },
+      "items_here": [],
+      "npc": {
+        "id": "memory-sprite",
+        "name": "Memory Sprite",
+        "description": "A tiny, shimmering sprite made of recycled save data. It has kind eyes and a slightly glitchy smile.",
+        "dialogue_default": "The Memory Sprite twinkles at you. 'Hello, adventurer! I remember everything that happens in BMO's circuits. The Glitch Zone to the east has a broken bridge — very corrupted data. I know the repair code, but I'll only share it if you bring me something shiny to remember!'",
+        "dialogue_has_sword": "The Memory Sprite's eyes go wide. 'Ooh, a sword! So shiny! I'll trade you — the bridge repair code for that lovely blade!' The sprite hands you a glowing fragment of code and takes the sword, holding it like a teddy bear.",
+        "trade_give": "rusty-sword",
+        "trade_receive": "bridge-code",
+        "traded": false
+      }
+    },
+    "glitch-zone": {
+      "name": "The Glitch Zone",
+      "description_broken": "ZZZT! The room crackles with corrupted data. Textures flicker between colors that shouldn't exist. A bridge stretches over a chasm of null pointers, but it's GLITCHED — full of holes. No way across without fixing it. Beyond the bridge, you can see a cartridge floating in a bubble.",
+      "description_fixed": "The bridge is solid now, its code repaired and humming smoothly. Beyond it, a game cartridge floats in a data bubble — 'Adventure Master'! The corruption has calmed to a gentle aesthetic static. Past the bridge, a dark passage leads north.",
+      "exits": {
+        "west": "memory-palace",
+        "north": "boss-room"
+      },
+      "north_requires_bridge": true,
+      "bridge_broken": true,
+      "items_here": [
+        "cartridge-2"
+      ],
+      "items_blocked": true
+    },
+    "boss-room": {
+      "name": "The Boss Room",
+      "description": "A dark arena ringed with health bars and damage numbers. In the center, a massive BUG — literally, a giant glowing insect made of error messages — buzzes angrily. It guards a game cartridge labeled 'Guardians of Sunshine'.",
+      "description_defeated": "The arena is peaceful now. Scattered error messages dissolve into the floor. Where the Bug stood, the 'Guardians of Sunshine' cartridge sits in a pool of debug light.",
+      "exits": {
+        "south": "glitch-zone"
+      },
+      "boss": {
+        "id": "the-bug",
+        "name": "The Bug",
+        "alive": true,
+        "description": "A HUGE glowing insect made entirely of stack traces and segfaults. Its wings are memory leaks. Its eyes are off-by-one errors. It hisses: 'SEGMENTATION FAULT: CORE DUMPED!'",
+        "defeat_text": "You don't have a sword anymore (you traded it, remember?), but you DO have something better — you're inside a computer. You focus hard and whisper: 'try { bug.delete(); } catch(e) { /* lol */ }'\n\nThe Bug SCREAMS as its own error handling catches up with it. Stack traces unravel. Memory leaks seal themselves. With a final 'EXCEPTION_UNHANDLED', it pops like a soap bubble.\n\nThe 'Guardians of Sunshine' cartridge clinks to the ground!",
+        "no_action_text": "The Bug buzzes menacingly! You need to figure out how to defeat it. Maybe there's a clever way to deal with a bug... in a computer..."
+      },
+      "items_here": [
+        "cartridge-3"
+      ],
+      "items_blocked": true
+    },
+    "secret-room": {
+      "name": "???",
+      "description": "Whoa. You found a secret room! It's tiny and cozy — just a bean bag chair, a cup of hot chocolate, and a tiny screen showing the credits:\n\n  DESIGNED & BUILT BY: BMO\n  TESTED BY: hopefully Dave\n  BUGS: yes\n  FUN: also yes\n\nThere's a small note on the wall.",
+      "exits": {
+        "out": "memory-palace"
+      },
+      "items_here": [],
+      "features": {
+        "note": {
+          "description": "A hand-written note in pixel font:\n\n  'If you found this room, you're a real\n   adventurer. BMO is proud of you.\n   Now go finish the game!'\n\n                         - BMO"
+        }
+      }
+    }
+  },
+  "items": {
+    "rusty-sword": {
+      "name": "Rusty Sword",
+      "description": "A pixelated blade with a chipped edge. It's seen better render cycles, but it's still shiny enough to trade.",
+      "takeable": true
+    },
+    "torch": {
+      "name": "Torch",
+      "description": "A bright, flickering torch that renders at a solid 60fps. Lights up dark places nicely.",
+      "takeable": true
+    },
+    "bridge-code": {
+      "name": "Bridge Repair Code",
+      "description": "A glowing fragment of source code. It reads: 'bridge.integrity = 1.0; bridge.render();' Looks like it could fix something broken.",
+      "takeable": true,
+      "usable_in": "glitch-zone"
+    },
+    "cartridge-1": {
+      "name": "Kompy's Castle cartridge",
+      "description": "A game cartridge with a pixel castle on the label. One of three needed to restore BMO's game library!",
+      "takeable": true,
+      "is_cartridge": true
+    },
+    "cartridge-2": {
+      "name": "Adventure Master cartridge",
+      "description": "A game cartridge showing a tiny adventurer. One of three needed to restore BMO's game library!",
+      "takeable": true,
+      "is_cartridge": true
+    },
+    "cartridge-3": {
+      "name": "Guardians of Sunshine cartridge",
+      "description": "A game cartridge blazing with golden light. One of three needed to restore BMO's game library!",
+      "takeable": true,
+      "is_cartridge": true
+    }
+  },
+  "help_text": "Commands:\n  look           - Look around the room\n  look [thing]   - Examine something specific\n  go [direction] - Move (north, south, east, west, out)\n  take [item]    - Pick up an item\n  use [item]     - Use an item in the current room\n  talk [npc]     - Talk to someone\n  inventory / i  - Check your pockets\n  help           - Show this help\n  quit           - Save and quit\n\nShortcuts: n/s/e/w for directions, 'i' for inventory"
+}
