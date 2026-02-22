@@ -11,6 +11,7 @@ import { openDatabase } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
+import { handleMemoryRoute } from './api/memory.js';
 
 export const VERSION = '0.1.0';
 
@@ -74,7 +75,11 @@ const server = http.createServer((req, res) => {
   if (url.pathname.startsWith('/api/')) {
     handleStateRoute(req, res, url.pathname, url.searchParams)
       .then((handled) => {
-        if (!handled) {
+        if (handled) return;
+        return handleMemoryRoute(req, res, url.pathname);
+      })
+      .then((handled) => {
+        if (handled === false) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
         }
