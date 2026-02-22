@@ -11,7 +11,7 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import { openDatabase, closeDatabase, query } from '../core/db.js';
-import { Scheduler } from '../automation/scheduler.js';
+import { Scheduler, type TaskHandlerContext } from '../automation/scheduler.js';
 import { getTaskHistory, type TaskResult } from '../automation/task-runner.js';
 import { handleTasksRoute, setScheduler } from '../api/tasks.js';
 
@@ -474,6 +474,330 @@ describe('Scheduler Engine', { concurrency: 1 }, () => {
           return true;
         },
       );
+    });
+  });
+
+  // ── t-204: registerHandler() enables in-process execution ───
+
+  describe('In-process handler execution (t-204)', () => {
+    let scheduler: Scheduler;
+
+    beforeEach(() => {
+      setupDb();
+    });
+
+    afterEach(() => {
+      scheduler?.stop();
+      teardownDb();
+    });
+
+    it('registerHandler() stores handler in _handlers map', () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'handler-test',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo fallback' },
+        }],
+      });
+
+      assert.equal(scheduler.hasHandler('handler-test'), false);
+
+      scheduler.registerHandler('handler-test', async () => {});
+
+      assert.equal(scheduler.hasHandler('handler-test'), true);
+    });
+
+    it('registered handler executes in-process (no subprocess)', async () => {
+      let handlerCalled = false;
+      let receivedContext: TaskHandlerContext | null = null;
+
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'inprocess-test',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo should-not-run', custom_key: 'custom_value' },
+        }],
+      });
+
+      scheduler.registerHandler('inprocess-test', async (ctx) => {
+        handlerCalled = true;
+        receivedContext = ctx;
+      });
+
+      const result = await scheduler.triggerTask('inprocess-test');
+
+      assert.equal(handlerCalled, true, 'Handler should have been called');
+      assert.equal(result.status, 'success');
+      assert.equal(result.task_name, 'inprocess-test');
+      assert.ok(result.output?.includes('In-process handler completed'));
+      assert.ok(result.duration_ms >= 0);
+      assert.ok(result.started_at);
+      assert.ok(result.finished_at);
+
+      // Verify handler received correct context
+      assert.notEqual(receivedContext, null);
+      assert.equal(receivedContext!.taskName, 'inprocess-test');
+      assert.equal(receivedContext!.config.custom_key, 'custom_value');
+    });
+
+    it('handler failure returns failure result (does not throw)', async () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'fail-handler',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo fallback' },
+        }],
+      });
+
+      scheduler.registerHandler('fail-handler', async () => {
+        throw new Error('Handler exploded');
+      });
+
+      const result = await scheduler.triggerTask('fail-handler');
+
+      assert.equal(result.status, 'failure');
+      assert.ok(result.output?.includes('Handler exploded'));
+      assert.ok(result.duration_ms >= 0);
+    });
+
+    it('onTaskComplete fires for in-process handlers', async () => {
+      let completedResult: TaskResult | null = null;
+
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'complete-handler',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo fallback' },
+        }],
+        onTaskComplete: (result) => { completedResult = result; },
+      });
+
+      scheduler.registerHandler('complete-handler', async () => {});
+
+      await scheduler.triggerTask('complete-handler');
+
+      assert.notEqual(completedResult, null, 'onTaskComplete should have fired');
+      assert.equal(completedResult!.task_name, 'complete-handler');
+      assert.equal(completedResult!.status, 'success');
+    });
+
+    it('task without handler falls back to subprocess', async () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'subprocess-fallback',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo subprocess-ran' },
+        }],
+      });
+
+      // No handler registered — should use subprocess
+      assert.equal(scheduler.hasHandler('subprocess-fallback'), false);
+
+      const result = await scheduler.triggerTask('subprocess-fallback');
+      assert.equal(result.status, 'success');
+      assert.ok(result.output?.includes('subprocess-ran'));
+    });
+
+    it('triggerTask via API works with registered handler', async () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'api-handler',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo fallback' },
+        }],
+      });
+      setScheduler(scheduler);
+
+      scheduler.registerHandler('api-handler', async () => {});
+
+      const { status, body } = await fakeRequest('POST', '/api/tasks/api-handler/run');
+      assert.equal(status, 200);
+      assert.equal(body.data.status, 'success');
+      assert.ok(body.data.output.includes('In-process handler completed'));
+    });
+  });
+
+  // ── t-204b: registerHandler for non-existent task rejected ──
+
+  describe('registerHandler rejects invalid tasks (t-204b)', () => {
+    let scheduler: Scheduler;
+
+    beforeEach(() => {
+      setupDb();
+    });
+
+    afterEach(() => {
+      scheduler?.stop();
+      teardownDb();
+    });
+
+    it('throws for task name not in config', () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'real-task',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo ok' },
+        }],
+      });
+
+      assert.throws(
+        () => scheduler.registerHandler('nonexistent-task', async () => {}),
+        (err: Error) => {
+          assert.ok(err.message.includes('nonexistent-task'));
+          assert.ok(err.message.includes('unknown task'));
+          return true;
+        },
+      );
+
+      // Verify handler was not registered
+      assert.equal(scheduler.hasHandler('nonexistent-task'), false);
+    });
+
+    it('throws for requiresSession task without sessionExists callback', () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'session-task',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo ok', requires_session: true },
+        }],
+        // No sessionExists callback provided
+      });
+
+      assert.throws(
+        () => scheduler.registerHandler('session-task', async () => {}),
+        (err: Error) => {
+          assert.ok(err.message.includes('requires_session'));
+          assert.ok(err.message.includes('sessionExists'));
+          return true;
+        },
+      );
+    });
+
+    it('accepts requiresSession task when sessionExists callback provided', () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'session-task-ok',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo ok', requires_session: true },
+        }],
+        sessionExists: () => true,
+      });
+
+      // Should not throw
+      scheduler.registerHandler('session-task-ok', async () => {});
+      assert.equal(scheduler.hasHandler('session-task-ok'), true);
+    });
+  });
+
+  // ── t-205: requiresSession flag prevents execution ──────────
+
+  describe('requiresSession skips when no session (t-205)', () => {
+    let scheduler: Scheduler;
+
+    beforeEach(() => {
+      setupDb();
+    });
+
+    afterEach(() => {
+      scheduler?.stop();
+      teardownDb();
+    });
+
+    it('task skipped when session not available', async () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'needs-session',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo ok', requires_session: true },
+        }],
+        sessionExists: () => false, // No session
+      });
+
+      let handlerCalled = false;
+      scheduler.registerHandler('needs-session', async () => {
+        handlerCalled = true;
+      });
+
+      const result = await scheduler.triggerTask('needs-session');
+
+      assert.equal(handlerCalled, false, 'Handler should NOT have been called');
+      assert.equal(result.status, 'success');
+      assert.ok(result.output?.includes('Skipped'));
+      assert.equal(result.duration_ms, 0);
+    });
+
+    it('task executes when session is available', async () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'has-session',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo ok', requires_session: true },
+        }],
+        sessionExists: () => true, // Session active
+      });
+
+      let handlerCalled = false;
+      scheduler.registerHandler('has-session', async () => {
+        handlerCalled = true;
+      });
+
+      const result = await scheduler.triggerTask('has-session');
+
+      assert.equal(handlerCalled, true, 'Handler should have been called');
+      assert.equal(result.status, 'success');
+      assert.ok(result.output?.includes('In-process handler completed'));
+    });
+
+    it('task without requires_session runs regardless', async () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'no-session-flag',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo ok' },
+          // No requires_session in config
+        }],
+        sessionExists: () => false, // Session not available, but task doesn't care
+      });
+
+      let handlerCalled = false;
+      scheduler.registerHandler('no-session-flag', async () => {
+        handlerCalled = true;
+      });
+
+      const result = await scheduler.triggerTask('no-session-flag');
+
+      assert.equal(handlerCalled, true, 'Handler should run — no session requirement');
+      assert.equal(result.status, 'success');
+    });
+
+    it('requiresSession subprocess task also skips (not just handlers)', async () => {
+      scheduler = new Scheduler({
+        tasks: [{
+          name: 'subprocess-session',
+          enabled: true,
+          interval: '1h',
+          config: { command: 'echo should-not-run', requires_session: true },
+        }],
+        sessionExists: () => false,
+      });
+
+      // No handler registered — would fall back to subprocess, but session check happens first
+      const result = await scheduler.triggerTask('subprocess-session');
+
+      assert.equal(result.status, 'success');
+      assert.ok(result.output?.includes('Skipped'));
     });
   });
 });

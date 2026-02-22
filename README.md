@@ -1,85 +1,75 @@
 # Kithkit
 
-A framework for building personal AI assistants with Claude Code.
+A framework for building persistent personal AI assistants with Claude Code.
 
-Kithkit gives your Claude Code agent a persistent daemon, structured memory, multi-agent task delegation, and channel-based communication — so it can run as an always-on assistant, not just a CLI tool.
+Kithkit gives your agent a background daemon for state management, a multi-agent task delegation system, channel-based communication, and a scheduler — so it runs as an always-on assistant, not just a CLI tool you open when you need it.
+
+## Features
+
+- **Persistent daemon** — Node.js HTTP server on localhost manages SQLite state, schedules tasks, and routes messages
+- **Structured memory** — store facts, decisions, and episodic memories; search by keyword, tag, category, or semantic similarity (vector embeddings via all-MiniLM-L6-v2)
+- **Multi-agent task delegation** — spawn scoped worker agents (research, coding, testing, review, etc.) via the Agent SDK; each profile defines allowed tools, model, and turn limits
+- **Channel adapters** — receive and send messages through Telegram, email, and custom channels
+- **Scheduler** — cron and interval-based task execution with idle detection and session awareness
+- **Extension model** — add custom HTTP routes, scheduler tasks, and health checks without modifying the framework
+- **Identity system** — define your agent's name, personality, and communication style in a single `identity.md` file
+- **Config hot-reload** — change settings without restarting the daemon
 
 ## Quick Start
 
 ```bash
-mkdir my-agent && cd my-agent
+# 1. Clone and install
+git clone https://github.com/kithkit/kithkit.git my-agent
+cd my-agent && npm install
+
+# 2. Initialize your agent
 npx kithkit init
+
+# 3. Start the daemon and Claude Code session
+./scripts/start-tmux.sh
+
+# 4. Verify the daemon is running
+./scripts/health.sh
+
+# 5. Talk to your agent
+curl http://localhost:3847/status
 ```
 
-The wizard asks for a name and personality template. Everything else is automatic.
+The init wizard asks for a name and personality template — everything else is automatic.
 
 ## Architecture
 
 ```
-Human ←→ Comms Agent ←→ Daemon ←→ Orchestrator ←→ Workers
-              ↕            ↕            ↕
-          Channels      SQLite DB    Agent SDK
+Human ←→ Comms Agent ←→ Daemon (Orchestrator) ←→ Worker Agents
+              ↕                    ↕
+          Identity              SQLite DB
 ```
 
-**Comms agent** — persistent Claude Code session with your agent's identity. Handles simple requests directly.
+**Comms agent** — a persistent Claude Code session with your agent's identity. Handles conversations directly and delegates complex tasks to workers.
 
-**Daemon** — Node.js HTTP server on localhost. Manages state (SQLite), agent lifecycle, inter-agent messaging, scheduling, and channel routing.
+**Daemon (Orchestrator)** — a background HTTP server on `localhost:3847`. Manages state (SQLite), agent lifecycle, scheduling, and channel routing. Acts as the Orchestrator for all Worker agents.
 
-**Orchestrator** — spawned on-demand when the comms agent encounters complex tasks. Decomposes work and manages workers.
+**Worker agents** — ephemeral Claude Code agents scoped by profiles (research, coding, testing, etc.). Spawned on demand; killed when the task is done.
 
-**Workers** — ephemeral agents scoped by profiles (research, coding, testing, etc.). Each profile defines allowed tools, model, and turn limits.
-
-## What's Included
-
-- **SQLite state management** — todos, calendar, memories, config, feature state, usage tracking
-- **Structured + vector memory** — keyword search, tag/category filters, semantic similarity via all-MiniLM-L6-v2
-- **Agent lifecycle management** — spawn, monitor, timeout, kill workers via API
-- **Inter-agent messaging** — logged, auditable message routing between agents
-- **Channel adapters** — pluggable delivery to Telegram, email, and custom channels
-- **Scheduler** — cron and interval-based task execution
-- **Agent profiles** — 6 built-in worker types (research, coding, testing, email, review, devil's advocate)
-- **Identity system** — 3 personality templates (professional, creative, minimal)
-- **Config hot-reload** — change settings without restarting the daemon
-- **Error recovery** — automatic detection and recovery from worker crashes and hangs
-- **Skills catalog** — install community skills via `npx kithkit install`
-
-## Project Structure
-
-```
-kithkit/
-├── daemon/               # Node.js daemon (HTTP API, SQLite, lifecycle)
-│   └── src/
-│       ├── core/         # Config, DB, health, logging
-│       ├── api/          # HTTP route handlers
-│       ├── agents/       # Lifecycle, profiles, SDK adapter, recovery
-│       ├── comms/        # Channel router + adapters
-│       ├── memory/       # Structured search + vector embeddings
-│       └── automation/   # Scheduler + task runner
-├── cli/                  # npx kithkit command
-│   └── src/
-│       ├── index.ts      # CLI entry point
-│       ├── init.ts       # Init wizard
-│       └── prerequisites.ts
-├── profiles/             # Built-in agent profiles
-├── templates/            # Identity templates + default config
-├── packages/             # Kithkit ecosystem packages
-│   ├── kithkit-client/   # Catalog API client
-│   ├── kithkit-linter/   # Skill quality linter
-│   ├── kithkit-catalog/  # Catalog index builder
-│   └── kithkit-sign/     # Ed25519 skill signing
-└── docs/                 # Documentation
-```
+See [docs/architecture.md](docs/architecture.md) for a complete breakdown including data flow, daemon internals, extension model, and scripts.
 
 ## Documentation
 
-- [Getting Started](docs/getting-started.md) — from zero to running agent
-- [API Reference](docs/api-reference.md) — all daemon HTTP endpoints
-- [Agent Profiles](docs/agent-profiles.md) — profile format and built-in types
+| Doc | What it covers |
+|-----|---------------|
+| [Getting Started](docs/getting-started.md) | Prerequisites, installation, first run, verification, configuration |
+| [Architecture](docs/architecture.md) | Three-tier system, daemon internals, extension model, scripts |
+| [Extensions](docs/extensions.md) | Writing custom routes, tasks, and health checks |
+| [API Reference](docs/api-reference.md) | All daemon HTTP endpoints with request/response examples |
+| [Agent Profiles](docs/agent-profiles.md) | Worker profile format, built-in profiles, creating custom types |
+| [Recipes](docs/recipes/) | Integration guides — Telegram, email, voice, browser automation |
 
 ## Requirements
 
 - Node.js 22+
 - npm
+- tmux
+- jq
 - Claude Code CLI
 
 ## License

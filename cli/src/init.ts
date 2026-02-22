@@ -35,6 +35,8 @@ export interface InitOptions {
   template?: string;
   /** Custom readline interface (for testing). */
   rl?: readline.Interface;
+  /** Run only a specific sub-step instead of the full wizard. */
+  subcommand?: 'prereqs' | 'identity' | 'verify';
 }
 
 export interface InitResult {
@@ -86,6 +88,55 @@ export async function runInit(opts: InitOptions = {}): Promise<InitResult> {
   const closeRl = !opts.rl; // Only close if we created it
 
   try {
+    // Sub-command: prereqs — run prerequisite check and exit
+    if (opts.subcommand === 'prereqs') {
+      const prereqs = await checkPrerequisites();
+      console.log(formatPrereqReport(prereqs));
+      return {
+        success: prereqs.allPassed,
+        projectDir,
+        agentName: '',
+        template: '',
+        configPath: '',
+        identityPath: '',
+        profilesDir: '',
+        errors: [],
+      };
+    }
+
+    // Sub-command: verify — post-setup health check
+    if (opts.subcommand === 'verify') {
+      const results: string[] = [];
+
+      // Check daemon running
+      try {
+        const resp = await fetch(`http://localhost:${3847}/health`);
+        results.push(resp.ok ? '[ok] Daemon healthy' : '[!!] Daemon unhealthy');
+      } catch {
+        results.push('[!!] Daemon not running');
+      }
+
+      // Check config exists
+      const configPath = path.join(projectDir, 'kithkit.config.yaml');
+      results.push(fs.existsSync(configPath) ? '[ok] Config file exists' : '[!!] Config file missing');
+
+      // Check identity exists
+      const identityPath = path.join(projectDir, 'identity.md');
+      results.push(fs.existsSync(identityPath) ? '[ok] Identity file exists' : '[!!] Identity file missing');
+
+      console.log('\nVerification:\n' + results.join('\n'));
+      return {
+        success: !results.some(r => r.includes('[!!]')),
+        projectDir,
+        agentName: '',
+        template: '',
+        configPath,
+        identityPath,
+        profilesDir: '',
+        errors: [],
+      };
+    }
+
     console.log('\nkithkit init — Setting up your AI assistant\n');
 
     // Step 1: Prerequisites
@@ -95,7 +146,7 @@ export async function runInit(opts: InitOptions = {}): Promise<InitResult> {
       console.log(formatPrereqReport(prereqs));
 
       if (!prereqs.allPassed) {
-        const criticalFails = prereqs.results.filter(r => !r.ok && r.name !== 'Claude Code');
+        const criticalFails = prereqs.results.filter(r => !r.ok && !r.optional && r.name !== 'Claude Code');
         if (criticalFails.length > 0) {
           return {
             success: false,
@@ -188,6 +239,14 @@ export async function runInit(opts: InitOptions = {}): Promise<InitResult> {
       }
     } else if (fs.existsSync(identityPath)) {
       console.log('  identity.md already exists, skipping');
+    }
+
+    // Step 5b: Set default autonomy mode
+    const autonomyPath = path.join(projectDir, '.claude', 'state', 'autonomy.json');
+    if (!fs.existsSync(autonomyPath)) {
+      fs.mkdirSync(path.join(projectDir, '.claude', 'state'), { recursive: true });
+      fs.writeFileSync(autonomyPath, JSON.stringify({ mode: 'confident' }, null, 2));
+      console.log('  Set default autonomy mode: confident');
     }
 
     // Step 6: Create .claude/agents/ with built-in profiles
