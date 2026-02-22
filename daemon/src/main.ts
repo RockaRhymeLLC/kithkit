@@ -13,6 +13,7 @@ import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
 import { handleMemoryRoute } from './api/memory.js';
 import { handleAgentsRoute } from './api/agents.js';
+import { handleMessagesRoute } from './api/messages.js';
 
 export const VERSION = '0.1.0';
 
@@ -78,6 +79,10 @@ const server = http.createServer((req, res) => {
       .then((handled) => {
         if (handled) return;
         return handleStateRoute(req, res, url.pathname, url.searchParams);
+      })
+      .then((handled) => {
+        if (handled) return;
+        return handleMessagesRoute(req, res, url.pathname, url.searchParams);
       })
       .then((handled) => {
         if (handled) return;
