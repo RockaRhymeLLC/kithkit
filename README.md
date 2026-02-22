@@ -53,12 +53,31 @@ Human ←→ Comms Agent ←→ Daemon (Orchestrator) ←→ Worker Agents
 
 See [docs/architecture.md](docs/architecture.md) for a complete breakdown including data flow, daemon internals, extension model, and scripts.
 
+## Built-in Skills
+
+Kithkit ships with 21 skills that your agent can use out of the box — no installation needed. Skills are Claude Code slash commands that give your agent structured capabilities.
+
+**Development workflow:**
+`/spec` → `/plan` → `/review` → `/build` → `/validate`
+
+**State management:**
+`/todo`, `/memory`, `/calendar`, `/save-state`, `/restart`
+
+**Automation & tools:**
+`/hooks`, `/mode`, `/remind`, `/playwright-cli`, `/kithkit`
+
+**Reference skills** (loaded automatically when relevant):
+`browser`, `email-compose`, `keychain`, `macos-automation`, `web-design`, `skill-create`
+
+See [docs/skills.md](docs/skills.md) for the full reference with descriptions.
+
 ## Documentation
 
 | Doc | What it covers |
 |-----|---------------|
 | [Getting Started](docs/getting-started.md) | Prerequisites, installation, first run, verification, configuration |
 | [Architecture](docs/architecture.md) | Three-tier system, daemon internals, extension model, scripts |
+| [Skills Reference](docs/skills.md) | All 21 built-in skills with descriptions and usage |
 | [Extensions](docs/extensions.md) | Writing custom routes, tasks, and health checks |
 | [API Reference](docs/api-reference.md) | All daemon HTTP endpoints with request/response examples |
 | [Agent Profiles](docs/agent-profiles.md) | Worker profile format, built-in profiles, creating custom types |

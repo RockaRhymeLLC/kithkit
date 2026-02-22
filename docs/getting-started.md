@@ -58,6 +58,11 @@ my-agent/
 ├── kithkit.db               # SQLite database (created on first run)
 ├── .claude/
 │   ├── CLAUDE.md            # Framework manual (auto-generated)
+│   ├── skills/              # 21 built-in skills (slash commands)
+│   │   ├── build/           #   /build — implement features from stories
+│   │   ├── todo/            #   /todo — persistent cross-session tasks
+│   │   ├── memory/          #   /memory — store and retrieve facts
+│   │   ├── ...              #   (18 more — see docs/skills.md)
 │   └── agents/              # Worker profiles (6 built-in)
 │       ├── research.md
 │       ├── coding.md
@@ -195,7 +200,18 @@ Worker profiles live in `.claude/agents/`. Add a new `.md` file with YAML frontm
 
 ### Skills
 
-Install skills from the Kithkit catalog:
+Kithkit ships with 21 built-in skills your agent can use immediately — no installation needed. These are Claude Code slash commands that live in `.claude/skills/`:
+
+| Category | Skills |
+|----------|--------|
+| Dev workflow | `/spec`, `/plan`, `/review`, `/build`, `/validate` |
+| State management | `/todo`, `/memory`, `/calendar`, `/save-state`, `/restart` |
+| Automation | `/hooks`, `/mode`, `/remind`, `/playwright-cli`, `/kithkit` |
+| Reference | `browser`, `email-compose`, `keychain`, `macos-automation`, `web-design`, `skill-create` |
+
+See [skills.md](skills.md) for detailed descriptions of each skill.
+
+You can also install additional skills from the Kithkit catalog:
 
 ```bash
 npx kithkit search "email"
@@ -249,6 +265,7 @@ The `scripts/` directory provides common operational commands:
 
 ## Next Steps
 
+- Read [Skills Reference](skills.md) — all 21 built-in skills with descriptions
 - Read [Architecture](architecture.md) — understand the daemon, extensions, and data flow
 - Read [Extensions](extensions.md) — add custom routes, tasks, and integrations
 - Read [API Reference](api-reference.md) — complete daemon HTTP endpoint documentation
