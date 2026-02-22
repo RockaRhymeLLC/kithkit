@@ -7,8 +7,10 @@
 import http from 'node:http';
 import path from 'node:path';
 import { loadConfig } from './core/config.js';
+import { openDatabase } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
+import { handleStateRoute } from './api/state.js';
 
 export const VERSION = '0.1.0';
 
@@ -25,6 +27,10 @@ initLogger({
 });
 
 const log = createLogger('main');
+
+// ── Database ─────────────────────────────────────────────────
+
+openDatabase(projectDir);
 
 log.info('Kithkit daemon starting', {
   agent: config.agent.name,
@@ -61,6 +67,25 @@ const server = http.createServer((req, res) => {
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
     }));
+    return;
+  }
+
+  // Async routes
+  if (url.pathname.startsWith('/api/')) {
+    handleStateRoute(req, res, url.pathname, url.searchParams)
+      .then((handled) => {
+        if (!handled) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
+        }
+      })
+      .catch((err) => {
+        log.error('Request error', { path: url.pathname, error: String(err) });
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal server error', timestamp: new Date().toISOString() }));
+        }
+      });
     return;
   }
 
