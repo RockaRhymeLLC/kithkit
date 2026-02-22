@@ -9,7 +9,7 @@
     "build": "tsc && cp -r src/core/migrations dist/core/",
     "start": "node dist/main.js",
     "dev": "tsc --watch",
-    "test": "node --test dist/__tests__/**/*.test.js",
+    "test": "node --test --test-concurrency=1 dist/__tests__/*.test.js dist/__tests__/integration/*.test.js",
     "clean": "rm -rf dist"
   },
   "engines": {
