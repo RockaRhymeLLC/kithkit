@@ -26,5 +26,9 @@
   "devDependencies": {
     "@types/node": "^25.3.0",
     "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "^3.8.1",
+    "sqlite-vec": "^0.1.7-alpha.2"
   }
 }
