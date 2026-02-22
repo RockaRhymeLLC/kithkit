@@ -1,0 +1,284 @@
+{
+  "generated": "2026-02-22T23:18:01.961Z",
+  "dryRun": false,
+  "summary": {
+    "imported": 39,
+    "failed": 0,
+    "totalActions": 332
+  },
+  "entries": [
+    {
+      "file": "2-high-blocked-104-playplan-review-specs-improv.json",
+      "v1Id": "104",
+      "ok": true,
+      "v2Id": 1,
+      "actions": 40
+    },
+    {
+      "file": "2-high-blocked-133-ship-shape-cc4me-repo-for-pu.json",
+      "v1Id": 133,
+      "ok": true,
+      "v2Id": 2,
+      "actions": 27
+    },
+    {
+      "file": "2-high-completed-120-research-multi-model-integrat.json",
+      "v1Id": "120",
+      "ok": true,
+      "v2Id": 3,
+      "actions": 8
+    },
+    {
+      "file": "2-high-completed-122-build-cc4me-skills-catalog.json",
+      "v1Id": "122",
+      "ok": true,
+      "v2Id": 4,
+      "actions": 13
+    },
+    {
+      "file": "2-high-completed-123-build-public-internet-a2a-co.json",
+      "v1Id": "123",
+      "ok": true,
+      "v2Id": 5,
+      "actions": 16
+    },
+    {
+      "file": "2-high-completed-126-shut-down-apis-services-and-s.json",
+      "v1Id": 126,
+      "ok": true,
+      "v2Id": 6,
+      "actions": 6
+    },
+    {
+      "file": "2-high-completed-128-cc4me-network-v2-p2p-mess.json",
+      "v1Id": 128,
+      "ok": true,
+      "v2Id": 7,
+      "actions": 19
+    },
+    {
+      "file": "2-high-completed-130-cc4me-network-phase-3-disco.json",
+      "v1Id": 130,
+      "ok": true,
+      "v2Id": 8,
+      "actions": 21
+    },
+    {
+      "file": "2-high-completed-136-review-startup-procedure-pri.json",
+      "v1Id": 136,
+      "ok": true,
+      "v2Id": 9,
+      "actions": 3
+    },
+    {
+      "file": "2-high-completed-137-review-startup-procedure-to.json",
+      "v1Id": 137,
+      "ok": true,
+      "v2Id": 10,
+      "actions": 3
+    },
+    {
+      "file": "2-high-completed-138-marvho-marvbot-cc4me-network-o.json",
+      "v1Id": "138",
+      "ok": true,
+      "v2Id": 11,
+      "actions": 14
+    },
+    {
+      "file": "2-high-completed-139-cc4me-network-v3-registrat.json",
+      "v1Id": "139",
+      "ok": true,
+      "v2Id": 12,
+      "actions": 13
+    },
+    {
+      "file": "2-high-completed-141-fix-cc4me-network-v3-e2e-pa.json",
+      "v1Id": "141",
+      "ok": true,
+      "v2Id": 13,
+      "actions": 6
+    },
+    {
+      "file": "2-high-completed-142-replace-ses-with-resend-for-r.json",
+      "v1Id": 142,
+      "ok": true,
+      "v2Id": 14,
+      "actions": 2
+    },
+    {
+      "file": "2-high-completed-143-publish-cc4me-network-sdk-to-np.json",
+      "v1Id": 143,
+      "ok": true,
+      "v2Id": 15,
+      "actions": 3
+    },
+    {
+      "file": "2-high-completed-151-build-voice-client-for-chrissys-la.json",
+      "v1Id": "151",
+      "ok": true,
+      "v2Id": 16,
+      "actions": 9
+    },
+    {
+      "file": "2-high-completed-152-cc4me-v2-kithkit-framework-rewrite.json",
+      "v1Id": 152,
+      "ok": true,
+      "v2Id": 17,
+      "actions": 7
+    },
+    {
+      "file": "2-high-completed-154-build-kithkit-v2-framework.json",
+      "v1Id": 154,
+      "ok": true,
+      "v2Id": 18,
+      "actions": 11
+    },
+    {
+      "file": "2-high-completed-155-migrate-bmo-to-kithkit-v2.json",
+      "v1Id": 155,
+      "ok": true,
+      "v2Id": 19,
+      "actions": 9
+    },
+    {
+      "file": "2-high-in-progress-156-spec-plan-kithkit-v2-migration.json",
+      "v1Id": 156,
+      "ok": true,
+      "v2Id": 20,
+      "actions": 8
+    },
+    {
+      "file": "3-medium-blocked-131-build-cc4me-network-user.json",
+      "v1Id": 131,
+      "ok": true,
+      "v2Id": 21,
+      "actions": 11
+    },
+    {
+      "file": "3-medium-blocked-144-cc4me-network-phase-4-social.json",
+      "v1Id": 144,
+      "ok": true,
+      "v2Id": 22,
+      "actions": 6
+    },
+    {
+      "file": "3-medium-completed-116-upstream-latest-enhancements.json",
+      "v1Id": "116",
+      "ok": true,
+      "v2Id": 23,
+      "actions": 5
+    },
+    {
+      "file": "3-medium-completed-118-set-up-lemon-squeezy-produ.json",
+      "v1Id": "118",
+      "ok": true,
+      "v2Id": 24,
+      "actions": 9
+    },
+    {
+      "file": "3-medium-completed-119-build-github-rate-ledger-s.json",
+      "v1Id": 119,
+      "ok": true,
+      "v2Id": 25,
+      "actions": 4
+    },
+    {
+      "file": "3-medium-completed-121-build-repo-audit-sh-pre-publi.json",
+      "v1Id": "121",
+      "ok": true,
+      "v2Id": 26,
+      "actions": 5
+    },
+    {
+      "file": "3-medium-completed-124-rebuild-bmobot-ai-cc4me-entry.json",
+      "v1Id": 124,
+      "ok": true,
+      "v2Id": 27,
+      "actions": 5
+    },
+    {
+      "file": "3-medium-completed-127-create-private-website-rep.json",
+      "v1Id": 127,
+      "ok": true,
+      "v2Id": 28,
+      "actions": 3
+    },
+    {
+      "file": "3-medium-completed-129-cc4me-network-phase-2-groups.json",
+      "v1Id": 129,
+      "ok": true,
+      "v2Id": 29,
+      "actions": 9
+    },
+    {
+      "file": "3-medium-completed-132-improve-cc4me-network-sdk-in.json",
+      "v1Id": 132,
+      "ok": true,
+      "v2Id": 30,
+      "actions": 8
+    },
+    {
+      "file": "3-medium-completed-135-investigate-transient-fetch.json",
+      "v1Id": 135,
+      "ok": true,
+      "v2Id": 31,
+      "actions": 3
+    },
+    {
+      "file": "3-medium-completed-146-bcps-summer-arts-camp-recon.json",
+      "v1Id": 146,
+      "ok": true,
+      "v2Id": 32,
+      "actions": 3
+    },
+    {
+      "file": "3-medium-completed-148-skills-catalog.json",
+      "v1Id": 148,
+      "ok": true,
+      "v2Id": 33,
+      "actions": 7
+    },
+    {
+      "file": "3-medium-pending-157-review-kithkit-agent-profiles.json",
+      "v1Id": 157,
+      "ok": true,
+      "v2Id": 34,
+      "actions": 1
+    },
+    {
+      "file": "4-low-completed-134-madrid-travel-guide-for-dave.json",
+      "v1Id": 134,
+      "ok": true,
+      "v2Id": 35,
+      "actions": 5
+    },
+    {
+      "file": "4-low-completed-140-explore-kokoro-voice-presets.json",
+      "v1Id": "140",
+      "ok": true,
+      "v2Id": 36,
+      "actions": 3
+    },
+    {
+      "file": "4-low-completed-145-learn-yahoo-email-scams-targ.json",
+      "v1Id": 145,
+      "ok": true,
+      "v2Id": 37,
+      "actions": 2
+    },
+    {
+      "file": "4-low-completed-149-build-linter-test-suite.json",
+      "v1Id": "149",
+      "ok": true,
+      "v2Id": 38,
+      "actions": 2
+    },
+    {
+      "file": "4-low-completed-153-prototype-sqlite-vec-embeddin.json",
+      "v1Id": 153,
+      "ok": true,
+      "v2Id": 39,
+      "actions": 3
+    }
+  ]
+}
