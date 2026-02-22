@@ -40,6 +40,7 @@ import {
 import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P } from './comms/network/sdk-bridge.js';
 import { registerWithRelay } from './comms/network/registration.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
+import { initVoice, stopVoice } from './voice/index.js';
 
 const log = createLogger('bmo-extension');
 
@@ -306,6 +307,11 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
       }));
   }
 
+  // Initialize voice extension (registers its own routes)
+  if (_config.channels?.voice) {
+    await initVoice(_config.channels.voice);
+  }
+
   // Register BMO-specific routes
   registerRoute('/telegram', handleTelegramWebhook);
   registerRoute('/shortcut', handleShortcut);
@@ -355,6 +361,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 }
 
 async function onShutdown(): Promise<void> {
+  stopVoice();
   await stopNetworkSDK();
   stopAgentComms();
   shutdownComms();

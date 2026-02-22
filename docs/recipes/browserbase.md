@@ -1,262 +1,127 @@
-# Cloud Browser Integration (Browserbase)
+# Recipe: Browser Automation (Browserbase Cloud)
 
-Integrate Browserbase cloud browsers into your Kithkit assistant for authenticated browsing, anti-bot bypass, and persistent session contexts — while keeping local Playwright for ordinary scraping.
+Set up cloud browser automation for your Kithkit agent using Browserbase. The daemon runs a sidecar process that manages Browserbase sessions and provides navigation primitives. Human hand-off via live view URLs enables unblocking when the agent encounters CAPTCHAs, logins, or verification steps.
 
 ---
 
 ## Prerequisites
 
-- Browserbase account at [browserbase.com](https://www.browserbase.com)
-- Browserbase API key
-- Node.js 18+ (for the sidecar process)
-- Kithkit daemon running (`curl http://localhost:3847/health`)
+- A Browserbase account (https://www.browserbase.com/)
+- API key and project ID from Browserbase dashboard
+- Kithkit daemon running
+- `playwright-core` npm package installed
 
 ---
 
 ## Setup Steps
 
-### 1. Sign up and get your API key
+### 1. Get Browserbase credentials
 
-Create an account at [browserbase.com](https://www.browserbase.com). From the dashboard, navigate to **API Keys** and generate a new key.
+Sign up at browserbase.com, then find your API key and project ID in the dashboard settings.
 
-### 2. Store the API key in Keychain
+### 2. Store credentials in Keychain
 
 ```bash
-security add-generic-password \
-  -s credential-browserbase-api-key \
-  -a browserbase \
-  -w "YOUR_API_KEY_HERE"
+security add-generic-password -s credential-browserbase-api-key -a default -w "YOUR_API_KEY"
+security add-generic-password -s credential-browserbase-project-id -a default -w "YOUR_PROJECT_ID"
 ```
 
-Verify it was stored:
+### 3. Install dependencies
+
+In the browser sidecar directory:
 
 ```bash
-security find-generic-password -s credential-browserbase-api-key -w
-```
-
-### 3. Install the sidecar dependencies
-
-The Browserbase sidecar is a local HTTP proxy that manages cloud sessions on your behalf.
-
-```bash
-cd daemon
 npm install @browserbasehq/sdk playwright-core
 ```
 
-### 4. Configure the sidecar in your config file
-
-Add the `browserbase` block under `integrations` (see Config Snippet below) and set `enabled: true`.
-
-### 5. Enable the sidecar in the daemon
-
-The daemon automatically starts the Browserbase sidecar when `integrations.browserbase.enabled` is `true`. Restart the daemon after updating config:
-
-```bash
-launchctl unload ~/Library/LaunchAgents/com.your-agent.daemon.plist
-launchctl load  ~/Library/LaunchAgents/com.your-agent.daemon.plist
-```
-
-Confirm the sidecar is up:
-
-```bash
-curl http://localhost:3849/health
-# → { "status": "ok", "engine": "browserbase" }
-```
-
----
-
-## Decision Matrix
-
-Use the right browser tool for each job:
-
-| Scenario | Tool | Why |
-|---|---|---|
-| Public docs, Wikipedia, news | Local Playwright | Free, fast, no quota consumed |
-| Simple scraping (no auth, no bot protection) | Local Playwright | Free, sufficient |
-| Dev preview / localhost testing | Local Playwright | Cloud can't reach localhost |
-| Authenticated flows (login, session cookies) | Browserbase | Persistent context, auth preserved |
-| Anti-bot / CAPTCHA sites | Browserbase | Stealth fingerprint, optional CAPTCHA solving |
-| Form filling on production apps | Browserbase | Reliable interaction, React-compatible helpers |
-| Long-running sessions (multi-step workflows) | Browserbase | Session survives network interruptions |
-
-**Budget**: Default allowance is 100 browser-hours/month. Overage is billed at $0.12/hr. Check usage in the Browserbase dashboard.
-
-**Local Playwright MCP tools** (use these for the free path):
-- `mcp__playwright__browser_navigate`
-- `mcp__playwright__browser_snapshot`
-- `mcp__playwright__browser_click`
-- `mcp__playwright__browser_type`
-- `mcp__playwright__browser_screenshot`
-
----
-
-## Reference Code
-
-### Sidecar API Pattern
-
-All Browserbase operations go through the local sidecar on port 3849. The sidecar holds the Browserbase session and exposes a simple REST API.
-
-```bash
-# Start a session (optionally reuse a named context for persistent cookies)
-curl -s -X POST http://localhost:3849/session/start \
-  -H "Content-Type: application/json" \
-  -d '{ "url": "https://example.com", "contextName": "sitename" }'
-# → { "sessionId": "...", "status": "ready" }
-
-# Navigate to a new URL within the session
-curl -s -X POST http://localhost:3849/session/navigate \
-  -H "Content-Type: application/json" \
-  -d '{ "url": "https://example.com/dashboard" }'
-
-# Click an element by CSS selector
-curl -s -X POST http://localhost:3849/session/click \
-  -H "Content-Type: application/json" \
-  -d '{ "selector": "#submit-button" }'
-
-# Type into an input field
-curl -s -X POST http://localhost:3849/session/type \
-  -H "Content-Type: application/json" \
-  -d '{ "selector": "#username", "text": "myuser" }'
-
-# Evaluate JavaScript (useful for React-controlled inputs)
-curl -s -X POST http://localhost:3849/session/eval \
-  -H "Content-Type: application/json" \
-  -d '{
-    "script": "const el = document.querySelector(\"#email\"); const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, \"value\").set; setter.call(el, \"user@example.com\"); el.dispatchEvent(new Event(\"input\", { bubbles: true }));"
-  }'
-
-# Take a screenshot (returns PNG bytes)
-curl -s http://localhost:3849/session/screenshot --output screenshot.png
-
-# Stop the session (pass saveContext: true to persist cookies for next run)
-curl -s -X POST http://localhost:3849/session/stop \
-  -H "Content-Type: application/json" \
-  -d '{ "saveContext": true }'
-```
-
-### Hand-off Protocol (Human-in-the-Loop)
-
-When a site requires human interaction (MFA, CAPTCHA that cannot be solved automatically, manual verification), use the hand-off protocol to relay control to the user via Telegram.
-
-```
-1. POST /browser/handoff/start
-   → daemon starts a Browserbase session and returns a session token
-
-2. GET /session/status
-   → extract wrapperPath (the shareable session URL)
-
-3. Send the public URL + a screenshot to the user via your configured channel
-   Example message: "Need your input — open this link to continue: https://..."
-
-4. Wait for user commands via Telegram:
-   - "screenshot"    → take and send a new screenshot
-   - "type: [text]"  → relay text input (NEVER logged to transcript — safe for passwords)
-   - "done"          → signal completion; sidecar saves context and closes session
-   - "abort"         → cancel the session without saving
-
-5. POST /session/stop { "saveContext": true }  (on "done")
-   or
-   POST /session/stop { "saveContext": false } (on "abort")
-```
-
-**Security note**: `type:` commands are relayed directly to the browser and are not captured in the conversation transcript. This makes the hand-off protocol safe for password entry and sensitive form fields.
-
-### TypeScript Sidecar Client Example
-
-```typescript
-const SIDECAR = 'http://localhost:3849';
-
-async function withBrowserbase(
-  contextName: string,
-  fn: (session: BrowserSession) => Promise<void>
-): Promise<void> {
-  await fetch(`${SIDECAR}/session/start`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: 'about:blank', contextName }),
-  });
-
-  try {
-    await fn({ navigate, click, type: typeText, eval: evalScript, screenshot });
-  } finally {
-    await fetch(`${SIDECAR}/session/stop`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ saveContext: true }),
-    });
-  }
-}
-
-async function navigate(url: string) {
-  await fetch(`${SIDECAR}/session/navigate`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url }),
-  });
-}
-```
-
----
-
-## Config Snippet
-
-Add this block to your `kithkit.config.yaml`:
+### 4. Enable in config
 
 ```yaml
 integrations:
   browserbase:
     enabled: true
     sidecar_port: 3849
-    # How long to wait for a page action before timing out (seconds)
     default_timeout: 300
-    # Warn user via channel when a session has been idle this long (seconds)
-    idle_warning: 240
-    # Hand-off mode: max time waiting for user input (seconds)
     handoff_timeout: 300
-    # Max total duration of a hand-off session (seconds)
     handoff_session_timeout: 1800
-    # Block known ad/tracker domains (reduces noise in screenshots)
     block_ads: true
-    # Use Browserbase's built-in CAPTCHA solver (increases session cost)
     solve_captchas: false
-    # Record sessions in the Browserbase dashboard for debugging
     record_sessions: false
 ```
 
 ---
 
+## Architecture
+
+```
+Daemon (port 3847)
+├── Spawns browser-sidecar on init
+│   ├── HTTP server on port 3849
+│   ├── Health checks every 30s
+│   └── Auto-restart on crash (max 3 retries)
+│
+Browser Sidecar (port 3849)
+├── Session Manager
+│   ├── Browserbase SDK — session create/connect/destroy
+│   ├── Playwright CDP — navigation, clicks, typing, screenshots
+│   └── Context Store — saved login sessions per site
+├── Hand-off Infrastructure
+│   ├── Live view URL generation
+│   ├── Telegram delivery for human interaction
+│   └── Session resume after unblock
+└── Endpoints
+    ├── POST /session/create — new browser session
+    ├── POST /session/navigate — go to URL
+    ├── POST /session/click — click element
+    ├── POST /session/type — type into element
+    ├── POST /session/screenshot — capture page
+    ├── POST /session/destroy — close session
+    ├── GET  /session/live-url — get live view URL
+    └── GET  /health — health check
+```
+
+---
+
+## Config Snippet
+
+```yaml
+integrations:
+  browserbase:
+    enabled: true
+    sidecar_port: 3849
+    default_timeout: 300
+    idle_warning: 120
+    handoff_timeout: 300
+    handoff_session_timeout: 1800
+    block_ads: true
+    solve_captchas: false
+    record_sessions: false
+```
+
+**Keychain credentials**:
+- `credential-browserbase-api-key` — Browserbase API key
+- `credential-browserbase-project-id` — Browserbase project ID
+
+---
+
 ## Troubleshooting
 
-**Session not starting**
+### Sidecar fails to start
 
-- Confirm your API key is stored correctly: `security find-generic-password -s credential-browserbase-api-key -w`
-- Check sidecar logs: `tail -f logs/browserbase-sidecar.log`
-- Verify the daemon loaded the sidecar: `curl http://localhost:3849/health`
+Check that `@browserbasehq/sdk` and `playwright-core` are installed. The sidecar is a separate Node.js process with its own package.json.
 
-**Timeout errors during navigation or interaction**
+### Session create fails (401)
 
-- Increase `default_timeout` in config (some SPAs take 10–20 seconds to render)
-- Check whether the site requires authentication — an unauth redirect may be looping
-- Use `GET /session/screenshot` to inspect the current page state
+API key is invalid or expired. Regenerate from the Browserbase dashboard and update Keychain.
 
-**CAPTCHA failures**
+### CDP connection fails
 
-- Enable `solve_captchas: true` in config (note: this increases Browserbase session cost)
-- For sites where auto-solve fails, use the hand-off protocol to let the user solve manually
+Browserbase sessions have a connect URL that changes per session. Ensure you are using the connectUrl from the session object, not a cached URL.
 
-**Context not persisting between sessions**
+### Live view URL not available
 
-- Ensure you pass `{ "saveContext": true }` in the stop request — the default is `false`
-- `contextName` must match exactly between the start call that saved and the one that loads
-- Named contexts are stored in Browserbase cloud — check the dashboard under **Contexts**
+Live view URLs are only generated for active sessions. If the session has been destroyed or timed out, create a new one.
 
-**Sidecar port conflict**
+### Hand-off times out
 
-- If port 3849 is already in use: `lsof -i :3849`
-- Change `sidecar_port` in config and restart the daemon
-
-**Hand-off type commands not working**
-
-- Confirm your Telegram channel is configured and the agent is listening
-- `type:` commands must be sent as a plain message starting with `type: ` (space after colon)
-- Ensure the hand-off session has not already expired (`handoff_timeout`)
+The default hand-off timeout is 5 minutes. If the user needs more time, increase handoff_timeout in config. The session itself stays alive for handoff_session_timeout (30 min default).
