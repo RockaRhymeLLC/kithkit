@@ -323,16 +323,29 @@ describe('BMO extension registers routes and tasks (t-231)', () => {
     assert.equal(result.body.ok, true);
   });
 
-  it('agent/p2p responds to POST', async () => {
-    const result = await request(PORT_231, 'POST', '/agent/p2p', '{}');
-    assert.equal(result.status, 200);
-    assert.equal(result.body.ok, true);
+  it('agent/p2p responds to POST (SDK not initialized returns 503)', async () => {
+    // P2P endpoint returns 503 when SDK is not initialized (no cc4me-network in test env)
+    const result = await request(PORT_231, 'POST', '/agent/p2p', JSON.stringify({
+      version: '1', type: 'direct', messageId: 'test-1',
+      sender: 'test', recipient: 'bmo', timestamp: new Date().toISOString(),
+      payload: {}, signature: 'test',
+    }));
+    assert.equal(result.status, 503);
+    assert.equal(result.body.ok, false);
   });
 
-  it('agent/status responds with extension info', async () => {
+  it('agent/status responds with heartbeat info (GET)', async () => {
     const result = await request(PORT_231, 'GET', '/agent/status');
     assert.equal(result.status, 200);
-    assert.equal(result.body.agent, 'BMO-test');
+    // Simple heartbeat format: agent, status, uptime
+    assert.equal(typeof result.body.agent, 'string');
+    assert.ok(['idle', 'busy'].includes(result.body.status as string), 'Should have idle/busy status');
+    assert.equal(typeof result.body.uptime, 'number');
+  });
+
+  it('agent/extended-status responds with rich info (GET)', async () => {
+    const result = await request(PORT_231, 'GET', '/agent/extended-status');
+    assert.equal(result.status, 200);
     // Rich status format (s-m25): session, channel, services, todos
     assert.ok(['active', 'stopped'].includes(result.body.session as string), 'Should have session status');
     assert.equal(typeof result.body.channel, 'string', 'Should have channel');
