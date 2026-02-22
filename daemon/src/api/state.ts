@@ -14,6 +14,7 @@ import {
   exec,
   getDatabase,
 } from '../core/db.js';
+import { loadContext } from '../core/context-loader.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -400,6 +401,14 @@ export async function handleStateRoute(
         cost_usd: Math.round(totalCostUsd * 10000) / 10000,
         jobs: rows.length,
       }));
+      return true;
+    }
+
+    // ── Context ─────────────────────────────────────────────
+    if (pathname === '/api/context' && method === 'GET') {
+      const budgetParam = searchParams.get('budget');
+      const summary = loadContext(budgetParam ? parseInt(budgetParam, 10) : undefined);
+      json(res, 200, withTimestamp(summary));
       return true;
     }
 

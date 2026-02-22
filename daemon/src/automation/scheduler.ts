@@ -26,28 +26,42 @@ export interface ScheduledTask {
   running: boolean;
 }
 
+/** Handler function for in-process tasks (registered via registerHandler). */
+export type TaskHandler = (context: TaskHandlerContext) => Promise<void>;
+
+/** Context passed to in-process task handlers. */
+export interface TaskHandlerContext {
+  taskName: string;
+  config: Record<string, unknown>;
+}
+
 export interface SchedulerOptions {
   tasks: TaskScheduleConfig[];
   tickIntervalMs?: number;
   onTaskComplete?: (result: TaskResult) => void;
   /** Returns the timestamp of the last human message (for idle detection). */
   getLastHumanActivity?: () => Date | null;
+  /** Check if a named tmux session exists (for requiresSession tasks). */
+  sessionExists?: () => boolean;
 }
 
 // ── Scheduler ────────────────────────────────────────────────
 
 export class Scheduler {
   private _tasks = new Map<string, ScheduledTask>();
+  private _handlers = new Map<string, TaskHandler>();
   private _tickTimer: ReturnType<typeof setInterval> | null = null;
   private _tickIntervalMs: number;
   private _onTaskComplete?: (result: TaskResult) => void;
   private _getLastHumanActivity?: () => Date | null;
+  private _sessionExists?: () => boolean;
   private _started = false;
 
   constructor(options: SchedulerOptions) {
     this._tickIntervalMs = options.tickIntervalMs ?? 1000;
     this._onTaskComplete = options.onTaskComplete;
     this._getLastHumanActivity = options.getLastHumanActivity;
+    this._sessionExists = options.sessionExists;
     this._loadTasks(options.tasks);
   }
 
@@ -105,6 +119,35 @@ export class Scheduler {
     if (!task) throw new Error(`Task not found: ${name}`);
 
     return this._runTask(task);
+  }
+
+  /**
+   * Register an in-process handler for a task.
+   * When the task fires, the handler runs directly instead of spawning a subprocess.
+   *
+   * @param taskName Must match a task name in config.
+   * @param handler Async function to execute.
+   * @throws If task name not found in config or if requiresSession but no sessionExists callback.
+   */
+  registerHandler(taskName: string, handler: TaskHandler): void {
+    const task = this._tasks.get(taskName);
+    if (!task) {
+      throw new Error(`Cannot register handler for unknown task: "${taskName}". Task must exist in config.`);
+    }
+    const requiresSession = (task.config.requires_session as boolean) ?? false;
+    if (requiresSession && !this._sessionExists) {
+      throw new Error(
+        `Task "${taskName}" has requires_session=true but no sessionExists callback was provided to Scheduler.`,
+      );
+    }
+    this._handlers.set(taskName, handler);
+  }
+
+  /**
+   * Check if a task has a registered in-process handler.
+   */
+  hasHandler(taskName: string): boolean {
+    return this._handlers.has(taskName);
   }
 
   /**
@@ -243,12 +286,30 @@ export class Scheduler {
     task.running = true;
 
     try {
-      const result = await runTask(task.name, {
-        command: task.command,
-        args: task.args,
-        timeoutMs: (task.config.timeout_ms as number) ?? 300_000,
-        cwd: task.config.cwd as string | undefined,
-      });
+      // Check requires_session flag
+      const requiresSession = (task.config.requires_session as boolean) ?? false;
+      if (requiresSession && this._sessionExists && !this._sessionExists()) {
+        return {
+          id: 0,
+          task_name: task.name,
+          status: 'success',
+          output: 'Skipped: session not available',
+          duration_ms: 0,
+          started_at: new Date().toISOString(),
+          finished_at: new Date().toISOString(),
+        };
+      }
+
+      // Use in-process handler if registered, otherwise spawn subprocess
+      const handler = this._handlers.get(task.name);
+      const result = handler
+        ? await this._runInProcess(task, handler)
+        : await runTask(task.name, {
+            command: task.command,
+            args: task.args,
+            timeoutMs: (task.config.timeout_ms as number) ?? 300_000,
+            cwd: task.config.cwd as string | undefined,
+          });
 
       task.lastRunAt = new Date().toISOString() as unknown as Date;
       task.nextRunAt = this._calculateNextRun(task);
@@ -260,6 +321,39 @@ export class Scheduler {
       return result;
     } finally {
       task.running = false;
+    }
+  }
+
+  /**
+   * Execute a task handler in-process (no subprocess).
+   */
+  private async _runInProcess(task: ScheduledTask, handler: TaskHandler): Promise<TaskResult> {
+    const startedAt = new Date().toISOString();
+    const start = Date.now();
+
+    try {
+      await handler({ taskName: task.name, config: task.config });
+      const durationMs = Date.now() - start;
+      return {
+        id: 0,
+        task_name: task.name,
+        status: 'success',
+        output: 'In-process handler completed',
+        duration_ms: durationMs,
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+      };
+    } catch (err) {
+      const durationMs = Date.now() - start;
+      return {
+        id: 0,
+        task_name: task.name,
+        status: 'failure',
+        output: err instanceof Error ? err.message : String(err),
+        duration_ms: durationMs,
+        started_at: startedAt,
+        finished_at: new Date().toISOString(),
+      };
     }
   }
 }

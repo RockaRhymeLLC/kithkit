@@ -13,6 +13,7 @@ export interface PrereqResult {
   version?: string;
   error?: string;
   instructions?: string;
+  optional?: boolean;  // if true, failure is info-only (not fatal)
 }
 
 export interface PrereqReport {
@@ -96,9 +97,49 @@ export async function checkPrerequisites(): Promise<PrereqReport> {
     });
   }
 
+  // tmux (required)
+  const tmuxVersion = await tryCommand('tmux', ['-V']);
+  if (tmuxVersion) {
+    results.push({ name: 'tmux', ok: true, version: tmuxVersion });
+  } else {
+    results.push({
+      name: 'tmux',
+      ok: false,
+      error: 'tmux not found',
+      instructions: 'Install tmux: brew install tmux',
+    });
+  }
+
+  // jq (required)
+  const jqVersion = await tryCommand('jq', ['--version']);
+  if (jqVersion) {
+    results.push({ name: 'jq', ok: true, version: jqVersion });
+  } else {
+    results.push({
+      name: 'jq',
+      ok: false,
+      error: 'jq not found',
+      instructions: 'Install jq: brew install jq',
+    });
+  }
+
+  // icalBuddy (optional)
+  const icalVersion = await tryCommand('icalBuddy', ['-v']);
+  if (icalVersion) {
+    results.push({ name: 'icalBuddy', ok: true, version: icalVersion, optional: true });
+  } else {
+    results.push({
+      name: 'icalBuddy',
+      ok: false,
+      optional: true,
+      error: 'icalBuddy not found',
+      instructions: 'Install icalBuddy for calendar support: brew install ical-buddy',
+    });
+  }
+
   return {
     results,
-    allPassed: results.every(r => r.ok),
+    allPassed: results.every(r => r.ok || r.optional),
   };
 }
 
@@ -110,6 +151,11 @@ export function formatPrereqReport(report: PrereqReport): string {
   for (const r of report.results) {
     if (r.ok) {
       lines.push(`  [ok] ${r.name} ${r.version ?? ''}`);
+    } else if (r.optional) {
+      lines.push(`  [info] ${r.name}: ${r.error}`);
+      if (r.instructions) {
+        lines.push(`         ${r.instructions}`);
+      }
     } else {
       lines.push(`  [!!] ${r.name}: ${r.error}`);
       if (r.instructions) {

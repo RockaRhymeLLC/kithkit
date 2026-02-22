@@ -1,12 +1,12 @@
 /**
  * Kithkit Daemon — entry point.
- * HTTP server, module init, route registration.
+ * HTTP server, module init, route registration, extension hooks.
  * Binds to localhost only for security.
  */
 
 import http from 'node:http';
 import path from 'node:path';
-import { loadConfig } from './core/config.js';
+import { loadConfig, type KithkitConfig } from './core/config.js';
 import { openDatabase } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
@@ -17,8 +17,61 @@ import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
 import { handleConfigRoute } from './api/config.js';
+import {
+  getExtension,
+  isDegraded,
+  setDegraded,
+  registerExtension,
+  _getExtensionForTesting,
+  _resetExtensionForTesting,
+  type Extension,
+} from './core/extensions.js';
+import {
+  registerRoute,
+  matchRoute,
+  getRegisteredRoutes,
+  _resetRoutesForTesting,
+  type RouteHandler,
+} from './core/route-registry.js';
+import {
+  getExtendedHealth,
+  getExtendedStatus,
+  formatHealthText,
+  registerCheck,
+  getRegisteredChecks,
+  _resetForTesting as _resetExtendedStatusForTesting,
+  type CheckResult,
+  type HealthCheckFn,
+} from './core/extended-status.js';
 
 export const VERSION = '0.1.0';
+
+// Re-export extension system for consumers
+export {
+  registerExtension,
+  isDegraded,
+  _getExtensionForTesting,
+  _resetExtensionForTesting,
+  type Extension,
+};
+
+// Re-export route registry for extensions
+export {
+  registerRoute,
+  matchRoute,
+  getRegisteredRoutes,
+  _resetRoutesForTesting,
+  type RouteHandler,
+};
+
+// Re-export extended status for extensions
+export {
+  registerCheck,
+  getRegisteredChecks,
+  _resetExtendedStatusForTesting,
+  type CheckResult,
+  type HealthCheckFn,
+};
 
 // ── Bootstrap ────────────────────────────────────────────────
 
@@ -59,8 +112,15 @@ const server = http.createServer((req, res) => {
   // Health endpoint
   if (req.method === 'GET' && url.pathname === '/health') {
     const health = getHealth(VERSION);
+    const extRoutes = getRegisteredRoutes();
+    const ext = getExtension();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(health));
+    res.end(JSON.stringify({
+      ...health,
+      degraded: isDegraded(),
+      extension: ext ? ext.name : null,
+      extensionRoutes: extRoutes,
+    }));
     return;
   }
 
@@ -76,51 +136,72 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // Async routes
-  if (url.pathname.startsWith('/api/')) {
-    handleAgentsRoute(req, res, url.pathname)
-      .then((handled) => {
-        if (handled) return;
-        return handleSendRoute(req, res, url.pathname);
-      })
-      .then((handled) => {
-        if (handled) return;
-        return handleStateRoute(req, res, url.pathname, url.searchParams);
-      })
-      .then((handled) => {
-        if (handled) return;
-        return handleMessagesRoute(req, res, url.pathname, url.searchParams);
-      })
-      .then((handled) => {
-        if (handled) return;
-        return handleMemoryRoute(req, res, url.pathname);
-      })
-      .then((handled) => {
-        if (handled) return;
-        return handleTasksRoute(req, res, url.pathname);
-      })
-      .then((handled) => {
-        if (handled) return;
-        return handleConfigRoute(req, res, url.pathname);
-      })
-      .then((handled) => {
-        if (handled === false) {
-          res.writeHead(404, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
-        }
-      })
-      .catch((err) => {
-        log.error('Request error', { path: url.pathname, error: String(err) });
-        if (!res.headersSent) {
-          res.writeHead(500, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: 'Internal server error', timestamp: new Date().toISOString() }));
-        }
-      });
-    return;
-  }
+  // Route handling — core API routes, then extension routes, then 404
+  const handleRoutes = async (): Promise<void> => {
+    // Extended health endpoint (async — must be inside handleRoutes)
+    if (req.method === 'GET' && url.pathname === '/health/extended') {
+      const health = await getExtendedHealth(VERSION);
+      const accept = req.headers['accept'] ?? '';
+      if (accept.includes('text/plain')) {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end(formatHealthText(health));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(health));
+      }
+      return;
+    }
 
-  res.writeHead(404, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
+    // Extended status endpoint (async — must be inside handleRoutes)
+    if (req.method === 'GET' && url.pathname === '/status/extended') {
+      const status = await getExtendedStatus(VERSION);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(status));
+      return;
+    }
+
+    // Core API routes
+    if (url.pathname.startsWith('/api/')) {
+      const handlers = [
+        () => handleAgentsRoute(req, res, url.pathname),
+        () => handleSendRoute(req, res, url.pathname),
+        () => handleStateRoute(req, res, url.pathname, url.searchParams),
+        () => handleMessagesRoute(req, res, url.pathname, url.searchParams),
+        () => handleMemoryRoute(req, res, url.pathname),
+        () => handleTasksRoute(req, res, url.pathname),
+        () => handleConfigRoute(req, res, url.pathname),
+      ];
+      for (const handler of handlers) {
+        const handled = await handler();
+        if (handled) return;
+      }
+    }
+
+    // Registered routes (from registerRoute(), checked before 404, skipped if degraded)
+    if (!isDegraded()) {
+      const routeHandled = await matchRoute(req, res, url.pathname, url.searchParams);
+      if (routeHandled) return;
+    }
+
+    // Extension direct onRoute (fallback for routes not using registerRoute)
+    const ext = getExtension();
+    if (ext?.onRoute && !isDegraded()) {
+      const handled = await ext.onRoute(req, res, url.pathname, url.searchParams);
+      if (handled) return;
+    }
+
+    // 404 fallback
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
+  };
+
+  handleRoutes().catch((err) => {
+    log.error('Request error', { path: url.pathname, error: String(err) });
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Internal server error', timestamp: new Date().toISOString() }));
+    }
+  });
 });
 
 // ── Start ────────────────────────────────────────────────────
@@ -132,8 +213,26 @@ const BIND_RETRY_DELAY_MS = 1000;
 let bindAttempt = 0;
 
 function tryListen(): void {
-  server.listen(config.daemon.port, HOST, () => {
+  server.listen(config.daemon.port, HOST, async () => {
     log.info(`HTTP server listening on ${HOST}:${config.daemon.port}`);
+
+    // Extension init hook — runs after server is listening
+    const ext = getExtension();
+    if (ext?.onInit) {
+      const initStart = Date.now();
+      try {
+        await ext.onInit(config, server);
+        const initMs = Date.now() - initStart;
+        log.info(`Extension "${ext.name}" initialized`, { durationMs: initMs });
+      } catch (err) {
+        const initMs = Date.now() - initStart;
+        setDegraded(true);
+        log.error(`Extension "${ext.name}" init failed — running in degraded mode`, {
+          error: err instanceof Error ? err.message : String(err),
+          durationMs: initMs,
+        });
+      }
+    }
   });
 }
 
@@ -152,8 +251,22 @@ tryListen();
 
 // ── Graceful shutdown ────────────────────────────────────────
 
-function shutdown(signal: string): void {
+async function shutdown(signal: string): Promise<void> {
   log.info(`Shutting down (${signal})`);
+
+  // Extension shutdown hook — runs before server.close()
+  const ext = getExtension();
+  if (ext?.onShutdown && !isDegraded()) {
+    try {
+      await ext.onShutdown();
+      log.info(`Extension "${ext.name}" stopped`);
+    } catch (err) {
+      log.error(`Extension "${ext.name}" shutdown error`, {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   server.close(() => {
     log.info('Daemon stopped');
     process.exit(0);
@@ -166,5 +279,6 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 log.info('Daemon initialized');
 
-// Export for testing
+// Export for testing and extension use
 export { server, config };
+export type { KithkitConfig };
