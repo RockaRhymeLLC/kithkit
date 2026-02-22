@@ -11,6 +11,7 @@ import yaml from 'js-yaml';
 
 export interface AgentConfig {
   name: string;
+  identity_file?: string;
 }
 
 export interface DaemonConfig {
