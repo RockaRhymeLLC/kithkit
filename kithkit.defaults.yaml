@@ -1,0 +1,22 @@
+# Kithkit — Default configuration
+# These defaults are deep-merged with your kithkit.config.yaml.
+# Override any value in your config file; unset values use these defaults.
+
+agent:
+  name: Assistant
+
+daemon:
+  port: 3847
+  log_level: info
+  log_dir: logs
+  log_rotation:
+    max_size_mb: 10
+    max_files: 5
+
+scheduler:
+  tasks: []
+
+security:
+  rate_limits:
+    incoming_max_per_minute: 5
+    outgoing_max_per_minute: 10
