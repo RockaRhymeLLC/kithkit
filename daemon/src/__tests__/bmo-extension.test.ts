@@ -333,11 +333,11 @@ describe('BMO extension registers routes and tasks (t-231)', () => {
     const result = await request(PORT_231, 'GET', '/agent/status');
     assert.equal(result.status, 200);
     assert.equal(result.body.agent, 'BMO-test');
-    assert.equal(result.body.extensions, 'loaded');
-    const channels = result.body.channels as Record<string, boolean>;
-    assert.equal(channels.telegram, true);
-    assert.equal(channels.email, true);
-    assert.equal(channels.voice, false);
+    // Rich status format (s-m25): session, channel, services, todos
+    assert.ok(['active', 'stopped'].includes(result.body.session as string), 'Should have session status');
+    assert.equal(typeof result.body.channel, 'string', 'Should have channel');
+    assert.ok(Array.isArray(result.body.services), 'Should have services array');
+    assert.equal(typeof result.body.todos, 'object', 'Should have todos');
   });
 
   it('api/context responds with context data', async () => {

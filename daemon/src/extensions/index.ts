@@ -26,6 +26,9 @@ import {
   createTelegramRouteHandler,
   createShortcutRouteHandler,
 } from './comms/index.js';
+import { initBmoAccessControl } from './access-control.js';
+import { registerBmoHealthChecks as registerBmoHealthChecksExtended } from './health-extended.js';
+import { getBmoExtendedStatus } from './extended-status.js';
 
 const log = createLogger('bmo-extension');
 
@@ -93,18 +96,17 @@ async function handleAgentStatus(
   _searchParams: URLSearchParams,
 ): Promise<boolean> {
   if (req.method !== 'GET') return false;
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({
-    agent: _config?.agent?.name ?? 'BMO',
-    extensions: 'loaded',
-    channels: {
-      telegram: _config?.channels?.telegram?.enabled ?? false,
-      email: _config?.channels?.email?.enabled ?? false,
-      voice: _config?.channels?.voice?.enabled ?? false,
-    },
-    network: _config?.network?.enabled ?? false,
-    agentComms: _config?.['agent-comms']?.enabled ?? false,
-  }));
+  try {
+    const status = _config
+      ? await getBmoExtendedStatus(_config)
+      : { agent: 'BMO', session: 'stopped', channel: 'unknown', todos: { open: 0, inProgress: 0, blocked: 0 }, services: [] };
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(status));
+  } catch (err) {
+    log.error('Failed to gather extended status', { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ agent: _config?.agent?.name ?? 'BMO', error: 'Status collection failed' }));
+  }
   return true;
 }
 
@@ -196,8 +198,12 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   setScheduler(_scheduler);
   _scheduler.start();
 
-  // Register health checks
+  // Initialize BMO access control (5-tier, channel-aware)
+  initBmoAccessControl();
+
+  // Register health checks (extension + comprehensive system checks)
   registerBmoHealthChecks();
+  registerBmoHealthChecksExtended(_config);
 
   _initialized = true;
   log.info('BMO extension initialized', {
