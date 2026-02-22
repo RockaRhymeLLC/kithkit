@@ -29,8 +29,30 @@ import {
 import { initBmoAccessControl } from './access-control.js';
 import { registerBmoHealthChecks as registerBmoHealthChecksExtended } from './health-extended.js';
 import { getBmoExtendedStatus } from './extended-status.js';
+import {
+  initAgentComms,
+  stopAgentComms,
+  handleAgentMessage,
+  sendAgentMessage,
+  getAgentStatus,
+  updatePeerState,
+} from './comms/agent-comms.js';
+import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P } from './comms/network/sdk-bridge.js';
+import { registerWithRelay } from './comms/network/registration.js';
+import type { WireEnvelope } from './comms/network/sdk-types.js';
 
 const log = createLogger('bmo-extension');
+
+// ── Helpers ──────────────────────────────────────────────────
+
+function readBody(req: http.IncomingMessage): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (chunk: Buffer) => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
+    req.on('error', reject);
+  });
+}
 
 // ── State ────────────────────────────────────────────────────
 
@@ -83,13 +105,111 @@ async function handleAgentP2P(
   _searchParams: URLSearchParams,
 ): Promise<boolean> {
   if (req.method !== 'POST') return false;
-  // Stub — real implementation in s-m26 (A2A extensions)
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ ok: true, stub: true }));
+
+  try {
+    const body = await readBody(req);
+    const envelope = JSON.parse(body) as WireEnvelope;
+    const handled = await handleIncomingP2P(envelope);
+    res.writeHead(handled ? 200 : 503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: handled }));
+  } catch (err) {
+    log.error('P2P endpoint error', { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+  }
   return true;
 }
 
-async function handleAgentStatus(
+async function handleAgentMessageRoute(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'POST') return false;
+
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const body = await readBody(req);
+    const parsed = JSON.parse(body);
+    const result = await handleAgentMessage(token, parsed);
+    res.writeHead(result.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result.body));
+  } catch (err) {
+    log.error('Agent message endpoint error', { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid request' }));
+  }
+  return true;
+}
+
+async function handleAgentSend(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'POST') return false;
+
+  try {
+    const body = await readBody(req);
+    const { peer, type, text, ...extra } = JSON.parse(body);
+    if (!peer || !type) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'peer and type are required' }));
+      return true;
+    }
+    const result = await sendAgentMessage(peer, type, text, extra);
+    res.writeHead(result.ok ? 200 : 502, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  } catch (err) {
+    log.error('Agent send endpoint error', { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid request' }));
+  }
+  return true;
+}
+
+async function handleAgentStatusEndpoint(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method === 'GET') {
+    // Simple status check (lightweight, for peer heartbeats)
+    const status = getAgentStatus();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(status));
+    return true;
+  }
+  if (req.method === 'POST') {
+    // Heartbeat exchange: peer POSTs their state, gets ours back
+    try {
+      const body = await readBody(req);
+      const peerState = JSON.parse(body);
+      if (peerState.agent) {
+        updatePeerState(peerState.agent, {
+          status: peerState.status ?? 'unknown',
+          updatedAt: Date.now(),
+          latencyMs: peerState.latencyMs,
+        });
+      }
+      const ourStatus = getAgentStatus();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(ourStatus));
+    } catch (err) {
+      log.error('Agent status POST error', { error: err instanceof Error ? err.message : String(err) });
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid request' }));
+    }
+    return true;
+  }
+  return false;
+}
+
+async function handleExtendedStatus(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   _pathname: string,
@@ -173,11 +293,27 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   _telegramRouteHandler = createTelegramRouteHandler();
   _shortcutRouteHandler = createShortcutRouteHandler();
 
+  // Initialize agent-to-agent comms (LAN + P2P SDK)
+  initAgentComms(_config);
+
+  // Network SDK (P2P messaging) — non-blocking
+  if (_config.network?.enabled) {
+    registerWithRelay(_config)
+      .then(() => initNetworkSDK(_config!))
+      .then(ok => { if (ok) log.info('Network SDK ready'); })
+      .catch(err => log.warn('Network init failed (LAN-only mode)', {
+        error: err instanceof Error ? err.message : String(err),
+      }));
+  }
+
   // Register BMO-specific routes
   registerRoute('/telegram', handleTelegramWebhook);
   registerRoute('/shortcut', handleShortcut);
   registerRoute('/agent/p2p', handleAgentP2P);
-  registerRoute('/agent/status', handleAgentStatus);
+  registerRoute('/agent/message', handleAgentMessageRoute);
+  registerRoute('/agent/send', handleAgentSend);
+  registerRoute('/agent/status', handleAgentStatusEndpoint);
+  registerRoute('/agent/extended-status', handleExtendedStatus);
   registerRoute('/api/context', handleContextApi);
 
   // Set up scheduler with in-process handlers
@@ -219,6 +355,8 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 }
 
 async function onShutdown(): Promise<void> {
+  await stopNetworkSDK();
+  stopAgentComms();
   shutdownComms();
   if (_scheduler) {
     _scheduler.stop();
