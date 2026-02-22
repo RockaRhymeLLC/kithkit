@@ -6,6 +6,8 @@
 
 import type http from 'node:http';
 import { insert, get, remove, query, getDatabase } from '../core/db.js';
+import { generateEmbedding, embeddingToBuffer } from '../memory/embeddings.js';
+import { initVectorSearch, indexEmbedding, vectorSearch, hybridSearch } from '../memory/vector-search.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -31,6 +33,30 @@ interface SearchFilters {
 }
 
 const VALID_TYPES = ['fact', 'episodic', 'procedural'];
+
+let _vectorEnabled = false;
+
+/**
+ * Enable vector search. Call after database is open and sqlite-vec is available.
+ */
+export function enableVectorSearch(): void {
+  try {
+    initVectorSearch();
+    _vectorEnabled = true;
+  } catch {
+    _vectorEnabled = false;
+  }
+}
+
+/** Check if vector search is enabled. */
+export function isVectorSearchEnabled(): boolean {
+  return _vectorEnabled;
+}
+
+/** Reset for testing. */
+export function _resetVectorForTesting(): void {
+  _vectorEnabled = false;
+}
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -180,14 +206,53 @@ export async function handleMemoryRoute(
       if (body.source) data.source = body.source;
 
       const memory = insert<Memory>('memories', data);
+
+      // Auto-generate embedding if vector search is available
+      try {
+        if (_vectorEnabled) {
+          const embedding = await generateEmbedding(body.content as string);
+          const buf = embeddingToBuffer(embedding);
+          const db = getDatabase();
+          db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(buf, memory.id);
+          indexEmbedding(memory.id, embedding);
+        }
+      } catch {
+        // Embedding generation failure is non-fatal — memory is still stored
+      }
+
       json(res, 201, withTimestamp(formatMemory(memory)));
       return true;
     }
 
-    // POST /memory/search — structured search
+    // POST /memory/search — structured, vector, or hybrid search
     if (pathname === '/api/memory/search' && method === 'POST') {
       const body = await parseBody(req);
+      const mode = (body.mode as string) ?? 'keyword';
 
+      // Vector and hybrid modes require a query string
+      if ((mode === 'vector' || mode === 'hybrid') && (!body.query || typeof body.query !== 'string')) {
+        json(res, 400, withTimestamp({ error: 'query is required for vector/hybrid search' }));
+        return true;
+      }
+
+      if ((mode === 'vector' || mode === 'hybrid') && !_vectorEnabled) {
+        json(res, 503, withTimestamp({ error: 'Vector search not initialized' }));
+        return true;
+      }
+
+      if (mode === 'vector') {
+        const results = await vectorSearch(body.query as string, (body.limit as number) ?? 10);
+        json(res, 200, withTimestamp({ data: results, mode: 'vector' }));
+        return true;
+      }
+
+      if (mode === 'hybrid') {
+        const results = await hybridSearch(body.query as string, (body.limit as number) ?? 10);
+        json(res, 200, withTimestamp({ data: results, mode: 'hybrid' }));
+        return true;
+      }
+
+      // Default: keyword (structured) search
       const hasQuery = body.query && typeof body.query === 'string';
       const hasTags = Array.isArray(body.tags) && (body.tags as unknown[]).length > 0;
       const hasCategory = body.category && typeof body.category === 'string';
@@ -209,7 +274,7 @@ export async function handleMemoryRoute(
       if (hasDateTo) filters.date_to = body.date_to as string;
 
       const results = searchMemories(filters);
-      json(res, 200, withTimestamp({ data: results }));
+      json(res, 200, withTimestamp({ data: results, mode: 'keyword' }));
       return true;
     }
 
