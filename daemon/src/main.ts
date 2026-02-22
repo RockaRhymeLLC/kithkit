@@ -15,6 +15,8 @@ import { handleMemoryRoute } from './api/memory.js';
 import { handleAgentsRoute } from './api/agents.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
+import { handleTasksRoute } from './api/tasks.js';
+import { handleConfigRoute } from './api/config.js';
 
 export const VERSION = '0.1.0';
 
@@ -92,6 +94,14 @@ const server = http.createServer((req, res) => {
       .then((handled) => {
         if (handled) return;
         return handleMemoryRoute(req, res, url.pathname);
+      })
+      .then((handled) => {
+        if (handled) return;
+        return handleTasksRoute(req, res, url.pathname);
+      })
+      .then((handled) => {
+        if (handled) return;
+        return handleConfigRoute(req, res, url.pathname);
       })
       .then((handled) => {
         if (handled === false) {
