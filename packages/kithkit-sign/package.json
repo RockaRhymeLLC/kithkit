@@ -1,0 +1,19 @@
+{
+  "name": "@kithkit/sign",
+  "version": "0.1.0",
+  "description": "Ed25519 signing and verification for Kithkit skill catalog",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "node --test --experimental-strip-types --no-warnings 'tests/**/*.test.ts'",
+    "lint": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": { "node": ">=20.0.0" },
+  "license": "MIT"
+}

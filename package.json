@@ -1,0 +1,30 @@
+{
+  "name": "kithkit",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal AI assistant framework — install, configure identity, go.",
+  "workspaces": [
+    "daemon",
+    "cli",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RockaRhymeLLC/kithkit.git"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.0",
+    "typescript": "^5.9.3"
+  }
+}

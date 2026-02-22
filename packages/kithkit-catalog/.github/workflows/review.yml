@@ -1,0 +1,113 @@
+name: Review Skill Submission
+
+on:
+  pull_request:
+    paths:
+      - 'archives/**'
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  lint:
+    name: Lint Submitted Skill
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Find changed archives
+        id: changed
+        run: |
+          # Get list of added/modified archive files
+          ARCHIVES=$(git diff --name-only --diff-filter=AM ${{ github.event.pull_request.base.sha }} ${{ github.sha }} -- 'archives/**/*.tar.gz')
+          echo "archives<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$ARCHIVES" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Install kithkit-lint
+        run: npm install -g @kithkit/linter
+
+      - name: Extract and lint each skill
+        id: lint
+        run: |
+          PASS=true
+          RESULTS=""
+
+          while IFS= read -r archive; do
+            [ -z "$archive" ] && continue
+            echo "📦 Linting: $archive"
+
+            # Extract archive to temp dir
+            TMPDIR=$(mktemp -d)
+            tar xzf "$archive" -C "$TMPDIR"
+            SKILL_DIR=$(ls -d "$TMPDIR"/*)
+
+            # Run linter
+            if RESULT=$(kithkit-lint "$SKILL_DIR" --json 2>&1); then
+              echo "  ✅ Passed"
+              RESULTS="${RESULTS}✅ \`${archive}\`: All checks passed\n"
+            else
+              echo "  ❌ Failed"
+              PASS=false
+              RESULTS="${RESULTS}❌ \`${archive}\`: Failed\n\`\`\`json\n${RESULT}\n\`\`\`\n"
+            fi
+
+            rm -rf "$TMPDIR"
+          done <<< "${{ steps.changed.outputs.archives }}"
+
+          echo "pass=$PASS" >> "$GITHUB_OUTPUT"
+          echo "results<<EOF" >> "$GITHUB_OUTPUT"
+          echo -e "$RESULTS" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Post lint results
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const results = `${{ steps.lint.outputs.results }}`;
+            const pass = '${{ steps.lint.outputs.pass }}' === 'true';
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## Kithkit Lint Results\n\n${results}\n\n${pass ? '✅ Ready to merge' : '❌ Please fix the issues above and push again'}`
+            });
+
+      - name: Fail if lint failed
+        if: steps.lint.outputs.pass != 'true'
+        run: exit 1
+
+  sign-on-merge:
+    name: Sign and Index
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.merged == true
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install catalog tools
+        run: npm install -g @kithkit/catalog
+
+      - name: Sign new archives and update index
+        env:
+          KITHKIT_CATALOG_PRIVATE_KEY: ${{ secrets.KITHKIT_CATALOG_PRIVATE_KEY }}
+        run: |
+          kithkit-catalog build archives/ index.json
+
+      - name: Commit updated index
+        run: |
+          git config user.name "kithkit-bot"
+          git config user.email "bot@kithkit.dev"
+          git add index.json
+          git commit -m "Update catalog index" || echo "No changes to commit"
+          git push

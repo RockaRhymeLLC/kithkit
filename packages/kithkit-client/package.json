@@ -1,0 +1,24 @@
+{
+  "name": "@kithkit/client",
+  "version": "0.1.0",
+  "description": "Kithkit skill client — search, install, config, update, uninstall",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test --experimental-strip-types --no-warnings 'tests/**/*.test.ts'",
+    "lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "yaml": "^2.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT"
+}
