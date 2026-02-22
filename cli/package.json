@@ -1,0 +1,17 @@
+{
+  "name": "@kithkit/cli",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Kithkit CLI — init, install, search, update.",
+  "bin": {
+    "kithkit": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT"
+}

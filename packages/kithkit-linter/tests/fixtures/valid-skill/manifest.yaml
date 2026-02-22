@@ -1,0 +1,32 @@
+name: weather-check
+version: 1.0.0
+description: Check weather forecasts for any location
+author:
+  name: Jane Doe
+  github: janedoe
+capabilities:
+  required:
+    - web_fetch
+    - notification
+  optional:
+    - memory_write
+config:
+  - key: api_key
+    type: credential
+    required: true
+    description: OpenWeather API key
+  - key: units
+    type: enum
+    required: false
+    default: metric
+    description: Temperature units
+    enum_values:
+      - metric
+      - imperial
+tags:
+  - weather
+  - utility
+category: utilities
+frameworks:
+  tested:
+    - claude-code

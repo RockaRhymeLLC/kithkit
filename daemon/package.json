@@ -1,0 +1,19 @@
+{
+  "name": "@kithkit/daemon",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Kithkit daemon — HTTP API, SQLite state, agent lifecycle, message routing.",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "dev": "tsc --watch",
+    "test": "node --test dist/__tests__/**/*.test.js",
+    "clean": "rm -rf dist"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT"
+}
