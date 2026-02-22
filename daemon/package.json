@@ -6,7 +6,7 @@
   "description": "Kithkit daemon — HTTP API, SQLite state, agent lifecycle, message routing.",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp -r src/core/migrations dist/core/",
     "start": "node dist/main.js",
     "dev": "tsc --watch",
     "test": "node --test dist/__tests__/**/*.test.js",
@@ -17,9 +17,11 @@
   },
   "license": "MIT",
   "dependencies": {
+    "better-sqlite3": "^12.6.2",
     "js-yaml": "^4.1.1"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/js-yaml": "^4.0.9"
   }
 }
