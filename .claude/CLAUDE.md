@@ -172,6 +172,12 @@ When you are the orchestrator:
 - Synthesize results and send summary to comms via `POST /api/messages {to: 'comms', type: 'result'}`
 - Exit when all work is complete — the daemon will clean up your session
 
+### Memory-First Context (Comms + Orchestrator)
+
+Before asking the human for additional context, **search memory first**. Use `POST /api/memory/search` (hybrid mode if available, keyword as fallback) with terms relevant to what you need. Review the results, then re-evaluate whether you still need to ask. Often the answer is already stored — asking the human for something they've already told you wastes their time and erodes trust.
+
+This applies to both comms (before asking Dave directly) and orchestrator (before sending a clarification request back to comms).
+
 ### State Management
 
 - Use the daemon API for all state (todos, calendar, memories, config)

@@ -16,6 +16,7 @@ import { register as registerMemorySync } from './memory-sync.js';
 import { register as registerredacted-vipInboxWatch } from './redacted-vip-inbox-watch.js';
 import { register as registerPeerHeartbeat } from './peer-heartbeat.js';
 import { register as registerEmailCheck } from './email-check.js';
+import { register as registerMemoryConsolidation } from './memory-consolidation.js';
 
 /**
  * Register all BMO-specific task handlers with the scheduler.
@@ -35,6 +36,7 @@ export function registerBmoTasks(scheduler: Scheduler): void {
     ['redacted-vip-inbox-watch', registerredacted-vipInboxWatch],
     ['peer-heartbeat', registerPeerHeartbeat],
     ['email-check', registerEmailCheck],
+    ['memory-consolidation', registerMemoryConsolidation],
   ];
 
   for (const [name, register] of registrations) {
@@ -55,4 +57,5 @@ export const REAL_TASK_NAMES = new Set([
   'redacted-vip-inbox-watch',
   'peer-heartbeat',
   'email-check',
+  'memory-consolidation',
 ]);
