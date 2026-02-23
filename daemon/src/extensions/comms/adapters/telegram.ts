@@ -30,6 +30,7 @@ import { resolveProjectPath, loadConfig } from '../../../core/config.js';
 import { sessionExists, startSession, injectText } from '../../../core/session-bridge.js';
 import { classifySender, checkRateLimit, registerTier } from '../../../core/access-control.js';
 import { createLogger } from '../../../core/logger.js';
+import { updateLastActiveChannel } from '../channel-router.js';
 
 const log = createLogger('bmo-telegram');
 
@@ -670,6 +671,9 @@ export class BmoTelegramAdapter implements ChannelAdapter {
     persistReplyChatId(ctx.replyChatId);
 
     const { senderId, replyChatId, firstName } = ctx;
+
+    // Track that Telegram is the last active text channel (for voice response routing)
+    updateLastActiveChannel('telegram');
 
     // Buffer inbound for collectInbound()
     if (msg.text) {

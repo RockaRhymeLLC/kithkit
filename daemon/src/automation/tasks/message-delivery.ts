@@ -1,16 +1,17 @@
 /**
- * Message Delivery — daemon-managed delivery queue for inter-agent messages.
+ * Message Delivery — notification-ping delivery for inter-agent messages.
  *
- * Replaces fire-and-forget tmux injection with a reliable delivery lifecycle:
- * 1. Messages arrive via POST /api/messages → stored as unread (processed_at IS NULL)
+ * Instead of injecting full message content into tmux, this task:
+ * 1. Messages arrive via POST /api/messages → stored as undelivered (processed_at IS NULL)
  * 2. This task runs on a short interval, pulls undelivered messages for persistent agents
- * 3. Checks if the target tmux session exists before attempting injection
- * 4. Injects each into the target tmux session with proper Enter submission
- * 5. Marks as delivered (processed_at set) on success
- * 6. Expires messages after MAX_RETRIES failed attempts (prevents infinite retry loops)
- * 7. Goes dormant when inbox is empty — woken by notifyNewMessage()
+ * 3. Injects a SHORT NOTIFICATION PING into the target tmux session:
+ *    "[12:05 PM] You have a message from orchestrator — use GET /api/messages?unread=true to read"
+ * 4. Marks as delivered (processed_at set) on successful ping injection
+ * 5. For unread messages (delivered but read_at IS NULL), re-pings every 60 seconds
+ * 6. Expires undelivered messages after MAX_RETRIES failed injection attempts
  *
- * Works for both directions: orchestrator→comms and comms→orchestrator.
+ * The comms agent pulls full message content via GET /api/messages?unread=true,
+ * which also marks messages as read (sets read_at).
  */
 
 import { query, exec } from '../../core/db.js';
@@ -26,17 +27,26 @@ const log = createLogger('message-delivery');
 /** Max delivery attempts before marking a message as expired. */
 const MAX_RETRIES = 3;
 
+/** Re-ping interval for unread messages (ms). */
+const REPING_INTERVAL_MS = 60_000;
+
 // ── State ────────────────────────────────────────────────────
 
 let _scheduler: Scheduler | null = null;
 let _pendingWakeup = false;
 
 /**
- * In-memory retry counter. Keyed by message ID.
+ * In-memory retry counter for undelivered messages. Keyed by message ID.
  * Resets on daemon restart — acceptable because stale messages
  * from a previous daemon run will get a fresh 3 attempts.
  */
 const _retryCounts = new Map<number, number>();
+
+/**
+ * Tracks when we last pinged about an unread message.
+ * Prevents spamming tmux faster than REPING_INTERVAL_MS.
+ */
+const _lastPingTime = new Map<number, number>();
 
 // ── Public API ───────────────────────────────────────────────
 
@@ -63,13 +73,8 @@ export function notifyNewMessage(): void {
  */
 function getLiveSessions(): Set<string> {
   const live = new Set<string>();
-  // comms session is the main agent session — check via tmux list
   const sessions = listSessions();
-  // We don't know the exact comms session name here, but injectMessage
-  // resolves it internally. We check orchestrator explicitly since it's
-  // the common source of dead-session retries.
   if (sessions.length > 0) {
-    // If any sessions exist, comms is likely alive (it's the persistent one)
     live.add('comms');
   }
   if (isOrchestratorAlive()) {
@@ -99,16 +104,42 @@ function expireMessage(msg: Message, retries: number): void {
     msg.id,
   );
   _retryCounts.delete(msg.id);
+  _lastPingTime.delete(msg.id);
 }
 
 /**
- * Pull all undelivered messages for persistent agents, inject into tmux, mark delivered.
- * Skips agents whose tmux sessions are dead and expires messages after MAX_RETRIES.
+ * Format a short notification ping (no message content).
  */
-async function deliverMessages(): Promise<void> {
-  _pendingWakeup = false;
+function formatNotificationPing(msg: Message): string {
+  const time = new Date().toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+    timeZone: 'America/New_York',
+  });
+  const count = getUnreadCountFor(msg.to_agent);
+  if (count > 1) {
+    return `[${time}] You have ${count} unread messages — use GET /api/messages?unread=true to read`;
+  }
+  return `[${time}] You have a message from ${msg.from_agent} — use GET /api/messages?unread=true to read`;
+}
 
-  // Pull undelivered messages for comms and orchestrator
+/**
+ * Get count of unread messages for an agent.
+ */
+function getUnreadCountFor(agentId: string): number {
+  const result = query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM messages
+     WHERE to_agent = ? AND processed_at IS NOT NULL AND read_at IS NULL`,
+    agentId,
+  );
+  return result[0]?.count ?? 0;
+}
+
+/**
+ * Phase 1: Deliver undelivered messages (inject notification ping, mark processed).
+ */
+async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivered: number; failed: number; expired: number }> {
   const undelivered = query<Message>(
     `SELECT * FROM messages
      WHERE processed_at IS NULL
@@ -116,103 +147,151 @@ async function deliverMessages(): Promise<void> {
      ORDER BY created_at ASC`,
   );
 
-  if (undelivered.length === 0) {
-    log.debug('No undelivered messages');
-    return;
-  }
-
-  // Check which target sessions are alive before attempting delivery
-  const liveSessions = getLiveSessions();
-
-  log.info(`Delivering ${undelivered.length} message(s)`, {
-    liveSessions: [...liveSessions],
-  });
-
   let delivered = 0;
   let failed = 0;
   let expired = 0;
 
+  if (undelivered.length === 0) return { delivered, failed, expired };
+
+  // Group by target agent to send a single ping per agent
+  const byAgent = new Map<string, Message[]>();
   for (const msg of undelivered) {
-    const retries = _retryCounts.get(msg.id) ?? 0;
+    const existing = byAgent.get(msg.to_agent) ?? [];
+    existing.push(msg);
+    byAgent.set(msg.to_agent, existing);
+  }
 
-    // If we've already hit max retries, expire immediately
-    if (retries >= MAX_RETRIES) {
-      expireMessage(msg, retries);
-      expired++;
-      log.warn('Message expired after max retries', {
-        id: msg.id,
-        to: msg.to_agent,
-        retries,
-      });
-      continue;
-    }
-
-    // Skip delivery if target session is dead — count as a retry attempt
-    if (!liveSessions.has(msg.to_agent)) {
-      const newCount = retries + 1;
-      _retryCounts.set(msg.id, newCount);
-      if (newCount >= MAX_RETRIES) {
-        expireMessage(msg, newCount);
+  for (const [agentId, messages] of byAgent) {
+    // Check retries and expire where needed
+    const deliverable: Message[] = [];
+    for (const msg of messages) {
+      const retries = _retryCounts.get(msg.id) ?? 0;
+      if (retries >= MAX_RETRIES) {
+        expireMessage(msg, retries);
         expired++;
-        log.warn('Message expired — target session does not exist', {
-          id: msg.id,
-          to: msg.to_agent,
-          retries: newCount,
-        });
-      } else {
-        failed++;
-        log.debug('Skipping delivery — target session not alive', {
-          id: msg.id,
-          to: msg.to_agent,
-          retry: `${newCount}/${MAX_RETRIES}`,
-        });
+        log.warn('Message expired after max retries', { id: msg.id, to: agentId, retries });
+        continue;
       }
-      continue;
+      if (!liveSessions.has(agentId)) {
+        const newCount = retries + 1;
+        _retryCounts.set(msg.id, newCount);
+        if (newCount >= MAX_RETRIES) {
+          expireMessage(msg, newCount);
+          expired++;
+          log.warn('Message expired — target session does not exist', { id: msg.id, to: agentId, retries: newCount });
+        } else {
+          failed++;
+        }
+        continue;
+      }
+      deliverable.push(msg);
     }
 
-    // Session is alive — attempt injection
-    const text = formatForDelivery(msg);
-    const success = injectMessage(msg.to_agent, text);
+    if (deliverable.length === 0) continue;
+
+    // Inject a single notification ping for the batch
+    const pingText = formatNotificationPing(deliverable[0]!);
+    const success = injectMessage(agentId, pingText);
 
     if (success) {
-      exec(
-        'UPDATE messages SET processed_at = ? WHERE id = ?',
-        new Date().toISOString(),
-        msg.id,
-      );
-      _retryCounts.delete(msg.id);
-      delivered++;
-      log.debug('Delivered message', {
-        id: msg.id,
-        from: msg.from_agent,
-        to: msg.to_agent,
-        type: msg.type,
-      });
+      const now = new Date().toISOString();
+      const nowMs = Date.now();
+      for (const msg of deliverable) {
+        exec('UPDATE messages SET processed_at = ? WHERE id = ?', now, msg.id);
+        _retryCounts.delete(msg.id);
+        _lastPingTime.set(msg.id, nowMs);
+        delivered++;
+      }
+      log.debug('Notification ping sent', { to: agentId, count: deliverable.length });
     } else {
-      const newCount = retries + 1;
-      _retryCounts.set(msg.id, newCount);
-      failed++;
-      log.warn('Failed to deliver message', {
-        id: msg.id,
-        to: msg.to_agent,
-        retry: `${newCount}/${MAX_RETRIES}`,
-      });
-    }
-
-    // Small gap between messages to avoid overwhelming the tmux pane
-    if (undelivered.length > 1) {
-      await sleep(200);
+      for (const msg of deliverable) {
+        const newCount = (_retryCounts.get(msg.id) ?? 0) + 1;
+        _retryCounts.set(msg.id, newCount);
+        failed++;
+      }
+      log.warn('Failed to inject notification ping', { to: agentId });
     }
   }
 
-  log.info(`Delivery complete: ${delivered} delivered, ${failed} failed, ${expired} expired`);
+  return { delivered, failed, expired };
+}
+
+/**
+ * Phase 2: Re-ping for unread messages (delivered but not yet read).
+ * Sends a reminder notification every REPING_INTERVAL_MS.
+ */
+async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> {
+  const unread = query<Message>(
+    `SELECT * FROM messages
+     WHERE processed_at IS NOT NULL
+       AND read_at IS NULL
+       AND (to_agent = 'comms' OR to_agent = 'orchestrator')
+     ORDER BY created_at ASC`,
+  );
+
+  if (unread.length === 0) return 0;
+
+  const now = Date.now();
+  let repinged = 0;
+
+  // Group by agent
+  const byAgent = new Map<string, Message[]>();
+  for (const msg of unread) {
+    // Check if we need to skip expired messages (metadata.expired = true)
+    if (msg.metadata) {
+      try {
+        const meta = JSON.parse(msg.metadata);
+        if (meta.expired) continue;
+      } catch { /* ignore parse errors */ }
+    }
+
+    const lastPing = _lastPingTime.get(msg.id) ?? 0;
+    if (now - lastPing < REPING_INTERVAL_MS) continue;
+
+    const existing = byAgent.get(msg.to_agent) ?? [];
+    existing.push(msg);
+    byAgent.set(msg.to_agent, existing);
+  }
+
+  for (const [agentId, messages] of byAgent) {
+    if (!liveSessions.has(agentId)) continue;
+    if (messages.length === 0) continue;
+
+    const pingText = formatNotificationPing(messages[0]!);
+    const success = injectMessage(agentId, pingText);
+
+    if (success) {
+      for (const msg of messages) {
+        _lastPingTime.set(msg.id, now);
+      }
+      repinged += messages.length;
+      log.debug('Re-ping sent for unread messages', { to: agentId, count: messages.length });
+    }
+  }
+
+  return repinged;
+}
+
+/**
+ * Main delivery loop: deliver new messages, then re-ping unread ones.
+ */
+async function deliverMessages(): Promise<void> {
+  _pendingWakeup = false;
+
+  const liveSessions = getLiveSessions();
+
+  // Phase 1: Deliver new messages (inject ping, mark processed)
+  const { delivered, failed, expired } = await deliverNewMessages(liveSessions);
+
+  // Phase 2: Re-ping unread messages
+  const repinged = await repingUnreadMessages(liveSessions);
+
+  if (delivered > 0 || failed > 0 || expired > 0 || repinged > 0) {
+    log.info('Delivery cycle complete', { delivered, failed, expired, repinged });
+  }
 }
 
 // ── Helpers ──────────────────────────────────────────────────
-
-function formatForDelivery(msg: Message): string {
-  return `[${msg.type}] from ${msg.from_agent}: ${msg.body}`;
-}
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -235,9 +314,15 @@ export function register(scheduler: Scheduler): void {
 /** @internal Reset retry state for testing */
 export function _resetRetriesForTesting(): void {
   _retryCounts.clear();
+  _lastPingTime.clear();
 }
 
 /** @internal Get current retry count for testing */
 export function _getRetryCount(messageId: number): number {
   return _retryCounts.get(messageId) ?? 0;
+}
+
+/** @internal Get last ping time for testing */
+export function _getLastPingTime(messageId: number): number {
+  return _lastPingTime.get(messageId) ?? 0;
 }
