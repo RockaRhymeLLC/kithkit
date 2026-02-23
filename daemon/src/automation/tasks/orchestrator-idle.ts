@@ -12,12 +12,14 @@
  */
 
 import fs from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { query, update } from '../../core/db.js';
 import { resolveProjectPath } from '../../core/config.js';
 import {
   isOrchestratorAlive,
   killOrchestratorSession,
   injectMessage,
+  _getOrchestratorSession,
 } from '../../agents/tmux.js';
 import { cleanupSessionDirs } from '../../agents/lifecycle.js';
 import { createLogger } from '../../core/logger.js';
@@ -60,6 +62,28 @@ const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const CONTEXT_THRESHOLD_PCT = 65; // Daemon backstop — orchestrator self-restarts at 50%
 const CONTEXT_STALE_SECONDS = 600; // Ignore context data older than 10 min
 const GRACE_PERIOD_MS = 60 * 1000; // 60 seconds to exit after nudge
+const TMUX_BIN = '/opt/homebrew/bin/tmux';
+const TMUX_SOCKET = `/private/tmp/tmux-${process.getuid?.() ?? 501}/default`;
+
+/**
+ * Check if the Claude process is actively running in the orchestrator's tmux session.
+ * Uses `tmux list-panes -t <session> -F '#{pane_current_command}'` to see the foreground process.
+ * If the pane is running 'claude' (or a child of it), the orchestrator is still working.
+ */
+function isClaudeProcessRunning(): boolean {
+  try {
+    const session = _getOrchestratorSession();
+    const output = execFileSync(TMUX_BIN, [
+      '-S', TMUX_SOCKET,
+      'list-panes', '-t', session, '-F', '#{pane_current_command}',
+    ], { encoding: 'utf8', timeout: 5000 }).trim();
+    // The pane's foreground command should be 'claude' (or 'node' running claude)
+    // If it's 'zsh' or 'bash' with no child, Claude has exited
+    return output.includes('claude') || output.includes('node');
+  } catch {
+    return false;
+  }
+}
 
 // Track whether we've already sent the shutdown nudge
 let shutdownNudgedAt: number | null = null;
@@ -161,12 +185,27 @@ async function run(config: Record<string, unknown>): Promise<void> {
     "SELECT COUNT(*) as count FROM worker_jobs WHERE status IN ('queued', 'running')",
   );
   if ((activeJobs[0]?.count ?? 0) > 0) {
+    log.debug('Workers still running — not idle');
     return; // Workers still running — not idle
+  }
+
+  // --- Check 0: Process-level liveness ---
+  // Claude can pause for long periods during complex tasks (thinking, generating).
+  // If the Claude process is still running, the orchestrator is NOT idle — even if
+  // last_activity hasn't been updated. This prevents premature kills.
+  if (isClaudeProcessRunning()) {
+    log.debug('Claude process still running in orchestrator session — not idle');
+    // Touch last_activity so the DB stays fresh
+    update('agents', 'orchestrator', {
+      last_activity: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    return;
   }
 
   // --- Check 1: Context exhaustion (backstop) ---
   // The orchestrator should self-restart at ~60% context. This is the safety net
-  // at 80% in case it didn't. We tell it to save state and exit so it can be respawned.
+  // at 65% in case it didn't. We tell it to save state and exit so it can be respawned.
   const contextUsed = getOrchestratorContextUsage();
   if (contextUsed !== null && contextUsed >= CONTEXT_THRESHOLD_PCT) {
     const reason = `context at ${contextUsed}% — save any pending work state to the daemon (POST /api/messages) and exit. The daemon will respawn you with that context.`;
@@ -200,6 +239,9 @@ async function run(config: Record<string, unknown>): Promise<void> {
   }
 
   // --- Check 2: Idle timeout ---
+  // Only reached if Claude process is NOT running (Check 0 above).
+  // This handles the case where the orchestrator's tmux session is alive
+  // but Claude has exited (left at a shell prompt).
   const rows = query<{ last_activity: string | null; started_at: string | null }>(
     "SELECT last_activity, started_at FROM agents WHERE id = 'orchestrator'",
   );
@@ -212,10 +254,11 @@ async function run(config: Record<string, unknown>): Promise<void> {
   const idleMs = Date.now() - new Date(lastActive).getTime();
 
   if (idleMs < idleTimeoutMs) {
+    log.debug('Not idle long enough', { idleMinutes: Math.round(idleMs / 60000), thresholdMinutes: Math.round(idleTimeoutMs / 60000) });
     return; // Not idle long enough
   }
 
-  const reason = `idle for ${Math.round(idleMs / 60000)} minutes with no pending work`;
+  const reason = `idle for ${Math.round(idleMs / 60000)} minutes — Claude process not running, no pending work`;
   log.info('Orchestrator idle — sending shutdown nudge', { idleMinutes: Math.round(idleMs / 60000) });
   const injected = injectMessage('orchestrator', buildShutdownPrompt(reason));
 
