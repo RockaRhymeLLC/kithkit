@@ -80,34 +80,7 @@ const VALID_TODO_STATUSES = ['pending', 'in_progress', 'completed', 'cancelled']
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function json(res: http.ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(body));
-}
-
-function withTimestamp<T extends object>(obj: T): T & { timestamp: string } {
-  return { ...obj, timestamp: new Date().toISOString() };
-}
-
-const MAX_BODY_SIZE = 1024 * 1024; // 1MB
-
-function parseBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    let size = 0;
-    req.on('data', (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_BODY_SIZE) { req.destroy(); reject(new Error('Request body too large')); return; }
-      body += chunk.toString();
-    });
-    req.on('end', () => {
-      if (!body) { resolve({}); return; }
-      try { resolve(JSON.parse(body)); }
-      catch { reject(new Error('Invalid JSON')); }
-    });
-    req.on('error', reject);
-  });
-}
+import { json, withTimestamp, parseBody } from './helpers.js';
 
 function extractId(pathname: string, prefix: string): string | null {
   if (!pathname.startsWith(prefix + '/')) return null;
@@ -421,9 +394,15 @@ export async function handleStateRoute(
 
     return false;
   } catch (err) {
-    if (err instanceof Error && err.message === 'Invalid JSON') {
-      json(res, 400, withTimestamp({ error: 'Invalid JSON' }));
-      return true;
+    if (err instanceof Error) {
+      if (err.message === 'Request body too large') {
+        json(res, 413, withTimestamp({ error: 'Request body too large' }));
+        return true;
+      }
+      if (err.message === 'Invalid JSON') {
+        json(res, 400, withTimestamp({ error: 'Invalid JSON' }));
+        return true;
+      }
     }
     throw err;
   }

@@ -6,8 +6,7 @@
   "description": "Personal AI assistant framework — install, configure identity, go.",
   "workspaces": [
     "daemon",
-    "cli",
-    "packages/*"
+    "cli"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",

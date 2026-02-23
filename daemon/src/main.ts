@@ -7,7 +7,7 @@
 import http from 'node:http';
 import path from 'node:path';
 import { loadConfig, type KithkitConfig } from './core/config.js';
-import { openDatabase } from './core/db.js';
+import { openDatabase, closeDatabase } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
@@ -266,6 +266,9 @@ async function shutdown(signal: string): Promise<void> {
       });
     }
   }
+
+  closeDatabase();
+  log.info('Database closed');
 
   server.close(() => {
     log.info('Daemon stopped');

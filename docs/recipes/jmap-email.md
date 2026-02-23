@@ -10,7 +10,7 @@ Connect your Kithkit agent to a JMAP-compatible mailbox. JMAP (JSON Meta Applica
 
 - A Fastmail account (or any RFC 8620-compliant JMAP server)
 - A Fastmail API token (see Step 1)
-- Node.js 18+ (daemon runtime)
+- Node.js 22+ (daemon runtime)
 - The Kithkit daemon configured and running
 
 ---

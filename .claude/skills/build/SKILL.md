@@ -35,8 +35,10 @@ Continues from the active plan's in-progress story.
 ## Workflow
 
 1. **Pre-build checks** (via hook)
-   - Verify plan file exists
-   - Verify spec file exists
+   - First, create the flag file so the hook knows we're in a build context:
+     `echo "<plan-file-path>" > /tmp/kithkit-build-active`
+   - The pre-build hook will then verify plan file exists and verify spec file exists
+   - Without the flag file, the hook exits immediately (avoids overhead on every Bash command)
 
 2. **Load plan context**
    - Read plan.md

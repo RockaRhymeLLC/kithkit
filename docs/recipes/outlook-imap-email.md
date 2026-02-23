@@ -14,7 +14,7 @@ This integration is **receive-only** for most use cases. For sending, use the Gr
 - Access to the Azure portal (`portal.azure.com`) to register a second Azure AD app
 - Python 3.9+ (the IMAP adapter is a Python script)
 - The `requests` and `msal` Python libraries
-- Node.js 18+ (daemon runtime)
+- Node.js 22+ (daemon runtime)
 - The Kithkit daemon configured and running
 
 ---
