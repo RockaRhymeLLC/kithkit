@@ -23,13 +23,14 @@ DAEMON_URL="http://localhost:$DAEMON_PORT"
 
 # Prevent concurrent/recursive runs (lock expires after 5 min)
 if [ -f "$LOCK_FILE" ]; then
-  LOCK_AGE=$(( $(date +%s) - $(stat -f %m "$LOCK_FILE") ))
+  LOCK_TIME=$(cat "$LOCK_FILE" 2>/dev/null || echo 0)
+  LOCK_AGE=$(( $(date +%s) - ${LOCK_TIME:-0} ))
   if [ "$LOCK_AGE" -lt 300 ]; then
     exit 0
   fi
 fi
 
-touch "$LOCK_FILE"
+date +%s > "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
 
 # Read hook input from stdin

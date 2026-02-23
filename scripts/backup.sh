@@ -59,7 +59,7 @@ if ! unzip -t "$BACKUP_TMP" > /dev/null 2>&1; then
 fi
 
 # Size sanity check (should be at least 1MB)
-BACKUP_SIZE=$(stat -f%z "$BACKUP_TMP")
+BACKUP_SIZE=$(wc -c < "$BACKUP_TMP" | tr -d ' ')
 if [ "$BACKUP_SIZE" -lt 1000000 ]; then
   echo "$(date): ERROR — backup suspiciously small (${BACKUP_SIZE} bytes), aborting"
   rm -f "$BACKUP_TMP"

@@ -9,15 +9,14 @@ This file tells Claude Code how to operate within a Kithkit-managed project. It 
 Kithkit uses a three-tier agent architecture managed by a small, stable daemon:
 
 ```
-Human ←→ Comms Agent ←→ Daemon ←→ Orchestrator ←→ Workers
-              ↕            ↕            ↕
-          Channels      SQLite DB    Agent SDK
+Human ←→ Comms Agent ←→ Daemon ←→ Workers
+              ↕            ↕
+          Identity      SQLite DB
 ```
 
-- **Comms agent** — persistent tmux session, full personality, handles simple requests directly
-- **Orchestrator** — spawned on-demand, no personality, decomposes complex tasks, manages workers
-- **Workers** — ephemeral SDK `query()` calls, scoped by agent profiles, report results and die
-- **Daemon** — Node.js HTTP server on `localhost:3847`, owns SQLite DB, routes messages, manages lifecycle
+- **Comms agent** — persistent tmux session, full personality, handles simple requests directly and delegates complex tasks to workers
+- **Daemon** — Node.js HTTP server on `localhost:3847`, owns SQLite DB, routes messages, manages agent lifecycle, scheduling, and channel routing
+- **Workers** — ephemeral Claude Code agents scoped by profiles, spawned on demand via the daemon's agent lifecycle API
 
 ### Daemon API
 

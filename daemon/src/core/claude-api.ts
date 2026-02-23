@@ -17,6 +17,12 @@ const API_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
 const API_VERSION = '2023-06-01';
 
+/** Shape of the Anthropic Messages API response (relevant fields). */
+interface AnthropicMessagesResponse {
+  content?: Array<{ type: string; text?: string }>;
+  usage?: { input_tokens?: number; output_tokens?: number };
+}
+
 export interface ClaudeResponse {
   content: string;
   inputTokens: number;
@@ -69,7 +75,7 @@ export async function askClaude(
       return null;
     }
 
-    const data = await res.json() as any;
+    const data = await res.json() as AnthropicMessagesResponse;
     const text = data.content?.[0]?.text ?? '';
     return {
       content: text,

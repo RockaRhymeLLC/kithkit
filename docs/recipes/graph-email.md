@@ -11,7 +11,7 @@ This recipe uses the **client credentials** (app-only) OAuth2 flow — no intera
 - A Microsoft 365 account (work, school, or personal with M365 subscription)
 - Access to the Azure portal (`portal.azure.com`) to register an app
 - Admin consent rights on the tenant (or a global admin who can grant them)
-- Node.js 18+ (daemon runtime)
+- Node.js 22+ (daemon runtime)
 - The Kithkit daemon configured and running
 
 ---

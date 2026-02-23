@@ -7,6 +7,7 @@
 
 import { execFile } from 'node:child_process';
 import { exec as dbExec, query } from '../core/db.js';
+import { createLogger } from '../core/logger.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -42,8 +43,12 @@ export function runTask(
   const timeoutMs = options.timeoutMs ?? 300_000; // 5 min default
 
   return new Promise((resolve) => {
-    // If no args provided and command has spaces, run via shell explicitly
+    // If no args provided, fall back to /bin/sh -c (log a warning)
     const hasArgs = options.args && options.args.length > 0;
+    if (!hasArgs) {
+      const log = createLogger('task-runner');
+      log.warn(`Task "${taskName}" uses shell fallback (/bin/sh -c). Prefer explicit args array for safety.`);
+    }
     const cmd = hasArgs ? options.command : '/bin/sh';
     const args = hasArgs ? options.args! : ['-c', options.command];
 

@@ -8,7 +8,7 @@ Integrate Browserbase cloud browsers into your Kithkit assistant for authenticat
 
 - Browserbase account at [browserbase.com](https://www.browserbase.com)
 - Browserbase API key
-- Node.js 18+ (for the sidecar process)
+- Node.js 22+ (for the sidecar process)
 - Kithkit daemon running (`curl http://localhost:3847/health`)
 
 ---

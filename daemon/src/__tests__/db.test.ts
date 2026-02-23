@@ -143,19 +143,22 @@ describe('Migrations (t-119)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('migration version 1 recorded after initial apply', () => {
+  it('all migrations applied after initial open', () => {
     const dbPath = path.join(tmpDir, 'kithkit.db');
     openDatabase(tmpDir, dbPath, getMigrationsDir());
     const db = getDatabase();
 
     const version = getCurrentVersion(db);
-    assert.equal(version, 1);
+    assert.equal(version, 2);
 
     const applied = getAppliedMigrations(db);
-    assert.equal(applied.length, 1);
+    assert.equal(applied.length, 2);
     assert.equal(applied[0]!.version, 1);
     assert.equal(applied[0]!.name, 'initial-schema');
     assert.ok(applied[0]!.applied_at);
+    assert.equal(applied[1]!.version, 2);
+    assert.equal(applied[1]!.name, 'add-indexes');
+    assert.ok(applied[1]!.applied_at);
   });
 
   it('new migration auto-applies on next open', () => {
