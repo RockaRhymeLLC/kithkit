@@ -22,6 +22,9 @@ channels:
   telegram:
     enabled: true
     webhook_path: "/telegram"
+    owner: 7629737488
+    allowed_users:
+      - 7629737488
   email:
     enabled: true
     providers:
@@ -118,7 +121,7 @@ channels:
         - "google voice"
 
   voice:
-    enabled: false  # Disabled until voice venv is set up (punchlist item 14)
+    enabled: true
     stt:
       engine: whisper-cpp
       model: small.en
@@ -238,6 +241,9 @@ scheduler:
     - name: "lindee-inbox-watch"
       enabled: true
       interval: "15m"
+    - name: "message-delivery"
+      enabled: true
+      interval: "5s"
     - name: "orchestrator-idle"
       enabled: true
       interval: "2m"

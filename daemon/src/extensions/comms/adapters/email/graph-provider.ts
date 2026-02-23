@@ -56,7 +56,7 @@ async function getAzureCredentials(): Promise<AzureCredentials> {
     readKeychain('credential-azure-client-id'),
     readKeychain('credential-azure-tenant-id'),
     readKeychain('credential-azure-secret-value'),
-    readKeychain('credential-azure-user-email'),
+    readKeychain('credential-graph-user-email'),
   ]);
   return { clientId, tenantId, clientSecret, userEmail };
 }

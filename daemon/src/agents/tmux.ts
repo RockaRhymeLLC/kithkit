@@ -55,10 +55,12 @@ export function injectMessage(agentId: string, text: string): boolean {
   }
 
   try {
-    // Send the text as keystrokes, then press Enter
+    // Send the text as keystrokes, then press Enter after a brief delay
     execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', session, '-l', text], {
       timeout: 5000,
     });
+    // Small delay to let tmux buffer the text before submitting
+    execFileSync('/bin/sleep', ['0.15'], { timeout: 2000 });
     execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', session, 'Enter'], {
       timeout: 5000,
     });

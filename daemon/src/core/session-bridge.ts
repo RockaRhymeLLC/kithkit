@@ -55,7 +55,10 @@ function validateSessionName(name: string): string {
 }
 
 function getDefaultSessionName(): string {
-  return loadConfig().agent.name;
+  const config = loadConfig();
+  // Prefer tmux.session (matches shell scripts), fall back to agent name
+  const tmux = (config as unknown as Record<string, unknown>).tmux as { session?: string } | undefined;
+  return tmux?.session ?? config.agent.name;
 }
 
 /**

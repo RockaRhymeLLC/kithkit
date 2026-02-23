@@ -45,7 +45,7 @@ let _shortcutToken: string | null = null;
 
 async function getBotToken(): Promise<string | null> {
   if (_botToken) return _botToken;
-  _botToken = await readKeychain('credential-telegram-bot-token');
+  _botToken = await readKeychain('credential-telegram-bot');
   return _botToken;
 }
 
@@ -57,7 +57,7 @@ async function getChatId(): Promise<string | null> {
 
 async function getShortcutToken(): Promise<string | null> {
   if (_shortcutToken) return _shortcutToken;
-  _shortcutToken = await readKeychain('credential-shortcut-auth-token');
+  _shortcutToken = await readKeychain('credential-shortcut-auth');
   return _shortcutToken;
 }
 
@@ -405,16 +405,33 @@ let _pendingApprovalContext: {
 
 /**
  * Register BMO's extended sender classification.
- * Adds 'approved' and 'pending' tiers using the safe-senders/3rd-party-senders files.
+ * Checks config owner/allowed_users first, then safe-senders/3rd-party-senders files.
  */
 function registerBmoTiers(): void {
+  // Read owner and allowed_users from channels.telegram config
+  const rawConfig = loadConfig() as unknown as Record<string, unknown>;
+  const channels = rawConfig.channels as Record<string, unknown> | undefined;
+  const telegramConfig = channels?.telegram as Record<string, unknown> | undefined;
+  const configOwner = telegramConfig?.owner != null ? String(telegramConfig.owner) : null;
+  const configAllowed = Array.isArray(telegramConfig?.allowed_users)
+    ? (telegramConfig!.allowed_users as unknown[]).map(id => String(id))
+    : [];
+
+  const configSafeIds = new Set<string>();
+  if (configOwner) configSafeIds.add(configOwner);
+  for (const id of configAllowed) configSafeIds.add(id);
+
+  if (configSafeIds.size > 0) {
+    log.info('Telegram config safe IDs', { ids: [...configSafeIds] });
+  }
+
   // Load safe-senders.json and 3rd-party-senders.json
   const safeSenders = loadJsonFile<Array<{ telegram_id?: string }>>('.claude/state/safe-senders.json') ?? [];
   const thirdParty = loadJsonFile<Array<{ id?: string; channels?: Record<string, unknown> }>>('.claude/state/3rd-party-senders.json') ?? [];
 
-  const safeIds = new Set<string>();
+  const fileSafeIds = new Set<string>();
   for (const s of safeSenders) {
-    if (s.telegram_id) safeIds.add(s.telegram_id);
+    if (s.telegram_id) fileSafeIds.add(s.telegram_id);
   }
 
   const approvedIds = new Set<string>();
@@ -431,7 +448,8 @@ function registerBmoTiers(): void {
   }
 
   registerTier('bmo-telegram', (senderId: string) => {
-    if (safeIds.has(senderId)) return 'safe';
+    if (configSafeIds.has(senderId)) return 'safe';
+    if (fileSafeIds.has(senderId)) return 'safe';
     if (approvedIds.has(senderId)) return 'approved';
     if (pendingIds.has(senderId)) return 'pending';
     return null; // fall through to default
