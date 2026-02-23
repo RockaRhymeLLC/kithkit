@@ -167,6 +167,15 @@ simplest version of this that actually works?"]
 - **CONCERNS** — Mostly good but has specific issues worth addressing first. List them clearly.
 - **RETHINK** — Fundamental approach needs reconsideration. Too complex, wrong abstraction, or missing the point.
 
+### After a RETHINK Verdict
+
+If the review returns RETHINK:
+1. **Don't build.** A RETHINK means the current approach has fundamental issues
+2. **Identify the root cause** — is it the spec (wrong requirements) or the plan (wrong approach to right requirements)?
+3. **If spec issue**: Go back to `/spec` and revise requirements before re-planning
+4. **If plan issue**: Revise the plan with the review feedback and re-run `/review`
+5. **Re-review**: Always re-run `/review` after making changes — don't assume fixes are sufficient
+
 ## Scoring Guide (Complexity & Scope)
 
 - **1/5** — Minimal, elegant, nothing wasted

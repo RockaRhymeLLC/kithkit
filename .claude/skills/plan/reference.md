@@ -1,454 +1,354 @@
 # Plan Workflow Reference
 
-Detailed step-by-step instructions for creating plans and managing tasks.
+Detailed step-by-step instructions for creating plans and managing stories and tests.
 
 ## Creation Workflow
 
 ### Step 1: Validate Input
 
-```typescript
-// Check spec file provided
-if (!args.includes('specs/')) {
-  throw new Error('Spec file path required');
-}
+Confirm a spec file path was provided. Use the Read tool to load the spec file and confirm it exists. If the spec is missing or the path is wrong, report the error and stop — a plan cannot be created without a spec.
 
-// Read and verify spec exists
-const specPath = args;
-const specContent = await readFile(specPath);
-```
-
-### Step 2: Analyze Specification
+### Step 2: Analyze the Specification
 
 Parse the spec to extract:
-- **Must Have requirements** - Core features (highest priority)
-- **Should Have requirements** - Nice-to-haves (medium priority)
-- **Constraints** - Security, performance, compatibility
-- **Success criteria** - Measurable outcomes
-- **User stories** - Usage scenarios
-- **Open questions** - Unresolved decisions
+- **Must Have requirements** — core features that define the minimum viable outcome
+- **Should Have requirements** — valuable additions, lower priority than must-haves
+- **Won't Have** — explicitly out-of-scope items to avoid scope creep
+- **Constraints** — security, performance, and compatibility requirements
+- **Success criteria** — measurable outcomes that define "done"
+- **User stories** — usage scenarios that inform how tests should be written
+- **Open questions** — unresolved decisions; note these, as they may block planning
 
 ### Step 3: Identify User Perspective
 
-**Critical**: Determine WHO will use this feature:
+Determine who will use this feature, because tests are written from that perspective:
 
 | User Type | Examples | Test Approach |
 |-----------|----------|---------------|
-| **Human** | CLI commands, web UI, API calls | Test command output, UI behavior, API responses |
-| **Claude Code** | Skills, workflows, internal tools | Test skill invocation, file outputs, tool usage |
-| **External System** | APIs, webhooks, integrations | Test HTTP requests/responses, data formats |
-| **Hybrid** | Multiple user types | Test all interaction patterns |
+| Human | CLI commands, web UI, API calls | Verify command output, UI behavior, API responses |
+| Claude Code | Skills, workflows, internal tools | Verify skill invocation results, file outputs, tool behavior |
+| External System | APIs, webhooks, integrations | Verify HTTP request/response formats, data shapes |
+| Hybrid | Multiple user types | Test all interaction patterns separately |
 
-**Document in plan**:
-```markdown
-## User Perspective
-
-**Primary User**: [Human | Claude Code | External System | Hybrid]
-
-**How They Interact**:
-- [Describe actual usage]
-
-**Test Approach**:
-Tests will simulate the user's actual interaction pattern
-```
+Document this in the plan.md under a "User Perspective" section so the build phase knows what the tests are simulating.
 
 ### Step 4: Technical Planning
 
 #### Architecture Decisions
+
 Consider:
-- Libraries/frameworks needed
-- Design patterns appropriate
-- Integration points
-- Performance implications
-- Security considerations
+- What libraries or frameworks are needed?
+- What design patterns fit?
+- What are the integration points with existing code?
+- What are the performance implications?
+- What security considerations apply?
 
-**Document as**:
-```markdown
-## Technical Approach
-
-### Architecture Overview
-[High-level design]
-
-### Key Components
-1. **Component A** - Purpose and responsibilities
-2. **Component B** - Purpose and responsibilities
-
-### Design Decisions
-**Why X instead of Y?**
-- Reason 1
-- Reason 2
-```
+Document the architecture under "Technical Approach" in the plan.md. Explain key decisions — "Why X instead of Y?" — so future readers understand the reasoning.
 
 #### File Planning
-Identify:
-```markdown
-## Files to Create/Modify
 
+List all files that will be created or modified. For each, note its purpose. This helps the build phase know what surface area is in play.
+
+Example:
+```
 ### New Files
-- `src/module/file.ts` - Purpose
-- `tests/module.test.ts` - Test coverage
+- src/module/feature.ts — Core feature logic
+- src/module/feature-types.ts — Shared type definitions
 
 ### Modified Files
-- `src/existing.ts` - What changes and why
+- src/index.ts — Export new module
+- cc4me.config.yaml — New config section for this feature
 ```
 
-### Step 5: Task Breakdown
+### Step 5: Task Breakdown — Create Stories
 
-Break work into discrete tasks using TaskCreate:
+Break the work into discrete stories. Each story is a logical unit of implementation that can be completed independently (or after its dependencies are done). For each story, create `plans/stories/s-{id}.json`.
 
-```typescript
-import { TaskCreate } from '@claude/tasks';
+Story ID format: `s-` prefix + 3 alphanumeric characters (e.g., `s-a1b`). Check existing story files to avoid ID collisions.
 
-// For each logical unit of work:
-TaskCreate({
-  subject: "Create context tracker module",
-  description: "Build simple TypeScript module to persist active spec/plan...",
-  activeForm: "Creating context tracker module"
-});
+Story JSON structure:
+
+```json
+{
+  "id": "s-a1b",
+  "title": "Implement login form",
+  "description": "Build the login UI with email and password fields",
+  "planRef": "plans/20260128-auth-system.plan.md",
+  "todoRef": "xyz",
+  "status": "pending",
+  "priority": 1,
+  "tests": ["t-001"],
+  "blockedBy": [],
+  "created": "2026-01-28T10:00:00Z",
+  "updated": "2026-01-28T10:00:00Z",
+  "notes": [],
+  "files": ["src/components/LoginForm.tsx"],
+  "acceptanceCriteria": [
+    "Form displays email and password fields",
+    "Submit button triggers authentication",
+    "Error messages display on failure"
+  ]
+}
 ```
 
-**Task Guidelines**:
-- **Size**:
-  - S (Small): < 1 hour, single file, straightforward
-  - M (Medium): 1-4 hours, multiple files, moderate complexity
-  - L (Large): > 4 hours, architectural changes, high complexity
-- **Granularity**: Each task should be independently completable
-- **Dependencies**: Note what must be done first
-- **Testing**: Specify which tests must pass
+Key fields to set carefully during planning:
+- `priority` — lower number = higher priority; determines build order
+- `blockedBy` — list story IDs that must complete before this one can start
+- `acceptanceCriteria` — these are immutable after planning; write them precisely
+- `tests` — list the test IDs that verify this story
 
-**Set Dependencies**:
-```typescript
-TaskUpdate({
-  taskId: "4",
-  addBlockedBy: ["2", "3"] // Task 4 blocked by tasks 2 and 3
-});
+#### Story Sizing Guidelines
+
+Use these as rough guides:
+- **Small (S)** — less than 1 hour: single file change, documentation update, simple bug fix, configuration change
+- **Medium (M)** — 1 to 4 hours: new module under 200 lines, test suite, feature implementation, single-module refactor
+- **Large (L)** — more than 4 hours: architectural change, major refactor, complex feature, system integration, breaking change
+
+If a story is Large, consider whether it can be split into two Medium stories with a dependency between them.
+
+### Step 6: Write Tests (Critical)
+
+Tests written during planning are IMMUTABLE during build. Write them with care — they define the contract that the implementation must satisfy.
+
+For each test, create `plans/tests/t-{id}.json`.
+
+Test ID format: `t-` prefix + 3-digit zero-padded number (e.g., `t-001`). Check existing test files to avoid ID collisions.
+
+Test JSON structure:
+
+```json
+{
+  "id": "t-001",
+  "title": "Login with valid credentials",
+  "description": "Verify the successful login flow end to end",
+  "storyRefs": ["s-a1b"],
+  "planRef": "plans/20260128-auth-system.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    {
+      "order": 1,
+      "action": "Open login page",
+      "expected": "Login form is visible with email and password fields"
+    },
+    {
+      "order": 2,
+      "action": "Enter a valid email and password",
+      "expected": "Fields accept input without error"
+    },
+    {
+      "order": 3,
+      "action": "Click the login button",
+      "expected": "User is redirected to the dashboard"
+    }
+  ],
+  "created": "2026-01-28T10:00:00Z",
+  "executedAt": null,
+  "result": null
+}
 ```
 
-### Step 6: Write Tests (Critical!)
+#### Writing Good Test Steps
 
-**IMPORTANT**: Tests written during plan phase are IMMUTABLE during build.
+Each step has two parts — `action` (what to do) and `expected` (what should happen). Write both from the user's perspective as identified in Step 3:
 
-#### Test Structure
-```typescript
-/**
- * Tests for: [Feature Name]
- * Spec: [link to spec]
- * Plan: [link to plan]
- *
- * Tests are written from USER'S perspective.
- * IMMUTABLE during build phase.
- */
+- **Human user**: Steps describe what the human does and what they observe
+- **Claude Code user**: Steps describe what skill or tool is invoked and what files or outputs result
+- **External system**: Steps describe HTTP requests sent and responses received
 
-describe('[Feature Name]', () => {
-  it('should [expected behavior from user perspective]', () => {
-    // Arrange: Set up user's context
+Make `expected` values specific and observable. Avoid vague criteria like "it works" — instead write "Response status is 200 and body contains `{ id: string }`."
 
-    // Act: Perform action as user would
+#### Coverage Requirements
 
-    // Assert: Verify outcome user would see
-    expect(result).toBe(expected);
-  });
-});
-```
+- Every must-have requirement in the spec → at least one story
+- Every story → at least one test
+- Each test must have at least 2 steps (action + verification)
+- Consider adding integration-level tests that span multiple stories
 
-#### Write Tests from User Perspective
+#### Confirm Red State
 
-**Human User**:
-```typescript
-it('should respond to Telegram command', async () => {
-  // Simulate user sending Telegram message
-  await bot.sendMessage(userId, '/help');
+Before declaring planning complete, mentally walk through each test's steps against the current codebase. The steps should fail — the feature does not exist yet. If a test would already pass without any implementation, that test is not testing anything useful and needs to be revised.
 
-  // Verify user receives response
-  expect(lastMessageSent).toContain('Available commands');
-});
-```
+Document in the plan.md: "Tests: X tests written, all expected to fail before implementation (red state confirmed)."
 
-**Claude Code User**:
-```typescript
-it('should update spec via skill', () => {
-  // Invoke skill as Claude would
-  invokeSkill('spec-update', 'add breakfast feature');
+### Step 7: Create Plan.md
 
-  // Verify file was updated
-  const spec = readFile('specs/test.spec.md');
-  expect(spec).toContain('Breakfast feature');
-});
-```
+Use this structure:
 
-**External System User**:
-```typescript
-it('should handle API request', async () => {
-  // Make API call as external system would
-  const response = await fetch('/api/tasks', {
-    method: 'POST',
-    body: JSON.stringify({ task: 'New task' })
-  });
-
-  // Verify response format
-  expect(response.status).toBe(201);
-  expect(response.data).toHaveProperty('id');
-});
-```
-
-#### Ensure Tests Fail (Red State)
-- Tests must fail before implementation exists
-- This proves tests are actually testing something
-- Run `npm test` to verify red state
-- Document in plan: "Tests: X tests written, all failing (red state ✓)"
-
-### Step 7: Create Plan File
-
-Use plan template structure:
 ```markdown
 # Plan: [Feature Name]
 
+**Spec**: specs/YYYYMMDD-feature.spec.md
+**To-Do**: [id] (if applicable)
 **Created**: YYYY-MM-DD
-**Spec**: [link to spec]
-**Status**: Planning
 
 ## Technical Approach
-[Architecture decisions]
+
+[Architecture decisions, key patterns, design rationale]
 
 ## User Perspective
-**Primary User**: [type]
-**How They Interact**: [details]
-**Test Approach**: [how tests simulate user]
+
+**Primary User**: [Human | Claude Code | External System | Hybrid]
+**How They Interact**: [Describe actual usage]
+**Test Approach**: Tests simulate the user's actual interaction pattern
+
+## Stories
+
+| ID | Title | Priority | Size | Tests |
+|----|-------|----------|------|-------|
+| s-a1b | Implement login form | 1 | M | t-001 |
+| s-c2d | Create session management | 2 | M | t-002 |
+
+## Dependencies
+
+[Story dependency graph if the order is non-obvious]
 
 ## Files to Create/Modify
+
 [List with purposes]
 
-## Tasks
-- [ ] **Task 1**: [description] (Size: S/M/L)
-  - **Dependencies**: [task numbers]
-  - **Tests**: [which tests]
-  - **Acceptance**: [completion criteria]
+## Notes
 
-## Test Plan
-**Location**: tests/feature.test.ts
-**IMPORTANT**: Tests written from user's perspective, IMMUTABLE during build
-
-### Test Cases
-[List all test cases with setup/action/assert]
-
-## Validation Checklist
-[Pre-build validation items]
-
-## Rollback Plan
-[How to undo if needed]
+[Any additional context the build phase will need]
 ```
 
-### Step 8: Update Context and Log
+### Step 8: Link to To-Do
 
-```typescript
-import { ContextTracker } from '../../src/context/tracker';
-import { HistoryLogger } from '../../src/history/logger';
-
-// Set active plan
-const tracker = new ContextTracker('.claude/state/context.json');
-tracker.setActivePlan(planPath);
-
-// Also set active spec if not already set
-if (!tracker.getActiveSpec()) {
-  tracker.setActiveSpec(specPath);
-}
-
-// Log creation
-const logger = new HistoryLogger('.claude/history/commands.log');
-logger.log('/plan', planPath, `Created plan for ${featureName}`);
-```
+If this plan was created from a to-do, add the to-do ID to each story's `todoRef` field and note the linkage in the plan.md header. This allows the build phase to update the parent to-do when the plan completes.
 
 ### Step 9: Run Validation
 
-Automatically run `/validate` to check:
-- All spec requirements mapped to tasks
-- Tests written and failing (red state)
-- No unresolved open questions blocking progress
-- Plan is complete and ready for build
+Run `/validate` to check:
+- All must-have spec requirements are covered by at least one story
+- All stories have at least one test
+- No unresolved open questions are blocking progress
+- Plan.md is complete and well-formed
 
-### Step 10: Confirm and Suggest Next Steps
+### Step 10: Run Review
+
+Run `/review` to sanity-check the plan with Bob (devil's advocate sub-agent). For plans involving shared work (skills, daemon features, agent-comms), also request peer review before building. See the `/review` Peer Review Protocol for when this is required.
+
+### Step 11: Confirm and Suggest Next Steps
 
 ```
-✓ Created plan: plans/20260127-feature-name.plan.md
-✓ Tasks created: 5 tasks added to TaskList
-✓ Tests written: tests/feature-name.test.ts (RED state ✓)
-✓ Validation: PASSED
+Created plan: plans/20260128-feature-name.plan.md
+Stories: 5 created (plans/stories/)
+Tests: 8 created (plans/tests/)
+Validation: PASSED
 
 Next steps:
   1. Review plan for completeness
-  2. Run `/build plans/20260127-feature-name.plan.md` to start implementation
+  2. Run /build plans/20260128-feature-name.plan.md to start implementation
 ```
 
-## Update Workflow
+---
 
-### Step 1: Parse Task Description
+## Update Workflow (Adding Stories to an Existing Plan)
 
-Extract from command:
+### Step 1: Parse the Description
+
+Extract the intent from the command:
+
 ```
-/plan add unit tests for breakfast module
-→ description = "add unit tests for breakfast module"
+/plan add implement login form validation
+→ description = "implement login form validation"
 ```
 
 ### Step 2: Determine Target Plan
 
-#### Check Context
-```typescript
-const tracker = new ContextTracker('.claude/state/context.json');
-const activePlan = tracker.getActivePlan();
-```
+First, check the current conversation for references to a plan file. If the plan context is clear, use that file. If it is ambiguous, list the files in `plans/` and ask the user to confirm which plan to update.
 
-#### Infer if Needed
-- Review conversation for plan references
-- List files in `plans/` directory
-- Match description to plan titles
+### Step 3: Extract Story Details
 
-#### Ask if Ambiguous
-```typescript
-const plans = listPlanFiles('plans/');
-// Use AskUserQuestion to let user select
-```
+From the description, determine:
+- **Title**: The main action in title case ("Implement Login Form Validation")
+- **Size**: Estimate S/M/L based on the scope
+- **Dependencies**: Does this story depend on any existing stories?
+- **Acceptance criteria**: What specific behaviors define completion?
 
-### Step 3: Extract Task Details
+### Step 4: Create the Story JSON
 
-Parse the description to determine:
+Generate a new story ID (check existing files to avoid collisions). Create `plans/stories/s-{id}.json` with status `"pending"` and the details extracted above.
 
-**Subject**: Main action
-- "Add unit tests for breakfast module"
-- "Implement coffee brewing logic"
-- "Refactor context tracker"
+### Step 5: Create Any New Tests
 
-**Size**: Estimate complexity
-- **S**: "Add logging", "Update documentation"
-- **M**: "Add unit tests", "Implement module"
-- **L**: "Refactor architecture", "Add integration"
+If the new story introduces new behavior that is not covered by existing tests, create the test JSON files in `plans/tests/`. Follow the same standards as the creation workflow — steps must be specific and observable.
 
-**Active Form**: Present continuous
-- "Add unit tests" → "Adding unit tests"
-- "Implement coffee" → "Implementing coffee brewing"
-- "Refactor tracker" → "Refactoring context tracker"
+### Step 6: Update Plan.md
 
-### Step 4: Add to Plan File
-
-Read plan and add task:
-```markdown
-## Tasks
-
-- [ ] **Task 1**: Existing task (Size: S)
-  - **Dependencies**: None
-  - **Tests**: Test suite A
-  - **Acceptance**: Feature works
-
-- [ ] **Task 2**: Add unit tests for breakfast module (Size: M)  ← NEW
-  - **Dependencies**: None
-  - **Tests**: Breakfast test suite
-  - **Acceptance**: 90%+ test coverage
-```
-
-Use Edit tool to preserve existing content.
-
-### Step 5: Add to TaskList
-
-```typescript
-TaskCreate({
-  subject: "Add unit tests for breakfast module",
-  description: "Write comprehensive unit tests for the breakfast module...",
-  activeForm: "Adding unit tests for breakfast module"
-});
-```
-
-### Step 6: Update Context and Log
-
-```typescript
-// Update context
-tracker.setActivePlan(planPath);
-
-// Log change
-logger.log('/plan', path.basename(planPath), `Added task: ${subject}`);
-```
+Use the Edit tool to add the new story to the Stories table in plan.md. Do not remove or reorder existing rows.
 
 ### Step 7: Confirm
 
 ```
-✓ Added Task #5: "Add unit tests for breakfast module" (Size: M)
-  Plan: plans/20260127-breakfast-maker.plan.md
-  TaskList: #5
+Added story s-x9z: "Implement login form validation" (Size: M)
+  Plan: plans/20260128-auth-system.plan.md
+  Tests: t-012 created
 ```
 
-## Task Management Best Practices
+---
 
-### Task Sizing
+## Task Sizing Guidelines
 
-**Small (S)** - < 1 hour:
+**Small (S)** — less than 1 hour:
 - Single file changes
 - Documentation updates
 - Simple bug fixes
-- Adding logs/comments
+- Adding logging or comments
 - Configuration changes
 
-**Medium (M)** - 1-4 hours:
-- New modules (< 200 lines)
+**Medium (M)** — 1 to 4 hours:
+- New modules (under 200 lines)
 - Test suites
 - Feature implementations
-- Refactoring single modules
-- Integration work
+- Refactoring a single module
+- Integration with an existing system
 
-**Large (L)** - > 4 hours:
-- Architecture changes
-- Major refactoring
-- Complex features
-- System integrations
-- Breaking changes
+**Large (L)** — more than 4 hours:
+- Architectural changes
+- Major refactoring across many files
+- Complex features with many moving parts
+- System-level integrations
+- Breaking changes requiring migration
 
-### Task Dependencies
+If a story is Large, consider splitting it. Smaller stories are easier to track, easier to regress, and less likely to get stuck.
 
-**Set dependencies when**:
-- Task B needs Task A's output
-- Task B modifies Task A's code
-- Task B tests Task A's functionality
-- Order matters for correctness
+---
 
-**Example**:
-```typescript
-// Task 2 depends on Task 1
-TaskUpdate({
-  taskId: "2",
-  addBlockedBy: ["1"]
-});
-```
+## Story Dependency Rules
 
-### Task Descriptions
+Set `blockedBy` on a story when:
+- It needs the output of another story to function
+- It modifies code that the blocking story is creating
+- Its tests depend on functionality delivered by the blocking story
+- The implementation order matters for correctness
 
-Good descriptions include:
-- What to build
-- Why it's needed
-- Key considerations
-- Acceptance criteria
+Keep the dependency graph as shallow as possible. Long dependency chains slow down build progress and create bottlenecks.
 
-**Example**:
-```
-Build simple TypeScript module to persist active spec/plan context.
-Reads/writes to .claude/state/context.json.
-Methods: getActiveSpec(), setActiveSpec(path), getActivePlan(), setActivePlan(path), clear().
-Schema: { activeSpec, activePlan, lastCommand, timestamp }.
-Module should be in src/context/tracker.ts
-```
+---
 
 ## Error Handling
 
 ### Creation Workflow
-- **Spec file missing**: Report error, cannot proceed
-- **Spec incomplete**: Warn about open questions, suggest resolving first
-- **Template missing**: Use default structure
-- **Test file creation fails**: Report error, block build phase
+
+- **Spec file missing**: Report the error and stop — cannot plan without a spec
+- **Spec has unresolved open questions**: Warn the user; consider resolving questions before committing to the plan
+- **ID collision on story or test**: Increment until a unique ID is found
+- **Plan directory missing**: Create `plans/stories/` and `plans/tests/` if they do not exist
 
 ### Update Workflow
-- **Plan not found**: Ask user to create plan or select different file
-- **TaskCreate fails**: Still update plan file, warn about TaskList sync
-- **Edit fails**: Report error, suggest manual edit
 
-## Integration Points
+- **Plan not found**: Ask the user to specify the correct plan file or create a new one
+- **Story JSON write fails**: Report the error clearly; do not update plan.md until the story file is saved successfully
+- **Edit to plan.md fails**: Report the error and suggest manually adding the story row
 
-**TaskCreate/TaskUpdate**: Core task management
-**ContextTracker**: Remembers active plan
-**HistoryLogger**: Audit trail
-**Validation**: Ensures readiness for build
-**Build Phase**: Consumes plan and executes tasks
+---
+
+## Integration
+
+- **Stories** (`plans/stories/s-{id}.json`): Core work units consumed by `/build`
+- **Tests** (`plans/tests/t-{id}.json`): Verification criteria, immutable during build
+- **Validation** (`/validate`): Checks coverage and completeness before build begins
+- **Review** (`/review`): Bob sub-agent challenges the plan; peer review for shared work
+- **Build** (`/build`): Works through stories in priority order, verifying tests at each step
+- **To-Dos**: Plans reference parent to-dos via `todoRef`; build updates them on completion

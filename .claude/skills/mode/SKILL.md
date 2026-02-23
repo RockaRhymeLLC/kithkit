@@ -42,6 +42,8 @@ View or change the assistant's autonomy mode. This controls how much confirmatio
 - Use when learning or for critical systems
 - Slowest but most controlled
 
+**Default**: `confident` (if not explicitly configured)
+
 ## Implementation
 
 1. **Parse Arguments**: Check if `$ARGUMENTS` contains a mode name
@@ -136,4 +138,4 @@ I'll ask for confirmation before destructive operations.
 - Mode persists across sessions (stored via daemon API)
 - User can always override individual actions regardless of mode
 - Mode changes are logged with `setAt` timestamp
-- Default mode if not configured: `confident`
+- Mode is stored persistently; see daemon API for current value

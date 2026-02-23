@@ -6,20 +6,23 @@ argument-hint: [optional description of current state]
 
 # Save State
 
-Save session state and update todo notes before restart or context loss. This skill has two equally important jobs:
+Save session state and update todo notes before restart or context loss. This skill has three jobs:
 
-1. **Write assistant-state.md** — so the next session can resume
-2. **Update todo notes** — so project history captures decisions and progress
+1. **Update todo notes** — so project history captures decisions and progress
+2. **Write assistant-state.md** — so the next session can resume
+3. **Append to 24hr log** — so the timeline captures what happened
 
-Both matter. The state file is for session continuity. Todo notes are the persistent project record.
+All three matter. Todo notes are the persistent project record. The state file is for session continuity. The 24hr log feeds the nightly timeline.
 
 ## When to Use
 
-**Always use `/restart` instead of `/save-state` directly.** `/restart` calls `/save-state` as its first step, then restarts the session. There's no reason to save state without restarting (if context is worth saving, it's worth getting a fresh session), and no reason to restart without saving (lose context).
+**Usually use `/restart` instead of `/save-state` directly.** `/restart` calls `/save-state` as its first step, then restarts the session.
 
-This skill exists as the internal "save" step of `/restart`. Direct invocation is only for:
-- The `/restart` skill calling it as step 1
-- The context watchdog injecting it before a scheduled restart
+This skill is called by:
+- The `/restart` skill as step 1
+- The context watchdog before a scheduled restart
+- The PreCompact hook before context compaction
+- Direct invocation when you need a checkpoint without restarting
 
 ## Workflow
 

@@ -1,13 +1,12 @@
 ---
 name: web-design
-description: Modern web design patterns, accessibility standards (WCAG 2.1 AA), and brand guidelines for building user-friendly, performant websites
-autoContext:
-  - "when building or designing web pages, websites, or web applications"
+description: Apply modern web design patterns, WCAG 2.1 AA accessibility standards, and brand guidelines when building web pages. Use when designing or implementing websites or web applications.
+user-invocable: false
 ---
 
 # Web Design Reference
 
-This is a reference skill for building modern, accessible websites. It provides patterns, standards, and brand guidelines for your site.
+Reference skill for building modern, accessible websites. Provides patterns, standards, and brand guidelines for the project.
 
 ## Purpose
 
