@@ -96,6 +96,7 @@ channels:
         - "uber.*promo"
         - "grubhub"
         - "servicer"
+        - "promomail.microsoft.com"
       newsletters:
         - "brightmls"
         - "siriusxm"

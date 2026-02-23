@@ -14,7 +14,7 @@ import { injectText, sessionExists } from '../../../core/session-bridge.js';
 import { createLogger } from '../../../core/logger.js';
 import { getProjectDir, loadConfig } from '../../../core/config.js';
 import type { Scheduler } from '../../../automation/scheduler.js';
-import { getTelegramAdapter, getGraphAdapter, getHimalayaAdapters } from '../../comms/index.js';
+import { getTelegramAdapter, getGraphAdapter, getJmapAdapter, getOutlookAdapter, getHimalayaAdapters } from '../../comms/index.js';
 
 const log = createLogger('morning-briefing');
 
@@ -421,6 +421,38 @@ async function gatherEmailSummary(): Promise<string> {
         }
       } catch (err) {
         log.warn('Graph email check failed', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    // Check JMAP adapter (Fastmail)
+    const jmap = getJmapAdapter();
+    if (jmap) {
+      try {
+        const inbox = await jmap.listInbox(10);
+        for (const msg of inbox) {
+          if (!msg.isRead) {
+            totalUnread++;
+            emails.push(`[JMAP] ${msg.from}: ${msg.subject}`);
+          }
+        }
+      } catch (err) {
+        log.warn('JMAP email check failed', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    // Check Outlook adapter
+    const outlook = getOutlookAdapter();
+    if (outlook) {
+      try {
+        const inbox = await outlook.listInbox(10);
+        for (const msg of inbox) {
+          if (!msg.isRead) {
+            totalUnread++;
+            emails.push(`[Outlook] ${msg.from}: ${msg.subject}`);
+          }
+        }
+      } catch (err) {
+        log.warn('Outlook email check failed', { error: err instanceof Error ? err.message : String(err) });
       }
     }
 

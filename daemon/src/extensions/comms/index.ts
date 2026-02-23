@@ -12,6 +12,8 @@ import type { BmoConfig } from '../config.js';
 import { BmoTelegramAdapter, createBmoTelegramAdapter } from './adapters/telegram.js';
 import { BmoGraphAdapter } from './adapters/email/graph-provider.js';
 import { BmoHimalayaAdapter } from './adapters/email/himalaya-provider.js';
+import { BmoJmapAdapter } from './adapters/email/jmap-provider.js';
+import { BmoOutlookAdapter } from './adapters/email/outlook-provider.js';
 import {
   initBmoChannelRouter,
   registerTelegramAdapter,
@@ -24,6 +26,8 @@ const log = createLogger('bmo-comms');
 
 let _telegramAdapter: BmoTelegramAdapter | null = null;
 let _graphAdapter: BmoGraphAdapter | null = null;
+let _jmapAdapter: BmoJmapAdapter | null = null;
+let _outlookAdapter: BmoOutlookAdapter | null = null;
 let _himalayaAdapters: BmoHimalayaAdapter[] = [];
 
 // ── Init ─────────────────────────────────────────────────────
@@ -65,6 +69,17 @@ export async function initComms(config: BmoConfig): Promise<void> {
             }
             break;
           }
+          case 'jmap': {
+            _jmapAdapter = new BmoJmapAdapter();
+            if (await _jmapAdapter.isConfigured()) {
+              registerEmailAdapter(_jmapAdapter);
+              log.info('JMAP email adapter enabled');
+            } else {
+              log.warn('JMAP email adapter not configured (missing credentials)');
+              _jmapAdapter = null;
+            }
+            break;
+          }
           case 'himalaya': {
             const adapter = new BmoHimalayaAdapter(providerConfig.account ?? 'gmail');
             if (adapter.isConfigured()) {
@@ -73,6 +88,17 @@ export async function initComms(config: BmoConfig): Promise<void> {
               log.info(`Himalaya email adapter enabled: ${adapter.name}`);
             } else {
               log.warn(`Himalaya adapter ${providerConfig.account ?? 'gmail'} not configured`);
+            }
+            break;
+          }
+          case 'outlook': {
+            _outlookAdapter = new BmoOutlookAdapter();
+            if (_outlookAdapter.isConfigured()) {
+              registerEmailAdapter(_outlookAdapter);
+              log.info('Outlook email adapter enabled');
+            } else {
+              log.warn('Outlook email adapter not configured (missing credentials)');
+              _outlookAdapter = null;
             }
             break;
           }
@@ -89,7 +115,7 @@ export async function initComms(config: BmoConfig): Promise<void> {
 
   log.info('BMO comms initialized', {
     telegram: !!_telegramAdapter,
-    emailAdapters: (_graphAdapter ? 1 : 0) + _himalayaAdapters.length,
+    emailAdapters: (_graphAdapter ? 1 : 0) + (_jmapAdapter ? 1 : 0) + (_outlookAdapter ? 1 : 0) + _himalayaAdapters.length,
   });
 }
 
@@ -166,6 +192,16 @@ export function getGraphAdapter(): BmoGraphAdapter | null {
   return _graphAdapter;
 }
 
+/** Get the JMAP email adapter. */
+export function getJmapAdapter(): BmoJmapAdapter | null {
+  return _jmapAdapter;
+}
+
+/** Get the Outlook email adapter. */
+export function getOutlookAdapter(): BmoOutlookAdapter | null {
+  return _outlookAdapter;
+}
+
 /** Get all Himalaya adapters. */
 export function getHimalayaAdapters(): BmoHimalayaAdapter[] {
   return [..._himalayaAdapters];
@@ -188,6 +224,8 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 export function shutdownComms(): void {
   _telegramAdapter = null;
   _graphAdapter = null;
+  _jmapAdapter = null;
+  _outlookAdapter = null;
   _himalayaAdapters = [];
   log.info('BMO comms shut down');
 }
@@ -197,5 +235,7 @@ export function shutdownComms(): void {
 export function _resetForTesting(): void {
   _telegramAdapter = null;
   _graphAdapter = null;
+  _jmapAdapter = null;
+  _outlookAdapter = null;
   _himalayaAdapters = [];
 }
