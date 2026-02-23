@@ -91,6 +91,31 @@ See [docs/skills.md](docs/skills.md) for the full reference with descriptions.
 - jq
 - Claude Code CLI
 
+## Acknowledgments
+
+Kithkit is built on the shoulders of these excellent projects:
+
+| Project | Use | License |
+|---------|-----|---------|
+| [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | SQLite database engine | MIT |
+| [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk) | Multi-agent task delegation | [Anthropic](https://code.claude.com/docs/en/legal-and-compliance) |
+| [Hugging Face Transformers.js](https://github.com/huggingface/transformers.js) | Embedding pipeline for semantic memory | Apache-2.0 |
+| [sqlite-vec](https://github.com/asg017/sqlite-vec) | Vector search SQLite extension | MIT / Apache-2.0 |
+| [cron-parser](https://github.com/harrisiirak/cron-parser) | Cron expression parsing for scheduler | MIT |
+| [js-yaml](https://github.com/nodeca/js-yaml) | YAML config parsing | MIT |
+
+The following projects are referenced in [integration recipes](docs/recipes/) (not bundled):
+
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by ggerganov — speech-to-text
+- [Kokoro ONNX](https://github.com/thewh1teagle/kokoro-onnx) by thewh1teagle — text-to-speech
+- [Himalaya](https://github.com/soywod/himalaya) by soywod — CLI email client
+- [openWakeWord](https://github.com/dscripka/openWakeWord) by dscripka — wake word detection
+- [Cerberus](https://github.com/emailmonday/Cerberus) by Ted Goas — responsive email patterns
+
+The semantic memory feature uses the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) model (Apache-2.0) via Hugging Face Transformers.js.
+
+See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for full license details.
+
 ## License
 
 MIT
