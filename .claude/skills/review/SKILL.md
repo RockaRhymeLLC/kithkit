@@ -19,10 +19,10 @@ Two layers of review to catch what you can't see in your own work:
 ## Usage
 
 ```bash
-/review                                    # Review most recent spec+plan
-/review specs/20260204-feature.spec.md     # Review a specific spec
-/review plans/20260204-feature.plan.md     # Review a specific plan
-/review all                                # Review all unbuilt plans
+/review                                                                # Review most recent spec+plan
+/review projects/feature/20260204-feature.spec.md                     # Review a specific spec
+/review projects/feature/20260204-feature.plan.md                     # Review a specific plan
+/review all                                                            # Review all unbuilt plans
 ```
 
 ## When to Use
@@ -39,9 +39,9 @@ Two layers of review to catch what you can't see in your own work:
 Read the target files:
 - If given a spec: read the spec
 - If given a plan: read the plan AND its referenced spec
-- If given neither: find the most recent plan in `plans/` and its spec
+- If given neither: find the most recent plan in `projects/` and its spec
 
-Also read any referenced story files (`plans/stories/s-*.json`) and test files (`plans/tests/t-*.json`).
+Also read any referenced story files (`projects/<feature-name>/stories/s-*.json`) and test files (`projects/<feature-name>/tests/t-*.json`).
 
 ### Step 2: Bob (Devil's Advocate)
 
@@ -166,6 +166,15 @@ simplest version of this that actually works?"]
 - **SHIP IT** — Design is solid, complexity is justified, risks are managed. Build away.
 - **CONCERNS** — Mostly good but has specific issues worth addressing first. List them clearly.
 - **RETHINK** — Fundamental approach needs reconsideration. Too complex, wrong abstraction, or missing the point.
+
+### After a RETHINK Verdict
+
+If the review returns RETHINK:
+1. **Don't build.** A RETHINK means the current approach has fundamental issues
+2. **Identify the root cause** — is it the spec (wrong requirements) or the plan (wrong approach to right requirements)?
+3. **If spec issue**: Go back to `/spec` and revise requirements before re-planning
+4. **If plan issue**: Revise the plan with the review feedback and re-run `/review`
+5. **Re-review**: Always re-run `/review` after making changes — don't assume fixes are sufficient
 
 ## Scoring Guide (Complexity & Scope)
 

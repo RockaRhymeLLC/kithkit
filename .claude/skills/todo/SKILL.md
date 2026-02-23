@@ -16,7 +16,7 @@ Parse $ARGUMENTS to determine the action:
 - `list` or `ls` or no arguments - Show all open to-dos
 - `list all` - Show all to-dos including completed
 - `list priority:high` - Filter by priority
-- `list status:blocked` - Filter by status
+- `list status:in_progress` - Filter by status (valid: pending, in_progress, blocked, completed, cancelled)
 
 ### Add To-Do
 - `add "To-do description"` - Add with default priority (medium)
@@ -38,9 +38,9 @@ Parse $ARGUMENTS to determine the action:
 
 ### Update To-Do
 - `update {id} status:in-progress` - Change status
+- `update {id} blocked:"Waiting on X"` - Set status to blocked and log a blocker note
 - `update {id} priority:high` - Change priority
 - `update {id} note:"Progress note"` - Add action/note to history (same as `note` command)
-- `update {id} blocked:"Waiting on X"` - Mark as blocked with reason
 
 ### Complete To-Do
 - `complete {id}` - Mark to-do as completed
@@ -54,38 +54,34 @@ To-dos are managed via the daemon HTTP API (default: `http://localhost:3847`):
 
 | Action | Method | Endpoint | Body / Notes |
 |--------|--------|----------|--------------|
-| List todos | `GET` | `/api/todos` | Query params: `status`, `priority` |
-| Create todo | `POST` | `/api/todos` | JSON body: `{ title, description, priority, due, tags }` |
-| Get todo detail | `GET` | `/api/todos/:id` | Returns full todo with actions array |
-| Update todo | `PUT` | `/api/todos/:id` | JSON body with fields to update |
-| Add work note | `POST` | `/api/todos/:id/note` | JSON body: `{ note, files?, commits?, prs? }` |
+| List todos | `GET` | `/api/todos` | Returns all todos (filter client-side) |
+| Create todo | `POST` | `/api/todos` | JSON body: `{ title, description, priority, due_date, tags }` |
+| Get todo detail | `GET` | `/api/todos/:id` | Returns full todo object |
+| Update todo | `PUT` | `/api/todos/:id` | JSON body with fields to update (title, description, priority, status, due_date, tags) |
+| Get todo history | `GET` | `/api/todos/:id/actions` | Returns audit trail of all actions |
+| Delete todo | `DELETE` | `/api/todos/:id` | Permanently removes todo |
 
-### Example: List open todos
+Work notes and progress updates are tracked through the `todo_actions` audit trail. The daemon auto-logs status and priority changes. For free-form notes, use `POST /api/todos/:id/actions` (not yet implemented) or track notes in the todo's `description` field via `PUT /api/todos/:id`.
+
+### Example: List all todos
 ```bash
 curl http://localhost:3847/api/todos
-curl http://localhost:3847/api/todos?status=open
-curl http://localhost:3847/api/todos?priority=high
 ```
+
+The API returns all todos. Filter by status or priority client-side (e.g., parse JSON and filter in your logic).
 
 ### Example: Create a todo
 ```bash
 curl -X POST http://localhost:3847/api/todos \
   -H "Content-Type: application/json" \
-  -d '{"title": "Set up CI/CD pipeline", "priority": "high", "due": "2026-02-15"}'
+  -d '{"title": "Set up CI/CD pipeline", "priority": "high", "due_date": "2026-02-15"}'
 ```
 
-### Example: Add a work note
-```bash
-curl -X POST http://localhost:3847/api/todos/32/note \
-  -H "Content-Type: application/json" \
-  -d '{"note": "Pipeline configured, committed abc1234", "commits": ["abc1234"], "files": ["src/ci.yml"]}'
-```
-
-### Example: Update status
+### Example: Add a work note / update status
 ```bash
 curl -X PUT http://localhost:3847/api/todos/32 \
   -H "Content-Type: application/json" \
-  -d '{"status": "in-progress"}'
+  -d '{"status": "in_progress"}'
 ```
 
 ### Example: Complete a todo
@@ -93,6 +89,11 @@ curl -X PUT http://localhost:3847/api/todos/32 \
 curl -X PUT http://localhost:3847/api/todos/32 \
   -H "Content-Type: application/json" \
   -d '{"status": "completed"}'
+```
+
+### Example: Get todo action history
+```bash
+curl http://localhost:3847/api/todos/32/actions
 ```
 
 ## Data Format
@@ -107,10 +108,11 @@ See `reference.md` for the full JSON schema.
 2. **Parse command**: Determine action from $ARGUMENTS
 3. **Execute action**:
    - List: `GET /api/todos` with optional filters, display formatted
-   - Add: `POST /api/todos` with title/priority/due, confirm
+   - Add: `POST /api/todos` with title/priority/due_date, confirm
    - Update: `PUT /api/todos/:id` with changed fields
-   - Note: `POST /api/todos/:id/note` with note text and extracted refs
+   - Note: `PUT /api/todos/:id` with status/priority change — daemon auto-logs to audit trail
    - Complete: `PUT /api/todos/:id` with `status: "completed"`
+   - History: `GET /api/todos/:id/actions` to see full audit trail
 4. **Report result**: Confirm what was done
 
 ## Output Format

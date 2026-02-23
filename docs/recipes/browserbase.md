@@ -6,10 +6,10 @@ Set up cloud browser automation for your Kithkit agent using Browserbase. The da
 
 ## Prerequisites
 
-- A Browserbase account (https://www.browserbase.com/)
-- API key and project ID from Browserbase dashboard
-- Kithkit daemon running
-- `playwright-core` npm package installed
+- Browserbase account at [browserbase.com](https://www.browserbase.com)
+- Browserbase API key
+- Node.js 22+ (for the sidecar process)
+- Kithkit daemon running (`curl http://localhost:3847/health`)
 
 ---
 

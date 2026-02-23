@@ -50,10 +50,10 @@ describe('Config (t-116)', () => {
   it('deep-merges user config with defaults — partial override', () => {
     fs.writeFileSync(
       path.join(tmpDir, 'kithkit.config.yaml'),
-      'agent:\n  name: BMO\n',
+      'agent:\n  name: TestAgent\n',
     );
     const config = loadConfig(tmpDir);
-    assert.equal(config.agent.name, 'BMO');
+    assert.equal(config.agent.name, 'TestAgent');
     // Defaults for everything else
     assert.equal(config.daemon.port, 3847);
     assert.equal(config.daemon.log_level, 'info');

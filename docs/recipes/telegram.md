@@ -12,7 +12,7 @@ Kithkit supports two modes: **webhook** (recommended for production) and **long-
 - A tmux session with an active Claude Code session
 - A Telegram account to create a bot through @BotFather
 - For webhook mode: a publicly reachable HTTPS endpoint (Cloudflare Tunnel or ngrok)
-- Node.js 18+ (daemon runtime)
+- Node.js 22+ (daemon runtime)
 
 ---
 

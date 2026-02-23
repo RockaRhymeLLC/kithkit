@@ -75,7 +75,7 @@ Hooks are configured in settings files:
 - **Regex**: `"Edit|Write"` or `"Notebook.*"`
 - **All tools**: `"*"` or `""`
 
-### Hook Types
+### Hook Formats
 
 **Command hooks** run bash commands:
 ```json

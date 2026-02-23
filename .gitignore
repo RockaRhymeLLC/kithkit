@@ -151,3 +151,9 @@ vite.config.ts.timestamp-*
 *.db
 *.db-shm
 *.db-wal
+
+# Kithkit — user-specific files (never commit these)
+kithkit.config.yaml
+identity.md
+.claude/state/
+models/

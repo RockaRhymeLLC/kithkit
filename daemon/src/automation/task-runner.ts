@@ -7,6 +7,7 @@
 
 import { execFile } from 'node:child_process';
 import { exec as dbExec, query } from '../core/db.js';
+import { createLogger } from '../core/logger.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -42,15 +43,34 @@ export function runTask(
   const timeoutMs = options.timeoutMs ?? 300_000; // 5 min default
 
   return new Promise((resolve) => {
+    // Require explicit args array — no shell fallback
+    if (!options.args || options.args.length === 0) {
+      const log = createLogger('task-runner');
+      log.error(`Task "${taskName}" has no args array. Shell fallback (/bin/sh -c) is disabled for security. Add an explicit args array to the task config.`);
+      const finishedAt = new Date().toISOString();
+      const durationMs = Date.now() - startMs;
+      dbExec(
+        'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
+        taskName, 'failure', 'No args array provided — shell fallback disabled', durationMs, startedAt, finishedAt,
+      );
+      const rows = query<TaskResult>(
+        'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
+        taskName,
+      );
+      resolve(rows[0]!);
+      return;
+    }
+    const cmd = options.command;
+    const args = options.args;
+
     const child = execFile(
-      options.command,
-      options.args ?? [],
+      cmd,
+      args,
       {
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024, // 1MB
         env: { ...process.env, ...options.env },
         cwd: options.cwd,
-        shell: true,
       },
       (error, stdout, stderr) => {
         const durationMs = Date.now() - startMs;

@@ -10,17 +10,7 @@
 import type http from 'node:http';
 import type { Scheduler } from '../automation/scheduler.js';
 import { getTaskHistory } from '../automation/task-runner.js';
-
-// ── Helpers ──────────────────────────────────────────────────
-
-function json(res: http.ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify(body));
-}
-
-function withTimestamp<T extends object>(obj: T): T & { timestamp: string } {
-  return { ...obj, timestamp: new Date().toISOString() };
-}
+import { json, withTimestamp } from './helpers.js';
 
 // ── State ────────────────────────────────────────────────────
 
@@ -56,7 +46,7 @@ export async function handleTasksRoute(
       schedule: t.schedule,
       running: t.running,
       nextRunAt: t.nextRunAt?.toISOString() ?? null,
-      lastRunAt: t.lastRunAt ? new Date(t.lastRunAt as unknown as string).toISOString() : null,
+      lastRunAt: t.lastRunAt?.toISOString() ?? null,
     }));
 
     json(res, 200, withTimestamp({ data: tasks }));

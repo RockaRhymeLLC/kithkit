@@ -19,7 +19,7 @@ Kithkit gives your agent a background daemon for state management, a multi-agent
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/kithkit/kithkit.git my-agent
+git clone https://github.com/RockaRhymeLLC/kithkit.git my-agent
 cd my-agent && npm install
 
 # 2. Initialize your agent
@@ -53,12 +53,31 @@ Human ←→ Comms Agent ←→ Daemon (Orchestrator) ←→ Worker Agents
 
 See [docs/architecture.md](docs/architecture.md) for a complete breakdown including data flow, daemon internals, extension model, and scripts.
 
+## Built-in Skills
+
+Kithkit ships with 21 skills that your agent can use out of the box — no installation needed. Skills are Claude Code slash commands that give your agent structured capabilities.
+
+**Development workflow:**
+`/spec` → `/plan` → `/review` → `/build` → `/validate`
+
+**State management:**
+`/todo`, `/memory`, `/calendar`, `/save-state`, `/restart`
+
+**Automation & tools:**
+`/hooks`, `/mode`, `/remind`, `/playwright-cli`, `/kithkit`
+
+**Reference skills** (loaded automatically when relevant):
+`browser`, `email-compose`, `keychain`, `macos-automation`, `web-design`, `skill-create`
+
+See [docs/skills.md](docs/skills.md) for the full reference with descriptions.
+
 ## Documentation
 
 | Doc | What it covers |
 |-----|---------------|
 | [Getting Started](docs/getting-started.md) | Prerequisites, installation, first run, verification, configuration |
 | [Architecture](docs/architecture.md) | Three-tier system, daemon internals, extension model, scripts |
+| [Skills Reference](docs/skills.md) | All 21 built-in skills with descriptions and usage |
 | [Extensions](docs/extensions.md) | Writing custom routes, tasks, and health checks |
 | [API Reference](docs/api-reference.md) | All daemon HTTP endpoints with request/response examples |
 | [Agent Profiles](docs/agent-profiles.md) | Worker profile format, built-in profiles, creating custom types |
@@ -71,6 +90,31 @@ See [docs/architecture.md](docs/architecture.md) for a complete breakdown includ
 - tmux
 - jq
 - Claude Code CLI
+
+## Acknowledgments
+
+Kithkit is built on the shoulders of these excellent projects:
+
+| Project | Use | License |
+|---------|-----|---------|
+| [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) | SQLite database engine | MIT |
+| [Claude Agent SDK](https://github.com/anthropics/claude-agent-sdk) | Multi-agent task delegation | [Anthropic](https://code.claude.com/docs/en/legal-and-compliance) |
+| [Hugging Face Transformers.js](https://github.com/huggingface/transformers.js) | Embedding pipeline for semantic memory | Apache-2.0 |
+| [sqlite-vec](https://github.com/asg017/sqlite-vec) | Vector search SQLite extension | MIT / Apache-2.0 |
+| [cron-parser](https://github.com/harrisiirak/cron-parser) | Cron expression parsing for scheduler | MIT |
+| [js-yaml](https://github.com/nodeca/js-yaml) | YAML config parsing | MIT |
+
+The following projects are referenced in [integration recipes](docs/recipes/) (not bundled):
+
+- [whisper.cpp](https://github.com/ggerganov/whisper.cpp) by ggerganov — speech-to-text
+- [Kokoro ONNX](https://github.com/thewh1teagle/kokoro-onnx) by thewh1teagle — text-to-speech
+- [Himalaya](https://github.com/soywod/himalaya) by soywod — CLI email client
+- [openWakeWord](https://github.com/dscripka/openWakeWord) by dscripka — wake word detection
+- [Cerberus](https://github.com/emailmonday/Cerberus) by Ted Goas — responsive email patterns
+
+The semantic memory feature uses the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) model (Apache-2.0) via Hugging Face Transformers.js.
+
+See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for full license details.
 
 ## License
 

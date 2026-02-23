@@ -23,8 +23,9 @@ For quick one-liner replies or casual messages, plain text is fine.
 Use the configured email sending script or API for the active email integration. The exact command depends on how email is set up in `kithkit.config.yaml`. For HTML emails, pass the content with an HTML flag:
 
 ```bash
-# Generic pattern — replace with your actual email send command
-<email-send-command> "to@email.com" "Subject" "<html>...</html>" --html
+# Check your email skill or kithkit.config.yaml for the configured send command
+# Example pattern (actual command varies by integration):
+# your-email-script send "to@email.com" --subject "Subject" --html "<html>...</html>"
 ```
 
 Check the email skill or `kithkit.config.yaml` for the specific sending mechanism configured on this instance.

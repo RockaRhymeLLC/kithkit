@@ -11,7 +11,7 @@ Himalaya supports Gmail, Fastmail, iCloud, Yahoo, generic IMAP providers, and mo
 - Himalaya CLI installed (see Step 1)
 - An IMAP-compatible email account with credentials
 - For Gmail: an App Password (not your main password — see Step 2)
-- Node.js 18+ (daemon runtime)
+- Node.js 22+ (daemon runtime)
 - The Kithkit daemon configured and running
 
 ---

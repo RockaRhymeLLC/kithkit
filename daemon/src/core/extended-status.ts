@@ -55,6 +55,21 @@ export interface ExtendedStatus {
   timestamp: string;
 }
 
+// ── DB Row Types ────────────────────────────────────────────
+
+/** Result of SELECT count(*) queries. */
+interface CountRow {
+  cnt: number;
+}
+
+/** Row shape from task_results queries. */
+interface TaskResultRow {
+  task_name: string;
+  status: string;
+  duration_ms: number;
+  created_at: string;
+}
+
 // ── Check Registry ──────────────────────────────────────────
 
 const _checks = new Map<string, HealthCheckFn>();
@@ -95,7 +110,7 @@ async function runDaemonCheck(): Promise<CheckResult> {
 async function runDbCheck(): Promise<CheckResult> {
   try {
     const db = getDatabase();
-    const row = db.prepare('SELECT count(*) as cnt FROM sqlite_master WHERE type=\'table\'').get() as any;
+    const row = db.prepare('SELECT count(*) as cnt FROM sqlite_master WHERE type=\'table\'').get() as CountRow | undefined;
     return {
       ok: true,
       message: `Database OK (${row?.cnt ?? 0} tables)`,
@@ -181,14 +196,14 @@ export async function getExtendedStatus(version: string): Promise<ExtendedStatus
   let dbOk = false;
   try {
     const db = getDatabase();
-    const tables = db.prepare('SELECT count(*) as cnt FROM sqlite_master WHERE type=\'table\'').get() as any;
+    const tables = db.prepare('SELECT count(*) as cnt FROM sqlite_master WHERE type=\'table\'').get() as CountRow | undefined;
     tableCount = tables?.cnt ?? 0;
     try {
-      const todos = db.prepare('SELECT count(*) as cnt FROM todos').get() as any;
+      const todos = db.prepare('SELECT count(*) as cnt FROM todos').get() as CountRow | undefined;
       todoCount = todos?.cnt ?? 0;
     } catch { /* table may not exist */ }
     try {
-      const memories = db.prepare('SELECT count(*) as cnt FROM memories').get() as any;
+      const memories = db.prepare('SELECT count(*) as cnt FROM memories').get() as CountRow | undefined;
       memoryCount = memories?.cnt ?? 0;
     } catch { /* table may not exist */ }
     dbOk = true;
@@ -200,7 +215,7 @@ export async function getExtendedStatus(version: string): Promise<ExtendedStatus
     const db = getDatabase();
     const rows = db.prepare(
       'SELECT task_name, status, duration_ms, created_at FROM task_results ORDER BY created_at DESC LIMIT 10'
-    ).all() as any[];
+    ).all() as TaskResultRow[];
     recentResults = rows.map(r => ({
       task: r.task_name,
       status: r.status,

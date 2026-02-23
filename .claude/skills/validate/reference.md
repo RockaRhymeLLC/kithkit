@@ -101,12 +101,35 @@ Validate alignment between spec, plan, and implementation at every workflow phas
 - No critical issues identified
 - Code is maintainable
 
-### Layer 6: Manual Review
+### Layer 6: Documentation Freshness (Post-Build)
+
+**If the spec has a Documentation Impact section:**
+- Read the Documentation Impact checklist
+- For each listed doc (CLAUDE.md, SKILL.md files, README.md, kithkit.config.yaml):
+  - Check if the file was modified since the build started (git diff or timestamp)
+  - If not modified, flag as potentially stale
+- If no Documentation Impact section, check common docs heuristically:
+  - New skill added → CLAUDE.md skills table updated?
+  - Config changes → kithkit.config.yaml documented?
+  - New behavior → CLAUDE.md Core Behaviors section current?
+
+**How to check:**
+1. Read the spec's Documentation Impact section (if present)
+2. For each listed doc, check modification time vs build start
+3. Flag docs that weren't updated
+4. If no Documentation Impact section, apply heuristic checks
+
+**Pass criteria:**
+- PASS: All listed docs were updated
+- WARN: Some docs flagged as potentially stale
+- SKIP: No documentation impact expected (pre-build or no doc changes)
+
+### Layer 7: Manual Review
 
 **Present summary to user:**
 - What was validated
 - What passed/failed
-- Any warnings or concerns
+- Any warnings or concerns (including doc freshness flags)
 - Request approval to proceed
 
 **Pass criteria:**
@@ -125,7 +148,7 @@ Validate alignment between spec, plan, and implementation at every workflow phas
 Result: PASS
 
 ### Layer 2: Plan Completeness
-- Spec reference: Found (specs/20260127-feature.spec.md)
+- Spec reference: Found (projects/feature/20260127-feature.spec.md)
 - Technical approach: Found
 - Tasks: 4 defined
 - Acceptance criteria: All tasks have criteria
@@ -148,18 +171,25 @@ Result: PASS
 - Code quality: Good
 Result: PASS
 
-### Layer 6: Manual Review
+### Layer 6: Documentation Freshness
+- Spec lists doc impact: CLAUDE.md (skills table), setup SKILL.md
+- CLAUDE.md: Modified (verified)
+- setup SKILL.md: Modified (verified)
+Result: PASS
+
+### Layer 7: Manual Review
 Summary presented. Awaiting approval.
 
 ---
-Overall: 5/6 layers passed, awaiting manual approval
+Overall: 6/7 layers passed, awaiting manual approval
 ```
 
 ## When to Skip Layers
 
 - **Layer 4 (Implementation)**: Skip if no implementation exists yet (planning phase)
 - **Layer 5 (AI Review)**: Skip if no implementation exists yet
-- **Layer 6 (Manual)**: Always runs last, presents summary
+- **Layer 6 (Documentation Freshness)**: Skip if pre-build or no documentation impact expected
+- **Layer 7 (Manual)**: Always runs last, presents summary
 
 ## Error Handling
 
