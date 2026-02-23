@@ -67,9 +67,11 @@ cli/
 
 The daemon is a persistent Node.js HTTP server (`127.0.0.1:<port>`, default 3847) that manages all agent state and background services. It starts via `scripts/start-tmux.sh` (which launches both the daemon and a Claude Code session in tmux).
 
+**Entry point**: Agent repos should use a `bootstrap.ts` file as the daemon entry point (not `main.ts` directly). `bootstrap.ts` calls `registerExtension()` before importing `main.ts`. Running `main.ts` directly starts a bare daemon with no extension — no scheduler tasks, no communication channels, no personality. The daemon logs a warning at startup when no extension is registered.
+
 ```
 daemon/src/
-├── main.ts              # Entry point — bootstrap, server, route dispatch
+├── main.ts              # Core daemon — server, route dispatch (bare without extension)
 ├── core/                # Foundation services
 ├── api/                 # HTTP route handlers
 ├── agents/              # Worker lifecycle
