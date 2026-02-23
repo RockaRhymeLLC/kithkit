@@ -10,6 +10,7 @@
 
 import { insert, query, exec } from '../core/db.js';
 import { injectMessage } from './tmux.js';
+import { notifyNewMessage } from '../automation/tasks/message-delivery.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -75,13 +76,15 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
   });
 
   // Route to target
-  let delivered = true;
   if (isPersistentAgent(req.to)) {
-    delivered = tmuxInjector(req.to, formatForTmux(req));
+    // Queue for delivery — the message-delivery scheduler task handles tmux injection.
+    // Trigger the task immediately so delivery doesn't wait for the next interval tick.
+    notifyNewMessage();
+    return { messageId: message.id, delivered: false };
   }
   // Workers pull their own messages — no active delivery needed
 
-  return { messageId: message.id, delivered };
+  return { messageId: message.id, delivered: true };
 }
 
 /**

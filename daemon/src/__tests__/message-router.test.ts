@@ -112,7 +112,8 @@ describe('Message sent and logged between agents (t-142)', () => {
     assert.equal(res.status, 200);
     const body = JSON.parse(res.body);
     assert.ok(typeof body.messageId === 'number', 'should return messageId');
-    assert.equal(body.delivered, true);
+    // Persistent agent messages are now queued for delivery, not immediately injected
+    assert.equal(body.delivered, false);
     assert.ok(body.timestamp);
   });
 
@@ -165,27 +166,32 @@ describe('Message sent and logged between agents (t-142)', () => {
   });
 });
 
-describe('Message injected into persistent agent tmux (t-143)', () => {
+describe('Message queued for delivery to persistent agents (t-143)', () => {
   beforeEach(setup);
   afterEach(teardown);
 
-  it('tmux injector called for persistent agents', () => {
+  it('persistent agent messages are queued (not immediately injected)', () => {
     const injectedMessages: { session: string; text: string }[] = [];
     _setTmuxInjectorForTesting((session, text) => {
       injectedMessages.push({ session, text });
       return true;
     });
 
-    sendMessage({
+    const result = sendMessage({
       from: 'orchestrator',
       to: 'comms',
       type: 'result',
       body: 'Research complete',
     });
 
-    assert.equal(injectedMessages.length, 1);
-    assert.equal(injectedMessages[0].session, 'comms');
-    assert.ok(injectedMessages[0].text.includes('Research complete'));
+    // No direct injection — delivery task handles it
+    assert.equal(injectedMessages.length, 0);
+    assert.equal(result.delivered, false);
+
+    // Message still stored in DB with processed_at = NULL (undelivered)
+    const messages = query<Message>('SELECT * FROM messages WHERE id = ?', result.messageId);
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].processed_at, null);
   });
 
   it('tmux injector NOT called for worker targets', () => {
@@ -205,9 +211,7 @@ describe('Message injected into persistent agent tmux (t-143)', () => {
     assert.equal(injectedMessages.length, 0, 'should not inject into worker tmux');
   });
 
-  it('message logged even when tmux injection fails', () => {
-    _setTmuxInjectorForTesting(() => false);
-
+  it('message stored in DB even for persistent agents', () => {
     const result = sendMessage({
       from: 'orchestrator',
       to: 'comms',
@@ -216,9 +220,10 @@ describe('Message injected into persistent agent tmux (t-143)', () => {
     });
 
     assert.equal(result.delivered, false);
-    // But message should still be in DB
+    // Message should be in DB awaiting delivery
     const messages = query<Message>('SELECT * FROM messages WHERE id = ?', result.messageId);
     assert.equal(messages.length, 1);
+    assert.equal(messages[0].body, 'Research complete');
   });
 });
 
