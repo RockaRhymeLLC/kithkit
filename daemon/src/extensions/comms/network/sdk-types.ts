@@ -1,8 +1,8 @@
 /**
- * Local type definitions for the cc4me-network SDK.
+ * Local type definitions for the kithkit-a2a-client SDK.
  *
  * These mirror the SDK's exported types so the daemon compiles without
- * requiring cc4me-network to be installed. The SDK is loaded dynamically
+ * requiring kithkit-a2a-client to be installed. The SDK is loaded dynamically
  * at runtime by sdk-bridge.ts.
  */
 
@@ -21,7 +21,7 @@ export interface CommunityStatusEvent {
   status: 'active' | 'failover' | 'offline';
 }
 
-export interface CC4MeNetworkOptions {
+export interface A2ANetworkOptions {
   relayUrl?: string;
   username: string;
   privateKey: Buffer;
@@ -100,7 +100,7 @@ export interface GroupSendResult {
   failed: string[];
 }
 
-export interface CC4MeNetworkClient {
+export interface A2ANetworkClient {
   start(): Promise<void>;
   stop(): Promise<void>;
   on(event: 'message', handler: (msg: Message) => void): void;

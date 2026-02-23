@@ -152,6 +152,11 @@ vite.config.ts.timestamp-*
 *.db-shm
 *.db-wal
 
+# Python virtual environments
+.venv/
+*/.venv/
+**/.venv/
+
 # Kithkit — user-specific files (never commit these)
 kithkit.config.yaml
 identity.md

@@ -1,7 +1,7 @@
 /**
  * Keychain bridge for network agent identity (Ed25519).
  *
- * Crypto primitives (sign, verify, encrypt) live in the cc4me-network SDK —
+ * Crypto primitives (sign, verify, encrypt) live in the kithkit-a2a-client SDK —
  * this module only manages key storage and identity lifecycle.
  *
  * v2 difference: keychain is async (readKeychain/writeKeychain return Promises).
