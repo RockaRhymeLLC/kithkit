@@ -28,10 +28,17 @@ function withTimestamp<T extends object>(obj: T): T & { timestamp: string } {
   return { ...obj, timestamp: new Date().toISOString() };
 }
 
+const MAX_BODY_SIZE = 1024 * 1024; // 1MB
+
 function parseBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+    let size = 0;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY_SIZE) { req.destroy(); reject(new Error('Request body too large')); return; }
+      body += chunk.toString();
+    });
     req.on('end', () => {
       if (!body) { resolve({}); return; }
       try { resolve(JSON.parse(body)); }

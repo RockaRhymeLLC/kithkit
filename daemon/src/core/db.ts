@@ -56,6 +56,21 @@ export function closeDatabase(): void {
   }
 }
 
+// ── Identifier validation ────────────────────────────────────
+
+const SAFE_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+/**
+ * Validate a SQL identifier (table name, column name) to prevent injection.
+ * Only allows alphanumeric characters and underscores.
+ */
+function validateIdentifier(name: string, context: string): string {
+  if (!SAFE_IDENTIFIER.test(name)) {
+    throw new Error(`Invalid ${context}: "${name}" — must match [a-zA-Z_][a-zA-Z0-9_]*`);
+  }
+  return name;
+}
+
 // ── Typed query helpers ──────────────────────────────────────
 
 /**
@@ -66,18 +81,20 @@ export function insert<T>(
   data: Record<string, unknown>,
 ): T {
   const db = getDatabase();
+  const safeTable = validateIdentifier(table, 'table name');
   const keys = Object.keys(data);
+  keys.forEach(k => validateIdentifier(k, 'column name'));
   const placeholders = keys.map(() => '?').join(', ');
   const values = keys.map(k => data[k]);
 
   const stmt = db.prepare(
-    `INSERT INTO ${table} (${keys.join(', ')}) VALUES (${placeholders})`,
+    `INSERT INTO ${safeTable} (${keys.join(', ')}) VALUES (${placeholders})`,
   );
   const result = stmt.run(...values);
 
   // Return the full row
   const row = db.prepare(
-    `SELECT * FROM ${table} WHERE rowid = ?`,
+    `SELECT * FROM ${safeTable} WHERE rowid = ?`,
   ).get(result.lastInsertRowid);
 
   return row as T;
@@ -92,8 +109,10 @@ export function get<T>(
   idColumn = 'id',
 ): T | undefined {
   const db = getDatabase();
+  const safeTable = validateIdentifier(table, 'table name');
+  const safeIdCol = validateIdentifier(idColumn, 'column name');
   return db.prepare(
-    `SELECT * FROM ${table} WHERE ${idColumn} = ?`,
+    `SELECT * FROM ${safeTable} WHERE ${safeIdCol} = ?`,
   ).get(id) as T | undefined;
 }
 
@@ -106,19 +125,30 @@ export function list<T>(
   orderBy?: string,
 ): T[] {
   const db = getDatabase();
+  const safeTable = validateIdentifier(table, 'table name');
+
+  // Validate orderBy — allow "column" or "column DESC/ASC"
+  let order = '';
+  if (orderBy) {
+    const parts = orderBy.trim().split(/\s+/);
+    validateIdentifier(parts[0]!, 'orderBy column');
+    if (parts[1] && !/^(ASC|DESC)$/i.test(parts[1])) {
+      throw new Error(`Invalid orderBy direction: "${parts[1]}"`);
+    }
+    order = ` ORDER BY ${parts[0]}${parts[1] ? ' ' + parts[1].toUpperCase() : ''}`;
+  }
 
   if (!filter || Object.keys(filter).length === 0) {
-    const order = orderBy ? ` ORDER BY ${orderBy}` : '';
-    return db.prepare(`SELECT * FROM ${table}${order}`).all() as T[];
+    return db.prepare(`SELECT * FROM ${safeTable}${order}`).all() as T[];
   }
 
   const keys = Object.keys(filter);
+  keys.forEach(k => validateIdentifier(k, 'filter column'));
   const where = keys.map(k => `${k} = ?`).join(' AND ');
   const values = keys.map(k => filter[k]);
-  const order = orderBy ? ` ORDER BY ${orderBy}` : '';
 
   return db.prepare(
-    `SELECT * FROM ${table} WHERE ${where}${order}`,
+    `SELECT * FROM ${safeTable} WHERE ${where}${order}`,
   ).all(...values) as T[];
 }
 
@@ -132,12 +162,15 @@ export function update(
   idColumn = 'id',
 ): boolean {
   const db = getDatabase();
+  const safeTable = validateIdentifier(table, 'table name');
+  const safeIdCol = validateIdentifier(idColumn, 'column name');
   const keys = Object.keys(data);
+  keys.forEach(k => validateIdentifier(k, 'column name'));
   const set = keys.map(k => `${k} = ?`).join(', ');
   const values = [...keys.map(k => data[k]), id];
 
   const result = db.prepare(
-    `UPDATE ${table} SET ${set} WHERE ${idColumn} = ?`,
+    `UPDATE ${safeTable} SET ${set} WHERE ${safeIdCol} = ?`,
   ).run(...values);
 
   return result.changes > 0;
@@ -152,8 +185,10 @@ export function remove(
   idColumn = 'id',
 ): boolean {
   const db = getDatabase();
+  const safeTable = validateIdentifier(table, 'table name');
+  const safeIdCol = validateIdentifier(idColumn, 'column name');
   const result = db.prepare(
-    `DELETE FROM ${table} WHERE ${idColumn} = ?`,
+    `DELETE FROM ${safeTable} WHERE ${safeIdCol} = ?`,
   ).run(id);
   return result.changes > 0;
 }

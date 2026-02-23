@@ -12,7 +12,7 @@
  * agent name from config.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -39,11 +39,19 @@ let _tmuxPath: string | null = null;
 function getTmuxPath(): string {
   if (_tmuxPath) return _tmuxPath;
   try {
-    _tmuxPath = execSync('which tmux', { encoding: 'utf8' }).trim();
+    _tmuxPath = execFileSync('/usr/bin/which', ['tmux'], { encoding: 'utf8' }).trim();
   } catch {
     _tmuxPath = 'tmux'; // fallback
   }
   return _tmuxPath;
+}
+
+/** Validate session name to prevent injection. */
+function validateSessionName(name: string): string {
+  if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+    throw new Error(`Invalid session name: ${name}`);
+  }
+  return name;
 }
 
 function getDefaultSessionName(): string {
@@ -71,9 +79,9 @@ function getTranscriptDir(projectDir: string): string {
  * @param name - Session name (defaults to agent name from config)
  */
 export function sessionExists(name?: string): boolean {
-  const session = name ?? getDefaultSessionName();
+  const session = validateSessionName(name ?? getDefaultSessionName());
   try {
-    execSync(`${getTmuxPath()} has-session -t ${session} 2>/dev/null`, {
+    execFileSync(getTmuxPath(), ['has-session', '-t', session], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     return true;
@@ -87,9 +95,9 @@ export function sessionExists(name?: string): boolean {
  * @param name - Session name (defaults to agent name from config)
  */
 export function capturePane(name?: string): string {
-  const session = name ?? getDefaultSessionName();
+  const session = validateSessionName(name ?? getDefaultSessionName());
   try {
-    return execSync(`${getTmuxPath()} capture-pane -t ${session} -p`, {
+    return execFileSync(getTmuxPath(), ['capture-pane', '-t', session, '-p'], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -121,7 +129,7 @@ export function injectText(
   text: string,
   options?: { name?: string; pressEnter?: boolean },
 ): boolean {
-  const session = options?.name ?? getDefaultSessionName();
+  const session = validateSessionName(options?.name ?? getDefaultSessionName());
   const pressEnter = options?.pressEnter ?? true;
   const tmux = getTmuxPath();
 
@@ -131,23 +139,22 @@ export function injectText(
   }
 
   try {
-    const sanitized = text.replace(/'/g, "'\\''");
-    execSync(`${tmux} send-keys -t ${session} -l '${sanitized}'`, {
+    execFileSync(tmux, ['send-keys', '-t', session, '-l', text], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
     if (pressEnter) {
-      execSync('sleep 0.3', { stdio: ['pipe', 'pipe', 'pipe'] });
+      execFileSync('/bin/sleep', ['0.3'], { stdio: ['pipe', 'pipe', 'pipe'] });
 
       const MAX_ENTER_ATTEMPTS = 3;
       const ENTER_DELAYS = [300, 500, 800];
       for (let attempt = 1; attempt <= MAX_ENTER_ATTEMPTS; attempt++) {
-        execSync(`${tmux} send-keys -t ${session} Enter`, {
+        execFileSync(tmux, ['send-keys', '-t', session, 'Enter'], {
           stdio: ['pipe', 'pipe', 'pipe'],
         });
 
         const delay = ENTER_DELAYS[attempt - 1] ?? 800;
-        execSync(`sleep ${delay / 1000}`, { stdio: ['pipe', 'pipe', 'pipe'] });
+        execFileSync('/bin/sleep', [String(delay / 1000)], { stdio: ['pipe', 'pipe', 'pipe'] });
 
         if (attempt < MAX_ENTER_ATTEMPTS) {
           const pane = capturePane(session);
@@ -209,7 +216,7 @@ export function startSession(name?: string): boolean {
   }
 
   try {
-    execSync(`"${startScript}" --detach`, {
+    execFileSync(startScript, ['--detach'], {
       cwd: getProjectDir(),
       stdio: 'inherit',
     });
