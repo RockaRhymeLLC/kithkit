@@ -16,7 +16,7 @@ Parse $ARGUMENTS to determine the action:
 - `list` or `ls` or no arguments - Show all open to-dos
 - `list all` - Show all to-dos including completed
 - `list priority:high` - Filter by priority
-- `list status:blocked` - Filter by status
+- `list status:in_progress` - Filter by status
 
 ### Add To-Do
 - `add "To-do description"` - Add with default priority (medium)
@@ -40,7 +40,6 @@ Parse $ARGUMENTS to determine the action:
 - `update {id} status:in-progress` - Change status
 - `update {id} priority:high` - Change priority
 - `update {id} note:"Progress note"` - Add action/note to history (same as `note` command)
-- `update {id} blocked:"Waiting on X"` - Mark as blocked with reason
 
 ### Complete To-Do
 - `complete {id}` - Mark to-do as completed
@@ -54,21 +53,21 @@ To-dos are managed via the daemon HTTP API (default: `http://localhost:3847`):
 
 | Action | Method | Endpoint | Body / Notes |
 |--------|--------|----------|--------------|
-| List todos | `GET` | `/api/todos` | Query params: `status`, `priority` |
+| List todos | `GET` | `/api/todos` | Returns all todos (filter client-side) |
 | Create todo | `POST` | `/api/todos` | JSON body: `{ title, description, priority, due_date, tags }` |
 | Get todo detail | `GET` | `/api/todos/:id` | Returns full todo object |
 | Update todo | `PUT` | `/api/todos/:id` | JSON body with fields to update (title, description, priority, status, due_date, tags) |
 | Get todo history | `GET` | `/api/todos/:id/actions` | Returns audit trail of all actions |
 | Delete todo | `DELETE` | `/api/todos/:id` | Permanently removes todo |
 
-Work notes and progress updates are added via `PUT /api/todos/:id` — include a `note` field in the body. The daemon records it in the `todo_actions` audit log automatically when status or priority changes.
+Work notes and progress updates are tracked through the `todo_actions` audit trail. The daemon auto-logs status and priority changes. For free-form notes, use `POST /api/todos/:id/actions` (not yet implemented) or track notes in the todo's `description` field via `PUT /api/todos/:id`.
 
-### Example: List open todos
+### Example: List all todos
 ```bash
 curl http://localhost:3847/api/todos
-curl http://localhost:3847/api/todos?status=open
-curl http://localhost:3847/api/todos?priority=high
 ```
+
+The API returns all todos. Filter by status or priority client-side (e.g., parse JSON and filter in your logic).
 
 ### Example: Create a todo
 ```bash
