@@ -62,7 +62,7 @@ Example:
 
 ### Step 5: Task Breakdown — Create Stories
 
-Break the work into discrete stories. Each story is a logical unit of implementation that can be completed independently (or after its dependencies are done). For each story, create `plans/stories/s-{id}.json`.
+Break the work into discrete stories. Each story is a logical unit of implementation that can be completed independently (or after its dependencies are done). For each story, create `projects/<feature-name>/stories/s-{id}.json`.
 
 Story ID format: `s-` prefix + 3 alphanumeric characters (e.g., `s-a1b`). Check existing story files to avoid ID collisions.
 
@@ -73,7 +73,7 @@ Story JSON structure:
   "id": "s-a1b",
   "title": "Implement login form",
   "description": "Build the login UI with email and password fields",
-  "planRef": "plans/20260128-auth-system.plan.md",
+  "planRef": "projects/auth-system/20260128-auth-system.plan.md",
   "todoRef": "xyz",
   "status": "pending",
   "priority": 1,
@@ -110,7 +110,7 @@ If a story is Large, consider whether it can be split into two Medium stories wi
 
 Tests written during planning are IMMUTABLE during build. Write them with care — they define the contract that the implementation must satisfy.
 
-For each test, create `plans/tests/t-{id}.json`.
+For each test, create `projects/<feature-name>/tests/t-{id}.json`.
 
 Test ID format: `t-` prefix + 3-digit zero-padded number (e.g., `t-001`). Check existing test files to avoid ID collisions.
 
@@ -122,7 +122,7 @@ Test JSON structure:
   "title": "Login with valid credentials",
   "description": "Verify the successful login flow end to end",
   "storyRefs": ["s-a1b"],
-  "planRef": "plans/20260128-auth-system.plan.md",
+  "planRef": "projects/auth-system/20260128-auth-system.plan.md",
   "type": "story",
   "status": "pending",
   "steps": [
@@ -178,7 +178,7 @@ Use this structure:
 ```markdown
 # Plan: [Feature Name]
 
-**Spec**: specs/YYYYMMDD-feature.spec.md
+**Spec**: projects/<feature-name>/YYYYMMDD-feature.spec.md
 **To-Do**: [id] (if applicable)
 **Created**: YYYY-MM-DD
 
@@ -231,14 +231,14 @@ Run `/review` to sanity-check the plan with Bob (devil's advocate sub-agent). Fo
 ### Step 11: Confirm and Suggest Next Steps
 
 ```
-Created plan: plans/20260128-feature-name.plan.md
-Stories: 5 created (plans/stories/)
-Tests: 8 created (plans/tests/)
+Created plan: projects/feature-name/20260128-feature-name.plan.md
+Stories: 5 created (projects/feature-name/stories/)
+Tests: 8 created (projects/feature-name/tests/)
 Validation: PASSED
 
 Next steps:
   1. Review plan for completeness
-  2. Run /build plans/20260128-feature-name.plan.md to start implementation
+  2. Run /build projects/feature-name/20260128-feature-name.plan.md to start implementation
 ```
 
 ---
@@ -256,7 +256,7 @@ Extract the intent from the command:
 
 ### Step 2: Determine Target Plan
 
-First, check the current conversation for references to a plan file. If the plan context is clear, use that file. If it is ambiguous, list the files in `plans/` and ask the user to confirm which plan to update.
+First, check the current conversation for references to a plan file. If the plan context is clear, use that file. If it is ambiguous, list the files in `projects/` and ask the user to confirm which plan to update.
 
 ### Step 3: Extract Story Details
 
@@ -268,11 +268,11 @@ From the description, determine:
 
 ### Step 4: Create the Story JSON
 
-Generate a new story ID (check existing files to avoid collisions). Create `plans/stories/s-{id}.json` with status `"pending"` and the details extracted above.
+Generate a new story ID (check existing files to avoid collisions). Create `projects/<feature-name>/stories/s-{id}.json` with status `"pending"` and the details extracted above.
 
 ### Step 5: Create Any New Tests
 
-If the new story introduces new behavior that is not covered by existing tests, create the test JSON files in `plans/tests/`. Follow the same standards as the creation workflow — steps must be specific and observable.
+If the new story introduces new behavior that is not covered by existing tests, create the test JSON files in `projects/<feature-name>/tests/`. Follow the same standards as the creation workflow — steps must be specific and observable.
 
 ### Step 6: Update Plan.md
 
@@ -282,7 +282,7 @@ Use the Edit tool to add the new story to the Stories table in plan.md. Do not r
 
 ```
 Added story s-x9z: "Implement login form validation" (Size: M)
-  Plan: plans/20260128-auth-system.plan.md
+  Plan: projects/auth-system/20260128-auth-system.plan.md
   Tests: t-012 created
 ```
 
@@ -334,7 +334,7 @@ Keep the dependency graph as shallow as possible. Long dependency chains slow do
 - **Spec file missing**: Report the error and stop — cannot plan without a spec
 - **Spec has unresolved open questions**: Warn the user; consider resolving questions before committing to the plan
 - **ID collision on story or test**: Increment until a unique ID is found
-- **Plan directory missing**: Create `plans/stories/` and `plans/tests/` if they do not exist
+- **Plan directory missing**: Create `projects/<feature-name>/stories/` and `projects/<feature-name>/tests/` if they do not exist
 
 ### Update Workflow
 
@@ -346,8 +346,8 @@ Keep the dependency graph as shallow as possible. Long dependency chains slow do
 
 ## Integration
 
-- **Stories** (`plans/stories/s-{id}.json`): Core work units consumed by `/build`
-- **Tests** (`plans/tests/t-{id}.json`): Verification criteria, immutable during build
+- **Stories** (`projects/<feature-name>/stories/s-{id}.json`): Core work units consumed by `/build`
+- **Tests** (`projects/<feature-name>/tests/t-{id}.json`): Verification criteria, immutable during build
 - **Validation** (`/validate`): Checks coverage and completeness before build begins
 - **Review** (`/review`): Bob sub-agent challenges the plan; peer review for shared work
 - **Build** (`/build`): Works through stories in priority order, verifying tests at each step

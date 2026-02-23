@@ -18,8 +18,8 @@ The hook will then verify the plan file and spec file exist. Without the flag fi
 
 Use the Read tool to load:
 - The plan.md file (for technical approach, story table, and notes)
-- All story JSON files from `plans/stories/` referenced by the plan
-- All test JSON files from `plans/tests/` referenced by the plan
+- All story JSON files from `projects/<feature-name>/stories/` referenced by the plan
+- All test JSON files from `projects/<feature-name>/tests/` referenced by the plan
 
 Understand the full picture before touching any code: what the feature does, how the stories are ordered, and what each test verifies.
 
@@ -43,7 +43,7 @@ For each story (lowest priority number first):
 
 #### 5.1 — Initial Test (Red State)
 
-Load the story from `plans/stories/s-{id}.json`. Identify which tests it references via the `tests` array. Load each referenced test from `plans/tests/t-{id}.json` and work through its `steps` array in order:
+Load the story from `projects/<feature-name>/stories/s-{id}.json`. Identify which tests it references via the `tests` array. Load each referenced test from `projects/<feature-name>/tests/t-{id}.json` and work through its `steps` array in order:
 - Perform each `action`
 - Check whether the `expected` result occurs
 
@@ -123,7 +123,7 @@ Next steps:
 
 ## Story JSON Format
 
-Story files live at `plans/stories/s-{id}.json`. Fields:
+Story files live at `projects/<feature-name>/stories/s-{id}.json`. Fields:
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -146,7 +146,7 @@ Story files live at `plans/stories/s-{id}.json`. Fields:
 
 ## Test JSON Format
 
-Test files live at `plans/tests/t-{id}.json`. Fields:
+Test files live at `projects/<feature-name>/tests/t-{id}.json`. Fields:
 
 | Field | Type | Notes |
 |-------|------|-------|
@@ -277,15 +277,15 @@ Implements [brief description]:
 - [Key change 3]
 
 Stories: X completed
-Spec: specs/YYYYMMDD-feature-name.spec.md
+Spec: projects/feature-name/YYYYMMDD-feature-name.spec.md
 ```
 
 ---
 
 ## Integration
 
-- **Stories**: `plans/stories/s-{id}.json` — work units tracked through build
-- **Tests**: `plans/tests/t-{id}.json` — verification criteria, immutable during build
+- **Stories**: `projects/<feature-name>/stories/s-{id}.json` — work units tracked through build
+- **Tests**: `projects/<feature-name>/tests/t-{id}.json` — verification criteria, immutable during build
 - **Validation**: `/validate` runs automatically post-build
 - **To-Dos**: Parent to-do gets updated when a plan completes (via `todoRef`)
 - **Git**: Commit offered after successful validation
