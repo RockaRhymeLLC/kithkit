@@ -53,14 +53,22 @@ export interface InitResult {
 // ── Helpers ─────────────────────────────────────────────────
 
 function findKithkitRoot(): string | null {
-  // Walk up from __dirname to find the kithkit root (has kithkit.defaults.yaml)
+  // Walk up from this file to find the kithkit root (has kithkit.defaults.yaml).
+  // Works in monorepo (cli/dist/init.js → cli → kithkit root) and when
+  // installed globally (walks up from node_modules/.../cli/dist/).
   let dir = path.resolve(new URL('.', import.meta.url).pathname);
   for (let i = 0; i < 10; i++) {
     if (fs.existsSync(path.join(dir, 'kithkit.defaults.yaml'))) return dir;
+    // Also check if templates are co-located in the package (npm install case)
+    if (fs.existsSync(path.join(dir, 'templates', 'identities'))) return dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
+  // Fallback: check if kithkit is installed as a dependency in the target project
+  const cwdKithkit = path.join(process.cwd(), 'node_modules', 'kithkit');
+  if (fs.existsSync(path.join(cwdKithkit, 'kithkit.defaults.yaml'))) return cwdKithkit;
+  if (fs.existsSync(path.join(cwdKithkit, 'templates', 'identities'))) return cwdKithkit;
   return null;
 }
 
