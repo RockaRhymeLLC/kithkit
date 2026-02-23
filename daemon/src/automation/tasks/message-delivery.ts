@@ -45,6 +45,7 @@ const _retryCounts = new Map<number, number>();
 /**
  * Tracks when we last pinged about an unread message.
  * Prevents spamming tmux faster than REPING_INTERVAL_MS.
+ * Also persisted in DB metadata.last_notified_at so it survives daemon restarts.
  */
 const _lastPingTime = new Map<number, number>();
 
@@ -197,7 +198,9 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
       const now = new Date().toISOString();
       const nowMs = Date.now();
       for (const msg of deliverable) {
-        exec('UPDATE messages SET processed_at = ? WHERE id = ?', now, msg.id);
+        const existingMeta = msg.metadata ? JSON.parse(msg.metadata) : {};
+        const updatedMeta = JSON.stringify({ ...existingMeta, last_notified_at: now });
+        exec('UPDATE messages SET processed_at = ?, metadata = ? WHERE id = ?', now, updatedMeta, msg.id);
         _retryCounts.delete(msg.id);
         _lastPingTime.set(msg.id, nowMs);
         delivered++;
@@ -232,21 +235,28 @@ async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> 
   if (unread.length === 0) return 0;
 
   const now = Date.now();
+  const nowIso = new Date().toISOString();
   let repinged = 0;
 
-  // Group by agent
+  // Group by agent — only messages that are due for a re-ping
   const byAgent = new Map<string, Message[]>();
   for (const msg of unread) {
     // Check if we need to skip expired messages (metadata.expired = true)
+    let meta: Record<string, unknown> = {};
     if (msg.metadata) {
       try {
-        const meta = JSON.parse(msg.metadata);
+        meta = JSON.parse(msg.metadata);
         if (meta.expired) continue;
       } catch { /* ignore parse errors */ }
     }
 
-    const lastPing = _lastPingTime.get(msg.id) ?? 0;
-    if (now - lastPing < REPING_INTERVAL_MS) continue;
+    // Use in-memory lastPingTime if available, otherwise hydrate from DB metadata
+    let lastPing = _lastPingTime.get(msg.id);
+    if (lastPing === undefined && meta.last_notified_at) {
+      lastPing = new Date(meta.last_notified_at as string).getTime();
+      _lastPingTime.set(msg.id, lastPing);
+    }
+    if (lastPing !== undefined && now - lastPing < REPING_INTERVAL_MS) continue;
 
     const existing = byAgent.get(msg.to_agent) ?? [];
     existing.push(msg);
@@ -263,6 +273,10 @@ async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> 
     if (success) {
       for (const msg of messages) {
         _lastPingTime.set(msg.id, now);
+        // Persist last_notified_at in DB metadata so it survives daemon restarts
+        const existingMeta = msg.metadata ? JSON.parse(msg.metadata) : {};
+        const updatedMeta = JSON.stringify({ ...existingMeta, last_notified_at: nowIso });
+        exec('UPDATE messages SET metadata = ? WHERE id = ?', updatedMeta, msg.id);
       }
       repinged += messages.length;
       log.debug('Re-ping sent for unread messages', { to: agentId, count: messages.length });
@@ -289,12 +303,6 @@ async function deliverMessages(): Promise<void> {
   if (delivered > 0 || failed > 0 || expired > 0 || repinged > 0) {
     log.info('Delivery cycle complete', { delivered, failed, expired, repinged });
   }
-}
-
-// ── Helpers ──────────────────────────────────────────────────
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 // ── Registration ─────────────────────────────────────────────
