@@ -28,10 +28,6 @@ if [ -f "$STATE_DIR/assistant-state.md" ]; then
   # Keep only the 5 most recent backups
   ls -t "$BACKUP_DIR"/assistant-state-*.md 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null
 
-  # Append current state to 24hr log if the script exists
-  if [ -x "$PROJECT_DIR/scripts/append-state-log.sh" ]; then
-    "$PROJECT_DIR/scripts/append-state-log.sh" --force "Pre-compact backup"
-  fi
 fi
 
 # Output instruction to Claude (this appears in Claude's context)

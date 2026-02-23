@@ -42,15 +42,19 @@ export function runTask(
   const timeoutMs = options.timeoutMs ?? 300_000; // 5 min default
 
   return new Promise((resolve) => {
+    // If no args provided and command has spaces, run via shell explicitly
+    const hasArgs = options.args && options.args.length > 0;
+    const cmd = hasArgs ? options.command : '/bin/sh';
+    const args = hasArgs ? options.args! : ['-c', options.command];
+
     const child = execFile(
-      options.command,
-      options.args ?? [],
+      cmd,
+      args,
       {
         timeout: timeoutMs,
         maxBuffer: 1024 * 1024, // 1MB
         env: { ...process.env, ...options.env },
         cwd: options.cwd,
-        shell: true,
       },
       (error, stdout, stderr) => {
         const durationMs = Date.now() - startMs;
