@@ -15,6 +15,7 @@ import {
   isOrchestratorAlive,
 } from '../agents/tmux.js';
 import { sendMessage } from '../agents/message-router.js';
+import { createSessionDir } from '../agents/lifecycle.js';
 import { exec, query, update } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
 import { logActivity } from './activity.js';
@@ -47,8 +48,11 @@ export async function handleOrchestratorRoute(
     const alive = isOrchestratorAlive();
 
     if (!alive) {
+      // Create session directory for orchestrator artifacts
+      const sessionDir = createSessionDir('orchestrator');
+
       // Spawn orchestrator with the task as initial prompt
-      const orchestratorPrompt = buildOrchestratorPrompt(task, context);
+      const orchestratorPrompt = buildOrchestratorPrompt(task, context, sessionDir);
       const session = spawnOrchestratorSession(orchestratorPrompt);
 
       if (!session) {
@@ -183,7 +187,7 @@ export async function handleOrchestratorRoute(
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function buildOrchestratorPrompt(task: string, context?: string): string {
+function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: string): string {
   const parts = [
     'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality, no humor, no conversational style.',
     '',
@@ -212,8 +216,14 @@ function buildOrchestratorPrompt(task: string, context?: string): string {
     '- Daemon restart IS allowed when needed: send results to comms first, wait 2s, then: launchctl kickstart -k gui/$(id -u)/com.assistant.daemon',
     '- After daemon restart, verify health (curl localhost:3847/health), then exit',
     '',
+    'Activity logging: log key milestones by curling POST http://localhost:3847/api/agents/orchestrator/activity with JSON {"event_type":"<type>","details":"<brief>"}. Log task_received when starting, task_completed or error when done, context_checkpoint if context > 70%. Keep it minimal.',
+    '',
     `Task: ${task}`,
   ];
+
+  if (sessionDir) {
+    parts.push('', `Session directory (for artifacts if needed): ${sessionDir}`);
+  }
 
   if (context) {
     parts.push('', `Context: ${context}`);

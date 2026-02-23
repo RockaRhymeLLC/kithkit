@@ -11,6 +11,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import {
   spawnWorker as sdkSpawn,
   killWorker as sdkKill,
@@ -20,6 +21,7 @@ import {
 import type { SpawnOptions as SdkSpawnOptions, WorkerState } from './sdk-adapter.js';
 import type { AgentProfile } from './profiles.js';
 import { get, update, query, exec } from '../core/db.js';
+import { resolveProjectPath } from '../core/config.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -98,6 +100,43 @@ function countRunningAgents(): number {
   return rows[0]?.count ?? 0;
 }
 
+// ── Session Directories ─────────────────────────────────────
+
+/**
+ * Create a session directory for an agent. Returns the absolute path.
+ */
+export function createSessionDir(agentId: string): string {
+  const dir = resolveProjectPath('.claude', 'sessions', agentId);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+/**
+ * Clean up session directories older than maxAgeDays.
+ */
+export function cleanupSessionDirs(maxAgeDays = 7): number {
+  const sessionsRoot = resolveProjectPath('.claude', 'sessions');
+  if (!fs.existsSync(sessionsRoot)) return 0;
+
+  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  let cleaned = 0;
+
+  for (const entry of fs.readdirSync(sessionsRoot)) {
+    const entryPath = resolveProjectPath('.claude', 'sessions', entry);
+    try {
+      const stat = fs.statSync(entryPath);
+      if (stat.isDirectory() && stat.mtimeMs < cutoff) {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+        cleaned++;
+      }
+    } catch {
+      // Skip entries we can't stat
+    }
+  }
+
+  return cleaned;
+}
+
 // ── Worker Lifecycle ─────────────────────────────────────────
 
 /**
@@ -107,6 +146,10 @@ function countRunningAgents(): number {
 export function spawnWorkerJob(req: SpawnRequest): { jobId: string; status: JobStatus } {
   const jobId = randomUUID();
   const ts = now();
+
+  // Create session directory for artifacts
+  const sessionDir = createSessionDir(jobId);
+  req.prompt = `Session directory (for artifacts if needed): ${sessionDir}\n\n${req.prompt}`;
 
   // Insert agent record
   exec(

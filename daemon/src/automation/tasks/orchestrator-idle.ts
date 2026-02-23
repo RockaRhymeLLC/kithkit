@@ -19,11 +19,42 @@ import {
   killOrchestratorSession,
   injectMessage,
 } from '../../agents/tmux.js';
+import { cleanupSessionDirs } from '../../agents/lifecycle.js';
 import { createLogger } from '../../core/logger.js';
-import { logActivity } from '../../api/activity.js';
+import { logActivity, getActivity } from '../../api/activity.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('orchestrator-idle');
+
+/**
+ * Dump post-mortem state to the orchestrator's session directory.
+ * Writes agent DB record + recent activity log entries.
+ */
+function writePostMortem(reason: string): void {
+  const sessionDir = resolveProjectPath('.claude', 'sessions', 'orchestrator');
+  try {
+    if (!fs.existsSync(sessionDir)) fs.mkdirSync(sessionDir, { recursive: true });
+
+    const agentRows = query<Record<string, unknown>>(
+      "SELECT * FROM agents WHERE id = 'orchestrator'",
+    );
+    const recentActivity = getActivity('orchestrator', { limit: 20 });
+
+    const postMortem = {
+      reason,
+      timestamp: new Date().toISOString(),
+      agent: agentRows[0] ?? null,
+      recent_activity: recentActivity,
+    };
+
+    fs.writeFileSync(
+      `${sessionDir}/post-mortem.json`,
+      JSON.stringify(postMortem, null, 2),
+    );
+  } catch (err) {
+    log.warn('Failed to write post-mortem', { error: String(err) });
+  }
+}
 
 const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const CONTEXT_THRESHOLD_PCT = 65; // Daemon backstop — orchestrator self-restarts at 50%
@@ -64,6 +95,14 @@ function getOrchestratorContextUsage(): number | null {
 }
 
 async function run(config: Record<string, unknown>): Promise<void> {
+  // Periodic cleanup: remove session directories older than 7 days
+  try {
+    const cleaned = cleanupSessionDirs(7);
+    if (cleaned > 0) log.info('Cleaned up stale session directories', { cleaned });
+  } catch (err) {
+    log.warn('Session dir cleanup failed', { error: String(err) });
+  }
+
   // Not alive? Nothing to do — reset nudge state
   if (!isOrchestratorAlive()) {
     shutdownNudgedAt = null;
@@ -92,6 +131,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
 
     if (elapsed >= GRACE_PERIOD_MS) {
       log.warn('Orchestrator did not exit within grace period — force killing', { reason: shutdownReason });
+      writePostMortem(`Grace period expired: ${shutdownReason}`);
       killOrchestratorSession();
       update('agents', 'orchestrator', {
         status: 'stopped',
@@ -142,6 +182,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
       });
     } else {
       log.warn('Failed to inject context shutdown nudge — killing session');
+      writePostMortem(`Context exhaustion: ${contextUsed}%, injection failed`);
       killOrchestratorSession();
       update('agents', 'orchestrator', { status: 'stopped', updated_at: new Date().toISOString() });
       logActivity({
@@ -189,6 +230,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
   } else {
     // Couldn't inject — session might be gone already
     log.warn('Failed to inject shutdown nudge — killing session');
+    writePostMortem(`Idle timeout: ${reason}, injection failed`);
     killOrchestratorSession();
     update('agents', 'orchestrator', {
       status: 'stopped',
