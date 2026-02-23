@@ -19,10 +19,10 @@ Two layers of review to catch what you can't see in your own work:
 ## Usage
 
 ```bash
-/review                                    # Review most recent spec+plan
-/review specs/20260204-feature.spec.md     # Review a specific spec
-/review plans/20260204-feature.plan.md     # Review a specific plan
-/review all                                # Review all unbuilt plans
+/review                                                                # Review most recent spec+plan
+/review projects/feature/20260204-feature.spec.md                     # Review a specific spec
+/review projects/feature/20260204-feature.plan.md                     # Review a specific plan
+/review all                                                            # Review all unbuilt plans
 ```
 
 ## When to Use
@@ -39,9 +39,9 @@ Two layers of review to catch what you can't see in your own work:
 Read the target files:
 - If given a spec: read the spec
 - If given a plan: read the plan AND its referenced spec
-- If given neither: find the most recent plan in `plans/` and its spec
+- If given neither: find the most recent plan in `projects/` and its spec
 
-Also read any referenced story files (`plans/stories/s-*.json`) and test files (`plans/tests/t-*.json`).
+Also read any referenced story files (`projects/<feature-name>/stories/s-*.json`) and test files (`projects/<feature-name>/tests/t-*.json`).
 
 ### Step 2: Bob (Devil's Advocate)
 

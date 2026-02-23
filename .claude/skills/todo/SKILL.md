@@ -16,7 +16,7 @@ Parse $ARGUMENTS to determine the action:
 - `list` or `ls` or no arguments - Show all open to-dos
 - `list all` - Show all to-dos including completed
 - `list priority:high` - Filter by priority
-- `list status:in_progress` - Filter by status
+- `list status:in_progress` - Filter by status (valid: pending, in_progress, blocked, completed, cancelled)
 
 ### Add To-Do
 - `add "To-do description"` - Add with default priority (medium)
@@ -38,6 +38,7 @@ Parse $ARGUMENTS to determine the action:
 
 ### Update To-Do
 - `update {id} status:in-progress` - Change status
+- `update {id} blocked:"Waiting on X"` - Set status to blocked and log a blocker note
 - `update {id} priority:high` - Change priority
 - `update {id} note:"Progress note"` - Add action/note to history (same as `note` command)
 

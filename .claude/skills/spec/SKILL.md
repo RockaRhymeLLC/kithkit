@@ -19,9 +19,9 @@ Define WHAT we're building and WHY, before planning HOW to build it. Specificati
 /spec [feature-name]
 ```
 Examples:
-- `/spec telegram-integration`
-- `/spec state-manager`
-- `/spec breakfast-maker`
+- `/spec telegram-integration` → creates `projects/telegram-integration/YYYYMMDD-telegram-integration.spec.md`
+- `/spec state-manager` → creates `projects/state-manager/YYYYMMDD-state-manager.spec.md`
+- `/spec breakfast-maker` → creates `projects/breakfast-maker/YYYYMMDD-breakfast-maker.spec.md`
 
 **When to use**: Starting a new feature from scratch
 
@@ -44,7 +44,7 @@ Examples:
    - Single word/slug → Create new spec
    - Natural sentence → Update existing spec
 2. **Conversation context**: What spec are we working on?
-3. **File system**: What specs exist in `specs/`?
+3. **File system**: What specs exist in `projects/`?
 
 If ambiguous, I'll ask you to clarify.
 
@@ -54,7 +54,7 @@ If ambiguous, I'll ask you to clarify.
 1. Parse feature name
 2. Interview you to gather requirements
 3. Use template structure
-4. Create `specs/YYYYMMDD-feature-name.spec.md`
+4. Create `projects/<feature-name>/` directory if it doesn't exist, then write `projects/<feature-name>/YYYYMMDD-feature-name.spec.md`
 5. Set as active spec (context tracker)
 6. Suggest next steps: `/plan`
 

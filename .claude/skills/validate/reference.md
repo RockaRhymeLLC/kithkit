@@ -148,7 +148,7 @@ Validate alignment between spec, plan, and implementation at every workflow phas
 Result: PASS
 
 ### Layer 2: Plan Completeness
-- Spec reference: Found (specs/20260127-feature.spec.md)
+- Spec reference: Found (projects/feature/20260127-feature.spec.md)
 - Technical approach: Found
 - Tasks: 4 defined
 - Acceptance criteria: All tasks have criteria

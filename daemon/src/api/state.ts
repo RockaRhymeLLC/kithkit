@@ -76,7 +76,7 @@ interface WorkerJob {
 }
 
 const VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'];
-const VALID_TODO_STATUSES = ['pending', 'in_progress', 'completed', 'cancelled'];
+const VALID_TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'cancelled'];
 
 // ── Helpers ──────────────────────────────────────────────────
 

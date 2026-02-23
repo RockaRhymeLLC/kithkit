@@ -11,9 +11,9 @@ Extract the feature name from the arguments and normalize it to a slug:
 - Input: `State Manager` → slug: `state-manager`
 - Input: `breakfast maker` → slug: `breakfast-maker`
 
-Generate the filename: `specs/YYYYMMDD-[feature-name].spec.md` using today's date.
+Generate the filename: `projects/<feature-name>/YYYYMMDD-[feature-name].spec.md` using today's date. Create the `projects/<feature-name>/` directory if it does not exist.
 
-Example: `/spec telegram-bot` → `specs/20260127-telegram-bot.spec.md`
+Example: `/spec telegram-bot` → `projects/telegram-bot/20260127-telegram-bot.spec.md`
 
 ### Step 2: Read the Template
 
@@ -131,7 +131,7 @@ If there are open questions, note them as potential blockers for planning. Ideal
 
 ### Step 4: Create the Specification File
 
-Use the Write tool to create the spec file at `specs/YYYYMMDD-feature-name.spec.md`.
+Create the `projects/<feature-name>/` directory if it does not already exist. Use the Write tool to create the spec file at `projects/<feature-name>/YYYYMMDD-feature-name.spec.md`.
 
 Fill in all sections with the information gathered during the interview. Replace template placeholders:
 - `[YYYY-MM-DD]` → today's date
@@ -142,12 +142,12 @@ Convert user responses into well-formatted markdown. Use consistent formatting t
 ### Step 5: Confirm and Suggest Next Steps
 
 ```
-Created: specs/20260127-feature-name.spec.md
+Created: projects/feature-name/20260127-feature-name.spec.md
 
 Next steps:
   1. Review and refine the spec if needed
   2. Resolve any open questions before planning
-  3. Run /plan specs/20260127-feature-name.spec.md to create the implementation plan
+  3. Run /plan projects/feature-name/20260127-feature-name.spec.md to create the implementation plan
 ```
 
 If the spec involves shared capabilities (new skills, daemon features, agent-comms), also suggest peer review before moving to planning. See the Peer Review section in SKILL.md.
@@ -167,7 +167,7 @@ Extract the description from the arguments:
 
 Check the current conversation for references to a spec file. If a spec was recently created or mentioned, use that one.
 
-If no spec is obvious from context, use the Glob tool to list files in `specs/` and match the description semantically to spec titles:
+If no spec is obvious from context, use the Glob tool to list spec files in `projects/` and match the description semantically to spec titles:
 - "breakfast" matches a spec titled "breakfast-maker"
 - "telegram" matches "telegram-integration"
 
@@ -226,7 +226,7 @@ Find the `## Documentation Impact` section and append a new checkbox item.
 
 ```
 Added to Must Have: "New requirement text"
-  File: specs/20260127-agent-assistant-harness.spec.md
+  File: projects/agent-assistant-harness/20260127-agent-assistant-harness.spec.md
 ```
 
 ---

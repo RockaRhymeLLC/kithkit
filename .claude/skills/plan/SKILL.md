@@ -22,8 +22,8 @@ Define HOW to build features by creating:
 /plan <spec-file-path>
 ```
 Examples:
-- `/plan specs/20260127-telegram-integration.spec.md`
-- `/plan specs/20260127-auth-system.spec.md`
+- `/plan projects/telegram-integration/20260127-telegram-integration.spec.md`
+- `/plan projects/auth-system/20260127-auth-system.spec.md`
 
 ### Add Story to Existing Plan
 ```bash
@@ -37,9 +37,9 @@ Examples:
 
 1. **Read spec file** - Understand requirements and constraints
 2. **Design technical approach** - Architecture, patterns, decisions
-3. **Create plan.md** - Document the approach in `plans/YYYYMMDD-feature.plan.md`
-4. **Create stories** - One JSON per work unit in `plans/stories/`
-5. **Create tests** - One JSON per test in `plans/tests/`
+3. **Create plan.md** - Document the approach in `projects/<feature-name>/YYYYMMDD-feature.plan.md`
+4. **Create stories** - One JSON per work unit in `projects/<feature-name>/stories/`
+5. **Create tests** - One JSON per test in `projects/<feature-name>/tests/`
 6. **Link to to-do** - If this plan was spawned from a to-do, add references
 7. **Run /validate** - Verify completeness
 8. **Run /review** - Sanity-check before building (Bob + optional peer review)
@@ -49,28 +49,30 @@ Examples:
 ## Output Structure
 
 ```
-plans/
-├── 20260128-auth-system.plan.md
-├── stories/
-│   ├── s-a1b.json    # "Implement login form"
-│   ├── s-c2d.json    # "Create session management"
-│   └── s-e3f.json    # "Add logout functionality"
-└── tests/
-    ├── t-001.json    # "Login with valid credentials"
-    ├── t-002.json    # "Session persists on refresh"
-    └── t-003.json    # "Logout clears session"
+projects/
+└── auth-system/
+    ├── 20260128-auth-system.spec.md
+    ├── 20260128-auth-system.plan.md
+    ├── stories/
+    │   ├── s-a1b.json    # "Implement login form"
+    │   ├── s-c2d.json    # "Create session management"
+    │   └── s-e3f.json    # "Add logout functionality"
+    └── tests/
+        ├── t-001.json    # "Login with valid credentials"
+        ├── t-002.json    # "Session persists on refresh"
+        └── t-003.json    # "Logout clears session"
 ```
 
 ## Story Creation
 
-For each story, create `plans/stories/s-{id}.json`:
+For each story, create `projects/<feature-name>/stories/s-{id}.json`:
 
 ```json
 {
   "id": "s-a1b",
   "title": "Implement login form",
   "description": "Build the login UI with email/password fields",
-  "planRef": "plans/20260128-auth-system.plan.md",
+  "planRef": "projects/auth-system/20260128-auth-system.plan.md",
   "todoRef": "xyz",
   "status": "pending",
   "priority": 1,
@@ -90,7 +92,7 @@ For each story, create `plans/stories/s-{id}.json`:
 
 ## Test Creation
 
-For each test, create `plans/tests/t-{id}.json`:
+For each test, create `projects/<feature-name>/tests/t-{id}.json`:
 
 ```json
 {
@@ -98,7 +100,7 @@ For each test, create `plans/tests/t-{id}.json`:
   "title": "Login with valid credentials",
   "description": "Verify successful login flow",
   "storyRefs": ["s-a1b"],
-  "planRef": "plans/20260128-auth-system.plan.md",
+  "planRef": "projects/auth-system/20260128-auth-system.plan.md",
   "type": "story",
   "status": "pending",
   "steps": [
@@ -154,7 +156,7 @@ Check existing IDs to avoid collisions.
 ```markdown
 # Plan: [Feature Name]
 
-**Spec**: specs/YYYYMMDD-feature.spec.md
+**Spec**: projects/<feature-name>/YYYYMMDD-feature.spec.md
 **To-Do**: [id] (if applicable)
 **Created**: YYYY-MM-DD
 

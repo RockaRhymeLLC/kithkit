@@ -14,7 +14,7 @@ Todos are stored in SQLite (`todos` table). The daemon manages all storage — a
 | `title` | TEXT | required | Short to-do title |
 | `description` | TEXT | null | Full description, supports markdown |
 | `priority` | TEXT | `'medium'` | `critical`, `high`, `medium`, `low` |
-| `status` | TEXT | `'pending'` | `pending`, `in_progress`, `completed`, `cancelled` |
+| `status` | TEXT | `'pending'` | `pending`, `in_progress`, `blocked`, `completed`, `cancelled` |
 | `due_date` | TEXT | null | Due date (ISO date string, e.g., `2026-02-15`) |
 | `tags` | JSON | `'[]'` | JSON array of string tags |
 | `created_at` | TEXT | `datetime('now')` | Creation timestamp |
@@ -47,6 +47,7 @@ Todos are stored in SQLite (`todos` table). The daemon manages all storage — a
 |--------|-------------|
 | `pending` | Not yet started |
 | `in_progress` | Actively being worked on |
+| `blocked` | Waiting on external input or dependency |
 | `completed` | Done |
 | `cancelled` | No longer needed |
 
@@ -134,7 +135,7 @@ Response (200): Full updated todo object.
 
 **Validation rules:**
 - `priority` must be one of: `critical`, `high`, `medium`, `low`
-- `status` must be one of: `pending`, `in_progress`, `completed`, `cancelled`
+- `status` must be one of: `pending`, `in_progress`, `blocked`, `completed`, `cancelled`
 - Invalid values return 400 with error message
 
 ### GET /api/todos/:id/actions (audit trail)
