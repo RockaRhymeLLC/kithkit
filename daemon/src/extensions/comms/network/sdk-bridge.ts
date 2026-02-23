@@ -1,15 +1,15 @@
 /**
- * SDK Bridge — integrates the CC4Me Network SDK into the kithkit daemon.
+ * SDK Bridge — integrates the KithKit A2A Network SDK into the kithkit daemon.
  *
- * Initializes the CC4MeNetwork client, wires SDK events to session bridge,
+ * Initializes the A2ANetwork client, wires SDK events to session bridge,
  * and exposes the network client for agent-comms (P2P fallback).
  *
- * cc4me-network is loaded dynamically. If not installed, daemon degrades
+ * kithkit-a2a-client is loaded dynamically. If not installed, daemon degrades
  * gracefully to LAN-only mode.
  */
 
 import type {
-  CC4MeNetworkClient, CommunityConfig, CommunityStatusEvent,
+  A2ANetworkClient, CommunityConfig, CommunityStatusEvent,
   Message, ContactRequest, Broadcast, WireEnvelope,
   GroupMessage, GroupInvitationEvent,
 } from './sdk-types.js';
@@ -22,15 +22,15 @@ import { logCommsEntry, getDisplayName } from '../agent-comms.js';
 
 const log = createLogger('network:sdk');
 
-let _network: CC4MeNetworkClient | null = null;
+let _network: A2ANetworkClient | null = null;
 let _config: BmoConfig | null = null;
 
-export function getNetworkClient(): CC4MeNetworkClient | null {
+export function getNetworkClient(): A2ANetworkClient | null {
   return _network;
 }
 
 /**
- * Initialize the CC4Me Network SDK.
+ * Initialize the KithKit A2A Network SDK.
  * Returns true if initialization succeeded, false if degraded to LAN-only.
  */
 export async function initNetworkSDK(config: BmoConfig): Promise<boolean> {
@@ -60,15 +60,14 @@ export async function initNetworkSDK(config: BmoConfig): Promise<boolean> {
   }
 
   try {
-    // Dynamic import — cc4me-network is optional
+    // Dynamic import — kithkit-a2a-client is optional
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let CC4MeNetworkClass: any;
+    let A2ANetworkClass: any;
     try {
-      // @ts-expect-error — cc4me-network is an optional dependency, loaded dynamically
-      const sdk = await import('cc4me-network');
-      CC4MeNetworkClass = sdk.CC4MeNetwork;
+      const sdk = await import('kithkit-a2a-client');
+      A2ANetworkClass = sdk.A2ANetwork;
     } catch {
-      log.warn('cc4me-network package not installed — P2P messaging unavailable. Install with: npm install cc4me-network');
+      log.warn('kithkit-a2a-client package not installed — P2P messaging unavailable. Install with: npm install kithkit-a2a-client');
       return false;
     }
 
@@ -91,7 +90,7 @@ export async function initNetworkSDK(config: BmoConfig): Promise<boolean> {
       communities: networkConfig.communities.map(c => c.name),
     });
 
-    _network = new CC4MeNetworkClass(sdkOptions);
+    _network = new A2ANetworkClass(sdkOptions);
 
     wireMessageEvent();
     wireGroupMessageEvent();

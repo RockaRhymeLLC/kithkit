@@ -1,0 +1,3 @@
+[submodule ".a2a-sdk"]
+	path = .a2a-sdk
+	url = https://github.com/RockaRhymeLLC/kithkit-a2a-client.git

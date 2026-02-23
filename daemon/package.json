@@ -22,6 +22,7 @@
     "better-sqlite3": "^12.6.2",
     "cron-parser": "^5.5.0",
     "js-yaml": "^4.1.1",
+    "kithkit-a2a-client": "file:../.a2a-sdk/packages/sdk",
     "sqlite-vec": "^0.1.7-alpha.2"
   },
   "devDependencies": {

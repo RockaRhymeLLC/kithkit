@@ -269,10 +269,11 @@ function registerBmoHealthChecks(): void {
 
 // ── Extension Implementation ────────────────────────────────
 
-/** BMO task names that get in-process handlers. */
+/** BMO task names that get in-process handlers.
+ * NOTE: Do NOT include core tasks here (context-watchdog, todo-reminder,
+ * approval-audit, backup, orchestrator-idle, message-delivery) — those are
+ * registered by registerCoreTasks() and would be overwritten by stubs. */
 const BMO_TASK_HANDLERS = [
-  'context-watchdog',
-  'todo-reminder',
   'email-check',
   'nightly-todo',
   'health-check',

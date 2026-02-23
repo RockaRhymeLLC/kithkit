@@ -324,7 +324,7 @@ describe('BMO extension registers routes and tasks (t-231)', () => {
   });
 
   it('agent/p2p responds to POST (SDK not initialized returns 503)', async () => {
-    // P2P endpoint returns 503 when SDK is not initialized (no cc4me-network in test env)
+    // P2P endpoint returns 503 when SDK is not initialized (no kithkit-a2a-client in test env)
     const result = await request(PORT_231, 'POST', '/agent/p2p', JSON.stringify({
       version: '1', type: 'direct', messageId: 'test-1',
       sender: 'test', recipient: 'bmo', timestamp: new Date().toISOString(),
