@@ -18,6 +18,7 @@ import {
 import { loadProfiles } from '../agents/profiles.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { logActivity, getActivity } from './activity.js';
+import { update } from '../core/db.js';
 
 // ── Configuration ────────────────────────────────────────────
 
@@ -141,6 +142,13 @@ export async function handleAgentsRoute(
           event_type: body.event_type as string,
           details: typeof body.details === 'string' ? body.details : undefined,
         });
+
+        // Touch agents.last_activity so idle-detection tasks see fresh activity
+        update('agents', agentId, {
+          last_activity: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+
         json(res, 201, withTimestamp({ data: entry }));
         return true;
       }
