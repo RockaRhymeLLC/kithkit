@@ -15,6 +15,7 @@ import { register as registerA2aDigest } from './a2a-digest.js';
 import { register as registerMemorySync } from './memory-sync.js';
 import { register as registerLindeeInboxWatch } from './lindee-inbox-watch.js';
 import { register as registerPeerHeartbeat } from './peer-heartbeat.js';
+import { register as registerEmailCheck } from './email-check.js';
 
 /**
  * Register all BMO-specific task handlers with the scheduler.
@@ -33,6 +34,7 @@ export function registerBmoTasks(scheduler: Scheduler): void {
     ['memory-sync', registerMemorySync],
     ['lindee-inbox-watch', registerLindeeInboxWatch],
     ['peer-heartbeat', registerPeerHeartbeat],
+    ['email-check', registerEmailCheck],
   ];
 
   for (const [name, register] of registrations) {
@@ -52,4 +54,5 @@ export const REAL_TASK_NAMES = new Set([
   'memory-sync',
   'lindee-inbox-watch',
   'peer-heartbeat',
+  'email-check',
 ]);

@@ -15,11 +15,11 @@
 
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import { createLogger } from '../../../core/logger.js';
 import { askClaude } from '../../../core/claude-api.js';
+import { getProjectDir } from '../../../core/config.js';
 import type { Scheduler } from '../../../automation/scheduler.js';
 import { getTelegramAdapter } from '../../comms/index.js';
 
@@ -29,8 +29,7 @@ const execFileAsync = promisify(execFile);
 const HIMALAYA_BIN = '/opt/homebrew/bin/himalaya';
 const ACCOUNT = 'yahoo-lindee';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const STATE_DIR = join(__dirname, '..', '..', '..', '..', '.claude', 'state');
+const STATE_DIR = join(getProjectDir(), '.claude', 'state');
 const SEEN_FILE = join(STATE_DIR, 'lindee-inbox-last-check.json');
 const LEDGER_FILE = join(STATE_DIR, 'lindee-purchase-ledger.json');
 const DAILY_SUMMARY_FILE = join(STATE_DIR, 'lindee-daily-summary.json');
@@ -268,6 +267,9 @@ Respond with only valid JSON.`,
 // ── Main ──
 
 async function run(): Promise<void> {
+  // Ensure state directory exists
+  mkdirSync(STATE_DIR, { recursive: true });
+
   const emails = await fetchRecentEmails();
   if (emails.length === 0) {
     log.info('No emails fetched from Lindee inbox');
