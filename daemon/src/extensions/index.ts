@@ -43,6 +43,7 @@ import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { initVoice, stopVoice } from './voice/index.js';
 import { registerBmoTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
+import { enableVectorSearch } from '../api/memory.js';
 
 const log = createLogger('bmo-extension');
 
@@ -296,6 +297,9 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   await initComms(_config);
   _telegramRouteHandler = createTelegramRouteHandler();
   _shortcutRouteHandler = createShortcutRouteHandler();
+
+  // Enable vector search (sqlite-vec + ONNX embeddings)
+  enableVectorSearch();
 
   // Initialize agent-to-agent comms (LAN + P2P SDK)
   initAgentComms(_config);
