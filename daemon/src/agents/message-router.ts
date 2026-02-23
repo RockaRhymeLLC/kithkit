@@ -24,6 +24,7 @@ export interface Message {
   body: string;
   metadata: string | null;
   processed_at: string | null;
+  read_at: string | null;
   created_at: string;
 }
 
@@ -129,6 +130,31 @@ export function markProcessed(messageId: number): void {
   exec(
     'UPDATE messages SET processed_at = ? WHERE id = ?',
     new Date().toISOString(), messageId,
+  );
+}
+
+/**
+ * Get unread messages for an agent (read_at IS NULL, already delivered/processed).
+ */
+export function getUnreadMessages(agentId: string): Message[] {
+  return query<Message>(
+    `SELECT * FROM messages
+     WHERE to_agent = ? AND read_at IS NULL AND processed_at IS NOT NULL
+     ORDER BY created_at ASC`,
+    agentId,
+  );
+}
+
+/**
+ * Mark messages as read. Sets read_at timestamp.
+ */
+export function markMessagesRead(messageIds: number[]): void {
+  if (messageIds.length === 0) return;
+  const now = new Date().toISOString();
+  const placeholders = messageIds.map(() => '?').join(',');
+  exec(
+    `UPDATE messages SET read_at = ? WHERE id IN (${placeholders})`,
+    now, ...messageIds,
   );
 }
 

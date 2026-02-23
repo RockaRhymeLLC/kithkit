@@ -9,6 +9,8 @@ import type http from 'node:http';
 import {
   sendMessage,
   getMessages,
+  getUnreadMessages,
+  markMessagesRead,
   MessageValidationError,
   WorkerRestrictionError,
 } from '../agents/message-router.js';
@@ -75,6 +77,18 @@ export async function handleMessagesRoute(
       const agent = searchParams.get('agent');
       if (!agent) {
         json(res, 400, withTimestamp({ error: 'agent query parameter is required' }));
+        return true;
+      }
+
+      const unread = searchParams.get('unread');
+
+      // ?unread=true — return unread messages and mark them as read
+      if (unread === 'true') {
+        const messages = getUnreadMessages(agent);
+        if (messages.length > 0) {
+          markMessagesRead(messages.map(m => m.id));
+        }
+        json(res, 200, withTimestamp({ data: messages }));
         return true;
       }
 

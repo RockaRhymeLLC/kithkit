@@ -17,6 +17,7 @@
 import fs from 'node:fs';
 import { resolveProjectPath } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
+import { getDatabase } from '../../core/db.js';
 import {
   registerAdapter,
   routeMessage as kithkitRouteMessage,
@@ -51,10 +52,62 @@ export function getChannel(): BmoChannel {
   return 'terminal';
 }
 
-/** Set BMO's active channel. */
+/** Set BMO's active channel. Also updates last_active_channel for text channels. */
 export function setChannel(channel: BmoChannel): void {
   fs.writeFileSync(resolveProjectPath(CHANNEL_FILE_REL), channel + '\n');
   log.info(`Channel set to: ${channel}`);
+  // Track text channels as last active (voice is an input method, not a channel)
+  if (channel !== 'voice' && channel !== 'silent') {
+    updateLastActiveChannel(channel);
+  }
+}
+
+// ── Last active channel tracking ─────────────────────────────
+// Tracks the last text channel that sent an inbound message.
+// Voice input does NOT update this — voice is an input method, not a channel.
+// Used by the voice pipeline to route responses to the right text channel.
+
+const TEXT_CHANNELS: BmoChannel[] = ['telegram', 'telegram-verbose', 'terminal'];
+
+/**
+ * Update last_active_channel when an inbound message arrives from a text channel.
+ * Stored in the feature_state DB table for persistence across daemon restarts.
+ */
+export function updateLastActiveChannel(channel: BmoChannel): void {
+  if (!TEXT_CHANNELS.includes(channel)) return;
+  try {
+    const db = getDatabase();
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO feature_state (feature, state, updated_at)
+       VALUES ('last_active_channel', ?, ?)
+       ON CONFLICT(feature) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+    ).run(JSON.stringify({ channel, updated_at: now }), now);
+    log.debug(`Last active channel updated: ${channel}`);
+  } catch (err) {
+    log.warn('Failed to update last_active_channel', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * Get the last active text channel. Defaults to 'telegram' if none recorded.
+ */
+export function getLastActiveChannel(): BmoChannel {
+  try {
+    const db = getDatabase();
+    const row = db.prepare(
+      `SELECT state FROM feature_state WHERE feature = 'last_active_channel'`,
+    ).get() as { state: string } | undefined;
+    if (row) {
+      const parsed = JSON.parse(row.state);
+      if (parsed.channel && TEXT_CHANNELS.includes(parsed.channel)) {
+        return parsed.channel as BmoChannel;
+      }
+    }
+  } catch { /* missing or parse error */ }
+  return 'telegram';
 }
 
 // ── Adapter registration ─────────────────────────────────────

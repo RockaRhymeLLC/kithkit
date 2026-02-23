@@ -38,6 +38,7 @@ import {
   getChannel,
   setChannel,
   startTypingIndicator,
+  getLastActiveChannel,
 } from '../comms/channel-router.js';
 
 const log = createLogger('voice-server');
@@ -291,10 +292,12 @@ async function handleTranscribe(
     log.info('Voice pipeline: STT complete', { text: sttText });
 
     let channel = getChannel();
-    if (channel === 'terminal') {
-      setChannel('telegram');
-      channel = 'telegram';
-      log.info('Voice input: channel was terminal, switched to telegram');
+    if (channel === 'terminal' || channel === 'silent') {
+      // Route voice response to the last active text channel instead of hardcoding telegram
+      const lastActive = getLastActiveChannel();
+      setChannel(lastActive);
+      channel = lastActive;
+      log.info('Voice input: channel was terminal/silent, switched to last active channel', { lastActive });
     }
 
     if (channel === 'voice') {
@@ -342,7 +345,7 @@ async function handleTranscribe(
         startTypingIndicator();
       }
 
-      const injected = injectText(`[Voice] ${sttText}`);
+      const injected = injectText(`[Voice → ${channel}] ${sttText}`);
       if (!injected) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to inject text into Claude session' }));
