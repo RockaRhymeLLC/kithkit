@@ -55,10 +55,13 @@ To-dos are managed via the daemon HTTP API (default: `http://localhost:3847`):
 | Action | Method | Endpoint | Body / Notes |
 |--------|--------|----------|--------------|
 | List todos | `GET` | `/api/todos` | Query params: `status`, `priority` |
-| Create todo | `POST` | `/api/todos` | JSON body: `{ title, description, priority, due, tags }` |
-| Get todo detail | `GET` | `/api/todos/:id` | Returns full todo with actions array |
-| Update todo | `PUT` | `/api/todos/:id` | JSON body with fields to update |
-| Add work note | `POST` | `/api/todos/:id/note` | JSON body: `{ note, files?, commits?, prs? }` |
+| Create todo | `POST` | `/api/todos` | JSON body: `{ title, description, priority, due_date, tags }` |
+| Get todo detail | `GET` | `/api/todos/:id` | Returns full todo object |
+| Update todo | `PUT` | `/api/todos/:id` | JSON body with fields to update (title, description, priority, status, due_date, tags) |
+| Get todo history | `GET` | `/api/todos/:id/actions` | Returns audit trail of all actions |
+| Delete todo | `DELETE` | `/api/todos/:id` | Permanently removes todo |
+
+Work notes and progress updates are added via `PUT /api/todos/:id` — include a `note` field in the body. The daemon records it in the `todo_actions` audit log automatically when status or priority changes.
 
 ### Example: List open todos
 ```bash
@@ -71,21 +74,14 @@ curl http://localhost:3847/api/todos?priority=high
 ```bash
 curl -X POST http://localhost:3847/api/todos \
   -H "Content-Type: application/json" \
-  -d '{"title": "Set up CI/CD pipeline", "priority": "high", "due": "2026-02-15"}'
+  -d '{"title": "Set up CI/CD pipeline", "priority": "high", "due_date": "2026-02-15"}'
 ```
 
-### Example: Add a work note
-```bash
-curl -X POST http://localhost:3847/api/todos/32/note \
-  -H "Content-Type: application/json" \
-  -d '{"note": "Pipeline configured, committed abc1234", "commits": ["abc1234"], "files": ["src/ci.yml"]}'
-```
-
-### Example: Update status
+### Example: Add a work note / update status
 ```bash
 curl -X PUT http://localhost:3847/api/todos/32 \
   -H "Content-Type: application/json" \
-  -d '{"status": "in-progress"}'
+  -d '{"status": "in_progress"}'
 ```
 
 ### Example: Complete a todo
@@ -93,6 +89,11 @@ curl -X PUT http://localhost:3847/api/todos/32 \
 curl -X PUT http://localhost:3847/api/todos/32 \
   -H "Content-Type: application/json" \
   -d '{"status": "completed"}'
+```
+
+### Example: Get todo action history
+```bash
+curl http://localhost:3847/api/todos/32/actions
 ```
 
 ## Data Format
@@ -107,10 +108,11 @@ See `reference.md` for the full JSON schema.
 2. **Parse command**: Determine action from $ARGUMENTS
 3. **Execute action**:
    - List: `GET /api/todos` with optional filters, display formatted
-   - Add: `POST /api/todos` with title/priority/due, confirm
+   - Add: `POST /api/todos` with title/priority/due_date, confirm
    - Update: `PUT /api/todos/:id` with changed fields
-   - Note: `POST /api/todos/:id/note` with note text and extracted refs
+   - Note: `PUT /api/todos/:id` with status/priority change — daemon auto-logs to audit trail
    - Complete: `PUT /api/todos/:id` with `status: "completed"`
+   - History: `GET /api/todos/:id/actions` to see full audit trail
 4. **Report result**: Confirm what was done
 
 ## Output Format

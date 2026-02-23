@@ -53,31 +53,39 @@ Memory is managed via the daemon HTTP API (default: `http://localhost:3847`):
 
 | Action | Method | Endpoint | Body / Notes |
 |--------|--------|----------|--------------|
-| Store a fact | `POST` | `/api/memory/store` | JSON body: `{ fact, category?, importance?, tags?, subject? }` |
-| Search memories | `GET` | `/api/memory/search` | Query param: `q=search+term` |
-| List memories | `GET` | `/api/memory/list` | Query param: `category=person` (optional) |
-| Detect conflicts | `POST` | `/api/memory/conflicts` | No body required |
+| Store a memory | `POST` | `/api/memory/store` | JSON body: `{ content, type?, category?, tags?, source? }` |
+| Search memories | `POST` | `/api/memory/search` | JSON body: `{ query?, tags?, category?, type?, date_from?, date_to?, mode? }` |
+| Get a memory | `GET` | `/api/memory/:id` | Returns single memory by numeric ID |
+| Delete a memory | `DELETE` | `/api/memory/:id` | Permanently removes memory by numeric ID |
 
-### Example: Store a fact
+Search supports three modes via the `mode` field: `keyword` (default, SQL LIKE), `vector` (semantic, requires vector search enabled), `hybrid` (keyword + vector combined).
+
+Note: there is no list-all endpoint or conflict-detection endpoint. To list memories, use `POST /api/memory/search` with a `category` filter and no `query`.
+
+### Example: Store a memory
 ```bash
 curl -X POST http://localhost:3847/api/memory/store \
   -H "Content-Type: application/json" \
-  -d '{"fact": "Prefers dark mode in all applications", "category": "preference", "importance": "medium"}'
+  -d '{"content": "Prefers dark mode in all applications", "category": "preference", "type": "fact"}'
 ```
 
-### Example: Search memories
+### Example: Search memories by keyword
 ```bash
-curl "http://localhost:3847/api/memory/search?q=email"
+curl -X POST http://localhost:3847/api/memory/search \
+  -H "Content-Type: application/json" \
+  -d '{"query": "email"}'
 ```
 
-### Example: List by category
+### Example: Filter by category
 ```bash
-curl "http://localhost:3847/api/memory/list?category=person"
+curl -X POST http://localhost:3847/api/memory/search \
+  -H "Content-Type: application/json" \
+  -d '{"category": "person"}'
 ```
 
-### Example: Run conflict detection
+### Example: Get a specific memory
 ```bash
-curl -X POST http://localhost:3847/api/memory/conflicts
+curl http://localhost:3847/api/memory/42
 ```
 
 ## File Format
@@ -169,21 +177,22 @@ Note: Legacy `technical` and `event` categories still exist on older files. New 
 3. Confirm what was added (the API returns the created file details)
 
 ### Looking Up
-1. Call `GET /api/memory/search?q=query`
-2. Return matching facts with their source file and metadata
+1. Call `POST /api/memory/search` with `{"query": "search term"}`
+2. Return matching facts with their metadata
 3. If nothing found, say so (don't guess)
 
 ### Listing
-1. Call `GET /api/memory/list` with optional `category` filter
+1. Call `POST /api/memory/search` with `{"category": "person"}` (or other category filter, no `query` needed)
 2. Display grouped by category
 
 ### Searching
-1. Call `GET /api/memory/search?q=term`
-2. Return matching lines with file context and frontmatter metadata
+1. Call `POST /api/memory/search` with `{"query": "term"}`
+2. Return matching memories with metadata
 
 ### Conflict Detection
-1. Call `POST /api/memory/conflicts`
-2. The API groups memories by subject/category similarity and identifies contradictions
+There is no daemon endpoint for conflict detection. To surface potential contradictions manually:
+1. Call `POST /api/memory/search` with relevant category or subject filters
+2. Review returned memories for contradictions
 3. Display as advisory report — flag potential conflicts, let user decide resolution
 
 **Output format:**

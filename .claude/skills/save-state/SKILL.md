@@ -27,7 +27,7 @@ This skill exists as the internal "save" step of `/restart`. Direct invocation i
 
 Do this FIRST, while context is freshest.
 
-For each todo you touched this session, add a work note via the daemon API (`POST /api/todos/:id/note`) capturing:
+For each todo you touched this session, add a work note via the daemon API (`PUT /api/todos/:id`) capturing:
 
 | What to capture | Example |
 |----------------|---------|
@@ -45,7 +45,7 @@ How to identify which todos were touched:
 - Did the human give direction, make decisions, or change priorities on any todo?
 - Did you create, complete, or change status on any todo?
 
-For each one, call `POST /api/todos/:id/note` with a detailed note. Include the key details — be specific, not vague.
+For each one, call `PUT /api/todos/:id` with the note as a description update. Include the key details — be specific, not vague.
 
 **Skip** todos you only glanced at or listed but didn't actually work on or discuss.
 
@@ -85,15 +85,17 @@ What's waiting on the human or external input
 
 ### Step 3: Append to 24hr Log
 
-Call the daemon API: `POST /api/state/save`
+Append a brief entry directly to `.claude/state/memory/summaries/24hr.md`. The format is a timestamped markdown section:
 
-```bash
-curl -X POST http://localhost:3847/api/state/save \
-  -H "Content-Type: application/json" \
-  -d '{"reason": "context low"}'
+```markdown
+## YYYY-MM-DD HH:MM — [reason]
+
+- [1-3 bullet points summarizing what happened this session]
+- Current task: [todo ID and description]
+- Next: [immediate next action]
 ```
 
-The daemon automatically condenses the state and appends to `memory/summaries/24hr.md`. Protected by time throttle (15 min), condensing, and content dedup.
+Write this with the Write or Edit tool — no daemon API call needed. The nightly memory-consolidation task (5am) will rotate this to the appropriate `timeline/YYYY-MM-DD.md` file automatically.
 
 ### Step 4: Confirm
 
@@ -138,7 +140,7 @@ The watchdog sends escalating messages at 50%/65%/80% context usage. When it say
 SessionStart loads assistant-state.md and injects context, so you resume where you left off. Todo notes from step 1 ensure the project record is accurate even if assistant-state gets stale.
 
 ### Preservation Chain
-assistant-state.md → backed up by pre-compact hook (last 5 copies) → appended to 24hr.md via daemon API → rotated to timeline/ daily files by memory-consolidation. Nothing is lost.
+assistant-state.md → backed up by pre-compact hook (last 5 copies) → appended to 24hr.md (direct file write) → rotated to timeline/ daily files by memory-consolidation. Nothing is lost.
 
 ## Best Practices
 
