@@ -43,14 +43,25 @@ export function runTask(
   const timeoutMs = options.timeoutMs ?? 300_000; // 5 min default
 
   return new Promise((resolve) => {
-    // If no args provided, fall back to /bin/sh -c (log a warning)
-    const hasArgs = options.args && options.args.length > 0;
-    if (!hasArgs) {
+    // Require explicit args array — no shell fallback
+    if (!options.args || options.args.length === 0) {
       const log = createLogger('task-runner');
-      log.warn(`Task "${taskName}" uses shell fallback (/bin/sh -c). Prefer explicit args array for safety.`);
+      log.error(`Task "${taskName}" has no args array. Shell fallback (/bin/sh -c) is disabled for security. Add an explicit args array to the task config.`);
+      const finishedAt = new Date().toISOString();
+      const durationMs = Date.now() - startMs;
+      dbExec(
+        'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
+        taskName, 'failure', 'No args array provided — shell fallback disabled', durationMs, startedAt, finishedAt,
+      );
+      const rows = query<TaskResult>(
+        'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
+        taskName,
+      );
+      resolve(rows[0]!);
+      return;
     }
-    const cmd = hasArgs ? options.command : '/bin/sh';
-    const args = hasArgs ? options.args! : ['-c', options.command];
+    const cmd = options.command;
+    const args = options.args;
 
     const child = execFile(
       cmd,
