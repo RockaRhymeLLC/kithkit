@@ -125,7 +125,7 @@ Resolve natural language to absolute dates:
 | `2026-02-01` | Specific date |
 | `5pm`, `17:00`, `5:30 PM` | Specific time |
 
-If no time given, default to **9:00 AM**.
+If no time given and no natural-language time keyword (`morning`, `tonight`), default to **9:00 AM**.
 
 ## Notification Delivery
 

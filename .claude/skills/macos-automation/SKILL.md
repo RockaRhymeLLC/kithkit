@@ -1,8 +1,7 @@
 ---
 name: macos-automation
 description: macOS automation patterns — AppleScript/osascript, accessibility, clipboard, notifications, window management. Use when automating macOS system tasks.
-autoContext:
-  - "when working on macOS automation, AppleScript, or system-level scripting tasks"
+user-invocable: false
 ---
 
 # macOS Automation

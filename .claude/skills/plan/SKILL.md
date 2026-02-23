@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Create implementation plans with stories and tests using the spec-driven workflow. Use after completing a spec, ready for technical planning.
+description: Create implementation plans with stories and tests from an approved spec. Use when converting a spec into actionable stories, tests, and a technical approach ready for /build.
 argument-hint: [spec-file or story description]
 ---
 
