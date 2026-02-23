@@ -311,7 +311,7 @@ export class Scheduler {
             cwd: task.config.cwd as string | undefined,
           });
 
-      task.lastRunAt = new Date().toISOString() as unknown as Date;
+      task.lastRunAt = new Date();
       task.nextRunAt = this._calculateNextRun(task);
 
       if (this._onTaskComplete) {

@@ -36,15 +36,9 @@ icalBuddy eventsNow
 icalBuddy eventsFrom:'today' to:'saturday'
 ```
 
-### Available Calendars
+### Discovering Calendars
 
-| Calendar | Type | Contents |
-|----------|------|----------|
-| Work | CalDAV | Work meetings (Exchange/CalDAV) |
-| Calendar | CalDAV | Personal events (iCloud) |
-| Reminders | Local | macOS Reminders integration |
-
-*Actual calendars vary per user. Run `icalBuddy calendars` to discover available calendars.*
+Calendars vary per user. Run `icalBuddy calendars` to discover available calendars and their types (CalDAV, iCloud, Exchange, Local, etc.).
 
 ### Filtering Options
 

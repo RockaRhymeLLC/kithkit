@@ -34,7 +34,7 @@ touch .claude/state/restart-requested
 
 # 4. Tell user (terminal)
 echo "Restart requested. Session will restart in ~5 seconds."
-echo "Attach after restart with: tmux attach -t assistant"
+echo "Attach after restart with: tmux attach -t <your-session-name>"
 ```
 
 ## Important

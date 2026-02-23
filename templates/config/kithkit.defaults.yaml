@@ -14,7 +14,30 @@ daemon:
     max_files: 5
 
 scheduler:
-  tasks: []
+  tasks:
+    - name: context-watchdog
+      interval: "3m"
+      enabled: true
+      config:
+        requires_session: true
+
+    - name: todo-reminder
+      interval: "30m"
+      enabled: true
+      config:
+        requires_session: false
+
+    - name: approval-audit
+      cron: "0 9 1 * *"  # 1st of month, 9am
+      enabled: true
+      config:
+        requires_session: true
+
+    - name: backup
+      cron: "0 3 * * 0"  # Sunday 3am
+      enabled: true
+      config:
+        requires_session: false
 
 security:
   rate_limits:

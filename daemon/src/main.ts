@@ -7,7 +7,7 @@
 import http from 'node:http';
 import path from 'node:path';
 import { loadConfig, type KithkitConfig } from './core/config.js';
-import { openDatabase } from './core/db.js';
+import { openDatabase, closeDatabase } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
@@ -267,6 +267,9 @@ async function shutdown(signal: string): Promise<void> {
     }
   }
 
+  closeDatabase();
+  log.info('Database closed');
+
   server.close(() => {
     log.info('Daemon stopped');
     process.exit(0);
@@ -276,6 +279,21 @@ async function shutdown(signal: string): Promise<void> {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+process.on('unhandledRejection', (reason) => {
+  log.error('Unhandled promise rejection', {
+    error: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
+});
+
+process.on('uncaughtException', (err) => {
+  log.error('Uncaught exception — shutting down', {
+    error: err.message,
+    stack: err.stack,
+  });
+  shutdown('uncaughtException').catch(() => process.exit(1));
+});
 
 log.info('Daemon initialized');
 

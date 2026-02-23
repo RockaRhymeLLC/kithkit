@@ -65,7 +65,7 @@ cli/
 
 ## Layer 2: Daemon (`daemon/`)
 
-The daemon is a persistent Node.js HTTP server (`127.0.0.1:<port>`, default 3847) that manages all agent state and background services. It starts with `npx kithkit start` or via `scripts/start-tmux.sh`.
+The daemon is a persistent Node.js HTTP server (`127.0.0.1:<port>`, default 3847) that manages all agent state and background services. It starts via `scripts/start-tmux.sh` (which launches both the daemon and a Claude Code session in tmux).
 
 ```
 daemon/src/
@@ -230,26 +230,37 @@ Hooks are bash scripts in `.claude/hooks/` that run at specific points in the Cl
 
 | Hook | When it runs |
 |------|-------------|
-| `session-start.sh` | After Claude Code session starts — loads saved state, sends "online" notification |
+| `memory-extraction.sh` | On session stop — extracts and stores memories from the conversation |
 | `pre-build.sh` | Before build commands — safety checks |
+| `pre-compact.sh` | Before context compaction — saves work state |
+| `set-channel.sh` | On user prompt submit — configures the active communication channel |
 
 Hooks are configured in `.claude/settings.json`.
 
 ### State Files
 
-Agent state in `.claude/state/` persists across sessions:
+Kithkit uses two layers of state persistence:
+
+**Database state** (in `kithkit.db` via daemon API):
+
+| Table | Purpose |
+|-------|---------|
+| `todos` / `todo_actions` | Todos with full action history audit trail |
+| `memories` | Facts, decisions, episodic memories (with optional vector embeddings) |
+| `calendar` | Scheduled events, reminders, deadlines |
+| `messages` | Inter-agent message log |
+| `agents` / `worker_jobs` | Agent registry and worker job tracking |
+| `config` / `feature_state` | Runtime config overrides and per-feature state |
+| `task_results` | Scheduler task execution history |
+
+**File state** (in `.claude/state/`, persists across sessions):
 
 | File/Dir | Purpose |
 |----------|---------|
-| `identity.json` | Agent name and identity metadata |
 | `autonomy.json` | Current autonomy mode (yolo / confident / cautious / supervised) |
-| `todos/` | JSON todo files (used by the `/todo` skill) |
-| `memory/memories/` | Individual memory files with YAML frontmatter |
-| `memory/summaries/24hr.md` | Rolling 24-hour activity log |
-| `memory/timeline/` | Daily log files |
-| `calendar.md` | Scheduled events, reminders, deadlines |
 | `channel.txt` | Active channel (`telegram`, `silent`, etc.) |
 | `assistant-state.md` | Saved work context (written before restart, read on resume) |
+| `safe-senders.json` | Trusted contacts for message authentication |
 
 ---
 

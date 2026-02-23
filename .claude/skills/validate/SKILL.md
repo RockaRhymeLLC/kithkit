@@ -16,7 +16,7 @@ Run comprehensive validation checks to ensure specifications, plans, and impleme
 
 Examples:
 - `/validate` - Validate current state (finds most recent plan)
-- `/validate plans/20260127-feature.plan.md` - Validate specific plan
+- `/validate projects/feature/20260127-feature.plan.md` - Validate specific plan
 
 ## Validation Layers
 
@@ -87,7 +87,7 @@ Execute each layer in order. All must pass for validation success.
 Result: PASS
 
 ### Layer 2: Plan Completeness
-- Spec reference: specs/20260127-feature.spec.md (exists)
+- Spec reference: projects/feature/20260127-feature.spec.md (exists)
 - Technical approach: Found
 - Tasks: 4 defined
 Result: PASS
