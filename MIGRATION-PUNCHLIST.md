@@ -10,33 +10,30 @@ Migration from `~/CC4Me-BMO` (CC4Me v1) to `~/KKit-BMO` (Kithkit v2 framework).
 
 ## Pre-Move (do while still running from CC4Me-BMO)
 
-- [ ] **1. Verify daemon builds and starts** — `cd ~/KKit-BMO && npm run build && node daemon/dist/main.js` — confirm health check passes
-- [ ] **2. Fix system prompt wiring** — `start.sh` reads `.claude/state/system-prompt.txt` but kithkit uses `identity.md`. Either update `start.sh` to read `identity.md` or symlink/copy
-- [ ] **3. Create logs/ directory** — `mkdir ~/KKit-BMO/logs` — daemon and launchd plists need it
-- [ ] **4. Update launchd plists** — all 3 point to CC4Me-BMO, need to point to KKit-BMO:
-  - `com.bmo.daemon.plist` — WorkingDirectory + daemon entry point path (`daemon/dist/main.js` not `daemon/dist/core/main.js`)
-  - `com.assistant.bmo.plist` — WorkingDirectory + start-tmux.sh path
-  - `com.bmo.restart-watcher.plist` — WorkingDirectory + restart-watcher.sh path
-- [ ] **5. Set up Claude Code project memory** — create `~/.claude/projects/-Users-bmo-KKit-BMO/memory/MEMORY.md` (or migrate from CC4Me-BMO equivalent)
-- [ ] **6. Ensure projects/ dir exists at repo root** — `mkdir -p ~/KKit-BMO/projects` for specs/plans/stories/tests
+- [x] **1. Verify daemon builds and starts** — ✅ 2026-02-22
+- [x] **2. Fix system prompt wiring** — ✅ 2026-02-22 (identity.md at repo root)
+- [x] **3. Create logs/ directory** — ✅ 2026-02-22
+- [x] **4. Update launchd plists** — ✅ 2026-02-22. **NOTE**: Use `bootstrap.js` not `main.js` — see SOP gotcha #2
+- [x] **5. Set up Claude Code project memory** — ✅ 2026-02-22
+- [x] **6. Ensure projects/ dir exists at repo root** — ✅ 2026-02-22
 
 ## Post-Move (verify after cutover)
 
-- [ ] **7. Daemon health** — `curl http://localhost:3847/health` returns OK
-- [ ] **8. Session starts with identity** — BMO personality loads, system prompt present
-- [ ] **9. Context watchdog fires** — verify scheduler task runs (check logs)
-- [ ] **10. Selectively import state from CC4Me-BMO** (O-06 from inventory):
-  - Review and import relevant memories (many reference old patterns — rewrite stale refs)
-  - Review and import relevant todos (check accuracy against new architecture)
-  - Import calendar entries if any are still active
+- [x] **7. Daemon health** — ✅ 2026-02-22. `{"status":"ok","extension":"bmo"}` with 19 scheduler tasks
+- [x] **8. Session starts with identity** — ✅ 2026-02-22. BMO personality loads, `/status` shows agent: BMO
+- [x] **9. Context watchdog fires** — ✅ 2026-02-22. Required fix: core tasks weren't registered (see SOP gotcha #4). Fixed by calling `registerCoreTasks()` in extension init.
+- [x] **10. Selectively import state from CC4Me-BMO** — ✅ 2026-02-22
+  - Imported 8 future calendar events (BCPS camp, Madrid trip, cert expirations)
+  - Imported 5 active todos (3 blocked, 1 in-progress, 1 pending) + 2 new follow-up todos
+  - Memories: deferred — CC4Me had 1,469 memories, will import high-value ones incrementally via daemon memory API
 - [ ] **11. Set up Telegram** — rebuild via recipe, reference `~/CC4Me-BMO/daemon/src/comms/adapters/telegram.ts` and `~/CC4Me-BMO/scripts/telegram-send.sh`
 - [ ] **12. Set up email** — rebuild via recipe, reference `~/CC4Me-BMO/daemon/src/comms/adapters/email/`
 - [ ] **13. Set up A2A / agent-comms** — install cc4me-network SDK fresh, rebuild integration, reference `~/CC4Me-BMO/daemon/src/comms/network/`
-- [ ] **14. Set up voice** — rebuild via recipe, reference `~/CC4Me-BMO/daemon/src/voice/` and `~/CC4Me-BMO/voice-client/`
+- [ ] **14. Set up voice** — rebuild via recipe, reference `~/CC4Me-BMO/daemon/src/voice/`. **NOTE**: voice is disabled in config until Python venv is set up (see SOP gotcha #3)
 - [ ] **15. Verify Telegram delivery** — send + receive works both directions
 - [ ] **16. Verify agent-comms with R2** — send a ping, confirm she receives it
-- [ ] **17. Verify all scheduler tasks fire** — check logs for errors on configured tasks
-- [ ] **18. Save-state → restart cycle works** — test full context management loop
+- [x] **17. Verify all scheduler tasks fire** — ✅ 2026-02-22. 19 tasks registered, context-watchdog manually triggered: success
+- [ ] **18. Save-state → restart cycle works** — infrastructure verified (hook, state files, daemon), full cycle test pending
 
 ## Not Migrating (per inventory decisions)
 

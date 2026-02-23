@@ -42,6 +42,7 @@ import { registerWithRelay } from './comms/network/registration.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { initVoice, stopVoice } from './voice/index.js';
 import { registerBmoTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
+import { registerCoreTasks } from '../automation/tasks/index.js';
 
 const log = createLogger('bmo-extension');
 
@@ -329,6 +330,9 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     tasks: schedulerConfig,
     tickIntervalMs: 1000,
   });
+
+  // Register core task handlers (context-watchdog, todo-reminder, etc.)
+  registerCoreTasks(_scheduler);
 
   // Register real BMO task handlers (s-m29)
   registerBmoTasks(_scheduler);

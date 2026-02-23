@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.assistant.bmo</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/bmo/CC4Me-BMO/scripts/start-tmux.sh</string>
+        <string>--detach</string>
+        <string>--skip-permissions</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/bmo/CC4Me-BMO</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- KeepAlive removed: tmux script exits after starting detached session -->
+    <!-- The tmux server maintains the session independently -->
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/bmo/.claude/logs/assistant.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/bmo/.claude/logs/assistant.error.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/bmo/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+
+        <key>TERM</key>
+        <string>xterm-256color</string>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Interactive</string>
+
+    <key>LowPriorityIO</key>
+    <false/>
+
+    <key>Nice</key>
+    <integer>0</integer>
+</dict>
+</plist>

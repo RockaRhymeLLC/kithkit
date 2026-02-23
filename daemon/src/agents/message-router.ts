@@ -9,6 +9,7 @@
  */
 
 import { insert, query, exec } from '../core/db.js';
+import { injectMessage } from './tmux.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -42,10 +43,8 @@ type TmuxInjector = (session: string, text: string) => boolean;
 
 let tmuxInjector: TmuxInjector = defaultTmuxInjector;
 
-function defaultTmuxInjector(_session: string, _text: string): boolean {
-  // Real implementation would use tmux send-keys
-  // For now, return true (delivery logged in DB regardless)
-  return true;
+function defaultTmuxInjector(agentId: string, text: string): boolean {
+  return injectMessage(agentId, text);
 }
 
 // ── Public API ───────────────────────────────────────────────
