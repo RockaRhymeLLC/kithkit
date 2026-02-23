@@ -12,7 +12,7 @@ import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
 import { handleMemoryRoute } from './api/memory.js';
-import { handleAgentsRoute } from './api/agents.js';
+import { handleAgentsRoute, setProfilesDir } from './api/agents.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
@@ -90,6 +90,7 @@ const log = createLogger('main');
 // ── Database ─────────────────────────────────────────────────
 
 openDatabase(projectDir);
+setProfilesDir(path.resolve(projectDir, '.claude', 'agents'));
 
 log.info('Kithkit daemon starting', {
   agent: config.agent.name,
@@ -218,6 +219,11 @@ function tryListen(): void {
 
     // Extension init hook — runs after server is listening
     const ext = getExtension();
+    if (!ext) {
+      log.warn('No extension registered — daemon is running without an agent extension. ' +
+        'If you expected an extension, make sure your entry point calls registerExtension() ' +
+        'before importing main.ts (e.g., use bootstrap.ts as the entry point).');
+    }
     if (ext?.onInit) {
       const initStart = Date.now();
       try {
@@ -288,11 +294,23 @@ process.on('unhandledRejection', (reason) => {
 });
 
 process.on('uncaughtException', (err) => {
-  log.error('Uncaught exception — shutting down', {
-    error: err.message,
-    stack: err.stack,
-  });
-  shutdown('uncaughtException').catch(() => process.exit(1));
+  const ext = getExtension();
+  if (ext && !isDegraded()) {
+    // When an extension is loaded, try degraded mode instead of shutting down.
+    // This handles async errors from extension child processes, timers, etc.
+    log.error('Uncaught exception — entering degraded mode (extension disabled)', {
+      error: err.message,
+      stack: err.stack,
+    });
+    setDegraded(true);
+  } else {
+    // No extension or already degraded — fatal, shut down
+    log.error('Uncaught exception — shutting down', {
+      error: err.message,
+      stack: err.stack,
+    });
+    shutdown('uncaughtException').catch(() => process.exit(1));
+  }
 });
 
 log.info('Daemon initialized');
