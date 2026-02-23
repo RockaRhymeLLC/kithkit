@@ -9,6 +9,7 @@
 import { CronExpressionParser } from 'cron-parser';
 import { parseInterval, type TaskScheduleConfig } from '../core/config.js';
 import { runTask, type TaskResult } from './task-runner.js';
+import { registerCoreTasks } from './tasks/index.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -43,6 +44,8 @@ export interface SchedulerOptions {
   getLastHumanActivity?: () => Date | null;
   /** Check if a named tmux session exists (for requiresSession tasks). */
   sessionExists?: () => boolean;
+  /** Auto-register built-in core task handlers (context-watchdog, todo-reminder, etc.). Defaults to true. */
+  autoRegisterCoreTasks?: boolean;
 }
 
 // ── Scheduler ────────────────────────────────────────────────
@@ -63,6 +66,11 @@ export class Scheduler {
     this._getLastHumanActivity = options.getLastHumanActivity;
     this._sessionExists = options.sessionExists;
     this._loadTasks(options.tasks);
+
+    // Auto-register built-in core task handlers unless explicitly disabled
+    if (options.autoRegisterCoreTasks !== false) {
+      registerCoreTasks(this);
+    }
   }
 
   // ── Public API ──────────────────────────────────────────

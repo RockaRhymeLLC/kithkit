@@ -138,7 +138,7 @@ Human ←→ Comms Agent ←→ Daemon ←→ Workers
 
 **Comms agent** — the Claude Code session with your agent's personality. Handles conversations directly and delegates complex tasks to workers.
 
-**Daemon** — a background HTTP server on localhost. Manages state (todos, calendar, memories), agent lifecycle, scheduling, and channel routing. Everything goes through its API.
+**Daemon** — a background HTTP server on localhost. Manages state (todos, calendar, memories), agent lifecycle, scheduling, and channel routing. Everything goes through its API. Agent repos use a `bootstrap.ts` entry point that registers the extension before starting the daemon — running `main.ts` directly starts a bare daemon with no extension loaded.
 
 **Workers** — ephemeral Claude Code agents scoped by profiles (research, coding, testing, etc.). Each profile defines allowed tools, model, and turn limits. The comms agent spawns workers on demand.
 
