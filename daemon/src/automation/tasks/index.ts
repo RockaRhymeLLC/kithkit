@@ -11,6 +11,8 @@ import { register as registerContextWatchdog } from './context-watchdog.js';
 import { register as registerTodoReminder } from './todo-reminder.js';
 import { register as registerApprovalAudit } from './approval-audit.js';
 import { register as registerBackup } from './backup.js';
+import { register as registerOrchestratorIdle } from './orchestrator-idle.js';
+import { register as registerMessageDelivery } from './message-delivery.js';
 
 /**
  * Register all core task handlers with the scheduler.
@@ -23,6 +25,8 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'todo-reminder', register: registerTodoReminder },
     { name: 'approval-audit', register: registerApprovalAudit },
     { name: 'backup', register: registerBackup },
+    { name: 'orchestrator-idle', register: registerOrchestratorIdle },
+    { name: 'message-delivery', register: registerMessageDelivery },
   ];
 
   for (const { name, register } of registrations) {
