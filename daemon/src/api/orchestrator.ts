@@ -171,14 +171,17 @@ export async function handleOrchestratorRoute(
 
 function buildOrchestratorPrompt(task: string, context?: string): string {
   const parts = [
-    'You are the orchestrator agent. Your role is to decompose complex tasks, spawn workers, coordinate their output, and report results back to the comms agent.',
+    'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality, no humor, no conversational style.',
+    '',
+    'Your role: decompose complex tasks, spawn workers, coordinate their output, and report structured results back to the comms agent.',
     '',
     'Rules:',
-    '- Output structured JSON, not prose',
-    '- Spawn workers via POST http://localhost:3847/api/agents/spawn',
+    '- Output structured results, not conversational prose',
+    '- Spawn workers via POST http://localhost:3847/api/agents/spawn (profiles: research, coding, testing)',
     '- Check worker status via GET http://localhost:3847/api/agents/:id/status',
-    '- Report results back via POST http://localhost:3847/api/messages',
+    '- Report results to comms via: curl -s -X POST http://localhost:3847/api/messages -H "Content-Type: application/json" -d \'{"from":"orchestrator","to":"comms","type":"result","body":"<your result>"}\'',
     '- When all work is complete, send a result message to comms and exit',
+    '- Do not interact with the human directly — only comms talks to humans',
     '',
     `Task: ${task}`,
   ];
