@@ -128,6 +128,70 @@ else
 fi
 echo ""
 
+# Smart memory loading — query daemon for relevant memories
+if [ "$DAEMON_RUNNING" = "true" ]; then
+  # Extract keywords from assistant-state for context-aware memory search
+  SEARCH_QUERY=""
+  if [ -f "$STATE_DIR/assistant-state.md" ]; then
+    # Pull key phrases: headings, bolded text, first few words of bullet points
+    SEARCH_QUERY=$(cat "$STATE_DIR/assistant-state.md" | \
+      grep -E '(^#+|^\*\*|^- )' | \
+      sed 's/^[#*\- ]*//' | sed 's/\*//g' | \
+      head -5 | tr '\n' ' ' | \
+      sed 's/[[:space:]]\+/ /g' | \
+      cut -c1-200)
+  fi
+
+  # Fallback: use agent name as generic query
+  if [ -z "$SEARCH_QUERY" ]; then
+    SEARCH_QUERY="important facts preferences decisions"
+  fi
+
+  # Query daemon memory API (hybrid search for best results)
+  MEMORY_CONTEXT=$(curl -s --connect-timeout 2 --max-time 5 \
+    -X POST "http://localhost:3847/api/memory/search" \
+    -H 'Content-Type: application/json' \
+    -d "{\"mode\":\"hybrid\",\"query\":\"$SEARCH_QUERY\",\"limit\":10}" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    memories = data.get('data', [])
+    if not memories:
+        sys.exit(0)
+    for m in memories:
+        cat = m.get('category', 'other')
+        content = m.get('content', '')[:120]
+        la = m.get('last_accessed', '')
+        if la:
+            # Format as relative time
+            from datetime import datetime
+            try:
+                accessed = datetime.fromisoformat(la.replace('Z', '+00:00'))
+                delta = datetime.now(accessed.tzinfo) - accessed if accessed.tzinfo else datetime.now() - accessed
+                days = delta.days
+                if days == 0:
+                    age = 'today'
+                elif days == 1:
+                    age = '1d ago'
+                else:
+                    age = f'{days}d ago'
+            except:
+                age = la[:10]
+        else:
+            age = 'never'
+        content_oneline = content.replace(chr(10), ' ').strip()
+        print(f'- [{cat}] {content_oneline} (accessed: {age})')
+except:
+    pass
+" 2>/dev/null)
+
+  if [ -n "$MEMORY_CONTEXT" ]; then
+    echo "### Relevant Memories"
+    echo "$MEMORY_CONTEXT"
+    echo ""
+  fi
+fi
+
 echo "---"
 
 # --- Auto-resume: inject a bootstrap prompt via tmux ---

@@ -2,6 +2,10 @@
  * Memory API — store, search (structured), retrieve, and delete memories.
  * Structured search covers keyword (SQL LIKE), tags, category, and date ranges.
  * Embedding column is reserved for vector search (s-f05b).
+ *
+ * Features:
+ * - Vector dedup on store (optional, via `dedup: true` in request body)
+ * - Access tracking (last_accessed updated on retrieval/search)
  */
 
 import type http from 'node:http';
@@ -21,7 +25,11 @@ interface Memory {
   embedding: Buffer | null;
   created_at: string;
   updated_at: string;
+  last_accessed: string | null;
 }
+
+/** Similarity threshold for vector dedup (0-1, higher = stricter). */
+const DEDUP_SIMILARITY_THRESHOLD = 0.85;
 
 interface SearchFilters {
   query?: string;
@@ -80,7 +88,18 @@ function formatMemory(m: Memory): Record<string, unknown> {
     source: m.source,
     created_at: m.created_at,
     updated_at: m.updated_at,
+    last_accessed: m.last_accessed,
   };
+}
+
+/** Update last_accessed for a batch of memory IDs. */
+function touchMemories(ids: number[]): void {
+  if (ids.length === 0) return;
+  const db = getDatabase();
+  const placeholders = ids.map(() => '?').join(',');
+  db.prepare(
+    `UPDATE memories SET last_accessed = datetime('now') WHERE id IN (${placeholders})`,
+  ).run(...ids);
 }
 
 // ── Structured search ────────────────────────────────────────
@@ -177,6 +196,39 @@ export async function handleMemoryRoute(
         return true;
       }
 
+      // Vector dedup: if dedup=true and vector search is available, find candidates
+      // Returns candidates to the caller — the agent decides whether to store or skip.
+      // Reason: vector similarity gives false positives (e.g. "Chrissy likes pie" vs
+      // "David likes pie" score high but are different memories). The LLM decides.
+      const wantDedup = body.dedup === true;
+      if (wantDedup && _vectorEnabled) {
+        try {
+          const candidates = await vectorSearch(body.content as string, 3);
+          const similar = candidates.filter(c => c.score >= DEDUP_SIMILARITY_THRESHOLD);
+          if (similar.length > 0) {
+            json(res, 200, withTimestamp({
+              action: 'review_duplicates',
+              message: 'Potential duplicates found — caller decides whether to store',
+              duplicates: similar.map(c => ({
+                id: c.id,
+                content: c.content,
+                similarity: c.score,
+                category: c.category,
+              })),
+              proposed: {
+                content: body.content,
+                type: body.type ?? 'fact',
+                category: body.category ?? null,
+                tags: body.tags ?? [],
+              },
+            }));
+            return true;
+          }
+        } catch {
+          // Dedup check failed — fall through and store anyway
+        }
+      }
+
       const data: Record<string, unknown> = {
         content: body.content,
       };
@@ -222,12 +274,14 @@ export async function handleMemoryRoute(
 
       if (mode === 'vector') {
         const results = await vectorSearch(body.query as string, (body.limit as number) ?? 10);
+        touchMemories(results.map(r => r.id));
         json(res, 200, withTimestamp({ data: results, mode: 'vector' }));
         return true;
       }
 
       if (mode === 'hybrid') {
         const results = await hybridSearch(body.query as string, (body.limit as number) ?? 10);
+        touchMemories(results.map(r => r.id));
         json(res, 200, withTimestamp({ data: results, mode: 'hybrid' }));
         return true;
       }
@@ -254,6 +308,7 @@ export async function handleMemoryRoute(
       if (hasDateTo) filters.date_to = body.date_to as string;
 
       const results = searchMemories(filters);
+      touchMemories(results.map(r => r.id as number));
       json(res, 200, withTimestamp({ data: results, mode: 'keyword' }));
       return true;
     }
@@ -267,6 +322,7 @@ export async function handleMemoryRoute(
           json(res, 404, withTimestamp({ error: 'Not found' }));
           return true;
         }
+        touchMemories([memory.id]);
         json(res, 200, withTimestamp(formatMemory(memory)));
         return true;
       }

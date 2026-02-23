@@ -19,6 +19,8 @@ import { createSessionDir } from '../agents/lifecycle.js';
 import { exec, query, update } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
 import { logActivity } from './activity.js';
+import { isVectorSearchEnabled } from './memory.js';
+import { hybridSearch } from '../memory/vector-search.js';
 
 const log = createLogger('orchestrator-api');
 
@@ -51,8 +53,8 @@ export async function handleOrchestratorRoute(
       // Create session directory for orchestrator artifacts
       const sessionDir = createSessionDir('orchestrator');
 
-      // Spawn orchestrator with the task as initial prompt
-      const orchestratorPrompt = buildOrchestratorPrompt(task, context, sessionDir);
+      // Spawn orchestrator with the task as initial prompt (includes memory context)
+      const orchestratorPrompt = await buildOrchestratorPrompt(task, context, sessionDir);
       const session = spawnOrchestratorSession(orchestratorPrompt);
 
       if (!session) {
@@ -187,7 +189,7 @@ export async function handleOrchestratorRoute(
 
 // ── Helpers ──────────────────────────────────────────────────
 
-function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: string): string {
+async function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: string): Promise<string> {
   const parts = [
     'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality, no humor, no conversational style.',
     '',
@@ -227,6 +229,24 @@ function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: st
 
   if (context) {
     parts.push('', `Context: ${context}`);
+  }
+
+  // Inject relevant memories from the database
+  try {
+    if (isVectorSearchEnabled()) {
+      // Use task description as search query for relevant context
+      const searchQuery = task.slice(0, 300);
+      const memories = await hybridSearch(searchQuery, 10);
+      if (memories.length > 0) {
+        parts.push('', 'Relevant memories from database (for context):');
+        for (const m of memories) {
+          const content = m.content.replace(/\n/g, ' ').slice(0, 150);
+          parts.push(`- [${m.category ?? 'general'}] ${content}`);
+        }
+      }
+    }
+  } catch {
+    // Memory lookup failure is non-fatal — orchestrator works fine without it
   }
 
   return parts.join('\n');

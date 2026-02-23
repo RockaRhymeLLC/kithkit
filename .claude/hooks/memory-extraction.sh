@@ -5,6 +5,11 @@
 # Spawns a separate Claude session (Haiku) to extract persistent facts
 # from the conversation transcript and store them via the daemon memory API.
 #
+# Features:
+# - Vector dedup via `dedup: true` in store request
+# - Source tracking (comms vs orchestrator session)
+# - Fallback to plain store if dedup unavailable
+#
 # Runs as async hook — non-blocking to the main session.
 
 # Ensure claude binary is on PATH (hooks inherit a minimal shell environment)
@@ -53,12 +58,29 @@ if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
   exit 0
 fi
 
-# Build inventory of existing memories via daemon API
-INVENTORY=$(curl -s "$DAEMON_URL/api/memory" 2>/dev/null | python3 -c "
+# Detect session type for source tracking
+SESSION_SOURCE="extraction"
+TMUX_BIN="/opt/homebrew/bin/tmux"
+COMMS_SESSION=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
+COMMS_SESSION="${COMMS_SESSION:-bmo}"
+
+if [ -n "$TMUX" ]; then
+  CURRENT_SESSION=$($TMUX_BIN display-message -p '#{session_name}' 2>/dev/null || true)
+  if [ "$CURRENT_SESSION" = "$COMMS_SESSION" ]; then
+    SESSION_SOURCE="comms-extraction"
+  elif [ "$CURRENT_SESSION" = "${COMMS_SESSION}-orch" ]; then
+    SESSION_SOURCE="orchestrator-extraction"
+  fi
+fi
+
+# Build inventory of existing memories via daemon API (keyword search for all)
+INVENTORY=$(curl -s -X POST "$DAEMON_URL/api/memory/search" \
+  -H 'Content-Type: application/json' \
+  -d '{"category":"person"}' 2>/dev/null | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    memories = data if isinstance(data, list) else data.get('memories', [])
+    memories = data.get('data', [])
     for m in memories:
         cat = m.get('category', '')
         content = m.get('content', '')[:80]
@@ -66,18 +88,24 @@ try:
 except: pass
 " 2>/dev/null)
 
-# Fallback: read from filesystem if daemon is unavailable
-if [ -z "$INVENTORY" ]; then
-  MEMORY_DIR="$PROJECT_DIR/.claude/state/memory/memories"
-  if [ -d "$MEMORY_DIR" ]; then
-    INVENTORY=$(for f in "$MEMORY_DIR"/*.md; do
-      [ -f "$f" ] || continue
-      subj=$(grep -m1 '^subject:' "$f" 2>/dev/null | sed 's/^subject: *//')
-      cat=$(grep -m1 '^category:' "$f" 2>/dev/null | sed 's/^category: *//')
-      [ -n "$subj" ] && echo "- [$cat] $subj"
-    done | sort)
-  fi
-fi
+# Also get other categories
+for cat in preference infrastructure tool architecture account decision; do
+  MORE=$(curl -s -X POST "$DAEMON_URL/api/memory/search" \
+    -H 'Content-Type: application/json' \
+    -d "{\"category\":\"$cat\"}" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    memories = data.get('data', [])
+    for m in memories:
+        cat = m.get('category', '')
+        content = m.get('content', '')[:80]
+        print(f'- [{cat}] {content}')
+except: pass
+" 2>/dev/null)
+  [ -n "$MORE" ] && INVENTORY="$INVENTORY
+$MORE"
+done
 
 # Build the prompt and write to a temp file
 PROMPT_FILE=$(mktemp /tmp/kithkit-extract-prompt.XXXXXX)
@@ -89,10 +117,26 @@ Read only the LAST 200 lines to stay fast.
 
 Extract any NEW persistent facts worth remembering.
 
-Store each memory by running curl to the daemon API:
-curl -s -X POST $DAEMON_URL/api/memory \\
+Store each memory using a two-step process:
+
+Step 1: Check for duplicates first (dedup:true). The API returns potential duplicates
+for YOU to review — it does NOT auto-reject:
+
+curl -s -X POST $DAEMON_URL/api/memory/store \\
   -H 'Content-Type: application/json' \\
-  -d '{"content":"the fact","type":"memory","category":"preference","tags":["tag1"]}'
+  -d '{"content":"the fact","type":"fact","category":"preference","tags":["tag1"],"source":"$SESSION_SOURCE","dedup":true}'
+
+If the response contains "action":"review_duplicates", compare the "duplicates" array
+against your proposed memory. Only skip if the existing memory truly covers the same
+information. Similar wording about DIFFERENT subjects is NOT a duplicate (e.g.
+"Chrissy likes pie" vs "David likes pie" are different memories despite high similarity).
+
+Step 2: If NOT a duplicate, store without dedup flag:
+curl -s -X POST $DAEMON_URL/api/memory/store \\
+  -H 'Content-Type: application/json' \\
+  -d '{"content":"the fact","type":"fact","category":"preference","tags":["tag1"],"source":"$SESSION_SOURCE"}'
+
+If dedup is unavailable (503), store directly without the flag.
 
 ## EXISTING MEMORIES — do NOT duplicate
 $INVENTORY
@@ -107,6 +151,7 @@ Before storing ANY memory, scan the EXISTING MEMORIES list above:
 - Same person = same individual. Do NOT create separate entries for sub-facts about existing people.
 - Same topic = same concept. Do NOT create narrow entries about topics already covered.
 - When in doubt, SKIP. A missed extraction is harmless. A duplicate wastes time.
+- The API also does vector dedup (dedup:true), but manual review first is faster and cheaper.
 
 ### 2. What qualifies as a NEW memory
 ALL of these must be true:
