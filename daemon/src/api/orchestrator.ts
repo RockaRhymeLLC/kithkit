@@ -17,6 +17,7 @@ import {
 import { sendMessage } from '../agents/message-router.js';
 import { exec, query, update } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
+import { logActivity } from './activity.js';
 
 const log = createLogger('orchestrator-api');
 
@@ -72,6 +73,14 @@ export async function handleOrchestratorRoute(
           updated_at: ts,
         });
       }
+
+      // Log activity: session_start
+      logActivity({
+        agent_id: 'orchestrator',
+        session_id: session,
+        event_type: 'session_start',
+        details: `Spawned for task: ${task.slice(0, 200)}`,
+      });
 
       // Log the escalation as a message
       sendMessage({
@@ -153,6 +162,11 @@ export async function handleOrchestratorRoute(
         update('agents', 'orchestrator', {
           status: 'stopped',
           updated_at: new Date().toISOString(),
+        });
+        logActivity({
+          agent_id: 'orchestrator',
+          event_type: 'session_end',
+          details: 'Force-killed after shutdown timeout (no acknowledgment)',
         });
       }
     }, SHUTDOWN_TIMEOUT_MS);

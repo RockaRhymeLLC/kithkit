@@ -20,6 +20,7 @@ import {
   injectMessage,
 } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
+import { logActivity } from '../../api/activity.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('orchestrator-idle');
@@ -79,6 +80,11 @@ async function run(config: Record<string, unknown>): Promise<void> {
 
     if (!isOrchestratorAlive()) {
       log.info('Orchestrator exited gracefully after shutdown nudge', { reason: shutdownReason });
+      logActivity({
+        agent_id: 'orchestrator',
+        event_type: 'session_end',
+        details: `Graceful exit after nudge: ${shutdownReason}`,
+      });
       shutdownNudgedAt = null;
       shutdownReason = null;
       return;
@@ -90,6 +96,16 @@ async function run(config: Record<string, unknown>): Promise<void> {
       update('agents', 'orchestrator', {
         status: 'stopped',
         updated_at: new Date().toISOString(),
+      });
+      logActivity({
+        agent_id: 'orchestrator',
+        event_type: 'shutdown_reason',
+        details: `Force-killed after grace period: ${shutdownReason}`,
+      });
+      logActivity({
+        agent_id: 'orchestrator',
+        event_type: 'session_end',
+        details: `Force-killed: grace period expired (${shutdownReason})`,
       });
       shutdownNudgedAt = null;
       shutdownReason = null;
@@ -119,10 +135,25 @@ async function run(config: Record<string, unknown>): Promise<void> {
     if (injected) {
       shutdownNudgedAt = Date.now();
       shutdownReason = `context exhaustion (${contextUsed}%)`;
+      logActivity({
+        agent_id: 'orchestrator',
+        event_type: 'shutdown_reason',
+        details: `Context exhaustion: ${contextUsed}% used — nudge sent`,
+      });
     } else {
       log.warn('Failed to inject context shutdown nudge — killing session');
       killOrchestratorSession();
       update('agents', 'orchestrator', { status: 'stopped', updated_at: new Date().toISOString() });
+      logActivity({
+        agent_id: 'orchestrator',
+        event_type: 'shutdown_reason',
+        details: `Context exhaustion: ${contextUsed}% — failed to inject nudge, force-killed`,
+      });
+      logActivity({
+        agent_id: 'orchestrator',
+        event_type: 'session_end',
+        details: `Force-killed: context exhaustion (${contextUsed}%), injection failed`,
+      });
     }
     return;
   }
@@ -149,6 +180,12 @@ async function run(config: Record<string, unknown>): Promise<void> {
 
   if (injected) {
     shutdownNudgedAt = Date.now();
+    shutdownReason = reason;
+    logActivity({
+      agent_id: 'orchestrator',
+      event_type: 'shutdown_reason',
+      details: `Idle timeout: ${reason} — nudge sent`,
+    });
   } else {
     // Couldn't inject — session might be gone already
     log.warn('Failed to inject shutdown nudge — killing session');
@@ -156,6 +193,16 @@ async function run(config: Record<string, unknown>): Promise<void> {
     update('agents', 'orchestrator', {
       status: 'stopped',
       updated_at: new Date().toISOString(),
+    });
+    logActivity({
+      agent_id: 'orchestrator',
+      event_type: 'shutdown_reason',
+      details: `Idle timeout: ${reason} — failed to inject nudge, force-killed`,
+    });
+    logActivity({
+      agent_id: 'orchestrator',
+      event_type: 'session_end',
+      details: `Force-killed: idle timeout, injection failed`,
     });
   }
 }
