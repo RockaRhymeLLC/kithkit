@@ -55,7 +55,10 @@ function validateSessionName(name: string): string {
 }
 
 function getDefaultSessionName(): string {
-  return loadConfig().agent.name;
+  const config = loadConfig();
+  // Prefer tmux.session (matches shell scripts), fall back to agent name
+  const tmux = (config as unknown as Record<string, unknown>).tmux as { session?: string } | undefined;
+  return tmux?.session ?? config.agent.name;
 }
 
 /**
@@ -70,6 +73,20 @@ function getTranscriptDir(projectDir: string): string {
     'projects',
     projectDirMangled,
   );
+}
+
+// ── Timestamp helper ────────────────────────────────────────
+
+/**
+ * Return a local-time timestamp string, e.g. "[11:30 AM]".
+ * Uses the system's local timezone.
+ */
+export function estTimestamp(): string {
+  return '[' + new Date().toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }) + ']';
 }
 
 // ── Public API ──────────────────────────────────────────────
@@ -139,7 +156,8 @@ export function injectText(
   }
 
   try {
-    execFileSync(tmux, ['send-keys', '-t', session, '-l', text], {
+    const stamped = `${estTimestamp()} ${text}`;
+    execFileSync(tmux, ['send-keys', '-t', session, '-l', stamped], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

@@ -311,11 +311,23 @@ process.on('unhandledRejection', (reason) => {
 });
 
 process.on('uncaughtException', (err) => {
-  log.error('Uncaught exception — shutting down', {
-    error: err.message,
-    stack: err.stack,
-  });
-  shutdown('uncaughtException').catch(() => process.exit(1));
+  const ext = getExtension();
+  if (ext && !isDegraded()) {
+    // When an extension is loaded, try degraded mode instead of shutting down.
+    // This handles async errors from extension child processes, timers, etc.
+    log.error('Uncaught exception — entering degraded mode (extension disabled)', {
+      error: err.message,
+      stack: err.stack,
+    });
+    setDegraded(true);
+  } else {
+    // No extension or already degraded — fatal, shut down
+    log.error('Uncaught exception — shutting down', {
+      error: err.message,
+      stack: err.stack,
+    });
+    shutdown('uncaughtException').catch(() => process.exit(1));
+  }
 });
 
 log.info('Daemon initialized');

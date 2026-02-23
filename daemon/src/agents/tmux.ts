@@ -10,6 +10,7 @@
 
 import { execFileSync, execFile } from 'node:child_process';
 import { createLogger } from '../core/logger.js';
+import { estTimestamp } from '../core/session-bridge.js';
 
 const log = createLogger('tmux');
 
@@ -55,10 +56,13 @@ export function injectMessage(agentId: string, text: string): boolean {
   }
 
   try {
-    // Send the text as keystrokes, then press Enter
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', session, '-l', text], {
+    // Prepend timestamp and send as keystrokes, then press Enter
+    const stamped = `${estTimestamp()} ${text}`;
+    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', session, '-l', stamped], {
       timeout: 5000,
     });
+    // Small delay to let tmux buffer the text before submitting
+    execFileSync('/bin/sleep', ['0.15'], { timeout: 2000 });
     execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', session, 'Enter'], {
       timeout: 5000,
     });
