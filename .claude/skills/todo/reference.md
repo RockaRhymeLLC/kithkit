@@ -184,15 +184,32 @@ Response:
 }
 ```
 
-### POST /api/todos/:id/note (add work note)
+### GET /api/todos/:id/actions (get audit trail)
 
-Request body:
+Returns the full action history for a todo. Each action records status changes, priority changes, and creation events.
+
+Response:
 ```json
 {
-  "note": "Pipeline configured and committed. See ci.yml for details.",
-  "files": ["src/ci.yml"],
-  "commits": ["abc1234"]
+  "data": [
+    {
+      "id": 1,
+      "todo_id": 34,
+      "action": "created",
+      "old_value": null,
+      "new_value": null,
+      "note": "Created with title: Set up CI/CD pipeline",
+      "created_at": "2026-01-28T12:00:00Z"
+    },
+    {
+      "id": 2,
+      "todo_id": 34,
+      "action": "status_change",
+      "old_value": "pending",
+      "new_value": "in_progress",
+      "note": null,
+      "created_at": "2026-01-29T10:00:00Z"
+    }
+  ],
+  "timestamp": "2026-01-29T10:01:00Z"
 }
-```
-
-Response: Updated todo object with the new action appended.
