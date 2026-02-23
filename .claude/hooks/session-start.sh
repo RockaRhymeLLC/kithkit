@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# SessionStart Hook (v3)
+# SessionStart Hook (v4)
 #
-# Minimal bootstrap: injects only what the agent can't self-load.
-# The agent loads everything else (todos, calendar, memory) via its own skills.
+# Comms agent bootstrap: injects identity, autonomy, saved state, daemon status.
+# Then triggers self-bootstrap via the Session Start Checklist.
 #
-# Outputs: identity, autonomy mode, daemon status, saved state.
-# Then triggers the agent to self-bootstrap via the Session Start Checklist.
+# ONLY runs for the comms agent session. Orchestrator and worker sessions
+# get their prompts from the daemon — this hook exits immediately for them.
 #
 # Fires on: startup, resume, clear, compact
 # Set CC4ME_QUIET_START=1 to suppress auto-resume injection (useful for debugging).
@@ -15,10 +15,27 @@ set -e
 
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 STATE_DIR="$PROJECT_DIR/.claude/state"
+TMUX_BIN="/opt/homebrew/bin/tmux"
 
 # Read hook input from stdin (consume stdin so it doesn't block)
 HOOK_INPUT=$(cat)
 SOURCE=$(echo "$HOOK_INPUT" | grep -o '"source"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:.*"\([^"]*\)".*/\1/')
+
+# ── Gate: comms agent only ──────────────────────────────────
+# Detect which tmux session we're in. If it's not the comms session, exit.
+# Non-tmux sessions (SDK workers) also skip — they don't need this bootstrap.
+SESSION_NAME=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
+SESSION_NAME="${SESSION_NAME:-cc4me}"
+
+if [ -n "$TMUX" ]; then
+  CURRENT_SESSION=$($TMUX_BIN display-message -p '#{session_name}' 2>/dev/null || true)
+  if [ -n "$CURRENT_SESSION" ] && [ "$CURRENT_SESSION" != "$SESSION_NAME" ]; then
+    # Not the comms session — exit clean, no output
+    exit 0
+  fi
+fi
+
+# ── Comms agent bootstrap ──────────────────────────────────
 
 # Check if daemon is running
 DAEMON_RUNNING=false
@@ -117,10 +134,7 @@ echo "---"
 # Triggers the agent to self-load context (todos, calendar, memory) via its own skills,
 # instead of the hook parsing JSON in bash. Works for all session start types.
 if [ "${CC4ME_QUIET_START:-0}" != "1" ]; then
-  TMUX_BIN="/opt/homebrew/bin/tmux"
   TMUX_SOCKET="/private/tmp/tmux-$(id -u)/default"
-  SESSION_NAME=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
-  SESSION_NAME="${SESSION_NAME:-cc4me}"
 
   if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
     PROMPT="Session cleared and restored. Review the most recent saved state and follow the Next Steps in order."

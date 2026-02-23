@@ -238,6 +238,11 @@ scheduler:
     - name: "lindee-inbox-watch"
       enabled: true
       interval: "15m"
+    - name: "orchestrator-idle"
+      enabled: true
+      interval: "2m"
+      config:
+        idle_timeout_minutes: 10
 
 # ── Integrations ──────────────────────
 integrations:
