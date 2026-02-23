@@ -19,7 +19,7 @@ Kithkit gives your agent a background daemon for state management, a multi-agent
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/kithkit/kithkit.git my-agent
+git clone https://github.com/RockaRhymeLLC/kithkit.git my-agent
 cd my-agent && npm install
 
 # 2. Initialize your agent

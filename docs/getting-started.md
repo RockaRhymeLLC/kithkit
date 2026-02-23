@@ -27,7 +27,7 @@ claude --version # any version
 Clone the repository and install dependencies:
 
 ```bash
-git clone https://github.com/kithkit/kithkit.git my-agent
+git clone https://github.com/RockaRhymeLLC/kithkit.git my-agent
 cd my-agent
 npm install
 ```
