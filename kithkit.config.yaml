@@ -118,7 +118,7 @@ channels:
         - "google voice"
 
   voice:
-    enabled: true
+    enabled: false  # Disabled until voice venv is set up (punchlist item 14)
     stt:
       engine: whisper-cpp
       model: small.en

@@ -12,11 +12,14 @@ import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
 import { handleMemoryRoute } from './api/memory.js';
-import { handleAgentsRoute } from './api/agents.js';
+import { handleAgentsRoute, setProfilesDir } from './api/agents.js';
+import { configure as configureTmux } from './agents/tmux.js';
+import { recoverFromRestart } from './agents/recovery.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
 import { handleConfigRoute } from './api/config.js';
+import { handleOrchestratorRoute } from './api/orchestrator.js';
 import {
   getExtension,
   isDegraded,
@@ -91,6 +94,25 @@ const log = createLogger('main');
 
 openDatabase(projectDir);
 
+// Wire up agent profiles directory
+setProfilesDir(path.resolve(projectDir, '.claude', 'agents'));
+
+// Configure tmux session management
+configureTmux({
+  commsSession: config.tmux?.session ?? 'agent',
+  projectDir,
+});
+
+// Recover from previous daemon crash (clean orphans, mark interrupted jobs)
+const recovery = recoverFromRestart();
+if (recovery.orphansCleaned > 0 || recovery.failedJobsRecovered > 0) {
+  log.info('Recovery completed', {
+    orphansCleaned: recovery.orphansCleaned,
+    failedJobsRecovered: recovery.failedJobsRecovered,
+    agentsRestarted: recovery.agentsRestarted,
+  });
+}
+
 log.info('Kithkit daemon starting', {
   agent: config.agent.name,
   port: config.daemon.port,
@@ -164,6 +186,7 @@ const server = http.createServer((req, res) => {
     if (url.pathname.startsWith('/api/')) {
       const handlers = [
         () => handleAgentsRoute(req, res, url.pathname),
+        () => handleOrchestratorRoute(req, res, url.pathname),
         () => handleSendRoute(req, res, url.pathname),
         () => handleStateRoute(req, res, url.pathname, url.searchParams),
         () => handleMessagesRoute(req, res, url.pathname, url.searchParams),
