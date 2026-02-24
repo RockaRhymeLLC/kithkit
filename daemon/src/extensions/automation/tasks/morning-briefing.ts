@@ -1,7 +1,10 @@
 /**
  * Morning Briefing — sends the human a daily summary.
  *
- * Gathers: calendar events, weather, open todos, overnight messages.
+ * Gathers: calendar events (icalbuddy + DB), weather (Open-Meteo + wttr.in),
+ * open todos (SQLite), overnight messages (log), email summary (adapters),
+ * Lindee inbox summary (flat file).
+ *
  * If a Claude session is active, injects data as a prompt for a nicely
  * formatted briefing. If no session, sends a plain-text version directly
  * via Telegram so the briefing always arrives on time.
@@ -13,36 +16,36 @@ import path from 'node:path';
 import { injectText, sessionExists } from '../../../core/session-bridge.js';
 import { createLogger } from '../../../core/logger.js';
 import { getProjectDir, loadConfig } from '../../../core/config.js';
-import { list, query } from '../../../core/db.js';
+import { query } from '../../../core/db.js';
 import type { Scheduler } from '../../../automation/scheduler.js';
 import { getTelegramAdapter, getGraphAdapter, getJmapAdapter, getOutlookAdapter, getHimalayaAdapters } from '../../comms/index.js';
 
 const log = createLogger('morning-briefing');
 
-/** Check if today is a holiday or special day, return a themed greeting or null. */
+// ─── Holidays ────────────────────────────────────────────────────────
+
+const FIXED_HOLIDAYS: Record<string, string> = {
+  '1-1': '🎉 Happy New Year!',
+  '2-14': '💕 Happy Valentine\'s Day!',
+  '3-17': '☘️ Happy St. Patrick\'s Day!',
+  '7-4': '🇺🇸 Happy Independence Day!',
+  '10-31': '🎃 Happy Halloween!',
+  '11-11': '🎖️ Veterans Day — thank a veteran today.',
+  '12-24': '🎄 Christmas Eve!',
+  '12-25': '🎄 Merry Christmas!',
+  '12-31': '🥂 Happy New Year\'s Eve!',
+};
+
 function getSpecialDayNote(): string | null {
   const now = new Date();
   const month = now.getMonth() + 1;
   const day = now.getDate();
-  const dow = now.getDay(); // 0=Sun
-
-  // Fixed-date holidays
-  const fixed: Record<string, string> = {
-    '1-1': '🎉 Happy New Year!',
-    '2-14': '💕 Happy Valentine\'s Day!',
-    '3-17': '☘️ Happy St. Patrick\'s Day!',
-    '7-4': '🇺🇸 Happy Independence Day!',
-    '10-31': '🎃 Happy Halloween!',
-    '11-11': '🎖️ Veterans Day — thank a veteran today.',
-    '12-24': '🎄 Christmas Eve!',
-    '12-25': '🎄 Merry Christmas!',
-    '12-31': '🥂 Happy New Year\'s Eve!',
-  };
+  const dow = now.getDay();
 
   const key = `${month}-${day}`;
-  if (fixed[key]) return fixed[key];
+  if (FIXED_HOLIDAYS[key]) return FIXED_HOLIDAYS[key];
 
-  // Floating holidays (day-of-week + week-in-month rules)
+  // Floating holidays (nth weekday of month)
   if (month === 1 && dow === 1 && day >= 15 && day <= 21) return '🕊️ Martin Luther King Jr. Day';
   if (month === 2 && dow === 1 && day >= 15 && day <= 21) return '🏛️ Presidents\' Day';
   if (month === 5 && dow === 0 && day >= 8 && day <= 14) return '💐 Happy Mother\'s Day!';
@@ -53,6 +56,8 @@ function getSpecialDayNote(): string | null {
 
   return null;
 }
+
+// ─── Calendar ────────────────────────────────────────────────────────
 
 function gatherCalendar(): string {
   try {
@@ -67,115 +72,8 @@ function gatherCalendar(): string {
   }
 }
 
-/** WMO weather interpretation codes → human-readable descriptions */
-const WMO_CODES: Record<number, string> = {
-  0: 'Clear', 1: 'Mostly clear', 2: 'Partly cloudy', 3: 'Overcast',
-  45: 'Foggy', 48: 'Rime fog',
-  51: 'Light drizzle', 53: 'Drizzle', 55: 'Heavy drizzle',
-  56: 'Light freezing drizzle', 57: 'Freezing drizzle',
-  61: 'Light rain', 63: 'Rain', 65: 'Heavy rain',
-  66: 'Light freezing rain', 67: 'Freezing rain',
-  71: 'Light snow', 73: 'Snow', 75: 'Heavy snow', 77: 'Snow grains',
-  80: 'Light showers', 81: 'Showers', 82: 'Heavy showers',
-  85: 'Light snow showers', 86: 'Heavy snow showers',
-  95: 'Thunderstorm', 96: 'Thunderstorm w/ hail', 99: 'Severe thunderstorm',
-};
-
-function wmoDescription(code: number): string {
-  return WMO_CODES[code] ?? `Unknown (${code})`;
-}
-
-function fetchOpenMeteo(location: string): string {
-  // Step 1: Geocode city name → lat/lon
-  const geoRaw = execFileSync('/usr/bin/curl', [
-    '-s', '--max-time', '5',
-    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`,
-  ], { encoding: 'utf8', timeout: 8_000 }).trim();
-
-  if (!geoRaw) throw new Error('Empty geocoding response');
-  const geo = JSON.parse(geoRaw);
-  if (!geo.results?.length) throw new Error(`No geocoding results for "${location}"`);
-
-  const { latitude, longitude, timezone } = geo.results[0];
-
-  // Step 2: Fetch current weather + 3-day forecast
-  const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
-    `&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code` +
-    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
-    `&temperature_unit=fahrenheit&wind_speed_unit=mph` +
-    `&timezone=${encodeURIComponent(timezone)}&forecast_days=3`;
-
-  const raw = execFileSync('/usr/bin/curl', [
-    '-s', '--max-time', '8', url,
-  ], { encoding: 'utf8', timeout: 12_000 }).trim();
-
-  if (!raw) throw new Error('Empty forecast response');
-  const data = JSON.parse(raw);
-
-  // Format current conditions
-  const c = data.current;
-  const current = `Now: ${wmoDescription(c.weather_code)}, ${Math.round(c.temperature_2m)}°F | Humidity: ${c.relative_humidity_2m}% | Wind: ${Math.round(c.wind_speed_10m)} mph`;
-
-  // Format 3-day forecast
-  const days = data.daily;
-  const dayNames = ['Today', 'Tomorrow'];
-  const forecastLines: string[] = [];
-  for (let i = 0; i < days.time.length; i++) {
-    const label = dayNames[i] ?? new Date(days.time[i] + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
-    const hi = Math.round(days.temperature_2m_max[i]);
-    const lo = Math.round(days.temperature_2m_min[i]);
-    const precip = days.precipitation_probability_max[i];
-    const desc = wmoDescription(days.weather_code[i]);
-    forecastLines.push(`${label}: ${desc}, ${hi}°/${lo}°F${precip > 10 ? `, ${precip}% precip` : ''}`);
-  }
-
-  return `${current}\n${forecastLines.join(' | ')}`;
-}
-
-function fetchWttrIn(location: string): string {
-  const locationPath = location ? `/${location.replace(/\s+/g, '+')}` : '';
-
-  const current = execFileSync('/usr/bin/curl', [
-    '-s', '--max-time', '8',
-    `wttr.in${locationPath}?format=%c+%t+|+Humidity:+%h+|+Wind:+%w+|+Precip:+%p`,
-  ], { encoding: 'utf8', timeout: 10_000 }).trim();
-
-  const forecast = execFileSync('/usr/bin/curl', [
-    '-s', '--max-time', '8',
-    `wttr.in${locationPath}?format=3`,
-  ], { encoding: 'utf8', timeout: 10_000 }).trim();
-
-  if (!current && !forecast) throw new Error('Both wttr.in requests returned empty');
-  const parts = [];
-  if (current) parts.push(`Now: ${current}`);
-  if (forecast) parts.push(`Forecast: ${forecast}`);
-  return parts.join('\n');
-}
-
-function gatherWeather(): string {
-  const config = loadConfig();
-  const task = config.scheduler.tasks.find(t => t.name === 'morning-briefing');
-  const location = (task?.config?.weather_location as string) ?? 'Baltimore';
-
-  // Primary: Open-Meteo (reliable 24/7, free, no API key)
-  try {
-    return fetchOpenMeteo(location);
-  } catch (err) {
-    log.warn('Open-Meteo failed, trying wttr.in fallback', { error: err instanceof Error ? err.message : String(err) });
-  }
-
-  // Fallback: wttr.in (can be flaky overnight)
-  try {
-    return fetchWttrIn(location);
-  } catch (err) {
-    log.warn('wttr.in also failed', { error: err instanceof Error ? err.message : String(err) });
-    return 'Weather unavailable.';
-  }
-}
-
 function gatherLookahead(): string {
   try {
-    // Compute explicit date range to avoid icalbuddy's -n flag including today
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
     const end = new Date();
@@ -209,8 +107,7 @@ function gatherInternalCalendar(): string {
 
     const entries: string[] = [];
     for (const ev of events) {
-      const eventDate = ev.start_time.slice(0, 10);
-      const label = eventDate === todayStr ? 'Today' : 'Tomorrow';
+      const label = ev.start_time.slice(0, 10) === todayStr ? 'Today' : 'Tomorrow';
       const time = ev.all_day ? '' : ` ${ev.start_time.slice(11, 16)}`;
       entries.push(`[${label}]${time} ${ev.title}`);
     }
@@ -220,6 +117,111 @@ function gatherInternalCalendar(): string {
     return '';
   }
 }
+
+// ─── Weather ─────────────────────────────────────────────────────────
+
+const WMO_CODES: Record<number, string> = {
+  0: 'Clear', 1: 'Mostly clear', 2: 'Partly cloudy', 3: 'Overcast',
+  45: 'Foggy', 48: 'Rime fog',
+  51: 'Light drizzle', 53: 'Drizzle', 55: 'Heavy drizzle',
+  56: 'Light freezing drizzle', 57: 'Freezing drizzle',
+  61: 'Light rain', 63: 'Rain', 65: 'Heavy rain',
+  66: 'Light freezing rain', 67: 'Freezing rain',
+  71: 'Light snow', 73: 'Snow', 75: 'Heavy snow', 77: 'Snow grains',
+  80: 'Light showers', 81: 'Showers', 82: 'Heavy showers',
+  85: 'Light snow showers', 86: 'Heavy snow showers',
+  95: 'Thunderstorm', 96: 'Thunderstorm w/ hail', 99: 'Severe thunderstorm',
+};
+
+function wmoDescription(code: number): string {
+  return WMO_CODES[code] ?? `Unknown (${code})`;
+}
+
+function fetchOpenMeteo(location: string): string {
+  const geoRaw = execFileSync('/usr/bin/curl', [
+    '-s', '--max-time', '5',
+    `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`,
+  ], { encoding: 'utf8', timeout: 8_000 }).trim();
+
+  if (!geoRaw) throw new Error('Empty geocoding response');
+  const geo = JSON.parse(geoRaw);
+  if (!geo.results?.length) throw new Error(`No geocoding results for "${location}"`);
+
+  const { latitude, longitude, timezone } = geo.results[0];
+
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
+    `&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code` +
+    `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset` +
+    `&temperature_unit=fahrenheit&wind_speed_unit=mph` +
+    `&timezone=${encodeURIComponent(timezone)}&forecast_days=3`;
+
+  const raw = execFileSync('/usr/bin/curl', [
+    '-s', '--max-time', '8', url,
+  ], { encoding: 'utf8', timeout: 12_000 }).trim();
+
+  if (!raw) throw new Error('Empty forecast response');
+  const data = JSON.parse(raw);
+
+  const c = data.current;
+  const feelsLike = c.apparent_temperature != null ? ` (feels ${Math.round(c.apparent_temperature)}°)` : '';
+  const currentLine = `${wmoDescription(c.weather_code)} ${Math.round(c.temperature_2m)}°F${feelsLike} · Humidity ${c.relative_humidity_2m}% · Wind ${Math.round(c.wind_speed_10m)} mph`;
+
+  const days = data.daily;
+  const dayNames = ['Today', 'Tomorrow'];
+  const forecastLines: string[] = [];
+  for (let i = 0; i < days.time.length; i++) {
+    const label = dayNames[i] ?? new Date(days.time[i] + 'T12:00:00').toLocaleDateString('en-US', { weekday: 'short' });
+    const hi = Math.round(days.temperature_2m_max[i]);
+    const lo = Math.round(days.temperature_2m_min[i]);
+    const precip = days.precipitation_probability_max[i];
+    const desc = wmoDescription(days.weather_code[i]);
+    const precipStr = precip > 10 ? ` · ${precip}% precip` : '';
+    forecastLines.push(`  ${label}: ${desc}, ${hi}°/${lo}°F${precipStr}`);
+  }
+
+  return `${currentLine}\n${forecastLines.join('\n')}`;
+}
+
+function fetchWttrIn(location: string): string {
+  const loc = location ? `/${location.replace(/\s+/g, '+')}` : '';
+
+  const current = execFileSync('/usr/bin/curl', [
+    '-s', '--max-time', '8',
+    `wttr.in${loc}?format=%c+%t+|+Humidity:+%h+|+Wind:+%w`,
+  ], { encoding: 'utf8', timeout: 10_000 }).trim();
+
+  const forecast = execFileSync('/usr/bin/curl', [
+    '-s', '--max-time', '8',
+    `wttr.in${loc}?format=3`,
+  ], { encoding: 'utf8', timeout: 10_000 }).trim();
+
+  if (!current && !forecast) throw new Error('Both wttr.in requests returned empty');
+  const parts = [];
+  if (current) parts.push(`Now: ${current}`);
+  if (forecast) parts.push(`Forecast: ${forecast}`);
+  return parts.join('\n');
+}
+
+function gatherWeather(): string {
+  const config = loadConfig();
+  const task = config.scheduler.tasks.find((t: { name: string }) => t.name === 'morning-briefing');
+  const location = (task?.config?.weather_location as string) ?? 'Baltimore';
+
+  try {
+    return fetchOpenMeteo(location);
+  } catch (err) {
+    log.warn('Open-Meteo failed, trying wttr.in fallback', { error: err instanceof Error ? err.message : String(err) });
+  }
+
+  try {
+    return fetchWttrIn(location);
+  } catch (err) {
+    log.warn('wttr.in also failed', { error: err instanceof Error ? err.message : String(err) });
+    return 'Weather unavailable.';
+  }
+}
+
+// ─── Todos ───────────────────────────────────────────────────────────
 
 function gatherTodos(): string {
   try {
@@ -241,13 +243,14 @@ function gatherTodos(): string {
   }
 }
 
+// ─── Overnight Messages ──────────────────────────────────────────────
+
 function gatherOvernightMessages(): string {
   const logPath = path.join(getProjectDir(), 'logs/daemon.log');
   try {
     if (!fs.existsSync(logPath)) return 'No overnight messages.';
 
-    const now = Date.now();
-    const eightHoursAgo = now - 8 * 60 * 60 * 1000;
+    const eightHoursAgo = Date.now() - 8 * 60 * 60 * 1000;
     const lines = fs.readFileSync(logPath, 'utf8').split('\n');
 
     const messages: string[] = [];
@@ -258,15 +261,12 @@ function gatherOvernightMessages(): string {
         const ts = new Date(entry.ts).getTime();
         if (ts < eightHoursAgo) continue;
 
-        // Telegram incoming messages
         if (entry.module === 'telegram' && entry.msg?.includes('Injected message from')) {
           messages.push(`Telegram: ${entry.msg}`);
         }
-        // Agent comms incoming
         if (entry.module === 'agent-comms' && entry.msg?.includes('Received message from')) {
           messages.push(`Agent: ${entry.msg}`);
         }
-        // Emails received
         if (entry.module === 'email-check' && entry.msg?.includes('unread')) {
           messages.push(`Email: ${entry.msg}`);
         }
@@ -276,7 +276,6 @@ function gatherOvernightMessages(): string {
     }
 
     if (messages.length === 0) return 'No overnight messages.';
-    // Deduplicate and limit
     const unique = [...new Set(messages)];
     return unique.slice(-10).join('\n');
   } catch {
@@ -284,9 +283,114 @@ function gatherOvernightMessages(): string {
   }
 }
 
-/**
- * Send a plain-text briefing directly via Telegram (no Claude session needed).
- */
+// ─── Lindee Summary ──────────────────────────────────────────────────
+
+function gatherLindeeSummary(): string {
+  const summaryFile = path.join(getProjectDir(), '.claude/state/lindee-daily-summary.json');
+  try {
+    if (!fs.existsSync(summaryFile)) return '';
+    const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
+
+    const yesterday = new Date();
+    yesterday.setDate(yesterday.getDate() - 1);
+    const yesterdayStr = yesterday.toISOString().slice(0, 10);
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (summary.date !== yesterdayStr && summary.date !== today) return '';
+    if (summary.emailsProcessed === 0) return '';
+
+    const lines: string[] = [];
+    lines.push(`${summary.emailsProcessed} emails processed`);
+
+    if (summary.spamRemoved > 0 || summary.phishingRemoved > 0) {
+      lines.push(`${summary.spamRemoved} spam + ${summary.phishingRemoved} phishing removed`);
+    }
+    if (summary.purchases.length > 0) {
+      lines.push('Purchases:');
+      for (const p of summary.purchases) {
+        lines.push(`  - ${p.vendor}: ${p.item} (${p.cost})`);
+      }
+    }
+    if (summary.duplicateAlerts.length > 0) {
+      lines.push(`Duplicate alerts: ${summary.duplicateAlerts.length}`);
+    }
+    if (summary.paymentAlerts.length > 0) {
+      lines.push('Payment alerts:');
+      for (const a of summary.paymentAlerts) {
+        lines.push(`  - ${a}`);
+      }
+    }
+
+    return lines.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+// ─── Email Summary ───────────────────────────────────────────────────
+
+async function gatherEmailSummary(): Promise<string> {
+  try {
+    const emails: string[] = [];
+    let totalUnread = 0;
+
+    const graph = getGraphAdapter();
+    if (graph) {
+      try {
+        const inbox = await graph.listInbox(10);
+        for (const msg of inbox) {
+          if (!msg.isRead) { totalUnread++; emails.push(`[Graph] ${msg.from}: ${msg.subject}`); }
+        }
+      } catch (err) {
+        log.warn('Graph email check failed', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    const jmap = getJmapAdapter();
+    if (jmap) {
+      try {
+        const inbox = await jmap.listInbox(10);
+        for (const msg of inbox) {
+          if (!msg.isRead) { totalUnread++; emails.push(`[JMAP] ${msg.from}: ${msg.subject}`); }
+        }
+      } catch (err) {
+        log.warn('JMAP email check failed', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    const outlook = getOutlookAdapter();
+    if (outlook) {
+      try {
+        const inbox = await outlook.listInbox(10);
+        for (const msg of inbox) {
+          if (!msg.isRead) { totalUnread++; emails.push(`[Outlook] ${msg.from}: ${msg.subject}`); }
+        }
+      } catch (err) {
+        log.warn('Outlook email check failed', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    for (const hAdapter of getHimalayaAdapters()) {
+      try {
+        const inbox = await hAdapter.listInbox(10);
+        for (const msg of inbox) {
+          if (!msg.isRead) { totalUnread++; emails.push(`[${hAdapter.name}] ${msg.from}: ${msg.subject}`); }
+        }
+      } catch (err) {
+        log.warn('Himalaya adapter check failed', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    if (totalUnread === 0) return 'No unread emails.';
+    return `${totalUnread} unread email(s):\n${emails.slice(0, 10).join('\n')}${totalUnread > 10 ? `\n...and ${totalUnread - 10} more` : ''}`;
+  } catch (err) {
+    log.warn('Email summary failed', { error: err instanceof Error ? err.message : String(err) });
+    return 'Email summary unavailable.';
+  }
+}
+
+// ─── Telegram Fallback ───────────────────────────────────────────────
+
 async function sendDirectTelegram(text: string): Promise<void> {
   try {
     const adapter = getTelegramAdapter();
@@ -303,170 +407,57 @@ async function sendDirectTelegram(text: string): Promise<void> {
   }
 }
 
-/**
- * Format a plain-text briefing for direct Telegram delivery.
- */
-function formatPlainBriefing(today: string, weather: string, calendar: string, internalCal: string, lookahead: string, todos: string, overnight: string, emailSummary: string, specialDay?: string | null, lindeeSummary?: string): string {
+// ─── Formatting ──────────────────────────────────────────────────────
+
+function formatPlainBriefing(sections: {
+  today: string;
+  weather: string;
+  calendar: string;
+  internalCal: string;
+  lookahead: string;
+  todos: string;
+  overnight: string;
+  emailSummary: string;
+  specialDay?: string | null;
+  lindeeSummary?: string;
+}): string {
+  const { today, weather, calendar, internalCal, lookahead, todos, overnight, emailSummary, specialDay, lindeeSummary } = sections;
+
   const greeting = specialDay
     ? `${specialDay}\nGood morning! Here's your briefing for ${today}.`
     : `Good morning! Here's your briefing for ${today}.`;
-  const lines = [
-    greeting,
-    '',
-    `Weather:`,
-    weather,
-    '',
-    'Today:',
-    calendar,
-  ];
+
+  const blocks: string[] = [greeting];
+
+  blocks.push(`\n☁️ Weather\n${weather}`);
+  blocks.push(`\n📅 Today\n${calendar}`);
 
   if (internalCal) {
-    lines.push('', 'Reminders:', internalCal);
+    blocks.push(`\n🔔 Reminders\n${internalCal}`);
   }
 
   if (lookahead && !lookahead.includes('Nothing notable') && !lookahead.includes('unavailable')) {
-    lines.push('', 'Coming up:', lookahead);
+    blocks.push(`\n🗓 Coming Up\n${lookahead}`);
   }
 
-  lines.push('', 'Open to-dos:', todos);
+  blocks.push(`\n✅ To-Dos\n${todos}`);
 
   if (emailSummary && emailSummary !== 'No unread emails.') {
-    lines.push('', 'Email:', emailSummary);
+    blocks.push(`\n📧 Email\n${emailSummary}`);
   }
 
   if (overnight && overnight !== 'No overnight messages.') {
-    lines.push('', 'Overnight:', overnight);
+    blocks.push(`\n💬 Overnight\n${overnight}`);
   }
 
   if (lindeeSummary) {
-    lines.push('', "Lindee's Email:", lindeeSummary);
+    blocks.push(`\n👩‍🦳 Lindee's Email\n${lindeeSummary}`);
   }
 
-  return lines.join('\n');
+  return blocks.join('\n');
 }
 
-function gatherLindeeSummary(): string {
-  const summaryFile = path.join(getProjectDir(), '.claude/state/lindee-daily-summary.json');
-  try {
-    if (!fs.existsSync(summaryFile)) return '';
-    const summary = JSON.parse(fs.readFileSync(summaryFile, 'utf8'));
-
-    // Only include yesterday's summary (morning briefing reports on overnight activity)
-    const yesterday = new Date();
-    yesterday.setDate(yesterday.getDate() - 1);
-    const yesterdayStr = yesterday.toISOString().slice(0, 10);
-
-    // Accept yesterday or today (in case the task ran just after midnight)
-    const today = new Date().toISOString().slice(0, 10);
-    if (summary.date !== yesterdayStr && summary.date !== today) return '';
-    if (summary.emailsProcessed === 0) return '';
-
-    const lines: string[] = [];
-    lines.push(`${summary.emailsProcessed} emails processed`);
-
-    if (summary.spamRemoved > 0 || summary.phishingRemoved > 0) {
-      lines.push(`${summary.spamRemoved} spam + ${summary.phishingRemoved} phishing removed`);
-    }
-
-    if (summary.purchases.length > 0) {
-      lines.push(`Purchases:`);
-      for (const p of summary.purchases) {
-        lines.push(`  - ${p.vendor}: ${p.item} (${p.cost})`);
-      }
-    }
-
-    if (summary.duplicateAlerts.length > 0) {
-      lines.push(`Duplicate alerts: ${summary.duplicateAlerts.length}`);
-    }
-
-    if (summary.paymentAlerts.length > 0) {
-      lines.push(`Payment alerts:`);
-      for (const a of summary.paymentAlerts) {
-        lines.push(`  - ${a}`);
-      }
-    }
-
-    return lines.join('\n');
-  } catch {
-    return '';
-  }
-}
-
-async function gatherEmailSummary(): Promise<string> {
-  try {
-    const emails: string[] = [];
-    let totalUnread = 0;
-
-    // Check Graph adapter (M365)
-    const graph = getGraphAdapter();
-    if (graph) {
-      try {
-        const inbox = await graph.listInbox(10);
-        for (const msg of inbox) {
-          if (!msg.isRead) {
-            totalUnread++;
-            emails.push(`[Graph] ${msg.from}: ${msg.subject}`);
-          }
-        }
-      } catch (err) {
-        log.warn('Graph email check failed', { error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-
-    // Check JMAP adapter (Fastmail)
-    const jmap = getJmapAdapter();
-    if (jmap) {
-      try {
-        const inbox = await jmap.listInbox(10);
-        for (const msg of inbox) {
-          if (!msg.isRead) {
-            totalUnread++;
-            emails.push(`[JMAP] ${msg.from}: ${msg.subject}`);
-          }
-        }
-      } catch (err) {
-        log.warn('JMAP email check failed', { error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-
-    // Check Outlook adapter
-    const outlook = getOutlookAdapter();
-    if (outlook) {
-      try {
-        const inbox = await outlook.listInbox(10);
-        for (const msg of inbox) {
-          if (!msg.isRead) {
-            totalUnread++;
-            emails.push(`[Outlook] ${msg.from}: ${msg.subject}`);
-          }
-        }
-      } catch (err) {
-        log.warn('Outlook email check failed', { error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-
-    // Check Himalaya adapters
-    for (const hAdapter of getHimalayaAdapters()) {
-      try {
-        const inbox = await hAdapter.listInbox(10);
-        for (const msg of inbox) {
-          if (!msg.isRead) {
-            totalUnread++;
-            emails.push(`[${hAdapter.name}] ${msg.from}: ${msg.subject}`);
-          }
-        }
-      } catch (err) {
-        log.warn(`Himalaya adapter check failed`, { error: err instanceof Error ? err.message : String(err) });
-      }
-    }
-
-    if (totalUnread === 0) return 'No unread emails.';
-    return `${totalUnread} unread email(s):\n${emails.slice(0, 10).join('\n')}${totalUnread > 10 ? `\n...and ${totalUnread - 10} more` : ''}`;
-  } catch (err) {
-    log.warn('Email summary failed', { error: err instanceof Error ? err.message : String(err) });
-    return 'Email summary unavailable.';
-  }
-}
+// ─── Main ────────────────────────────────────────────────────────────
 
 async function run(): Promise<void> {
   log.info('Gathering morning briefing data');
@@ -488,8 +479,8 @@ async function run(): Promise<void> {
     year: 'numeric',
   });
 
-  // If a Claude session is running, inject as a prompt for a nicely formatted briefing
   if (sessionExists()) {
+    const config = loadConfig();
     const prompt = [
       `[System] Morning briefing time! Today is ${today}.`,
       'Send the human a concise, friendly morning briefing via Telegram with the data below.',
@@ -502,7 +493,7 @@ async function run(): Promise<void> {
       `WEATHER:\n${weather}`,
       '',
       `CALENDAR:\n${calendar}`,
-      ...(internalCal ? ['', `${loadConfig().agent.name.toUpperCase()}'S REMINDERS:\n${internalCal}`] : []),
+      ...(internalCal ? ['', `${config.agent.name.toUpperCase()}'S REMINDERS:\n${internalCal}`] : []),
       '',
       `COMING UP (next 7 days):\n${lookahead}`,
       '',
@@ -517,9 +508,11 @@ async function run(): Promise<void> {
     log.info('Injecting morning briefing prompt');
     injectText(prompt);
   } else {
-    // No session — send a plain-text briefing directly via Telegram
     log.warn('No Claude session available — sending plain-text briefing via Telegram');
-    const briefing = formatPlainBriefing(today, weather, calendar, internalCal, lookahead, todos, overnight, emailSummary, specialDay, lindeeSummary);
+    const briefing = formatPlainBriefing({
+      today, weather, calendar, internalCal, lookahead,
+      todos, overnight, emailSummary, specialDay, lindeeSummary,
+    });
     await sendDirectTelegram(briefing);
   }
 }
