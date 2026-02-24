@@ -72,6 +72,20 @@ function getTranscriptDir(projectDir: string): string {
   );
 }
 
+// ── Timestamp helper ────────────────────────────────────────
+
+/**
+ * Return a local-time timestamp string in EST, e.g. "[11:30 AM]".
+ */
+export function estTimestamp(): string {
+  return '[' + new Date().toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  }) + ']';
+}
+
 // ── Public API ──────────────────────────────────────────────
 
 /**

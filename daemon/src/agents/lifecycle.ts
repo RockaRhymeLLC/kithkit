@@ -10,6 +10,7 @@
  *   Persistent: idle ↔ busy, stopped, crashed
  */
 
+import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import {
   spawnWorker as sdkSpawn,
@@ -20,6 +21,7 @@ import {
 import type { SpawnOptions as SdkSpawnOptions, WorkerState } from './sdk-adapter.js';
 import type { AgentProfile } from './profiles.js';
 import { get, update, query, exec } from '../core/db.js';
+import { resolveProjectPath } from '../core/config.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -96,6 +98,34 @@ function countRunningAgents(): number {
     "SELECT COUNT(*) as count FROM agents WHERE status IN ('running', 'busy', 'idle')",
   );
   return rows[0]?.count ?? 0;
+}
+
+// ── Session Directory Cleanup ─────────────────────────────────
+
+/**
+ * Clean up session directories older than maxAgeDays.
+ */
+export function cleanupSessionDirs(maxAgeDays = 7): number {
+  const sessionsRoot = resolveProjectPath('.claude', 'sessions');
+  if (!fs.existsSync(sessionsRoot)) return 0;
+
+  const cutoff = Date.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  let cleaned = 0;
+
+  for (const entry of fs.readdirSync(sessionsRoot)) {
+    const entryPath = resolveProjectPath('.claude', 'sessions', entry);
+    try {
+      const stat = fs.statSync(entryPath);
+      if (stat.isDirectory() && stat.mtimeMs < cutoff) {
+        fs.rmSync(entryPath, { recursive: true, force: true });
+        cleaned++;
+      }
+    } catch {
+      // Skip entries we can't stat
+    }
+  }
+
+  return cleaned;
 }
 
 // ── Worker Lifecycle ─────────────────────────────────────────
