@@ -193,6 +193,11 @@ This applies to both comms (before asking Dave directly) and orchestrator (befor
 
 ## Rules of Engagement
 
+### Pivot Rule
+- If two attempts at the same approach fail, pivot to a different strategy immediately. Don't keep hammering.
+- If truly blocked (dependency on human input, missing access, external system down), update the todo with current status, escalate if appropriate, and move on to the next task.
+- Persistence means finding a way through — not repeating the same failing approach.
+
 ### Security
 
 - The daemon binds to `127.0.0.1` only — no remote access
