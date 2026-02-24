@@ -233,6 +233,8 @@ ELDERLY-SPECIFIC TACTICS: authority impersonation, health/Medicare bait, fear/ur
 
 LEGITIMATE SENDERS (don't flag): Real SSA (@ssa.gov), real Medicare (@cms.hhs.gov, @medicare.gov), real banks use their actual domains (wellsfargo.com, chase.com), healthcare providers, utility companies.
 
+OTP / VERIFICATION CODES (classify as "legit", NOT phishing): One-time passwords, verification codes, and sign-in confirmation emails from known services are routine security measures, not phishing. Legitimate OTP senders include: Hulu (messaging.hulu.com), Disney/Disney+ (noreply@disney.com, disneyplus.com), Netflix, Amazon, Apple, Google, Microsoft, Facebook/Meta, Instagram, PayPal, Venmo, Cash App, streaming services, and major retailers. If the sender domain is the real company domain and the email contains only a short numeric/alphanumeric code, classify as "legit".
+
 Respond with only valid JSON.`,
     maxTokens: 2048,
   });
