@@ -332,3 +332,23 @@ export function _getNudgeStateForTesting(): { nudgedAt: number | null; reason: s
 export async function _runForTesting(config: Record<string, unknown>): Promise<void> {
   return run(config);
 }
+
+/** @internal Override injectable deps for testing. Pass null to restore originals. */
+export function _setDepsForTesting(deps: {
+  isOrchestratorAlive?: () => boolean;
+  killOrchestratorSession?: () => void;
+  injectMessage?: (target: string, text: string) => boolean;
+  cleanupSessionDirs?: (maxAgeDays: number) => number;
+} | null): void {
+  if (deps === null) {
+    isOrchestratorAlive = _isOrchestratorAlive;
+    killOrchestratorSession = _killOrchestratorSession;
+    injectMessage = _injectMessage;
+    cleanupSessionDirs = _cleanupSessionDirs;
+    return;
+  }
+  if (deps.isOrchestratorAlive) isOrchestratorAlive = deps.isOrchestratorAlive;
+  if (deps.killOrchestratorSession) killOrchestratorSession = deps.killOrchestratorSession;
+  if (deps.injectMessage) injectMessage = deps.injectMessage;
+  if (deps.cleanupSessionDirs) cleanupSessionDirs = deps.cleanupSessionDirs;
+}
