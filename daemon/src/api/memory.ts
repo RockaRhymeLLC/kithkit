@@ -28,8 +28,11 @@ interface Memory {
   last_accessed: string | null;
 }
 
-/** Similarity threshold for vector dedup (0-1, higher = stricter). */
-const DEDUP_SIMILARITY_THRESHOLD = 0.85;
+/** Similarity threshold for vector dedup (0-1, higher = stricter).
+ * Empirically tested 2026-02-24: true dupes score 0.78–0.98, unrelated < 0.65.
+ * Set at 0.75 to catch semantic duplicates while letting the LLM reviewer
+ * make the final keep/skip decision on candidates. */
+const DEDUP_SIMILARITY_THRESHOLD = 0.75;
 
 interface SearchFilters {
   query?: string;
