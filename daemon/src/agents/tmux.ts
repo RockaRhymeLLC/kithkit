@@ -278,9 +278,14 @@ export function isOrchestratorAlive(): boolean {
 /**
  * Check if the orchestrator is actively running Claude (not just idle-waiting).
  *
+ * The wrapper script runs Claude as a child of bash, so tmux's
+ * pane_current_command always reports "bash". Instead, we grab the wrapper's
+ * PID (#{pane_pid}) and use pgrep to check whether any "claude" process is a
+ * descendant of that PID.
+ *
  * Returns:
- *  - 'active'  — session exists and foreground process is claude
- *  - 'waiting' — session exists but foreground process is bash/sh (idle loop)
+ *  - 'active'  — session exists and a claude process is running under the wrapper
+ *  - 'waiting' — session exists but no claude child (idle polling loop)
  *  - 'dead'    — no session
  */
 export function getOrchestratorState(): 'active' | 'waiting' | 'dead' {
@@ -295,20 +300,31 @@ export function getOrchestratorState(): 'active' | 'waiting' | 'dead' {
   }
 
   try {
-    const paneCmd = execFileSync(TMUX_BIN, [
+    // Get the PID of the wrapper bash process that owns the tmux pane
+    const panePid = execFileSync(TMUX_BIN, [
       '-S', TMUX_SOCKET,
       'display-message',
       '-t', `${session}:`,
-      '-p', '#{pane_current_command}',
-    ], { timeout: 5000, encoding: 'utf8' }).trim().toLowerCase();
+      '-p', '#{pane_pid}',
+    ], { timeout: 5000, encoding: 'utf8' }).trim();
 
-    // Consider 'claude' foreground as actively working
-    if (paneCmd === 'claude' || paneCmd.includes('claude')) {
-      return 'active';
+    if (!panePid || !/^\d+$/.test(panePid)) {
+      return 'waiting';
     }
-    return 'waiting';
+
+    // Check if any "claude" process is a descendant of the wrapper PID
+    try {
+      execFileSync('/usr/bin/pgrep', ['-P', panePid, '-f', 'claude'], {
+        timeout: 5000,
+      });
+      // pgrep exits 0 → at least one claude descendant found
+      return 'active';
+    } catch {
+      // pgrep exits non-zero → no matching descendants
+      return 'waiting';
+    }
   } catch {
-    // Can't determine foreground process — assume waiting
+    // Can't determine process tree — assume waiting
     return 'waiting';
   }
 }
