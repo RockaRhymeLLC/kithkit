@@ -133,6 +133,23 @@ run_claude() {
   "$CLAUDE_BIN" --dangerously-skip-permissions -p "$(cat "$pf")"
 }
 
+# ── Seed LAST_MSG_ID from current max message ID ─────────────
+# We track the highest message ID we've seen so we can poll for messages
+# with id > LAST_MSG_ID. This avoids a race where the orchestrator Claude
+# process reads and marks messages as read via the API before this wrapper's
+# polling loop runs — ?since_id is immune to read_at / processed_at state.
+LAST_MSG_ID=$(curl -s -f "http://localhost:$DAEMON_PORT/api/messages?agent=orchestrator&limit=1" 2>/dev/null \
+  | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+msgs = d.get('data', [])
+if msgs:
+    # limit=1 returns most recent by created_at ASC — take the max id
+    print(max(m.get('id', 0) for m in msgs))
+else:
+    print(0)
+" 2>/dev/null || printf '0')
+
 # ── Run initial task ─────────────────────────────────────────
 run_claude "$PROMPT_FILE"
 
@@ -142,33 +159,48 @@ while [ "$elapsed" -lt "$IDLE_WAIT_SEC" ]; do
   sleep "$POLL_INTERVAL_SEC"
   elapsed=$((elapsed + POLL_INTERVAL_SEC))
 
-  # Check for unread messages addressed to orchestrator
-  RESPONSE=$(curl -s -f "http://localhost:$DAEMON_PORT/api/messages?agent=orchestrator&unread=true" 2>/dev/null || printf '{"data":[]}')
+  # Check for new task messages addressed to orchestrator with id > LAST_MSG_ID.
+  # Using since_id avoids the race where Claude (running as the orchestrator) reads
+  # messages via the API and marks them read before this wrapper's loop runs.
+  RESPONSE=$(curl -s -f "http://localhost:$DAEMON_PORT/api/messages?agent=orchestrator&since_id=$LAST_MSG_ID&type=task" 2>/dev/null || printf '{"data":[]}')
   COUNT=$(printf '%s' "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('data',[])))" 2>/dev/null || printf '0')
 
   if [ "$COUNT" -gt "0" ]; then
-    # Extract and decode the task from the first unread message body.
+    # Extract and decode the task from the first new message body.
     # Message body is JSON: {"task":"...", "context":"..."}
-    TASK=$(printf '%s' "$RESPONSE" | python3 -c "
+    # Also capture the max message ID so we don't re-process this message.
+    PARSED=$(printf '%s' "$RESPONSE" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 msgs = d.get('data', [])
 if msgs:
-    raw = msgs[0].get('body', '')
+    msg = msgs[0]
+    new_last_id = max(m.get('id', 0) for m in msgs)
+    raw = msg.get('body', '')
     try:
         parsed = json.loads(raw)
         out = parsed.get('task', raw)
     except Exception:
         out = raw
+    # Output: first line = new LAST_MSG_ID, rest = task body
+    print(new_last_id)
     sys.stdout.write(out)
 " 2>/dev/null || printf '')
 
-    if [ -n "$TASK" ]; then
-      # Write task to prompt file and run Claude
-      printf '%s' "$TASK" > "$PROMPT_FILE"
-      run_claude "$PROMPT_FILE"
-      # Reset idle timer so we wait the full window for the next task
-      elapsed=0
+    if [ -n "$PARSED" ]; then
+      # First line is the new LAST_MSG_ID
+      NEW_LAST_ID=$(printf '%s' "$PARSED" | head -1)
+      TASK=$(printf '%s' "$PARSED" | tail -n +2)
+
+      if [ -n "$TASK" ]; then
+        # Advance our cursor so we never re-process this batch
+        LAST_MSG_ID="$NEW_LAST_ID"
+        # Write task to prompt file and run Claude
+        printf '%s' "$TASK" > "$PROMPT_FILE"
+        run_claude "$PROMPT_FILE"
+        # Reset idle timer so we wait the full window for the next task
+        elapsed=0
+      fi
     fi
   fi
 done

@@ -93,7 +93,7 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
  */
 export function getMessages(
   agentId: string,
-  opts?: { limit?: number; type?: MessageType },
+  opts?: { limit?: number; type?: MessageType; sinceId?: number },
 ): Message[] {
   let sql = 'SELECT * FROM messages WHERE to_agent = ? OR from_agent = ?';
   const params: unknown[] = [agentId, agentId];
@@ -103,12 +103,37 @@ export function getMessages(
     params.push(opts.type);
   }
 
+  if (opts?.sinceId !== undefined) {
+    sql += ' AND id > ?';
+    params.push(opts.sinceId);
+  }
+
   sql += ' ORDER BY created_at ASC';
 
   if (opts?.limit) {
     sql += ' LIMIT ?';
     params.push(opts.limit);
   }
+
+  return query<Message>(sql, ...params);
+}
+
+/**
+ * Get messages addressed TO an agent with ID greater than sinceId.
+ * Used by the orchestrator wrapper to poll for new tasks without relying
+ * on read/processed state (avoids race where Claude consumes messages
+ * via the API before the wrapper's polling loop runs).
+ */
+export function getMessagesSince(agentId: string, sinceId: number, type?: MessageType): Message[] {
+  let sql = 'SELECT * FROM messages WHERE to_agent = ? AND id > ?';
+  const params: unknown[] = [agentId, sinceId];
+
+  if (type) {
+    sql += ' AND type = ?';
+    params.push(type);
+  }
+
+  sql += ' ORDER BY id ASC';
 
   return query<Message>(sql, ...params);
 }
