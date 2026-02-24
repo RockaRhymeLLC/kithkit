@@ -17,6 +17,8 @@ import {
 } from '../agents/lifecycle.js';
 import { loadProfiles } from '../agents/profiles.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
+import { logActivity, getActivity } from './activity.js';
+import { update } from '../core/db.js';
 
 // ── Configuration ────────────────────────────────────────────
 
@@ -124,6 +126,41 @@ export async function handleAgentsRoute(
           return true;
         }
         json(res, 200, withTimestamp({ status: 'killed' }));
+        return true;
+      }
+
+      // POST /api/agents/:id/activity — log an activity event
+      if (suffix === '/activity' && method === 'POST') {
+        const body = await parseBody(req);
+        if (!body.event_type || typeof body.event_type !== 'string') {
+          json(res, 400, withTimestamp({ error: 'event_type is required' }));
+          return true;
+        }
+        const entry = logActivity({
+          agent_id: agentId,
+          session_id: typeof body.session_id === 'string' ? body.session_id : undefined,
+          event_type: body.event_type as string,
+          details: typeof body.details === 'string' ? body.details : undefined,
+        });
+
+        // Touch agents.last_activity so idle-detection tasks see fresh activity
+        update('agents', agentId, {
+          last_activity: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+
+        json(res, 201, withTimestamp({ data: entry }));
+        return true;
+      }
+
+      // GET /api/agents/:id/activity — list activity events
+      if (suffix === '/activity' && method === 'GET') {
+        const url = new URL(req.url ?? '', 'http://localhost');
+        const sessionId = url.searchParams.get('session_id') ?? undefined;
+        const eventType = url.searchParams.get('event_type') ?? undefined;
+        const limit = parseInt(url.searchParams.get('limit') ?? '100', 10);
+        const events = getActivity(agentId, { sessionId, eventType, limit });
+        json(res, 200, withTimestamp({ data: events }));
         return true;
       }
     }
