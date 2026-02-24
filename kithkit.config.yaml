@@ -250,7 +250,7 @@ scheduler:
       enabled: true
       interval: "2m"
       config:
-        idle_timeout_minutes: 10
+        idle_timeout_minutes: 15
 
 # ── Integrations ──────────────────────
 integrations:

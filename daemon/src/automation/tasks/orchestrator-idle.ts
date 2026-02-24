@@ -180,15 +180,6 @@ async function run(config: Record<string, unknown>): Promise<void> {
     return;
   }
 
-  // Check if orchestrator has active workers
-  const activeJobs = query<{ count: number }>(
-    "SELECT COUNT(*) as count FROM worker_jobs WHERE status IN ('queued', 'running')",
-  );
-  if ((activeJobs[0]?.count ?? 0) > 0) {
-    log.debug('Workers still running — not idle');
-    return; // Workers still running — not idle
-  }
-
   // --- Check 0: Process-level liveness ---
   // Claude can pause for long periods during complex tasks (thinking, generating).
   // If the Claude process is still running, the orchestrator is NOT idle — even if
@@ -201,6 +192,15 @@ async function run(config: Record<string, unknown>): Promise<void> {
       updated_at: new Date().toISOString(),
     });
     return;
+  }
+
+  // Check if orchestrator has active workers
+  const activeJobs = query<{ count: number }>(
+    "SELECT COUNT(*) as count FROM worker_jobs WHERE status IN ('queued', 'running')",
+  );
+  if ((activeJobs[0]?.count ?? 0) > 0) {
+    log.debug('Workers still running — not idle');
+    return; // Workers still running — not idle
   }
 
   // --- Check 1: Context exhaustion (backstop) ---

@@ -114,6 +114,12 @@ export async function handleOrchestratorRoute(
       body: JSON.stringify({ task, context }),
     });
 
+    // Update activity so idle checker knows we just got work
+    update('agents', 'orchestrator', {
+      last_activity: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+
     log.info('Task escalated to running orchestrator', { task: task.slice(0, 100) });
     json(res, 200, withTimestamp({
       status: 'escalated',
