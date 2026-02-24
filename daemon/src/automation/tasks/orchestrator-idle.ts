@@ -16,17 +16,24 @@ import { execFileSync } from 'node:child_process';
 import { query, update } from '../../core/db.js';
 import { resolveProjectPath } from '../../core/config.js';
 import {
-  isOrchestratorAlive,
-  killOrchestratorSession,
-  injectMessage,
+  isOrchestratorAlive as _isOrchestratorAlive,
+  killOrchestratorSession as _killOrchestratorSession,
+  injectMessage as _injectMessage,
   _getOrchestratorSession,
 } from '../../agents/tmux.js';
-import { cleanupSessionDirs } from '../../agents/lifecycle.js';
+import { cleanupSessionDirs as _cleanupSessionDirs } from '../../agents/lifecycle.js';
 import { createLogger } from '../../core/logger.js';
 import { logActivity, getActivity } from '../../api/activity.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('orchestrator-idle');
+
+// ── Injectable deps (overridable for testing) ────────────────
+
+let isOrchestratorAlive = _isOrchestratorAlive;
+let killOrchestratorSession = _killOrchestratorSession;
+let injectMessage = _injectMessage;
+let cleanupSessionDirs = _cleanupSessionDirs;
 
 /**
  * Dump post-mortem state to the orchestrator's session directory.
@@ -127,21 +134,12 @@ async function run(config: Record<string, unknown>): Promise<void> {
     log.warn('Session dir cleanup failed', { error: String(err) });
   }
 
-  // Not alive? Nothing to do — reset nudge state
-  if (!isOrchestratorAlive()) {
-    shutdownNudgedAt = null;
-    return;
-  }
-
-  const idleTimeoutMs = typeof config.idle_timeout_minutes === 'number'
-    ? config.idle_timeout_minutes * 60 * 1000
-    : DEFAULT_IDLE_TIMEOUT_MS;
-
-  // If we already nudged, check if grace period has expired
+  // If we previously nudged, check the outcome BEFORE the alive check.
+  // The orchestrator may have exited gracefully in response to our nudge —
+  // if we check alive first and reset nudge state, we'd never log the graceful exit.
   if (shutdownNudgedAt !== null) {
-    const elapsed = Date.now() - shutdownNudgedAt;
-
     if (!isOrchestratorAlive()) {
+      // Orchestrator exited after our nudge — log the graceful exit
       log.info('Orchestrator exited gracefully after shutdown nudge', { reason: shutdownReason });
       logActivity({
         agent_id: 'orchestrator',
@@ -153,6 +151,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
       return;
     }
 
+    const elapsed = Date.now() - shutdownNudgedAt;
     if (elapsed >= GRACE_PERIOD_MS) {
       log.warn('Orchestrator did not exit within grace period — force killing', { reason: shutdownReason });
       writePostMortem(`Grace period expired: ${shutdownReason}`);
@@ -179,6 +178,15 @@ async function run(config: Record<string, unknown>): Promise<void> {
     // Still within grace period — let it finish
     return;
   }
+
+  // Not alive and no pending nudge — nothing to do
+  if (!isOrchestratorAlive()) {
+    return;
+  }
+
+  const idleTimeoutMs = typeof config.idle_timeout_minutes === 'number'
+    ? config.idle_timeout_minutes * 60 * 1000
+    : DEFAULT_IDLE_TIMEOUT_MS;
 
   // Check if orchestrator has active workers
   const activeJobs = query<{ count: number }>(
@@ -299,4 +307,28 @@ export function register(scheduler: Scheduler): void {
   scheduler.registerHandler('orchestrator-idle', async (ctx) => {
     await run(ctx.config);
   });
+}
+
+// ── Testing ──────────────────────────────────────────────────
+
+/** @internal Reset nudge state for testing. */
+export function _resetNudgeStateForTesting(): void {
+  shutdownNudgedAt = null;
+  shutdownReason = null;
+}
+
+/** @internal Set nudge state for testing. */
+export function _setNudgeStateForTesting(at: number, reason: string): void {
+  shutdownNudgedAt = at;
+  shutdownReason = reason;
+}
+
+/** @internal Get current nudge state for testing. */
+export function _getNudgeStateForTesting(): { nudgedAt: number | null; reason: string | null } {
+  return { nudgedAt: shutdownNudgedAt, reason: shutdownReason };
+}
+
+/** @internal Expose run() for direct testing. */
+export async function _runForTesting(config: Record<string, unknown>): Promise<void> {
+  return run(config);
 }
