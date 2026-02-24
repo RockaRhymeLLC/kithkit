@@ -7,8 +7,8 @@
  */
 import http from 'node:http';
 
-const HOST = process.argv[2] || '192.168.12.147';
-const PORT = parseInt(process.argv[3] || '9222');
+const HOST = process.argv[2] || 'localhost';
+const PORT = parseInt(process.argv[3] || '9223');
 const TAB_INDEX = parseInt(process.argv[4] || '0');
 
 function httpGet(url) {
@@ -60,7 +60,11 @@ async function main() {
     console.error('ERROR: Tab has no WebSocket URL');
     process.exit(1);
   }
-  wsUrl = wsUrl.replace(/localhost|127\.0\.0\.1/g, HOST);
+  // When tunneled, Chrome's localhost WS URLs are already correct
+  // For non-tunnel usage, fix host in WebSocket URL
+  if (HOST !== 'localhost' && HOST !== '127.0.0.1') {
+    wsUrl = wsUrl.replace(/localhost|127\.0\.0\.1/g, HOST);
+  }
 
   console.log(`Tab: ${tab.title.slice(0, 80)}`);
   console.log(`URL: ${tab.url.slice(0, 100)}`);

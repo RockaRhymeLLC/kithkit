@@ -7,8 +7,8 @@
  */
 import http from 'node:http';
 
-const HOST = process.argv[2] || '192.168.12.147';
-const PORT = parseInt(process.argv[3] || '9222');
+const HOST = process.argv[2] || 'localhost';
+const PORT = parseInt(process.argv[3] || '9223');
 
 function httpGet(url) {
   return new Promise((resolve, reject) => {
@@ -35,12 +35,13 @@ async function main() {
     console.error(`  Error: ${e.message}`);
     console.error('');
     console.error('Dave needs to launch Chrome with remote debugging:');
-    console.error(`  /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\`);
-    console.error(`    --remote-debugging-port=${PORT} \\`);
-    console.error('    --remote-debugging-address=0.0.0.0 \\');
-    console.error("    '--remote-allow-origins=*' \\");
+    console.error('  /Applications/Google\\ Chrome.app/Contents/MacOS/Google\\ Chrome \\');
+    console.error('    --remote-debugging-port=9222 \\');
     console.error('    --user-data-dir=/tmp/chrome-cowork \\');
     console.error('    --no-first-run --no-default-browser-check');
+    console.error('');
+    console.error('Then BMO sets up the SSH tunnel:');
+    console.error('  ssh -f -N -L 9223:localhost:9222 davidhurley@192.168.12.151');
     process.exit(1);
   }
 
