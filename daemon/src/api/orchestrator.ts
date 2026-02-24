@@ -13,6 +13,7 @@ import {
   spawnOrchestratorSession,
   killOrchestratorSession,
   isOrchestratorAlive,
+  getOrchestratorState,
 } from '../agents/tmux.js';
 import { sendMessage } from '../agents/message-router.js';
 import { createSessionDir } from '../agents/lifecycle.js';
@@ -124,6 +125,7 @@ export async function handleOrchestratorRoute(
   // GET /api/orchestrator/status
   if (pathname === '/api/orchestrator/status' && method === 'GET') {
     const alive = isOrchestratorAlive();
+    const state = getOrchestratorState(); // 'active' | 'waiting' | 'dead'
     const agentRows = query<{ status: string; started_at: string | null; last_activity: string | null }>(
       "SELECT status, started_at, last_activity FROM agents WHERE id = 'orchestrator'",
     );
@@ -137,6 +139,7 @@ export async function handleOrchestratorRoute(
 
     json(res, 200, withTimestamp({
       alive,
+      state,   // fine-grained: 'active' (running claude), 'waiting' (idle loop), 'dead'
       status: agent?.status ?? 'not_registered',
       started_at: agent?.started_at ?? null,
       last_activity: agent?.last_activity ?? null,
