@@ -47,7 +47,7 @@ async function run(): Promise<void> {
 
   log.info(`Reminding about ${actionable.length} actionable todo(s)`);
 
-  const reminder = `[System] You have ${actionable.length} actionable todo(s).${suggestion} Run /todo list, pick one, and start working on it now.`;
+  const reminder = `[System] You have ${actionable.length} actionable todo(s).${suggestion} Run /todo list, pick one, and start working on it now. Reminder: if you're stuck on something after 2 attempts, pivot to a different approach or move to another task.`;
   const injected = injectMessage('comms', reminder);
   if (!injected) {
     log.warn('Failed to inject todo reminder into comms session');
