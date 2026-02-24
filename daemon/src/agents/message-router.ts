@@ -93,7 +93,7 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
  */
 export function getMessages(
   agentId: string,
-  opts?: { limit?: number; type?: MessageType; sinceId?: number },
+  opts?: { limit?: number; type?: MessageType },
 ): Message[] {
   let sql = 'SELECT * FROM messages WHERE to_agent = ? OR from_agent = ?';
   const params: unknown[] = [agentId, agentId];
@@ -101,11 +101,6 @@ export function getMessages(
   if (opts?.type) {
     sql += ' AND type = ?';
     params.push(opts.type);
-  }
-
-  if (opts?.sinceId !== undefined) {
-    sql += ' AND id > ?';
-    params.push(opts.sinceId);
   }
 
   sql += ' ORDER BY created_at ASC';

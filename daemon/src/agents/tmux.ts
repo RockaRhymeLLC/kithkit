@@ -116,6 +116,12 @@ IDLE_WAIT_SEC=${idleWaitSec}
 POLL_INTERVAL_SEC=${pollIntervalSec}
 PROMPT_FILE=$(mktemp /tmp/orch-prompt-XXXXXX)
 
+# Validate dependencies
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "ERROR: python3 not found — required for JSON parsing in orchestrator wrapper" >&2
+  exit 1
+fi
+
 # Decode the base64-encoded initial prompt into the temp file
 printf '%s' '${promptB64}' | base64 -d > "$PROMPT_FILE"
 
@@ -138,13 +144,12 @@ run_claude() {
 # with id > LAST_MSG_ID. This avoids a race where the orchestrator Claude
 # process reads and marks messages as read via the API before this wrapper's
 # polling loop runs — ?since_id is immune to read_at / processed_at state.
-LAST_MSG_ID=$(curl -s -f "http://localhost:$DAEMON_PORT/api/messages?agent=orchestrator&limit=1" 2>/dev/null \
+LAST_MSG_ID=$(curl -s -f "http://localhost:$DAEMON_PORT/api/messages?agent=orchestrator&since_id=0" 2>/dev/null \
   | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 msgs = d.get('data', [])
 if msgs:
-    # limit=1 returns most recent by created_at ASC — take the max id
     print(max(m.get('id', 0) for m in msgs))
 else:
     print(0)
@@ -355,8 +360,10 @@ export function getOrchestratorState(): 'active' | 'waiting' | 'dead' {
       // pgrep exits non-zero → no matching descendants
       return 'waiting';
     }
-  } catch {
-    // Can't determine process tree — assume waiting
+  } catch (err) {
+    log.warn('getOrchestratorState: failed to determine process tree, assuming waiting', {
+      error: err instanceof Error ? err.message : String(err),
+    });
     return 'waiting';
   }
 }
