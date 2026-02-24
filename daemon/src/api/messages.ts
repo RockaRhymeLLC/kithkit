@@ -20,6 +20,21 @@ import {
 import type { MessageType } from '../agents/message-router.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
 
+const VALID_MESSAGE_TYPES: readonly string[] = ['text', 'task', 'result', 'error', 'status'];
+
+/** Validate and return the `type` query param, or send a 400 and return false. */
+function validateType(
+  raw: string | null,
+  res: http.ServerResponse,
+): MessageType | null | false {
+  if (raw === null) return null;
+  if (!VALID_MESSAGE_TYPES.includes(raw)) {
+    json(res, 400, withTimestamp({ error: `type must be one of: ${VALID_MESSAGE_TYPES.join(', ')}` }));
+    return false;
+  }
+  return raw as MessageType;
+}
+
 // ── Route handler ────────────────────────────────────────────
 
 export async function handleMessagesRoute(
@@ -129,22 +144,24 @@ export async function handleMessagesRoute(
       const sinceIdStr = searchParams.get('since_id');
       if (sinceIdStr !== null) {
         const sinceId = parseInt(sinceIdStr, 10);
-        if (isNaN(sinceId)) {
-          json(res, 400, withTimestamp({ error: 'since_id must be a number' }));
+        if (isNaN(sinceId) || sinceId < 0) {
+          json(res, 400, withTimestamp({ error: 'since_id must be a non-negative number' }));
           return true;
         }
-        const type = searchParams.get('type') as MessageType | null;
+        const type = validateType(searchParams.get('type'), res);
+        if (type === false) return true;
         const messages = getMessagesSince(agent, sinceId, type ?? undefined);
         json(res, 200, withTimestamp({ data: messages }));
         return true;
       }
 
-      const type = searchParams.get('type') as MessageType | null;
+      const type = validateType(searchParams.get('type'), res);
+      if (type === false) return true;
       const limitStr = searchParams.get('limit');
       const limit = limitStr ? parseInt(limitStr, 10) : undefined;
 
       const messages = getMessages(agent, {
-        type: type ?? undefined,
+        type: (type as MessageType) ?? undefined,
         limit: limit && !isNaN(limit) ? limit : undefined,
       });
 
