@@ -14,7 +14,7 @@
  * which also marks messages as read (sets read_at).
  */
 
-import { query, exec } from '../../core/db.js';
+import { query, exec, update } from '../../core/db.js';
 import { injectMessage, isOrchestratorAlive, listSessions } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
@@ -204,6 +204,14 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
         _retryCounts.delete(msg.id);
         _lastPingTime.set(msg.id, nowMs);
         delivered++;
+      }
+      // If we just delivered to the orchestrator, touch last_activity so the
+      // idle checker knows it received work and resets its idle clock.
+      if (agentId === 'orchestrator') {
+        update('agents', 'orchestrator', {
+          last_activity: now,
+          updated_at: now,
+        });
       }
       log.debug('Notification ping sent', { to: agentId, count: deliverable.length });
     } else {
