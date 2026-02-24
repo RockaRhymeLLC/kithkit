@@ -11,6 +11,7 @@ import type http from 'node:http';
 import {
   sendMessage,
   getMessages,
+  getMessagesSince,
   getUnreadMessages,
   markMessagesRead,
   MessageValidationError,
@@ -117,6 +118,23 @@ export async function handleMessagesRoute(
         if (messages.length > 0) {
           markMessagesRead(messages.map(m => m.id));
         }
+        json(res, 200, withTimestamp({ data: messages }));
+        return true;
+      }
+
+      // ?since_id=N — return messages with id > N addressed TO this agent
+      // Used by the orchestrator wrapper to poll for new tasks without relying
+      // on read/processed state (avoids race where Claude consumes messages
+      // via the API before the wrapper's polling loop runs).
+      const sinceIdStr = searchParams.get('since_id');
+      if (sinceIdStr !== null) {
+        const sinceId = parseInt(sinceIdStr, 10);
+        if (isNaN(sinceId)) {
+          json(res, 400, withTimestamp({ error: 'since_id must be a number' }));
+          return true;
+        }
+        const type = searchParams.get('type') as MessageType | null;
+        const messages = getMessagesSince(agent, sinceId, type ?? undefined);
         json(res, 200, withTimestamp({ data: messages }));
         return true;
       }
