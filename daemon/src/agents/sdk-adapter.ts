@@ -32,6 +32,8 @@ export interface WorkerProfile {
   disallowedTools?: string[];
   permissionMode?: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
   maxTurns?: number;
+  /** Controls how much effort Claude puts into responses */
+  effort?: 'low' | 'medium' | 'high' | 'max';
   /** Profile body text appended to system prompt */
   body?: string;
 }
@@ -138,6 +140,7 @@ export function spawnWorker(opts: SpawnOptions): string {
   if (opts.profile.allowedTools) sdkOptions.allowedTools = opts.profile.allowedTools;
   if (opts.profile.disallowedTools) sdkOptions.disallowedTools = opts.profile.disallowedTools;
   if (opts.profile.maxTurns) sdkOptions.maxTurns = opts.profile.maxTurns;
+  if (opts.profile.effort) sdkOptions.effort = opts.profile.effort;
   if (opts.maxBudgetUsd !== undefined) sdkOptions.maxBudgetUsd = opts.maxBudgetUsd;
   if (opts.cwd) sdkOptions.cwd = opts.cwd;
 
