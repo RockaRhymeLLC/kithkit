@@ -336,9 +336,9 @@ export async function _runForTesting(config: Record<string, unknown>): Promise<v
 /** @internal Override injectable deps for testing. Pass null to restore originals. */
 export function _setDepsForTesting(deps: {
   isOrchestratorAlive?: () => boolean;
-  killOrchestratorSession?: () => void;
+  killOrchestratorSession?: () => boolean;
   injectMessage?: (target: string, text: string) => boolean;
-  cleanupSessionDirs?: (maxAgeDays: number) => number;
+  cleanupSessionDirs?: (maxAgeDays?: number) => number;
 } | null): void {
   if (deps === null) {
     isOrchestratorAlive = _isOrchestratorAlive;
