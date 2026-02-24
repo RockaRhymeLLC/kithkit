@@ -47,7 +47,7 @@ export function injectMessage(agentId: string, text: string): boolean {
 
   try {
     // Check if session exists first
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', session], {
+    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
       timeout: 5000,
     });
   } catch {
@@ -58,12 +58,12 @@ export function injectMessage(agentId: string, text: string): boolean {
   try {
     // Prepend EST timestamp and send as keystrokes, then press Enter
     const stamped = `${estTimestamp()} ${text}`;
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', session, '-l', stamped], {
+    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', `${session}:`, '-l', stamped], {
       timeout: 5000,
     });
     // Small delay to let tmux buffer the text before submitting
     execFileSync('/bin/sleep', ['0.15'], { timeout: 2000 });
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', session, 'Enter'], {
+    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', `${session}:`, 'Enter'], {
       timeout: 5000,
     });
     log.info('Message injected into tmux session', { agentId, session, length: text.length });
@@ -89,7 +89,7 @@ export function spawnOrchestratorSession(prompt: string): string | null {
 
   // Check if already running
   try {
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', session], {
+    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
       timeout: 5000,
     });
     log.warn('Orchestrator session already exists', { session });
@@ -121,6 +121,7 @@ export function spawnOrchestratorSession(prompt: string): string | null {
       env: {
         ...process.env,
         PATH: `${process.env.HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+        CLAUDECODE: '',  // Clear nesting guard — orchestrator is a separate session
       },
     });
 
@@ -143,7 +144,7 @@ export function killOrchestratorSession(): boolean {
   const session = resolveSession('orchestrator')!;
 
   try {
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'kill-session', '-t', session], {
+    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'kill-session', '-t', `=${session}`], {
       timeout: 5000,
     });
     log.info('Orchestrator session killed', { session });
@@ -161,7 +162,7 @@ export function isOrchestratorAlive(): boolean {
   const session = resolveSession('orchestrator')!;
 
   try {
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', session], {
+    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
       timeout: 5000,
     });
     return true;
