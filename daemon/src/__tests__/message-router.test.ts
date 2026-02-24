@@ -10,11 +10,12 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { openDatabase, _resetDbForTesting, query } from '../core/db.js';
+import { openDatabase, _resetDbForTesting, query, exec } from '../core/db.js';
 import { handleMessagesRoute } from '../api/messages.js';
 import {
   sendMessage,
   getMessages,
+  getMessagesSince,
   _setTmuxInjectorForTesting,
   WorkerRestrictionError,
 } from '../agents/message-router.js';
@@ -112,7 +113,7 @@ describe('Message sent and logged between agents (t-142)', () => {
     assert.equal(res.status, 200);
     const body = JSON.parse(res.body);
     assert.ok(typeof body.messageId === 'number', 'should return messageId');
-    // Persistent agents queue for delivery task — delivered is false until ping sent
+    // Persistent agent messages are now queued for delivery, not immediately injected
     assert.equal(body.delivered, false);
     assert.ok(body.timestamp);
   });
@@ -166,11 +167,17 @@ describe('Message sent and logged between agents (t-142)', () => {
   });
 });
 
-describe('Message delivery queuing for persistent agents (t-143)', () => {
+describe('Message queued for delivery to persistent agents (t-143)', () => {
   beforeEach(setup);
   afterEach(teardown);
 
-  it('persistent agent messages queued for delivery (not direct tmux)', () => {
+  it('persistent agent messages are queued (not immediately injected)', () => {
+    const injectedMessages: { session: string; text: string }[] = [];
+    _setTmuxInjectorForTesting((session, text) => {
+      injectedMessages.push({ session, text });
+      return true;
+    });
+
     const result = sendMessage({
       from: 'orchestrator',
       to: 'comms',
@@ -178,28 +185,34 @@ describe('Message delivery queuing for persistent agents (t-143)', () => {
       body: 'Research complete',
     });
 
-    // Should be queued (delivered=false), not directly injected
+    // No direct injection — delivery task handles it
+    assert.equal(injectedMessages.length, 0);
     assert.equal(result.delivered, false);
 
-    // Message should exist in DB with processed_at IS NULL (awaiting delivery task)
+    // Message still stored in DB with processed_at = NULL (undelivered)
     const messages = query<Message>('SELECT * FROM messages WHERE id = ?', result.messageId);
     assert.equal(messages.length, 1);
     assert.equal(messages[0].processed_at, null);
   });
 
-  it('worker target messages NOT queued for delivery', () => {
-    const result = sendMessage({
+  it('tmux injector NOT called for worker targets', () => {
+    const injectedMessages: { session: string; text: string }[] = [];
+    _setTmuxInjectorForTesting((session, text) => {
+      injectedMessages.push({ session, text });
+      return true;
+    });
+
+    sendMessage({
       from: 'orchestrator',
       to: 'worker-abc',
       type: 'task',
       body: 'Do work',
     });
 
-    // Worker messages are delivered immediately (workers pull their own)
-    assert.equal(result.delivered, true);
+    assert.equal(injectedMessages.length, 0, 'should not inject into worker tmux');
   });
 
-  it('message logged in DB regardless of delivery status', () => {
+  it('message stored in DB even for persistent agents', () => {
     const result = sendMessage({
       from: 'orchestrator',
       to: 'comms',
@@ -208,9 +221,10 @@ describe('Message delivery queuing for persistent agents (t-143)', () => {
     });
 
     assert.equal(result.delivered, false);
-    // Message should still be in DB
+    // Message should be in DB awaiting delivery
     const messages = query<Message>('SELECT * FROM messages WHERE id = ?', result.messageId);
     assert.equal(messages.length, 1);
+    assert.equal(messages[0].body, 'Research complete');
   });
 });
 
@@ -285,6 +299,128 @@ describe('Worker messages restricted to result and error (t-144)', () => {
 
     const messages = query<Message>('SELECT * FROM messages');
     assert.equal(messages.length, 3);
+  });
+});
+
+describe('getMessagesSince — since_id cursor polling (race condition fix)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('returns only messages with id > sinceId addressed to the agent', () => {
+    const r1 = sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'First task' });
+    const r2 = sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Second task' });
+    const r3 = sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Third task' });
+
+    // Seed cursor at r1 — should return r2 and r3
+    const since = getMessagesSince('orchestrator', r1.messageId);
+    assert.equal(since.length, 2);
+    assert.equal(since[0]!.id, r2.messageId);
+    assert.equal(since[1]!.id, r3.messageId);
+  });
+
+  it('returns empty array when no messages newer than sinceId', () => {
+    const r1 = sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Only task' });
+    const since = getMessagesSince('orchestrator', r1.messageId);
+    assert.equal(since.length, 0);
+  });
+
+  it('returns all messages when sinceId is 0', () => {
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Task A' });
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Task B' });
+    const since = getMessagesSince('orchestrator', 0);
+    assert.equal(since.length, 2);
+  });
+
+  it('filters by type when provided', () => {
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Task A' });
+    const r2 = sendMessage({ from: 'comms', to: 'orchestrator', type: 'status', body: 'Status' });
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Task B' });
+
+    const tasksSince = getMessagesSince('orchestrator', 0, 'task');
+    assert.equal(tasksSince.length, 2);
+    assert.ok(tasksSince.every(m => m.type === 'task'), 'should only return task messages');
+
+    const statusSince = getMessagesSince('orchestrator', 0, 'status');
+    assert.equal(statusSince.length, 1);
+    assert.equal(statusSince[0]!.id, r2.messageId);
+  });
+
+  it('only returns messages TO the specified agent', () => {
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'For orch' });
+    sendMessage({ from: 'orchestrator', to: 'comms', type: 'result', body: 'For comms' });
+
+    const orchSince = getMessagesSince('orchestrator', 0);
+    assert.equal(orchSince.length, 1);
+    assert.equal(orchSince[0]!.body, 'For orch');
+  });
+
+  it('works regardless of read_at or processed_at state (immune to race condition)', () => {
+    const r1 = sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Task' });
+
+    // Simulate Claude (running as orchestrator) marking the message as read+processed via API —
+    // this is the race condition: Claude sees the notification ping and calls GET ?unread=true,
+    // which sets both processed_at and read_at before the wrapper's poll loop runs.
+    const now = new Date().toISOString();
+    exec('UPDATE messages SET read_at = ?, processed_at = ? WHERE id = ?',
+      now, now, r1.messageId);
+
+    // Verify it's now fully consumed
+    const consumed = query<Message>('SELECT * FROM messages WHERE id = ?', r1.messageId);
+    assert.equal(consumed.length, 1);
+    assert.ok(consumed[0]!.read_at, 'message should be marked read');
+
+    // getMessagesSince(r1.messageId) returns 0 — cursor is PAST r1, nothing newer
+    const since = getMessagesSince('orchestrator', r1.messageId);
+    assert.equal(since.length, 0);
+
+    // A NEW message after r1 should be found regardless of read/processed state of r1
+    const r2 = sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'New task' });
+    const since2 = getMessagesSince('orchestrator', r1.messageId);
+    assert.equal(since2.length, 1);
+    assert.equal(since2[0]!.id, r2.messageId);
+  });
+});
+
+describe('GET /api/messages?since_id=N API endpoint', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('returns messages with id > since_id for the agent', async () => {
+    const r1 = sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'First' });
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Second' });
+
+    const res = await request('GET', `/api/messages?agent=orchestrator&since_id=${r1.messageId}`);
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 1);
+    assert.equal(body.data[0].body, 'Second');
+  });
+
+  it('returns 400 for non-numeric since_id', async () => {
+    const res = await request('GET', '/api/messages?agent=orchestrator&since_id=abc');
+    assert.equal(res.status, 400);
+    assert.ok(JSON.parse(res.body).error.includes('since_id'));
+  });
+
+  it('since_id=0 returns all messages', async () => {
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Task A' });
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Task B' });
+
+    const res = await request('GET', '/api/messages?agent=orchestrator&since_id=0');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 2);
+  });
+
+  it('since_id with type filter returns only matching messages', async () => {
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'task', body: 'Task' });
+    sendMessage({ from: 'comms', to: 'orchestrator', type: 'status', body: 'Status' });
+
+    const res = await request('GET', '/api/messages?agent=orchestrator&since_id=0&type=task');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 1);
+    assert.equal(body.data[0].type, 'task');
   });
 });
 
