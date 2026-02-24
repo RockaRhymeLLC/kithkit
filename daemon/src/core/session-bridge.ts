@@ -98,7 +98,7 @@ export function estTimestamp(): string {
 export function sessionExists(name?: string): boolean {
   const session = validateSessionName(name ?? getDefaultSessionName());
   try {
-    execFileSync(getTmuxPath(), ['has-session', '-t', session], {
+    execFileSync(getTmuxPath(), ['has-session', '-t', `=${session}`], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     return true;
@@ -114,7 +114,7 @@ export function sessionExists(name?: string): boolean {
 export function capturePane(name?: string): string {
   const session = validateSessionName(name ?? getDefaultSessionName());
   try {
-    return execFileSync(getTmuxPath(), ['capture-pane', '-t', session, '-p'], {
+    return execFileSync(getTmuxPath(), ['capture-pane', '-t', `${session}:`, '-p'], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -157,7 +157,7 @@ export function injectText(
 
   try {
     const stamped = `${estTimestamp()} ${text}`;
-    execFileSync(tmux, ['send-keys', '-t', session, '-l', stamped], {
+    execFileSync(tmux, ['send-keys', '-t', `${session}:`, '-l', stamped], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -167,7 +167,7 @@ export function injectText(
       const MAX_ENTER_ATTEMPTS = 3;
       const ENTER_DELAYS = [300, 500, 800];
       for (let attempt = 1; attempt <= MAX_ENTER_ATTEMPTS; attempt++) {
-        execFileSync(tmux, ['send-keys', '-t', session, 'Enter'], {
+        execFileSync(tmux, ['send-keys', '-t', `${session}:`, 'Enter'], {
           stdio: ['pipe', 'pipe', 'pipe'],
         });
 
