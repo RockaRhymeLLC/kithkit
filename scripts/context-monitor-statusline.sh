@@ -9,28 +9,40 @@
 # Files written:
 #   .claude/state/context-usage.json           — comms agent (default)
 #   .claude/state/context-usage-orch.json      — orchestrator
+#   .claude/state/context-usage-other.json     — workers / unknown sessions
 #
 # Configuration: Add to .claude/settings.json:
 #   "statusLine": { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/context-monitor-statusline.sh" }
 
 input=$(cat)
 
-# Source shared config
+# Source shared config (provides BASE_DIR, STATE_DIR, TMUX_BIN, read_config, etc.)
 source "$(dirname "${BASH_SOURCE[0]}")/lib/config.sh"
 
 # Ensure state directory exists
 mkdir -p "$STATE_DIR"
 
-# Detect which tmux session we're in
-TMUX_BIN="/opt/homebrew/bin/tmux"
+# Detect which tmux session we're in using $TMUX_PANE (reliable).
+# Note: 'tmux display-message -p' without -t uses the attached CLIENT's session,
+# not the session that owns this process's pane. That's wrong when multiple sessions
+# share a tmux server. Using -t "$TMUX_PANE" resolves via the pane ID instead.
 CURRENT_SESSION=""
-if [ -n "$TMUX" ]; then
-  CURRENT_SESSION=$($TMUX_BIN display-message -p '#{session_name}' 2>/dev/null || true)
+if [ -n "$TMUX_PANE" ] && [ -n "$TMUX_BIN" ]; then
+  CURRENT_SESSION=$($TMUX_BIN display-message -t "$TMUX_PANE" -p '#{session_name}' 2>/dev/null || true)
+fi
+# Fallback: scan pane list to match by PID ancestry
+if [ -z "$CURRENT_SESSION" ] && [ -n "$TMUX" ] && [ -n "$TMUX_BIN" ]; then
+  CURRENT_SESSION=$($TMUX_BIN list-panes -a -F '#{pane_pid} #{session_name}' 2>/dev/null | while read pane_pid sess; do
+    if [ "$pane_pid" = "$PPID" ]; then
+      echo "$sess"
+      break
+    fi
+  done)
 fi
 
 # Pick the right state file based on session
-SESSION_NAME=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
-SESSION_NAME="${SESSION_NAME:-cc4me}"
+# Use read_config from config.sh (reads kithkit.config.yaml properly)
+SESSION_NAME="$(get_session_name)"
 
 if [ -n "$CURRENT_SESSION" ] && [ "$CURRENT_SESSION" = "${SESSION_NAME}-orch" ]; then
   STATE_FILE="$STATE_DIR/context-usage-orch.json"
