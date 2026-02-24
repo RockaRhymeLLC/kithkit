@@ -13,6 +13,7 @@ import path from 'node:path';
 import { injectText, sessionExists } from '../../../core/session-bridge.js';
 import { createLogger } from '../../../core/logger.js';
 import { getProjectDir, loadConfig } from '../../../core/config.js';
+import { list, query } from '../../../core/db.js';
 import type { Scheduler } from '../../../automation/scheduler.js';
 import { getTelegramAdapter, getGraphAdapter, getJmapAdapter, getOutlookAdapter, getHimalayaAdapters } from '../../comms/index.js';
 
@@ -193,60 +194,48 @@ function gatherLookahead(): string {
 }
 
 function gatherInternalCalendar(): string {
-  const calFile = path.join(getProjectDir(), '.claude/state/calendar.md');
   try {
-    if (!fs.existsSync(calFile)) return '';
-
-    const content = fs.readFileSync(calFile, 'utf8');
-    // Use local date strings (calendar.md uses local dates, not UTC)
     const now = new Date();
-    const todayParts = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')];
-    const today = todayParts.join('-');
+    const todayStr = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-');
     const tmrw = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-    const tmrwParts = [tmrw.getFullYear(), String(tmrw.getMonth() + 1).padStart(2, '0'), String(tmrw.getDate()).padStart(2, '0')];
-    const tomorrow = tmrwParts.join('-');
+    const tomorrowStr = [tmrw.getFullYear(), String(tmrw.getMonth() + 1).padStart(2, '0'), String(tmrw.getDate()).padStart(2, '0')].join('-');
+
+    const events = query<{ id: number; title: string; start_time: string; end_time: string | null; all_day: number; description: string | null }>(
+      "SELECT * FROM calendar WHERE date(start_time) >= date(?) AND date(start_time) <= date(?) ORDER BY start_time ASC",
+      todayStr, tomorrowStr,
+    );
+
+    if (events.length === 0) return '';
 
     const entries: string[] = [];
-    let currentDate = '';
-
-    for (const line of content.split('\n')) {
-      // Match date headings like "### 2026-02-14"
-      const dateMatch = line.match(/^###\s+(\d{4}-\d{2}-\d{2})/);
-      if (dateMatch) {
-        currentDate = dateMatch[1];
-        continue;
-      }
-      // Match entries (- items) under today or tomorrow
-      if ((currentDate === today || currentDate === tomorrow) && line.match(/^- /)) {
-        const label = currentDate === today ? 'Today' : 'Tomorrow';
-        entries.push(`[${label}] ${line.replace(/^- /, '').trim()}`);
-      }
+    for (const ev of events) {
+      const eventDate = ev.start_time.slice(0, 10);
+      const label = eventDate === todayStr ? 'Today' : 'Tomorrow';
+      const time = ev.all_day ? '' : ` ${ev.start_time.slice(11, 16)}`;
+      entries.push(`[${label}]${time} ${ev.title}`);
     }
 
-    return entries.length > 0 ? entries.join('\n') : '';
+    return entries.join('\n');
   } catch {
     return '';
   }
 }
 
 function gatherTodos(): string {
-  const todoDir = path.join(getProjectDir(), '.claude/state/todos');
   try {
-    const files = fs.readdirSync(todoDir).filter(f => f.endsWith('.json') && !f.includes('-completed-'));
-    if (files.length === 0) return 'No open to-dos.';
+    const rows = query<{ id: number; title: string; priority: string; status: string; due_date: string | null }>(
+      "SELECT id, title, priority, status, due_date FROM todos WHERE status NOT IN ('completed', 'cancelled') ORDER BY CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, created_at DESC",
+    );
 
-    const todos: string[] = [];
-    for (const file of files) {
-      try {
-        const data = JSON.parse(fs.readFileSync(path.join(todoDir, file), 'utf8'));
-        const priority = (data.priority ?? 'medium').toUpperCase();
-        const due = data.due ? ` (due: ${data.due})` : '';
-        todos.push(`[${data.id}] ${priority} — ${data.title}${due}`);
-      } catch {
-        // skip malformed files
-      }
+    if (rows.length === 0) return 'No open to-dos.';
+
+    const lines: string[] = [];
+    for (const row of rows) {
+      const priority = (row.priority ?? 'medium').toUpperCase();
+      const due = row.due_date ? ` (due: ${row.due_date})` : '';
+      lines.push(`[${row.id}] ${priority} — ${row.title}${due}`);
     }
-    return todos.length > 0 ? todos.join('\n') : 'No open to-dos.';
+    return lines.join('\n');
   } catch {
     return 'To-do list unavailable.';
   }
