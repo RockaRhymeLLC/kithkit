@@ -109,6 +109,7 @@ channels:
         - "paddle.com"
         - "your.*order"
         - "your.*receipt"
+        - "shipment-tracking@amazon.com"
       auto_read:
         - "bmo@bmobot.ai"
         - "bmo_hurley@fastmail.com"
