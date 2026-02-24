@@ -13,6 +13,8 @@ import yaml from 'js-yaml';
 
 // ── Types ────────────────────────────────────────────────────
 
+export type EffortLevel = 'low' | 'medium' | 'high' | 'max';
+
 export interface AgentProfile {
   name: string;
   description: string;
@@ -21,6 +23,10 @@ export interface AgentProfile {
   model: string;
   permissionMode: 'default' | 'acceptEdits' | 'bypassPermissions' | 'plan';
   maxTurns: number;
+  /** Controls how much effort Claude puts into responses (maps to SDK effort param) */
+  effort: EffortLevel;
+  /** Per-worker cost cap in USD (maps to SDK maxBudgetUsd) */
+  maxBudgetUsd: number;
   /** Markdown body — becomes systemPrompt append content */
   body: string;
 }
@@ -35,6 +41,7 @@ export class ProfileValidationError extends Error {
 // ── Constants ────────────────────────────────────────────────
 
 const VALID_PERMISSION_MODES = ['default', 'acceptEdits', 'bypassPermissions', 'plan'] as const;
+const VALID_EFFORT_LEVELS = ['low', 'medium', 'high', 'max'] as const;
 
 const DEFAULTS: Omit<AgentProfile, 'name' | 'body'> = {
   description: '',
@@ -43,6 +50,8 @@ const DEFAULTS: Omit<AgentProfile, 'name' | 'body'> = {
   model: 'sonnet',
   permissionMode: 'bypassPermissions',
   maxTurns: 20,
+  effort: 'high',
+  maxBudgetUsd: 1.0,
 };
 
 // ── Parsing ──────────────────────────────────────────────────
@@ -116,6 +125,22 @@ export function validateProfile(
     throw new ProfileValidationError('disallowedTools must be an array');
   }
 
+  // Validate effort if provided
+  if (frontmatter.effort !== undefined) {
+    if (!VALID_EFFORT_LEVELS.includes(frontmatter.effort as typeof VALID_EFFORT_LEVELS[number])) {
+      throw new ProfileValidationError(
+        `invalid effort: '${frontmatter.effort}' (must be ${VALID_EFFORT_LEVELS.join(', ')})`,
+      );
+    }
+  }
+
+  // Validate maxBudgetUsd if provided
+  if (frontmatter.maxBudgetUsd !== undefined) {
+    if (typeof frontmatter.maxBudgetUsd !== 'number' || frontmatter.maxBudgetUsd <= 0) {
+      throw new ProfileValidationError('maxBudgetUsd must be a positive number');
+    }
+  }
+
   return {
     name: frontmatter.name as string,
     description: typeof frontmatter.description === 'string' ? frontmatter.description : DEFAULTS.description,
@@ -126,6 +151,10 @@ export function validateProfile(
       ? frontmatter.permissionMode as AgentProfile['permissionMode']
       : DEFAULTS.permissionMode,
     maxTurns: typeof frontmatter.maxTurns === 'number' ? frontmatter.maxTurns : DEFAULTS.maxTurns,
+    effort: VALID_EFFORT_LEVELS.includes(frontmatter.effort as typeof VALID_EFFORT_LEVELS[number])
+      ? frontmatter.effort as EffortLevel
+      : DEFAULTS.effort,
+    maxBudgetUsd: typeof frontmatter.maxBudgetUsd === 'number' ? frontmatter.maxBudgetUsd : DEFAULTS.maxBudgetUsd,
     body,
   };
 }

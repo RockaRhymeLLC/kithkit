@@ -1,7 +1,11 @@
 ---
 name: coding
 description: Implementation worker — writes code, edits files, runs tests
+tools: [Read, Glob, Grep, Edit, Write, Bash, NotebookEdit, Task]
+disallowedTools: []
 model: sonnet
+effort: high
+maxBudgetUsd: 2.00
 permissionMode: bypassPermissions
 maxTurns: 30
 ---

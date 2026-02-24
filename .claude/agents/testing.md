@@ -1,7 +1,11 @@
 ---
 name: testing
 description: Test runner and validation worker
+tools: [Read, Glob, Grep, Bash]
+disallowedTools: [Edit, Write, NotebookEdit]
 model: haiku
+effort: low
+maxBudgetUsd: 0.25
 permissionMode: bypassPermissions
 maxTurns: 15
 ---

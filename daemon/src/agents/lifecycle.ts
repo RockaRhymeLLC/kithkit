@@ -183,7 +183,7 @@ export function spawnWorkerJob(req: SpawnRequest): { jobId: string; status: JobS
 function startWorker(jobId: string, req: SpawnRequest): void {
   const ts = now();
 
-  // Build SDK spawn options
+  // Build SDK spawn options — profile budget is the default, caller can override
   const sdkOpts: SdkSpawnOptions = {
     prompt: req.prompt,
     profile: {
@@ -194,11 +194,12 @@ function startWorker(jobId: string, req: SpawnRequest): void {
       disallowedTools: req.profile.disallowedTools.length > 0 ? req.profile.disallowedTools : undefined,
       permissionMode: req.profile.permissionMode,
       maxTurns: req.profile.maxTurns,
+      effort: req.profile.effort || undefined,
       body: req.profile.body || undefined,
     },
     cwd: req.cwd,
     timeoutMs: req.timeoutMs,
-    maxBudgetUsd: req.maxBudgetUsd,
+    maxBudgetUsd: req.maxBudgetUsd ?? req.profile.maxBudgetUsd ?? undefined,
   };
 
   // SDK adapter assigns its own internal ID

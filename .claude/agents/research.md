@@ -1,7 +1,11 @@
 ---
 name: research
 description: Read-only research worker — web search, file reading, codebase exploration
+tools: [Read, Glob, Grep, WebSearch, WebFetch, Task]
+disallowedTools: [Bash, Edit, Write, NotebookEdit]
 model: sonnet
+effort: low
+maxBudgetUsd: 0.50
 permissionMode: bypassPermissions
 maxTurns: 20
 ---
