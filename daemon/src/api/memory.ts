@@ -11,7 +11,7 @@
 import type http from 'node:http';
 import { insert, get, remove, query, getDatabase } from '../core/db.js';
 import { generateEmbedding, embeddingToBuffer } from '../memory/embeddings.js';
-import { initVectorSearch, indexEmbedding, vectorSearch, hybridSearch } from '../memory/vector-search.js';
+import { initVectorSearch, indexEmbedding, vectorSearch, hybridSearch, backfillEmbeddings } from '../memory/vector-search.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -182,6 +182,17 @@ export async function handleMemoryRoute(
   const method = req.method ?? 'GET';
 
   try {
+    // POST /memory/backfill — generate embeddings for memories missing them
+    if (pathname === '/api/memory/backfill' && method === 'POST') {
+      if (!_vectorEnabled) {
+        json(res, 503, withTimestamp({ error: 'Vector search not initialized' }));
+        return true;
+      }
+      const count = await backfillEmbeddings();
+      json(res, 200, withTimestamp({ backfilled: count }));
+      return true;
+    }
+
     // POST /memory/store — create a new memory
     if (pathname === '/api/memory/store' && method === 'POST') {
       const body = await parseBody(req);

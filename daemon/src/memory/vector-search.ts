@@ -201,7 +201,9 @@ export async function vectorSearch(
       const mem = memMap.get(memId);
       if (!mem) return null;
 
-      const score = Math.max(0, 1 - vr.distance);
+      // For L2-normalized vectors, convert L2 distance to cosine similarity:
+      // d² = 2(1 - cos_sim), so cos_sim = 1 - d²/2
+      const score = Math.max(0, 1 - (vr.distance * vr.distance) / 2);
 
       return {
         id: mem.id,
