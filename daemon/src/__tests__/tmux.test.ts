@@ -71,10 +71,25 @@ describe('buildOrchestratorWrapperScript — script structure', () => {
     );
   });
 
-  it('includes a polling loop for unread messages', () => {
+  it('includes a polling loop using since_id (not unread=true)', () => {
     const script = buildOrchestratorWrapperScript('/usr/bin/claude', 'Task');
-    assert.ok(script.includes('api/messages?agent=orchestrator&unread=true'), 'should poll for unread messages');
+    // Must use since_id-based polling so messages consumed by the orchestrator Claude
+    // process via the API don't disappear before the wrapper's poll loop runs.
+    assert.ok(script.includes('since_id=$LAST_MSG_ID'), 'should poll with since_id cursor, not unread=true');
+    assert.ok(!script.includes('unread=true'), 'should NOT use unread=true (race condition)');
     assert.ok(script.includes('while ['), 'should have a while loop for polling');
+  });
+
+  it('seeds LAST_MSG_ID from current max message ID before starting', () => {
+    const script = buildOrchestratorWrapperScript('/usr/bin/claude', 'Task');
+    assert.ok(script.includes('LAST_MSG_ID='), 'should define LAST_MSG_ID variable');
+    // Should query the daemon to seed initial cursor before running Claude
+    assert.ok(script.includes('api/messages?agent=orchestrator'), 'should query messages API to seed cursor');
+  });
+
+  it('advances LAST_MSG_ID after consuming a message', () => {
+    const script = buildOrchestratorWrapperScript('/usr/bin/claude', 'Task');
+    assert.ok(script.includes('LAST_MSG_ID="$NEW_LAST_ID"'), 'should advance cursor after consuming task');
   });
 
   it('resets elapsed counter after picking up a new task', () => {
