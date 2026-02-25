@@ -30,6 +30,9 @@ const log = createLogger('orchestrator-api');
 // Shutdown timeout: if orchestrator doesn't ack within 60s, force kill
 const SHUTDOWN_TIMEOUT_MS = 60_000;
 
+// Track the pending shutdown timer so we can cancel it on new spawn
+let pendingShutdownTimer: ReturnType<typeof setTimeout> | null = null;
+
 // ── Route handler ────────────────────────────────────────────
 
 export async function handleOrchestratorRoute(
@@ -53,6 +56,13 @@ export async function handleOrchestratorRoute(
     const alive = isOrchestratorAlive();
 
     if (!alive) {
+      // Cancel any pending shutdown timer — a new spawn supersedes a pending shutdown
+      if (pendingShutdownTimer) {
+        clearTimeout(pendingShutdownTimer);
+        pendingShutdownTimer = null;
+        log.info('Cancelled pending shutdown timer — new task spawning orchestrator');
+      }
+
       // Create session directory for orchestrator artifacts
       const sessionDir = createSessionDir('orchestrator');
 
@@ -106,6 +116,13 @@ export async function handleOrchestratorRoute(
         message: 'Orchestrator session created with task',
       }));
       return true;
+    }
+
+    // Cancel any pending shutdown timer — new work supersedes shutdown
+    if (pendingShutdownTimer) {
+      clearTimeout(pendingShutdownTimer);
+      pendingShutdownTimer = null;
+      log.info('Cancelled pending shutdown timer — new task for running orchestrator');
     }
 
     // Already alive — inject task as message
@@ -171,8 +188,9 @@ export async function handleOrchestratorRoute(
       body: JSON.stringify({ action: 'shutdown', reason: 'requested' }),
     });
 
-    // Set a timeout to force-kill if no acknowledgment
-    setTimeout(() => {
+    // Set a timeout to force-kill if no acknowledgment (cancellable on new spawn)
+    pendingShutdownTimer = setTimeout(() => {
+      pendingShutdownTimer = null;
       if (isOrchestratorAlive()) {
         log.warn('Orchestrator did not acknowledge shutdown — force killing');
         killOrchestratorSession();
