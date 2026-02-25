@@ -8,58 +8,106 @@
 // ---------------------------------------------------------------------------
 // DOM refs
 // ---------------------------------------------------------------------------
-const statusDot  = document.getElementById('statusDot');
-const statusText = document.getElementById('statusText');
-const hostInput  = document.getElementById('hostInput');
-const portInput  = document.getElementById('portInput');
-const connectBtn = document.getElementById('connectBtn');
-const tabInfo    = document.getElementById('tabInfo');
-const tabTitle   = document.getElementById('tabTitle');
-const tabUrl     = document.getElementById('tabUrl');
-const errorArea  = document.getElementById('errorArea');
+const statusDot       = document.getElementById('statusDot');
+const statusText      = document.getElementById('statusText');
+const hostInput       = document.getElementById('hostInput');
+const tokenInput      = document.getElementById('tokenInput');
+const pskToggle       = document.getElementById('pskToggle');
+const pskChevron      = document.getElementById('pskChevron');
+const pskSection      = document.getElementById('pskSection');
+const pskInput        = document.getElementById('pskInput');
+const connectBtn      = document.getElementById('connectBtn');
+const disconnectBtn   = document.getElementById('disconnectBtn');
+const tabInfo         = document.getElementById('tabInfo');
+const tabTitle        = document.getElementById('tabTitle');
+const tabUrl          = document.getElementById('tabUrl');
+const errorArea       = document.getElementById('errorArea');
+const fingerprintArea = document.getElementById('fingerprintArea');
+const fingerprintValue = document.getElementById('fingerprintValue');
+
+// ---------------------------------------------------------------------------
+// PSK collapsible toggle
+// ---------------------------------------------------------------------------
+pskToggle.addEventListener('click', () => {
+  const isOpen = pskSection.classList.contains('open');
+  if (isOpen) {
+    pskSection.classList.remove('open');
+    pskChevron.classList.remove('open');
+  } else {
+    pskSection.classList.add('open');
+    pskChevron.classList.add('open');
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Apply a state snapshot to the UI
 // ---------------------------------------------------------------------------
-function applyState(connState, attachedTarget) {
-  // Status dot + text
-  statusDot.className = `status-dot ${connState}`;
+function applyState(connState, attachedTarget, encrypted, fingerprint, error) {
+  // Clear previous error display unless this update carries one
+  if (!error) {
+    clearError();
+  } else {
+    showError(error);
+  }
 
+  // Status dot
   if (connState === 'connected') {
-    const host = hostInput.value.trim() || 'localhost';
-    const port = portInput.value.trim() || '3847';
-    statusText.textContent = `Connected to ${host}:${port}`;
+    statusDot.className = 'status-dot connected';
+  } else if (connState === 'connecting') {
+    statusDot.className = 'status-dot connecting';
+  } else if (error) {
+    statusDot.className = 'status-dot error';
+  } else {
+    statusDot.className = 'status-dot disconnected';
+  }
+
+  // Status text
+  if (connState === 'connected') {
+    const host = hostInput.value.trim() || 'cowork.bmobot.ai';
+    const encLabel = encrypted ? ' (encrypted)' : '';
+    statusText.textContent = `Connected to ${host}${encLabel}`;
   } else if (connState === 'connecting') {
     statusText.textContent = 'Connecting…';
   } else {
     statusText.textContent = 'Disconnected';
   }
 
-  // Button
-  connectBtn.className = `btn-connect state-${connState}`;
-  if (connState === 'connected') {
-    connectBtn.textContent = 'Disconnect';
-    connectBtn.disabled = false;
-  } else if (connState === 'connecting') {
-    connectBtn.textContent = 'Connecting…';
-    connectBtn.disabled = true;
+  // Buttons
+  const isConnected  = connState === 'connected';
+  const isConnecting = connState === 'connecting';
+
+  connectBtn.textContent = isConnecting ? 'Connecting…' : 'Connect';
+  connectBtn.disabled = isConnected || isConnecting;
+  connectBtn.classList.toggle('connecting', isConnecting);
+
+  if (isConnected) {
+    disconnectBtn.classList.remove('hidden');
   } else {
-    connectBtn.textContent = 'Connect';
-    connectBtn.disabled = false;
+    disconnectBtn.classList.add('hidden');
   }
 
   // Input fields disabled while connected or connecting
   const inputsDisabled = connState !== 'disconnected';
-  hostInput.disabled = inputsDisabled;
-  portInput.disabled = inputsDisabled;
+  hostInput.disabled  = inputsDisabled;
+  tokenInput.disabled = inputsDisabled;
+  pskInput.disabled   = inputsDisabled;
 
   // Tab info panel
-  if (connState === 'connected' && attachedTarget) {
+  if (isConnected && attachedTarget) {
     tabInfo.classList.remove('hidden');
     tabTitle.textContent = attachedTarget.title || '(no title)';
     tabUrl.textContent   = attachedTarget.url   || '(no url)';
   } else {
     tabInfo.classList.add('hidden');
+  }
+
+  // Fingerprint — only show when connected and encrypted
+  if (isConnected && encrypted && fingerprint) {
+    fingerprintArea.classList.add('visible');
+    fingerprintValue.textContent = fingerprint;
+  } else {
+    fingerprintArea.classList.remove('visible');
+    fingerprintValue.textContent = '';
   }
 }
 
@@ -81,13 +129,22 @@ function clearError() {
 // ---------------------------------------------------------------------------
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'state-update') {
-    applyState(message.connState, message.attachedTarget);
-    // Update status text with stored host:port for "connected" display
-    chrome.storage.local.get(['host', 'port'], ({ host, port }) => {
-      if (message.connState === 'connected') {
-        statusText.textContent = `Connected to ${host || 'localhost'}:${port || '3847'}`;
-      }
-    });
+    applyState(
+      message.connState,
+      message.attachedTarget,
+      message.encrypted,
+      message.fingerprint,
+      message.error,
+    );
+
+    // Fix up status text with stored host when connected
+    if (message.connState === 'connected') {
+      chrome.storage.local.get(['host'], ({ host }) => {
+        const resolvedHost = host || 'cowork.bmobot.ai';
+        const encLabel = message.encrypted ? ' (encrypted)' : '';
+        statusText.textContent = `Connected to ${resolvedHost}${encLabel}`;
+      });
+    }
   }
 });
 
@@ -97,53 +154,67 @@ chrome.runtime.onMessage.addListener((message) => {
 connectBtn.addEventListener('click', () => {
   clearError();
 
-  // Determine action based on current button state
-  const isConnected = connectBtn.classList.contains('state-connected');
+  const host  = hostInput.value.trim()  || 'cowork.bmobot.ai';
+  const token = tokenInput.value.trim() || null;
+  const psk   = pskInput.value.trim()   || null;
 
-  if (isConnected) {
-    // Disconnect
-    chrome.runtime.sendMessage({ type: 'disconnect' });
-  } else {
-    // Connect
-    const host = hostInput.value.trim() || 'localhost';
-    const port = portInput.value.trim() || '3847';
+  chrome.runtime.sendMessage({ type: 'connect', host, token, psk });
+});
 
-    // Basic validation
-    const portNum = parseInt(port, 10);
-    if (isNaN(portNum) || portNum < 1 || portNum > 65535) {
-      showError('Port must be a number between 1 and 65535.');
-      return;
-    }
-
-    chrome.runtime.sendMessage({ type: 'connect', host, port });
-  }
+// ---------------------------------------------------------------------------
+// Disconnect button handler
+// ---------------------------------------------------------------------------
+disconnectBtn.addEventListener('click', () => {
+  clearError();
+  chrome.runtime.sendMessage({ type: 'disconnect' });
 });
 
 // ---------------------------------------------------------------------------
 // On popup open: load saved config, then query background for live state
 // ---------------------------------------------------------------------------
 async function init() {
-  // 1. Load saved host:port
-  const stored = await chrome.storage.local.get(['host', 'port']);
-  if (stored.host) hostInput.value = stored.host;
-  if (stored.port) portInput.value = stored.port;
+  // 1. Load saved host and psk from local storage
+  const localStored = await chrome.storage.local.get(['host', 'psk']);
+  if (localStored.host) hostInput.value = localStored.host;
+  if (localStored.psk)  {
+    pskInput.value = localStored.psk;
+    // Auto-expand PSK section if PSK is configured
+    pskSection.classList.add('open');
+    pskChevron.classList.add('open');
+  }
 
-  // 2. Query background for current state
+  // 2. Load token from session storage (not persisted to local)
+  const sessionStored = await chrome.storage.session.get(['token', 'connState', 'encrypted', 'fingerprint']);
+  if (sessionStored.token) tokenInput.value = sessionStored.token;
+
+  // 3. Query background for live state
   let state;
   try {
     state = await chrome.runtime.sendMessage({ type: 'get-state' });
   } catch (err) {
-    // Background may not be running yet
-    state = { connState: 'disconnected', attachedTarget: null };
+    // Background may not be running yet — fall back to session-cached state
+    state = {
+      connState:      sessionStored.connState || 'disconnected',
+      attachedTarget: null,
+      encrypted:      sessionStored.encrypted || false,
+      fingerprint:    sessionStored.fingerprint || null,
+      error:          null,
+    };
   }
 
-  applyState(state.connState, state.attachedTarget);
+  applyState(
+    state.connState,
+    state.attachedTarget,
+    state.encrypted,
+    state.fingerprint,
+    state.error,
+  );
 
-  // Fix up status text with real stored host:port when connected
+  // Fix up status text with real stored host when connected
   if (state.connState === 'connected') {
-    const host = stored.host || 'localhost';
-    const port = stored.port || '3847';
-    statusText.textContent = `Connected to ${host}:${port}`;
+    const host = localStored.host || 'cowork.bmobot.ai';
+    const encLabel = state.encrypted ? ' (encrypted)' : '';
+    statusText.textContent = `Connected to ${host}${encLabel}`;
   }
 }
 

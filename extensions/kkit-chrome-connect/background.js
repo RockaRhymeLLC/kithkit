@@ -79,6 +79,12 @@ let pskHex = null;
 /** Auth token (loaded from chrome.storage.session) */
 let authToken = null;
 
+/** TOFU fingerprint of daemon's public key (set after key exchange) */
+let currentFingerprint = null;
+
+/** Last error message (set on handshake failure, cleared on connect/disconnect) */
+let lastError = null;
+
 // ---------------------------------------------------------------------------
 // Alarm name for keepalive
 // ---------------------------------------------------------------------------
@@ -94,6 +100,7 @@ function clearCryptoState() {
   sendSeq = 0;
   recvSeq = 0;
   daemonPubKeyB64 = null;
+  currentFingerprint = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +137,15 @@ function setBadge(state) {
   } else if (state === 'connecting') {
     chrome.action.setBadgeText({ text: '…' });
     chrome.action.setBadgeBackgroundColor({ color: '#f0a500' });
+  } else if (state === 'error') {
+    chrome.action.setBadgeText({ text: '!' });
+    chrome.action.setBadgeBackgroundColor({ color: '#ff5577' });
+    // Auto-clear error badge after 3 seconds
+    setTimeout(() => {
+      if (connState !== 'connected') {
+        chrome.action.setBadgeText({ text: '' });
+      }
+    }, 3000);
   } else {
     chrome.action.setBadgeText({ text: '' });
   }
@@ -143,6 +159,9 @@ function broadcastState() {
     type: 'state-update',
     connState,
     attachedTarget,
+    encrypted: sessionKey !== null,
+    fingerprint: currentFingerprint,
+    error: lastError,
   };
   chrome.runtime.sendMessage(payload).catch(() => {
     // No listeners open — that's fine
@@ -216,6 +235,7 @@ async function connectToDaemon(host, port) {
   }
 
   connState = 'connecting';
+  lastError = null;
   setBadge('connecting');
   broadcastState();
 
@@ -255,10 +275,11 @@ async function connectToDaemon(host, port) {
     } catch (err) {
       console.error('[kkit] Handshake failed', err);
       if (socket === ws) {
+        lastError = err.message || String(err);
         socket.close();
         ws = null;
         connState = 'disconnected';
-        setBadge('disconnected');
+        setBadge('error');
         broadcastState();
       }
     }
@@ -318,6 +339,9 @@ async function performHandshake(socket) {
     sessionKey = await KKitCrypto.deriveSessionKey(sharedBits, pskHex, extPubKeyB64, daemonPubKeyB64);
     console.log('[kkit] Session key derived');
 
+    // Compute TOFU fingerprint of daemon's public key
+    currentFingerprint = await KKitCrypto.computeFingerprint(daemonPubKeyB64);
+
     // Phase 3: Send encrypted hello (seq=1)
     sendSeq = 0; // reset before first encrypted message
     await encryptedSend({ type: 'hello', userAgent: navigator.userAgent });
@@ -352,6 +376,7 @@ async function performHandshake(socket) {
   if (socket !== ws) return; // socket was replaced during handshake
 
   connState = 'connected';
+  lastError = null;
   setBadge('connected');
 
   // Attach debugger to currently active tab
@@ -364,6 +389,7 @@ async function performHandshake(socket) {
   chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: HEARTBEAT_INTERVAL_SECONDS / 60 });
 
   broadcastState();
+  chrome.storage.session.set({ connState: 'connected', encrypted: sessionKey !== null, fingerprint: currentFingerprint });
 }
 
 // ---------------------------------------------------------------------------
@@ -405,11 +431,13 @@ async function disconnectFromDaemon() {
 
 async function handleDisconnect() {
   connState = 'disconnected';
+  lastError = null;
   setBadge('disconnected');
   chrome.alarms.clear(KEEPALIVE_ALARM);
   clearCryptoState();
   await detachAll();
   broadcastState();
+  chrome.storage.session.set({ connState: 'disconnected', encrypted: false, fingerprint: null });
   console.log('[kkit] Disconnected');
 }
 
@@ -654,23 +682,33 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Popup asks for current state
     // -------------------------------------------------------------------
     case 'get-state':
-      sendResponse({ connState, attachedTarget });
+      sendResponse({ connState, attachedTarget, encrypted: sessionKey !== null, fingerprint: currentFingerprint, error: lastError });
       return false; // synchronous
 
     // -------------------------------------------------------------------
     // Popup requests connect
     // -------------------------------------------------------------------
     case 'connect': {
-      const { host, port, token, psk } = message;
-      // Save config and credentials
-      chrome.storage.local.set({ host, port, psk: psk || null });
+      const { host, token, psk } = message;
+      // Save config to local storage (token is session-only, not persisted to local)
+      chrome.storage.local.set({ host, psk: psk || null });
       if (token) {
         chrome.storage.session.set({ token });
       } else {
         chrome.storage.session.remove('token');
       }
+      // Parse host — may be "host:port" or bare host (default port 3847)
+      const colonIdx = (host || '').lastIndexOf(':');
+      let resolvedHost, resolvedPort;
+      if (colonIdx > 0) {
+        resolvedHost = host.slice(0, colonIdx);
+        resolvedPort = host.slice(colonIdx + 1) || '3847';
+      } else {
+        resolvedHost = host || 'cowork.bmobot.ai';
+        resolvedPort = '3847';
+      }
       // Async connect — respond immediately
-      connectToDaemon(host, port);
+      connectToDaemon(resolvedHost, resolvedPort);
       sendResponse({ ok: true });
       return false;
     }

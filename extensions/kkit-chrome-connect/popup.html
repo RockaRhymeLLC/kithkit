@@ -15,7 +15,7 @@
     }
 
     body {
-      width: 280px;
+      width: 300px;
       min-height: 200px;
       background: #1a1a2e;
       color: #e0e0f0;
@@ -95,6 +95,10 @@
       background: #00d4aa;
     }
 
+    .status-dot.error {
+      background: #ff5577;
+    }
+
     @keyframes pulse {
       0%, 100% { opacity: 1; transform: scale(1); }
       50%       { opacity: 0.5; transform: scale(0.85); }
@@ -103,29 +107,21 @@
     .status-text {
       font-size: 12px;
       color: #c0c0dd;
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     /* ------------------------------------------------------------------ */
     /* Config fields                                                        */
     /* ------------------------------------------------------------------ */
-    .config-row {
-      display: flex;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-
     .field {
       display: flex;
       flex-direction: column;
       gap: 4px;
-    }
-
-    .field-host {
-      flex: 3;
-    }
-
-    .field-port {
-      flex: 2;
+      margin-bottom: 10px;
     }
 
     label {
@@ -137,7 +133,7 @@
     }
 
     input[type="text"],
-    input[type="number"] {
+    input[type="password"] {
       background: #12122a;
       border: 1px solid #2a2a4a;
       border-radius: 6px;
@@ -150,7 +146,7 @@
     }
 
     input[type="text"]:focus,
-    input[type="number"]:focus {
+    input[type="password"]:focus {
       border-color: #00d4aa;
     }
 
@@ -160,10 +156,56 @@
     }
 
     /* ------------------------------------------------------------------ */
-    /* Connect / Disconnect button                                          */
+    /* PSK settings (collapsible)                                          */
     /* ------------------------------------------------------------------ */
-    .btn-connect {
-      width: 100%;
+    .psk-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      color: #8888aa;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      margin-bottom: 8px;
+      user-select: none;
+    }
+
+    .psk-toggle:hover {
+      color: #aaaacc;
+    }
+
+    .psk-chevron {
+      font-style: normal;
+      transition: transform 0.2s;
+      display: inline-block;
+    }
+
+    .psk-chevron.open {
+      transform: rotate(90deg);
+    }
+
+    .psk-section {
+      display: none;
+      margin-bottom: 10px;
+    }
+
+    .psk-section.open {
+      display: block;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Buttons                                                             */
+    /* ------------------------------------------------------------------ */
+    .btn-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 0;
+    }
+
+    .btn {
+      flex: 1;
       padding: 9px 0;
       border: none;
       border-radius: 7px;
@@ -174,30 +216,65 @@
       letter-spacing: 0.02em;
     }
 
-    .btn-connect.state-disconnected {
+    .btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .btn-connect {
       background: #00d4aa;
       color: #1a1a2e;
     }
 
-    .btn-connect.state-disconnected:hover {
+    .btn-connect:hover:not(:disabled) {
       background: #00efc0;
     }
 
-    .btn-connect.state-connecting {
+    .btn-connect.connecting {
       background: #f0a500;
       color: #1a1a2e;
-      cursor: not-allowed;
-      opacity: 0.8;
     }
 
-    .btn-connect.state-connected {
+    .btn-disconnect {
       background: transparent;
       color: #ff5577;
       border: 1px solid #ff5577;
     }
 
-    .btn-connect.state-connected:hover {
+    .btn-disconnect:hover:not(:disabled) {
       background: rgba(255, 85, 119, 0.1);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Fingerprint display                                                  */
+    /* ------------------------------------------------------------------ */
+    .fingerprint-area {
+      margin-top: 10px;
+      padding: 8px 10px;
+      background: #0d1a14;
+      border: 1px solid #1a3a2a;
+      border-radius: 6px;
+      display: none;
+    }
+
+    .fingerprint-area.visible {
+      display: block;
+    }
+
+    .fingerprint-label {
+      font-size: 10px;
+      color: #00d4aa;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+
+    .fingerprint-value {
+      font-size: 10px;
+      color: #80e8c8;
+      font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+      word-break: break-all;
     }
 
     /* ------------------------------------------------------------------ */
@@ -280,20 +357,41 @@
     <span class="status-text" id="statusText">Disconnected</span>
   </div>
 
-  <!-- Config: host + port -->
-  <div class="config-row">
-    <div class="field field-host">
-      <label for="hostInput">Host</label>
-      <input type="text" id="hostInput" value="localhost" placeholder="localhost" spellcheck="false" />
-    </div>
-    <div class="field field-port">
-      <label for="portInput">Port</label>
-      <input type="number" id="portInput" value="3847" placeholder="3847" min="1" max="65535" />
+  <!-- Config: host -->
+  <div class="field">
+    <label for="hostInput">Host</label>
+    <input type="text" id="hostInput" value="cowork.bmobot.ai" placeholder="cowork.bmobot.ai" spellcheck="false" />
+  </div>
+
+  <!-- Config: token (session-only, not stored to local) -->
+  <div class="field">
+    <label for="tokenInput">Token</label>
+    <input type="password" id="tokenInput" placeholder="auth token (optional)" autocomplete="off" />
+  </div>
+
+  <!-- PSK settings (collapsible) -->
+  <div class="psk-toggle" id="pskToggle">
+    <span class="psk-chevron" id="pskChevron">&#9654;</span>
+    PSK Settings
+  </div>
+  <div class="psk-section" id="pskSection">
+    <div class="field">
+      <label for="pskInput">Pre-Shared Key (hex)</label>
+      <input type="password" id="pskInput" placeholder="hex PSK for encryption (optional)" autocomplete="off" />
     </div>
   </div>
 
-  <!-- Connect / Disconnect button -->
-  <button class="btn-connect state-disconnected" id="connectBtn">Connect</button>
+  <!-- Connect / Disconnect buttons -->
+  <div class="btn-row">
+    <button class="btn btn-connect" id="connectBtn">Connect</button>
+    <button class="btn btn-disconnect hidden" id="disconnectBtn">Disconnect</button>
+  </div>
+
+  <!-- Fingerprint (visible when connected + encrypted) -->
+  <div class="fingerprint-area" id="fingerprintArea">
+    <div class="fingerprint-label">Daemon Fingerprint</div>
+    <div class="fingerprint-value" id="fingerprintValue"></div>
+  </div>
 
   <!-- Attached tab info (visible when connected) -->
   <div class="tab-info hidden" id="tabInfo">
