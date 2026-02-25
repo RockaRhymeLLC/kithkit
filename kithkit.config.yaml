@@ -251,6 +251,9 @@ scheduler:
       interval: "2m"
       config:
         idle_timeout_minutes: 15
+    - name: "comms-heartbeat"
+      enabled: true
+      interval: "60s"
 
 # ── Integrations ──────────────────────
 integrations:
