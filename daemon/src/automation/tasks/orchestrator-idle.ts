@@ -16,17 +16,24 @@ import { execFileSync } from 'node:child_process';
 import { query, update } from '../../core/db.js';
 import { resolveProjectPath } from '../../core/config.js';
 import {
-  isOrchestratorAlive,
-  killOrchestratorSession,
-  injectMessage,
+  isOrchestratorAlive as _isOrchestratorAlive,
+  killOrchestratorSession as _killOrchestratorSession,
+  injectMessage as _injectMessage,
   _getOrchestratorSession,
 } from '../../agents/tmux.js';
-import { cleanupSessionDirs } from '../../agents/lifecycle.js';
+import { cleanupSessionDirs as _cleanupSessionDirs } from '../../agents/lifecycle.js';
 import { createLogger } from '../../core/logger.js';
 import { logActivity, getActivity } from '../../api/activity.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('orchestrator-idle');
+
+// ── Injectable deps (overridable for testing) ────────────────
+
+let isOrchestratorAlive = _isOrchestratorAlive;
+let killOrchestratorSession = _killOrchestratorSession;
+let injectMessage = _injectMessage;
+let cleanupSessionDirs = _cleanupSessionDirs;
 
 /**
  * Dump post-mortem state to the orchestrator's session directory.
@@ -127,21 +134,12 @@ async function run(config: Record<string, unknown>): Promise<void> {
     log.warn('Session dir cleanup failed', { error: String(err) });
   }
 
-  // Not alive? Nothing to do — reset nudge state
-  if (!isOrchestratorAlive()) {
-    shutdownNudgedAt = null;
-    return;
-  }
-
-  const idleTimeoutMs = typeof config.idle_timeout_minutes === 'number'
-    ? config.idle_timeout_minutes * 60 * 1000
-    : DEFAULT_IDLE_TIMEOUT_MS;
-
-  // If we already nudged, check if grace period has expired
+  // If we previously nudged, check the outcome BEFORE the alive check.
+  // The orchestrator may have exited gracefully in response to our nudge —
+  // if we check alive first and reset nudge state, we'd never log the graceful exit.
   if (shutdownNudgedAt !== null) {
-    const elapsed = Date.now() - shutdownNudgedAt;
-
     if (!isOrchestratorAlive()) {
+      // Orchestrator exited after our nudge — log the graceful exit
       log.info('Orchestrator exited gracefully after shutdown nudge', { reason: shutdownReason });
       logActivity({
         agent_id: 'orchestrator',
@@ -153,6 +151,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
       return;
     }
 
+    const elapsed = Date.now() - shutdownNudgedAt;
     if (elapsed >= GRACE_PERIOD_MS) {
       log.warn('Orchestrator did not exit within grace period — force killing', { reason: shutdownReason });
       writePostMortem(`Grace period expired: ${shutdownReason}`);
@@ -180,10 +179,21 @@ async function run(config: Record<string, unknown>): Promise<void> {
     return;
   }
 
+  // Not alive and no pending nudge — nothing to do
+  if (!isOrchestratorAlive()) {
+    return;
+  }
+
+  const idleTimeoutMs = typeof config.idle_timeout_minutes === 'number'
+    ? config.idle_timeout_minutes * 60 * 1000
+    : DEFAULT_IDLE_TIMEOUT_MS;
+
   // --- Check 0: Process-level liveness ---
   // Claude can pause for long periods during complex tasks (thinking, generating).
   // If the Claude process is still running, the orchestrator is NOT idle — even if
   // last_activity hasn't been updated. This prevents premature kills.
+  // This check MUST run before the active workers check — a long-running Claude
+  // process with no spawned workers should not be killed.
   if (isClaudeProcessRunning()) {
     log.debug('Claude process still running in orchestrator session — not idle');
     // Touch last_activity so the DB stays fresh
@@ -299,4 +309,48 @@ export function register(scheduler: Scheduler): void {
   scheduler.registerHandler('orchestrator-idle', async (ctx) => {
     await run(ctx.config);
   });
+}
+
+// ── Testing ──────────────────────────────────────────────────
+
+/** @internal Reset nudge state for testing. */
+export function _resetNudgeStateForTesting(): void {
+  shutdownNudgedAt = null;
+  shutdownReason = null;
+}
+
+/** @internal Set nudge state for testing. */
+export function _setNudgeStateForTesting(at: number, reason: string): void {
+  shutdownNudgedAt = at;
+  shutdownReason = reason;
+}
+
+/** @internal Get current nudge state for testing. */
+export function _getNudgeStateForTesting(): { nudgedAt: number | null; reason: string | null } {
+  return { nudgedAt: shutdownNudgedAt, reason: shutdownReason };
+}
+
+/** @internal Expose run() for direct testing. */
+export async function _runForTesting(config: Record<string, unknown>): Promise<void> {
+  return run(config);
+}
+
+/** @internal Override injectable deps for testing. Pass null to restore originals. */
+export function _setDepsForTesting(deps: {
+  isOrchestratorAlive?: () => boolean;
+  killOrchestratorSession?: () => boolean;
+  injectMessage?: (target: string, text: string) => boolean;
+  cleanupSessionDirs?: (maxAgeDays?: number) => number;
+} | null): void {
+  if (deps === null) {
+    isOrchestratorAlive = _isOrchestratorAlive;
+    killOrchestratorSession = _killOrchestratorSession;
+    injectMessage = _injectMessage;
+    cleanupSessionDirs = _cleanupSessionDirs;
+    return;
+  }
+  if (deps.isOrchestratorAlive) isOrchestratorAlive = deps.isOrchestratorAlive;
+  if (deps.killOrchestratorSession) killOrchestratorSession = deps.killOrchestratorSession;
+  if (deps.injectMessage) injectMessage = deps.injectMessage;
+  if (deps.cleanupSessionDirs) cleanupSessionDirs = deps.cleanupSessionDirs;
 }

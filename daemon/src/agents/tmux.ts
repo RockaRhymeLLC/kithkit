@@ -20,19 +20,20 @@ const log = createLogger('tmux');
 const TMUX_BIN = '/opt/homebrew/bin/tmux';
 const TMUX_SOCKET = `/private/tmp/tmux-${process.getuid?.() ?? 501}/default`;
 
-let commsSession = 'agent'; // Default, overridden by config
+const COMMS_SESSION = 'comms1';
+const ORCH_SESSION = 'orch1';
+
 let projectDir = process.cwd();
 
-export function configure(opts: { commsSession: string; projectDir: string }): void {
-  commsSession = opts.commsSession;
+export function configure(opts: { projectDir: string }): void {
   projectDir = opts.projectDir;
 }
 
 // ── Session name mapping ────────────────────────────────────
 
 function resolveSession(agentId: string): string | null {
-  if (agentId === 'comms') return commsSession;
-  if (agentId === 'orchestrator') return `${commsSession}-orch`;
+  if (agentId === 'comms') return COMMS_SESSION;
+  if (agentId === 'orchestrator') return ORCH_SESSION;
   return null; // Workers don't have tmux sessions
 }
 
@@ -128,8 +129,8 @@ printf '%s' '${promptB64}' | base64 -d > "$PROMPT_FILE"
 # On exit: clean up temp file and mark orchestrator stopped in daemon DB
 cleanup() {
   rm -f "$PROMPT_FILE"
-  curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/agents/orchestrator" \
-    -H "Content-Type: application/json" \
+  curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/agents/orchestrator" \\
+    -H "Content-Type: application/json" \\
     -d '{"status":"stopped"}' || true
 }
 trap cleanup EXIT
@@ -144,7 +145,7 @@ run_claude() {
 # with id > LAST_MSG_ID. This avoids a race where the orchestrator Claude
 # process reads and marks messages as read via the API before this wrapper's
 # polling loop runs — ?since_id is immune to read_at / processed_at state.
-LAST_MSG_ID=$(curl -s -f "http://localhost:$DAEMON_PORT/api/messages?agent=orchestrator&since_id=0" 2>/dev/null \
+LAST_MSG_ID=$(curl -s -f "http://localhost:$DAEMON_PORT/api/messages?agent=orchestrator&since_id=0" 2>/dev/null \\
   | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
@@ -386,5 +387,5 @@ export function listSessions(): string[] {
 
 // ── Testing ─────────────────────────────────────────────────
 
-export function _getCommsSession(): string { return commsSession; }
-export function _getOrchestratorSession(): string { return resolveSession('orchestrator')!; }
+export function _getCommsSession(): string { return COMMS_SESSION; }
+export function _getOrchestratorSession(): string { return ORCH_SESSION; }

@@ -26,6 +26,7 @@ import {
 } from '../core/migrations.js';
 
 const EXPECTED_TABLES = [
+  'agent_activity_log',
   'agents',
   'worker_jobs',
   'memories',
@@ -60,7 +61,7 @@ describe('Database schema (t-118)', () => {
     assert.ok(fs.existsSync(dbPath), 'DB should be created');
   });
 
-  it('creates all 11 tables with correct schema', () => {
+  it('creates all 12 tables with correct schema', () => {
     const dbPath = path.join(tmpDir, 'kithkit.db');
     const db = openDatabase(tmpDir, dbPath, getMigrationsDir());
 
@@ -149,16 +150,22 @@ describe('Migrations (t-119)', () => {
     const db = getDatabase();
 
     const version = getCurrentVersion(db);
-    assert.equal(version, 2);
+    assert.equal(version, 4);
 
     const applied = getAppliedMigrations(db);
-    assert.equal(applied.length, 2);
+    assert.equal(applied.length, 4);
     assert.equal(applied[0]!.version, 1);
     assert.equal(applied[0]!.name, 'initial-schema');
     assert.ok(applied[0]!.applied_at);
     assert.equal(applied[1]!.version, 2);
     assert.equal(applied[1]!.name, 'add-indexes');
     assert.ok(applied[1]!.applied_at);
+    assert.equal(applied[2]!.version, 3);
+    assert.equal(applied[2]!.name, 'message-read-tracking');
+    assert.ok(applied[2]!.applied_at);
+    assert.equal(applied[3]!.version, 4);
+    assert.equal(applied[3]!.name, 'agent-activity-log');
+    assert.ok(applied[3]!.applied_at);
   });
 
   it('new migration auto-applies on next open', () => {

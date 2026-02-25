@@ -39,6 +39,18 @@ scheduler:
       config:
         requires_session: false
 
+    - name: orchestrator-idle
+      interval: "2m"
+      enabled: true
+      config:
+        idle_timeout_minutes: 10
+
+    - name: message-delivery
+      interval: "10s"
+      enabled: true
+      config:
+        requires_session: true
+
 security:
   rate_limits:
     incoming_max_per_minute: 5

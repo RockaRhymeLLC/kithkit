@@ -70,6 +70,7 @@ export async function handleMessagesRoute(
           type: (body.type as MessageType) ?? 'text',
           body: body.body as string,
           metadata: typeof body.metadata === 'object' ? body.metadata as Record<string, unknown> : undefined,
+          direct: body.direct === true,
         });
 
         json(res, 200, withTimestamp({

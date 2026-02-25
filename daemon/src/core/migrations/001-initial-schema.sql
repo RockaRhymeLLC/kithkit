@@ -1,7 +1,8 @@
 -- Kithkit v2 initial schema
+-- All tables use IF NOT EXISTS for idempotent re-runs (handles stale DB edge case).
 
 -- Agent registry (persistent agents + worker records)
-CREATE TABLE agents (
+CREATE TABLE IF NOT EXISTS agents (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   profile TEXT,
@@ -16,7 +17,7 @@ CREATE TABLE agents (
 );
 
 -- Worker job tracking
-CREATE TABLE worker_jobs (
+CREATE TABLE IF NOT EXISTS worker_jobs (
   id TEXT PRIMARY KEY,
   agent_id TEXT REFERENCES agents(id),
   profile TEXT NOT NULL,
@@ -33,7 +34,7 @@ CREATE TABLE worker_jobs (
 );
 
 -- Memory entries with vector embeddings
-CREATE TABLE memories (
+CREATE TABLE IF NOT EXISTS memories (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   content TEXT NOT NULL,
   type TEXT DEFAULT 'fact',
@@ -46,7 +47,7 @@ CREATE TABLE memories (
 );
 
 -- Todos
-CREATE TABLE todos (
+CREATE TABLE IF NOT EXISTS todos (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
   description TEXT,
@@ -59,7 +60,7 @@ CREATE TABLE todos (
 );
 
 -- Todo action history (audit trail)
-CREATE TABLE todo_actions (
+CREATE TABLE IF NOT EXISTS todo_actions (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
   action TEXT NOT NULL,
@@ -70,7 +71,7 @@ CREATE TABLE todo_actions (
 );
 
 -- Calendar events
-CREATE TABLE calendar (
+CREATE TABLE IF NOT EXISTS calendar (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
   description TEXT,
@@ -83,7 +84,7 @@ CREATE TABLE calendar (
 );
 
 -- Inter-agent messages (audit log + pull queue)
-CREATE TABLE messages (
+CREATE TABLE IF NOT EXISTS messages (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   from_agent TEXT NOT NULL,
   to_agent TEXT NOT NULL,
@@ -95,21 +96,21 @@ CREATE TABLE messages (
 );
 
 -- Runtime config overrides
-CREATE TABLE config (
+CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value JSON NOT NULL,
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
 -- Per-feature flexible state
-CREATE TABLE feature_state (
+CREATE TABLE IF NOT EXISTS feature_state (
   feature TEXT PRIMARY KEY,
   state JSON NOT NULL,
   updated_at TEXT DEFAULT (datetime('now'))
 );
 
 -- Scheduled task execution history
-CREATE TABLE task_results (
+CREATE TABLE IF NOT EXISTS task_results (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   task_name TEXT NOT NULL,
   status TEXT NOT NULL,

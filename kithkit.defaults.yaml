@@ -39,8 +39,14 @@ scheduler:
       config:
         requires_session: false
 
-    - name: comms-heartbeat
-      interval: "60s"
+    - name: orchestrator-idle
+      interval: "2m"
+      enabled: true
+      config:
+        idle_timeout_minutes: 10
+
+    - name: message-delivery
+      interval: "10s"
       enabled: true
       config:
         requires_session: true
