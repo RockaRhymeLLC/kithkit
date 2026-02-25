@@ -31,7 +31,8 @@ interface MessageCount {
  * Check whether the comms session is alive.
  */
 function isCommsAlive(): boolean {
-  return listSessions().length > 0;
+  const sessions = listSessions();
+  return sessions.some(s => s === 'bmo' || s === 'comms');
 }
 
 /**

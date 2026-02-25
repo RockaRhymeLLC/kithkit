@@ -298,7 +298,12 @@ async function connectToDaemon(host, port) {
     console.warn('[kkit] Failed to load credentials from storage', err);
   }
 
-  const url = `ws://${host}:${port}/cowork`;
+  // Use wss:// for non-local hosts (Cloudflare tunnel, remote).
+  // Port is omitted for wss:// (default 443) unless explicitly non-443.
+  const isLocal = /^(localhost|127\.\d|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host);
+  const proto = isLocal ? 'ws' : 'wss';
+  const portSuffix = isLocal ? `:${port}` : '';
+  const url = `${proto}://${host}${portSuffix}/cowork`;
   console.log('[kkit] Connecting to', url);
 
   let socket;
@@ -746,24 +751,27 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case 'connect': {
       const { host, token, psk } = message;
       // Save config to local storage (token is session-only, not persisted to local)
-      chrome.storage.local.set({ host, psk: psk || null });
-      if (token) {
-        chrome.storage.session.set({ token });
-      } else {
-        chrome.storage.session.remove('token');
-      }
-      // Parse host — may be "host:port" or bare host (default port 3847)
-      const colonIdx = (host || '').lastIndexOf(':');
-      let resolvedHost, resolvedPort;
-      if (colonIdx > 0) {
-        resolvedHost = host.slice(0, colonIdx);
-        resolvedPort = host.slice(colonIdx + 1) || '3847';
-      } else {
-        resolvedHost = host || 'cowork.bmobot.ai';
-        resolvedPort = '3847';
-      }
-      // Async connect — respond immediately
-      connectToDaemon(resolvedHost, resolvedPort);
+      // Await storage writes before connecting to avoid race condition
+      // where connectToDaemon reads stale values from storage.
+      (async () => {
+        await chrome.storage.local.set({ host, psk: psk || null });
+        if (token) {
+          await chrome.storage.session.set({ token });
+        } else {
+          await chrome.storage.session.remove('token');
+        }
+        // Parse host — may be "host:port" or bare host (default port 3847)
+        const colonIdx = (host || '').lastIndexOf(':');
+        let resolvedHost, resolvedPort;
+        if (colonIdx > 0) {
+          resolvedHost = host.slice(0, colonIdx);
+          resolvedPort = host.slice(colonIdx + 1) || '3847';
+        } else {
+          resolvedHost = host || 'localhost';
+          resolvedPort = '3847';
+        }
+        connectToDaemon(resolvedHost, resolvedPort);
+      })();
       sendResponse({ ok: true });
       return false;
     }

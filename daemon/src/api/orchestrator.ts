@@ -63,8 +63,9 @@ export async function handleOrchestratorRoute(
         log.info('Cancelled pending shutdown timer — new task spawning orchestrator');
       }
 
-      // Create session directory for orchestrator artifacts
-      const sessionDir = createSessionDir('orchestrator');
+      // Create unique session directory for orchestrator artifacts (avoids stale file contamination)
+      const sessionId = `orchestrator-${Date.now()}`;
+      const sessionDir = createSessionDir(sessionId);
 
       // Spawn orchestrator with the task as initial prompt (includes memory context)
       const orchestratorPrompt = await buildOrchestratorPrompt(task, context, sessionDir);
