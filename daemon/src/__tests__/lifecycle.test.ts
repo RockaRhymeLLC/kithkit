@@ -374,13 +374,13 @@ describe('Orchestrator spawns on-demand and stops when idle (t-141)', () => {
     // Simulate orchestrator spawn
     exec(
       `INSERT INTO agents (id, type, status, tmux_session, created_at, updated_at)
-       VALUES ('orchestrator', 'orchestrator', 'busy', 'kithkit-orch', ?, ?)`,
+       VALUES ('orchestrator', 'orchestrator', 'busy', 'orchagent', ?, ?)`,
       ts, ts,
     );
 
     let orch = getAgentStatus('orchestrator');
     assert.equal(orch!.status, 'busy');
-    assert.equal(orch!.tmux_session, 'kithkit-orch');
+    assert.equal(orch!.tmux_session, 'orchagent');
 
     // Simulate orchestrator completing work
     exec(

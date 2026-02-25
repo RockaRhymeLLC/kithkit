@@ -102,10 +102,7 @@ initTimers();
 setProfilesDir(path.resolve(projectDir, '.claude', 'agents'));
 
 // Configure tmux session management
-configureTmux({
-  commsSession: config.tmux?.session ?? 'agent',
-  projectDir,
-});
+configureTmux({ projectDir });
 
 // Recover from previous daemon crash (clean orphans, mark interrupted jobs)
 const recovery = recoverFromRestart();
