@@ -31,7 +31,7 @@ import { sessionExists, startSession, injectText } from '../../../core/session-b
 import { classifySender, checkRateLimit, registerTier } from '../../../core/access-control.js';
 import { createLogger } from '../../../core/logger.js';
 import { updateLastActiveChannel } from '../channel-router.js';
-import { markdownToTelegramHtml, hasMarkdownPatterns } from './telegram-format.js';
+import { markdownToTelegramHtml, hasMarkdownPatterns, hasHtmlTags } from './telegram-format.js';
 
 const log = createLogger('bmo-telegram');
 
@@ -261,13 +261,15 @@ async function telegramSend(text: string, chatId?: string): Promise<boolean> {
   const cleaned = text.replace(/\\([^a-zA-Z0-9\s])/g, '$1');
   const truncated = cleaned.length > 4000 ? cleaned.substring(0, 4000) + '...' : cleaned;
 
-  // Convert markdown patterns to Telegram HTML for readability
-  const useHtml = hasMarkdownPatterns(truncated);
-  const formatted = useHtml ? markdownToTelegramHtml(truncated) : truncated;
+  // Detect formatting: pre-existing HTML tags get parse_mode but skip conversion;
+  // markdown patterns get converted to HTML first.
+  const alreadyHtml = hasHtmlTags(truncated);
+  const hasMarkdown = !alreadyHtml && hasMarkdownPatterns(truncated);
+  const formatted = hasMarkdown ? markdownToTelegramHtml(truncated) : truncated;
   const data = JSON.stringify({
     chat_id: targetChatId,
     text: formatted,
-    ...(useHtml ? { parse_mode: 'HTML' } : {}),
+    ...(alreadyHtml || hasMarkdown ? { parse_mode: 'HTML' } : {}),
   });
 
   return new Promise<boolean>((resolve) => {

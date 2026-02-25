@@ -23,10 +23,12 @@
     "cron-parser": "^5.5.0",
     "js-yaml": "^4.1.1",
     "kithkit-a2a-client": "file:../.a2a-sdk/packages/sdk",
-    "sqlite-vec": "^0.1.7-alpha.2"
+    "sqlite-vec": "^0.1.7-alpha.2",
+    "ws": "^8.19.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/js-yaml": "^4.0.9"
+    "@types/js-yaml": "^4.0.9",
+    "@types/ws": "^8.18.1"
   }
 }

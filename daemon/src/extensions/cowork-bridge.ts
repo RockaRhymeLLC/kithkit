@@ -2,15 +2,14 @@
  * Cowork Bridge — WebSocket server for the cowork Chrome extension.
  *
  * Attaches to the daemon's existing HTTP server via the `upgrade` event.
- * Implements RFC 6455 WebSocket framing (text frames only — CDP is JSON).
+ * Uses the `ws` library for standards-compliant WebSocket handshake and framing,
+ * which is required for Cloudflare tunnel compatibility.
  * Also exposes REST API routes for HTTP-based CDP access.
- *
- * No external dependencies — uses Node.js built-in `crypto` and `net`.
  */
 
 import http from 'node:http';
-import crypto from 'node:crypto';
 import type { Socket } from 'node:net';
+import { WebSocket, WebSocketServer } from 'ws';
 import { createLogger } from '../core/logger.js';
 import {
   generateToken,
@@ -26,16 +25,13 @@ import {
 
 const log = createLogger('cowork-bridge');
 
-// RFC 6455 magic GUID
-const WS_MAGIC = '258EAFA5-E914-47DA-95CA-C5AB5E4F89F5';
-
 // Auth timeout: 5 seconds to send valid auth message
 const AUTH_TIMEOUT_MS = 5_000;
 
 // ── Types ────────────────────────────────────────────────────
 
 interface CoworkSession {
-  socket: Socket;
+  ws: WebSocket;
   connectedAt: Date;
   lastActivity: Date;
   userAgent?: string;
@@ -48,12 +44,6 @@ interface CoworkSession {
   recvSeq: number;
   daemonKeyPair: EphemeralKeyPair | null;
   extensionPubKeyB64: string | null;
-}
-
-interface WsFrame {
-  opcode: number;
-  payload: Buffer;
-  totalLength: number;
 }
 
 interface PendingCommand {
@@ -71,6 +61,9 @@ let nextCommandId = 1;
 // Auth state
 let authToken: string | null = null;
 let pskHex: string | null = null;
+
+// WebSocketServer instance (noServer mode)
+let wss: WebSocketServer | null = null;
 
 // ── Auth State Accessors ──────────────────────────────────────
 
@@ -94,119 +87,32 @@ export function getAuthToken(): string | null {
   return authToken;
 }
 
-// ── WebSocket Handshake ───────────────────────────────────────
-
-function computeAccept(key: string): string {
-  return crypto
-    .createHash('sha1')
-    .update(key + WS_MAGIC)
-    .digest('base64');
-}
-
-// ── WebSocket Framing (RFC 6455) ─────────────────────────────
-
-/**
- * Parse a WebSocket frame from a buffer.
- * Returns null if the buffer doesn't contain a complete frame yet.
- */
-function parseFrame(buf: Buffer): WsFrame | null {
-  if (buf.length < 2) return null;
-
-  const opcode = buf[0] & 0x0f;
-  const masked = (buf[1] & 0x80) !== 0;
-  let payloadLength = buf[1] & 0x7f;
-  let offset = 2;
-
-  if (payloadLength === 126) {
-    if (buf.length < 4) return null;
-    payloadLength = buf.readUInt16BE(2);
-    offset = 4;
-  } else if (payloadLength === 127) {
-    if (buf.length < 10) return null;
-    // We only support text frames; payloads this large are not expected.
-    payloadLength = Number(buf.readBigUInt64BE(2));
-    offset = 10;
-  }
-
-  const maskLength = masked ? 4 : 0;
-  const totalLength = offset + maskLength + payloadLength;
-  if (buf.length < totalLength) return null;
-
-  let payload: Buffer;
-  if (masked) {
-    const mask = buf.subarray(offset, offset + 4);
-    payload = Buffer.allocUnsafe(payloadLength);
-    for (let i = 0; i < payloadLength; i++) {
-      payload[i] = buf[offset + 4 + i] ^ mask[i % 4];
-    }
-  } else {
-    payload = buf.subarray(offset, offset + payloadLength);
-  }
-
-  return { opcode, payload, totalLength };
-}
-
-/**
- * Send a text frame to the given socket.
- */
-function sendFrame(socket: Socket, data: string): void {
-  const payload = Buffer.from(data, 'utf-8');
-  const len = payload.length;
-
-  let header: Buffer;
-  if (len < 126) {
-    header = Buffer.allocUnsafe(2);
-    header[0] = 0x81; // FIN + text opcode
-    header[1] = len;
-  } else if (len < 65536) {
-    header = Buffer.allocUnsafe(4);
-    header[0] = 0x81;
-    header[1] = 126;
-    header.writeUInt16BE(len, 2);
-  } else {
-    header = Buffer.allocUnsafe(10);
-    header[0] = 0x81;
-    header[1] = 127;
-    header.writeBigUInt64BE(BigInt(len), 2);
-  }
-
-  socket.write(Buffer.concat([header, payload]));
-}
+// ── WebSocket Send Helpers ────────────────────────────────────
 
 /**
  * Send a message to the active session, encrypting it if key exchange is complete.
  * Manages the send sequence counter automatically.
  */
 function sendMessage(session: CoworkSession, message: unknown): void {
+  if (session.ws.readyState !== WebSocket.OPEN) return;
   if (session.keyExchangeState === 'complete' && session.sessionKey) {
     session.sendSeq += 1;
     const envelope = encryptEnvelope(session.sessionKey, message, session.sendSeq);
-    sendFrame(session.socket, JSON.stringify(envelope));
+    session.ws.send(JSON.stringify(envelope));
   } else {
-    sendFrame(session.socket, JSON.stringify(message));
+    session.ws.send(JSON.stringify(message));
   }
 }
 
 // ── Session Close Helpers ─────────────────────────────────────
 
 /**
- * Send a WebSocket close frame with a numeric status code and reason,
- * then end the socket. Clears the active session if it matches.
+ * Close the WebSocket with a numeric status code and reason.
+ * Clears the active session if it matches.
  */
 function closeWithCode(session: CoworkSession, code: number, reason: string): void {
   try {
-    const reasonBuf = Buffer.from(reason, 'utf-8');
-    const payload = Buffer.allocUnsafe(2 + reasonBuf.length);
-    payload.writeUInt16BE(code, 0);
-    reasonBuf.copy(payload, 2);
-
-    const frame = Buffer.allocUnsafe(2 + payload.length);
-    frame[0] = 0x88; // FIN + close opcode
-    frame[1] = payload.length;
-    payload.copy(frame, 2);
-
-    session.socket.write(frame);
-    session.socket.end();
+    session.ws.close(code, reason);
   } catch {
     // Socket may already be gone
   }
@@ -267,7 +173,7 @@ function handleKeyExchange(session: CoworkSession, msg: unknown): void {
   session.keyExchangeState = 'awaiting-hello';
 
   // Send back daemon public key (unencrypted — key exchange messages are always plaintext)
-  sendFrame(session.socket, JSON.stringify({
+  session.ws.send(JSON.stringify({
     type: 'key-exchange',
     publicKey: daemonKeyPair.publicKeyB64,
   }));
@@ -320,7 +226,7 @@ function handleEncryptedHello(session: CoworkSession, envelope: EncryptedEnvelop
   log.info('Cowork key exchange complete — session encrypted', { userAgent: session.userAgent });
 }
 
-// ── Frame Handling ───────────────────────────────────────────
+// ── Message Handling ─────────────────────────────────────────
 
 function handleAuthMessage(msg: unknown): void {
   if (!activeSession) return;
@@ -352,135 +258,106 @@ function handleAuthMessage(msg: unknown): void {
   log.info('Cowork session authenticated');
 
   // Send auth-ok so extension knows to proceed to key exchange
-  sendFrame(activeSession.socket, JSON.stringify({ type: 'auth-ok' }));
+  activeSession.ws.send(JSON.stringify({ type: 'auth-ok' }));
 
   // Begin key exchange phase — next message must be key-exchange
   activeSession.keyExchangeState = 'pending';
 }
 
-function handleFrame(frame: WsFrame): void {
+function handleIncomingMessage(data: string): void {
   if (!activeSession) return;
   activeSession.lastActivity = new Date();
 
-  switch (frame.opcode) {
-    // Close
-    case 0x08:
-      closeSession(activeSession);
-      activeSession = null;
-      return;
-
-    // Ping → Pong
-    case 0x09: {
-      const pong = Buffer.allocUnsafe(2 + frame.payload.length);
-      pong[0] = 0x8a; // FIN + pong opcode
-      pong[1] = frame.payload.length;
-      frame.payload.copy(pong, 2);
-      activeSession.socket.write(pong);
-      return;
-    }
-
-    // Pong → ignore
-    case 0x0a:
-      return;
-
-    // Text frame
-    case 0x01: {
-      let msg: unknown;
-      try {
-        msg = JSON.parse(frame.payload.toString('utf-8'));
-      } catch (err) {
-        log.error('Invalid cowork message (not JSON)', { error: String(err) });
-        return;
-      }
-
-      // Auth gate: if not yet authenticated, first message must be auth
-      if (!activeSession.authenticated) {
-        if (!authToken) {
-          // No token configured — auto-authenticate and proceed to key exchange
-          activeSession.authenticated = true;
-          if (activeSession.authTimer) {
-            clearTimeout(activeSession.authTimer);
-            activeSession.authTimer = undefined;
-          }
-          // Since no auth token, skip key exchange and handle message directly
-          handleMessage(msg);
-        } else {
-          handleAuthMessage(msg);
-        }
-        return;
-      }
-
-      // Key exchange gate
-      const session = activeSession;
-      const state = session.keyExchangeState;
-      const msgType = msg && typeof msg === 'object'
-        ? (msg as Record<string, unknown>)['type']
-        : undefined;
-
-      // If we receive a key-exchange message in any non-complete state,
-      // route it to handleKeyExchange (which will fail gracefully if no PSK).
-      if (msgType === 'key-exchange' && state !== 'complete') {
-        handleKeyExchange(session, msg);
-        return;
-      }
-
-      if (state === 'pending') {
-        // Expecting key-exchange message (already handled above)
-        closeWithCode(session, 4001, 'Key exchange failed: expected key-exchange message');
-        return;
-      }
-
-      if (state === 'awaiting-hello') {
-        // Expecting encrypted hello envelope
-        const m = msg as Record<string, unknown>;
-        if (!m || m['type'] !== 'encrypted') {
-          closeWithCode(session, 4001, 'Key exchange failed: expected encrypted envelope');
-          return;
-        }
-        handleEncryptedHello(session, msg as unknown as EncryptedEnvelope);
-        return;
-      }
-
-      if (state === 'complete') {
-        // All messages must be encrypted envelopes
-        const m = msg as Record<string, unknown>;
-        if (!m || m['type'] !== 'encrypted') {
-          closeWithCode(session, 4002, 'Expected encrypted envelope');
-          return;
-        }
-        const envelope = msg as unknown as EncryptedEnvelope;
-
-        // Validate sequence
-        const expectedSeq = session.recvSeq + 1;
-        if (envelope.seq !== expectedSeq) {
-          log.warn('Cowork sequence violation', { got: envelope.seq, expected: expectedSeq });
-          closeWithCode(session, 4003, 'Sequence violation');
-          return;
-        }
-        session.recvSeq = envelope.seq;
-
-        // Decrypt
-        let inner: unknown;
-        try {
-          inner = decryptEnvelope(session.sessionKey!, envelope);
-        } catch (err) {
-          log.error('Cowork decryption failed', { error: String(err) });
-          closeWithCode(session, 4002, 'Decryption failed');
-          return;
-        }
-
-        handleMessage(inner);
-        return;
-      }
-
-      // No key exchange state (keyExchangeState === null) — plaintext messages allowed
-      handleMessage(msg);
-      return;
-    }
-
-    default:
-      log.warn('Unsupported WebSocket opcode', { opcode: frame.opcode });
+  let msg: unknown;
+  try {
+    msg = JSON.parse(data);
+  } catch (err) {
+    log.error('Invalid cowork message (not JSON)', { error: String(err) });
+    return;
   }
+
+  // Auth gate: if not yet authenticated, first message must be auth
+  if (!activeSession.authenticated) {
+    if (!authToken) {
+      // No token configured — auto-authenticate and proceed to key exchange
+      activeSession.authenticated = true;
+      if (activeSession.authTimer) {
+        clearTimeout(activeSession.authTimer);
+        activeSession.authTimer = undefined;
+      }
+      // Since no auth token, skip key exchange and handle message directly
+      handleMessage(msg);
+    } else {
+      handleAuthMessage(msg);
+    }
+    return;
+  }
+
+  // Key exchange gate
+  const session = activeSession;
+  const state = session.keyExchangeState;
+  const msgType = msg && typeof msg === 'object'
+    ? (msg as Record<string, unknown>)['type']
+    : undefined;
+
+  // If we receive a key-exchange message in any non-complete state,
+  // route it to handleKeyExchange (which will fail gracefully if no PSK).
+  if (msgType === 'key-exchange' && state !== 'complete') {
+    handleKeyExchange(session, msg);
+    return;
+  }
+
+  if (state === 'pending') {
+    // Expecting key-exchange message (already handled above)
+    closeWithCode(session, 4001, 'Key exchange failed: expected key-exchange message');
+    return;
+  }
+
+  if (state === 'awaiting-hello') {
+    // Expecting encrypted hello envelope
+    const m = msg as Record<string, unknown>;
+    if (!m || m['type'] !== 'encrypted') {
+      closeWithCode(session, 4001, 'Key exchange failed: expected encrypted envelope');
+      return;
+    }
+    handleEncryptedHello(session, msg as unknown as EncryptedEnvelope);
+    return;
+  }
+
+  if (state === 'complete') {
+    // All messages must be encrypted envelopes
+    const m = msg as Record<string, unknown>;
+    if (!m || m['type'] !== 'encrypted') {
+      closeWithCode(session, 4002, 'Expected encrypted envelope');
+      return;
+    }
+    const envelope = msg as unknown as EncryptedEnvelope;
+
+    // Validate sequence
+    const expectedSeq = session.recvSeq + 1;
+    if (envelope.seq !== expectedSeq) {
+      log.warn('Cowork sequence violation', { got: envelope.seq, expected: expectedSeq });
+      closeWithCode(session, 4003, 'Sequence violation');
+      return;
+    }
+    session.recvSeq = envelope.seq;
+
+    // Decrypt
+    let inner: unknown;
+    try {
+      inner = decryptEnvelope(session.sessionKey!, envelope);
+    } catch (err) {
+      log.error('Cowork decryption failed', { error: String(err) });
+      closeWithCode(session, 4002, 'Decryption failed');
+      return;
+    }
+
+    handleMessage(inner);
+    return;
+  }
+
+  // No key exchange state (keyExchangeState === null) — plaintext messages allowed
+  handleMessage(msg);
 }
 
 function handleMessage(msg: unknown): void {
@@ -567,8 +444,7 @@ function closeSession(session: CoworkSession): void {
     session.authTimer = undefined;
   }
   try {
-    session.socket.write(Buffer.from([0x88, 0x00])); // Close frame
-    session.socket.end();
+    session.ws.close(1000);
   } catch {
     // Socket may already be gone
   }
@@ -585,95 +461,91 @@ function rejectAllPending(reason: string): void {
 // ── HTTP Upgrade Handler ──────────────────────────────────────
 
 export function initCoworkBridge(server: http.Server): void {
-  server.on('upgrade', (req: http.IncomingMessage, socket: Socket, _head: Buffer) => {
+  // Create a ws WebSocketServer in noServer mode — we handle upgrade routing ourselves
+  wss = new WebSocketServer({ noServer: true });
+
+  server.on('upgrade', (req: http.IncomingMessage, socket: Socket, head: Buffer) => {
     // Only claim /cowork — let other upgrade handlers through
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (url.pathname !== '/cowork') return;
 
-    const key = req.headers['sec-websocket-key'];
-    if (!key || typeof key !== 'string') {
-      socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
-      socket.destroy();
-      return;
-    }
-
-    const accept = computeAccept(key);
-    socket.write(
-      'HTTP/1.1 101 Switching Protocols\r\n' +
-      'Upgrade: websocket\r\n' +
-      'Connection: Upgrade\r\n' +
-      `Sec-WebSocket-Accept: ${accept}\r\n` +
-      '\r\n',
-    );
-
-    // Close existing session if present
-    if (activeSession) {
-      log.info('New cowork connection replacing existing session');
-      closeSession(activeSession);
-      rejectAllPending('Connection replaced');
-      activeSession = null;
-    }
-
-    // If no auth token is configured, start session as already-authenticated
-    activeSession = {
-      socket,
-      connectedAt: new Date(),
-      lastActivity: new Date(),
-      authenticated: !authToken,
-      // Key exchange state — null means no key exchange (no PSK configured or auth-less)
-      keyExchangeState: null,
-      sessionKey: null,
-      sendSeq: 0,
-      recvSeq: 0,
-      daemonKeyPair: null,
-      extensionPubKeyB64: null,
-    };
-
-    // Only start auth timer when a token is configured
-    if (authToken) {
-      activeSession.authTimer = setTimeout(() => {
-        if (activeSession && !activeSession.authenticated) {
-          log.warn('Cowork auth timeout');
-          closeWithCode(activeSession, 4000, 'Authentication timeout');
-        }
-      }, AUTH_TIMEOUT_MS);
-    }
-
-    log.info('Cowork session connected');
-
-    // If no auth token, session is auto-authenticated — but still start key exchange
-    // if a PSK is configured.
-    if (!authToken && pskHex) {
-      activeSession.keyExchangeState = 'pending';
-    }
-
-    // Frame reassembly buffer
-    let buffer = Buffer.alloc(0);
-
-    socket.on('data', (data: Buffer) => {
-      buffer = Buffer.concat([buffer, data]);
-      while (buffer.length >= 2) {
-        const frame = parseFrame(buffer);
-        if (!frame) break;
-        buffer = buffer.subarray(frame.totalLength);
-        handleFrame(frame);
-      }
+    log.info('Cowork upgrade request', {
+      url: req.url,
+      key: req.headers['sec-websocket-key'] || 'MISSING',
+      version: req.headers['sec-websocket-version'],
+      extensions: req.headers['sec-websocket-extensions'] || 'none',
+      origin: req.headers['origin'] || 'none',
+      host: req.headers['host'] || 'none',
     });
 
-    socket.on('close', () => {
-      log.info('Cowork session disconnected');
-      if (activeSession?.socket === socket) {
-        if (activeSession.authTimer) {
-          clearTimeout(activeSession.authTimer);
-          activeSession.authTimer = undefined;
-        }
+    // Delegate the handshake to the ws library for standards-compliant 101 response
+    wss!.handleUpgrade(req, socket, head, (ws) => {
+      log.info('Cowork WebSocket upgrade complete (ws library handshake)');
+
+      // Close existing session if present
+      if (activeSession) {
+        log.info('New cowork connection replacing existing session');
+        closeSession(activeSession);
+        rejectAllPending('Connection replaced');
         activeSession = null;
       }
-      rejectAllPending('Connection closed');
-    });
 
-    socket.on('error', (err: Error) => {
-      log.error('Cowork socket error', { error: err.message });
+      // If no auth token is configured, start session as already-authenticated
+      activeSession = {
+        ws,
+        connectedAt: new Date(),
+        lastActivity: new Date(),
+        authenticated: !authToken,
+        // Key exchange state — null means no key exchange (no PSK configured or auth-less)
+        keyExchangeState: null,
+        sessionKey: null,
+        sendSeq: 0,
+        recvSeq: 0,
+        daemonKeyPair: null,
+        extensionPubKeyB64: null,
+      };
+
+      // Only start auth timer when a token is configured
+      if (authToken) {
+        activeSession.authTimer = setTimeout(() => {
+          if (activeSession && !activeSession.authenticated) {
+            log.warn('Cowork auth timeout');
+            closeWithCode(activeSession, 4000, 'Authentication timeout');
+          }
+        }, AUTH_TIMEOUT_MS);
+      }
+
+      log.info('Cowork session connected');
+
+      // If no auth token, session is auto-authenticated — but still start key exchange
+      // if a PSK is configured.
+      if (!authToken && pskHex) {
+        activeSession.keyExchangeState = 'pending';
+      }
+
+      ws.on('message', (data: Buffer | ArrayBuffer | Buffer[]) => {
+        // ws delivers data as Buffer by default
+        const text = Array.isArray(data)
+          ? Buffer.concat(data).toString('utf-8')
+          : Buffer.from(data as Buffer).toString('utf-8');
+        handleIncomingMessage(text);
+      });
+
+      ws.on('close', () => {
+        log.info('Cowork session disconnected');
+        if (activeSession?.ws === ws) {
+          if (activeSession.authTimer) {
+            clearTimeout(activeSession.authTimer);
+            activeSession.authTimer = undefined;
+          }
+          activeSession = null;
+        }
+        rejectAllPending('Connection closed');
+      });
+
+      ws.on('error', (err: Error) => {
+        log.error('Cowork socket error', { error: err.message });
+      });
     });
   });
 }
@@ -752,6 +624,39 @@ export async function handleCoworkRoute(
     return true;
   }
 
+  // POST /api/cowork/psk — accept a user-supplied PSK and store it
+  if (req.method === 'POST' && pathname === '/api/cowork/psk') {
+    try {
+      const body = await readBody(req);
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      const suppliedPsk = parsed['psk'];
+      if (!suppliedPsk || typeof suppliedPsk !== 'string' || !/^[0-9a-fA-F]{64}$/.test(suppliedPsk)) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'psk must be a 64-character hex string (256 bits)' }));
+        return true;
+      }
+      pskHex = suppliedPsk;
+
+      // Store in Keychain
+      try {
+        const { execFileSync } = await import('node:child_process');
+        try {
+          execFileSync('security', ['delete-generic-password', '-s', 'credential-cowork-psk'], { encoding: 'utf-8' });
+        } catch { /* may not exist */ }
+        execFileSync('security', ['add-generic-password', '-s', 'credential-cowork-psk', '-a', 'kithkit', '-w', suppliedPsk], { encoding: 'utf-8' });
+      } catch (err) {
+        log.warn('Failed to store PSK in Keychain', { error: String(err) });
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    }
+    return true;
+  }
+
   // POST /api/cowork/generate-psk — generate a new PSK and store in Keychain
   if (req.method === 'POST' && pathname === '/api/cowork/generate-psk') {
     const newPsk = generateToken(); // 256-bit hex
@@ -761,9 +666,9 @@ export async function handleCoworkRoute(
     try {
       const { execFileSync } = await import('node:child_process');
       try {
-        execFileSync('security', ['delete-generic-password', '-s', 'credential-cowork-token'], { encoding: 'utf-8' });
+        execFileSync('security', ['delete-generic-password', '-s', 'credential-cowork-psk'], { encoding: 'utf-8' });
       } catch { /* may not exist */ }
-      execFileSync('security', ['add-generic-password', '-s', 'credential-cowork-token', '-a', 'kithkit', '-w', newPsk], { encoding: 'utf-8' });
+      execFileSync('security', ['add-generic-password', '-s', 'credential-cowork-psk', '-a', 'kithkit', '-w', newPsk], { encoding: 'utf-8' });
     } catch (err) {
       log.warn('Failed to store PSK in Keychain', { error: String(err) });
     }
@@ -773,9 +678,22 @@ export async function handleCoworkRoute(
     return true;
   }
 
-  // POST /api/cowork/rotate-token — generate a new auth token
-  if (req.method === 'POST' && pathname === '/api/cowork/rotate-token') {
+  // POST /api/cowork/token/rotate — alias (documented in README)
+  // POST /api/cowork/rotate-token — original path
+  if (req.method === 'POST' && (pathname === '/api/cowork/token/rotate' || pathname === '/api/cowork/rotate-token')) {
     authToken = generateToken();
+
+    // Persist to Keychain so it survives daemon restart
+    try {
+      const { execFileSync } = await import('node:child_process');
+      try {
+        execFileSync('security', ['delete-generic-password', '-s', 'credential-cowork-token'], { encoding: 'utf-8' });
+      } catch { /* may not exist */ }
+      execFileSync('security', ['add-generic-password', '-s', 'credential-cowork-token', '-a', 'kithkit', '-w', authToken], { encoding: 'utf-8' });
+    } catch (err) {
+      log.warn('Failed to store auth token in Keychain', { error: String(err) });
+    }
+
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ token: authToken }));
     return true;
@@ -788,7 +706,7 @@ export async function handleCoworkRoute(
 
 /** Returns true if a cowork session is currently active. */
 export function isCoworkConnected(): boolean {
-  return activeSession !== null && !activeSession.socket.destroyed;
+  return activeSession !== null && activeSession.ws.readyState === WebSocket.OPEN;
 }
 
 /** Returns session metadata for status endpoints. */
@@ -798,7 +716,7 @@ export function getCoworkStatus(): {
   lastActivity?: string;
   userAgent?: string;
 } {
-  if (!activeSession || activeSession.socket.destroyed) {
+  if (!activeSession || activeSession.ws.readyState !== WebSocket.OPEN) {
     return { connected: false };
   }
   return {
@@ -814,7 +732,7 @@ export function sendCdpCommand(
   method: string,
   params: Record<string, unknown> = {},
 ): Promise<unknown> {
-  if (!activeSession || activeSession.socket.destroyed) {
+  if (!activeSession || activeSession.ws.readyState !== WebSocket.OPEN) {
     return Promise.reject(new Error('No cowork session connected'));
   }
 
@@ -833,7 +751,7 @@ export function sendCdpCommand(
 
 /** List open tabs in the connected browser. */
 export function listTabs(): Promise<unknown[]> {
-  if (!activeSession || activeSession.socket.destroyed) {
+  if (!activeSession || activeSession.ws.readyState !== WebSocket.OPEN) {
     return Promise.reject(new Error('No cowork session connected'));
   }
 
@@ -856,7 +774,7 @@ export function listTabs(): Promise<unknown[]> {
 
 /** Switch the browser to a specific tab by ID. */
 export function switchTab(tabId: number): Promise<unknown> {
-  if (!activeSession || activeSession.socket.destroyed) {
+  if (!activeSession || activeSession.ws.readyState !== WebSocket.OPEN) {
     return Promise.reject(new Error('No cowork session connected'));
   }
 
@@ -880,6 +798,10 @@ export function shutdownCoworkBridge(): void {
     activeSession = null;
   }
   rejectAllPending('Shutdown');
+  if (wss) {
+    wss.close();
+    wss = null;
+  }
 }
 
 // ── Testing Helpers ───────────────────────────────────────────
@@ -888,7 +810,7 @@ export function shutdownCoworkBridge(): void {
 export function _resetCoworkBridgeForTesting(): void {
   if (activeSession) {
     if (activeSession.authTimer) clearTimeout(activeSession.authTimer);
-    try { activeSession.socket.destroy(); } catch { /* ignore */ }
+    try { activeSession.ws.terminate(); } catch { /* ignore */ }
     activeSession = null;
   }
   for (const [_id, pending] of pendingCommands) {
@@ -899,4 +821,7 @@ export function _resetCoworkBridgeForTesting(): void {
   // Reset auth state so tests run without auth by default
   authToken = null;
   pskHex = null;
+  // NOTE: wss is intentionally NOT closed here — it's tied to the HTTP server
+  // lifecycle. Closing it would prevent further upgrades until initCoworkBridge
+  // is called again. shutdownCoworkBridge() handles wss cleanup.
 }

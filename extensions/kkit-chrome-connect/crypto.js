@@ -300,20 +300,11 @@ const KKitCrypto = {
   computeFingerprint,
 };
 
-// Support both ES module import (if manifest uses type=module) and
-// globalThis assignment (for classic service workers).
+// Assign to globalThis for classic service workers (importScripts).
+// Note: do NOT use ES module `export` here — background.js loads this file
+// via importScripts() which is classic worker context, not ES module.
+// A top-level `export` would be a SyntaxError and prevent the entire
+// background service worker from loading.
 if (typeof globalThis !== 'undefined') {
   globalThis.KKitCrypto = KKitCrypto;
 }
-
-// ES module export — Chrome MV3 service workers support top-level export
-// when loaded as a module. For classic workers, use globalThis.KKitCrypto.
-export {
-  generateKeyPair,
-  exportPublicKey,
-  deriveBits,
-  deriveSessionKey,
-  encrypt,
-  decrypt,
-  computeFingerprint,
-};

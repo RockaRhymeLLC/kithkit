@@ -48,7 +48,10 @@ import {
   initCoworkBridge,
   shutdownCoworkBridge,
   handleCoworkRoute,
+  setAuthToken,
+  setPsk,
 } from './cowork-bridge.js';
+import { readKeychain } from '../core/keychain.js';
 
 const log = createLogger('bmo-extension');
 
@@ -305,6 +308,20 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 
   // Enable vector search (sqlite-vec + ONNX embeddings)
   enableVectorSearch();
+
+  // Load cowork credentials from Keychain before initializing bridge
+  const [coworkToken, coworkPsk] = await Promise.all([
+    readKeychain('credential-cowork-token').catch(() => null),
+    readKeychain('credential-cowork-psk').catch(() => null),
+  ]);
+  if (coworkToken) {
+    setAuthToken(coworkToken);
+    log.info('Cowork auth token loaded from Keychain');
+  }
+  if (coworkPsk) {
+    setPsk(coworkPsk);
+    log.info('Cowork PSK loaded from Keychain');
+  }
 
   // Initialize cowork WebSocket bridge (Chrome extension relay)
   initCoworkBridge(_server);

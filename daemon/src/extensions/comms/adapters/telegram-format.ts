@@ -93,3 +93,11 @@ export function markdownToTelegramHtml(text: string): string {
 export function hasMarkdownPatterns(text: string): boolean {
   return /\*\*.+?\*\*|(?<!\w)\*[^*\n]+?\*(?!\w)|`.+?`|```[\s\S]+?```|^#{1,3}\s|~~.+?~~|\[.+?\]\(.+?\)/m.test(text);
 }
+
+/**
+ * Check if text already contains Telegram-supported HTML tags.
+ * Used to detect pre-formatted HTML that needs parse_mode but NOT markdown conversion.
+ */
+export function hasHtmlTags(text: string): boolean {
+  return /<\/?(b|strong|i|em|u|ins|s|strike|del|code|pre|a)\b[^>]*>/i.test(text);
+}
