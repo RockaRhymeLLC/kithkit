@@ -1,0 +1,25 @@
+{
+  "id": "s-c12",
+  "title": "Integration tests + README",
+  "description": "Write integration tests that verify the full flow: WebSocket connect → token auth → key exchange → encrypted CDP relay → tab management → disconnect. Write README.md with setup instructions, PSK configuration, architecture overview, and Chrome loading instructions.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 12,
+  "tests": ["t-015", "t-016"],
+  "blockedBy": ["s-c07", "s-c10"],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["daemon/src/__tests__/cowork-bridge.test.ts", "daemon/src/__tests__/cowork-crypto.test.ts", "README.md"],
+  "acceptanceCriteria": [
+    "Integration test: full auth → key exchange → encrypted CDP roundtrip",
+    "Integration test: MITM detection (wrong PSK → hello decryption fails)",
+    "Integration test: sequence counter violation → close with 4003",
+    "Integration test: token rotation invalidates old token",
+    "Integration test: tab list/switch through encrypted channel",
+    "README covers: installation, PSK setup, connecting, architecture, troubleshooting",
+    "README documents the yellow infobar expectation",
+    "README documents minimum Chrome version requirement (114+)"
+  ]
+}

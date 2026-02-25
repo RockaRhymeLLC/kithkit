@@ -1,0 +1,24 @@
+{
+  "id": "s-c10",
+  "title": "Tab management (list/switch/detach handling)",
+  "description": "Implement tab management in the extension: list-tabs returns chrome.tabs.query results, switch-tab detaches debugger from current tab and attaches to new one, chrome.debugger.onDetach handler notifies daemon and updates badge. All tab messages go through the encrypted channel.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 10,
+  "tests": ["t-013"],
+  "blockedBy": ["s-c07"],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["src/background.ts"],
+  "acceptanceCriteria": [
+    "list-tabs command returns array of { id, title, url } from chrome.tabs.query",
+    "switch-tab detaches from current target, attaches to new target with protocol version 1.3",
+    "chrome.debugger.onDetach handler fires when user opens DevTools or closes tab",
+    "Detach notification sent to daemon (encrypted) with reason",
+    "Badge updates on detach: connected but not debugging state",
+    "Tab change events (chrome.tabs.onActivated) forwarded to daemon",
+    "CDP commands for non-attached tab return clear error"
+  ]
+}

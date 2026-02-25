@@ -1,0 +1,19 @@
+{
+  "id": "t-008",
+  "title": "Extension WebSocket connect + full key exchange flow",
+  "description": "Verify the extension-side connection flow from connect() through encrypted session establishment",
+  "storyRefs": ["s-c06"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Call connect(host, token) with valid credentials", "expected": "WebSocket opens, auth message sent, key exchange initiated" },
+    { "order": 2, "action": "Observe the key exchange sequence from the extension side", "expected": "Extension sends key-exchange with public key, receives daemon's, derives session key, sends encrypted hello, receives hello-ack" },
+    { "order": 3, "action": "Check chrome.storage.session after successful connect", "expected": "Session state includes: connected=true, host, encrypted=true" },
+    { "order": 4, "action": "Call connect() with invalid token", "expected": "Error callback fires with 'Authentication failed', connection closed" },
+    { "order": 5, "action": "Call disconnect()", "expected": "WebSocket closed, chrome.storage.session cleared, badge updated" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

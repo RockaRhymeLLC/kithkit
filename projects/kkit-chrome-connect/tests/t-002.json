@@ -1,0 +1,20 @@
+{
+  "id": "t-002",
+  "title": "Daemon crypto: key generation and session key derivation",
+  "description": "Verify X25519 keypair generation, ECDH shared secret, and PSK-authenticated HKDF key derivation on the daemon side",
+  "storyRefs": ["s-c02"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Call generateEphemeralKeyPair()", "expected": "Returns object with publicKey (Buffer, 32 bytes) and privateKey (KeyObject)" },
+    { "order": 2, "action": "Generate two keypairs, compute ECDH shared secret from both directions", "expected": "Both directions produce identical 32-byte shared secret" },
+    { "order": 3, "action": "Call deriveSessionKey with shared secret, a test PSK, and two public keys", "expected": "Returns 32-byte Buffer (AES-256 key)" },
+    { "order": 4, "action": "Derive session key with same inputs but swapped key order", "expected": "Same session key (public keys are sorted alphabetically in HKDF info)" },
+    { "order": 5, "action": "Derive session key with a different PSK", "expected": "Different session key (PSK affects HKDF salt)" },
+    { "order": 6, "action": "Call computeFingerprint on a known public key", "expected": "Returns first 16 hex chars of SHA-256 hash, deterministic" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

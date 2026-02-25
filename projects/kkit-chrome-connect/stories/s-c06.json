@@ -1,0 +1,28 @@
+{
+  "id": "s-c06",
+  "title": "Extension WebSocket client + key exchange",
+  "description": "Implement the WebSocket connection flow in background.ts: connect to wss://<host>/cowork, send auth token, perform X25519 key exchange (send public key, receive daemon's, derive session key, send encrypted hello, verify hello-ack). Store session state in chrome.storage.session for popup recovery.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 6,
+  "tests": ["t-008"],
+  "blockedBy": ["s-c01", "s-c03"],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["src/background.ts"],
+  "acceptanceCriteria": [
+    "connect(host, token) opens WebSocket to wss://<host>/cowork",
+    "Sends { type: 'auth', token } as first message",
+    "On auth success, sends { type: 'key-exchange', publicKey } with ephemeral X25519 public key",
+    "Receives daemon's key-exchange message",
+    "Derives session key using PSK from chrome.storage.local",
+    "Sends encrypted hello message",
+    "Receives and decrypts hello-ack — session now encrypted",
+    "Session state (connected, host, encryption status) saved to chrome.storage.session",
+    "Auth failure (4000) surfaces error to popup",
+    "Key exchange failure (4001/4002) surfaces error to popup",
+    "disconnect() cleanly closes WebSocket and clears session state"
+  ]
+}

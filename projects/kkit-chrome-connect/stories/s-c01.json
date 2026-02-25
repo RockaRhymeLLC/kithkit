@@ -1,0 +1,22 @@
+{
+  "id": "s-c01",
+  "title": "Scaffold extension repo and MV3 manifest",
+  "description": "Create the kkit-chrome-connect GitHub repo, set up the MV3 manifest with required permissions (debugger, storage, offscreen, alarms), TypeScript config, and build pipeline (tsc only). Include placeholder background.ts service worker and popup files.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 1,
+  "tests": ["t-001"],
+  "blockedBy": [],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["manifest.json", "tsconfig.json", "src/background.ts", "src/popup.html", "src/popup.ts", "src/popup.css", "keepalive.html"],
+  "acceptanceCriteria": [
+    "GitHub repo RockaRhymeLLC/kkit-chrome-connect created and cloned",
+    "manifest.json is valid MV3 with permissions: debugger, storage, offscreen, alarms, activeTab",
+    "minimum_chrome_version set to 114",
+    "TypeScript compiles with tsc to dist/ directory",
+    "Extension loads in Chrome as unpacked without errors"
+  ]
+}

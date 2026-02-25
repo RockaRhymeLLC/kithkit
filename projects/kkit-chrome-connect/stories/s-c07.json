@@ -1,0 +1,27 @@
+{
+  "id": "s-c07",
+  "title": "Encrypted CDP relay (daemon <-> extension)",
+  "description": "All CDP commands and results flow through the encryption layer. Daemon's sendCdpCommand encrypts before sending, extension decrypts and relays to chrome.debugger, then encrypts the response. Sequence counters validated on both sides. Invalid sequence or decryption failure terminates session.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 7,
+  "tests": ["t-009", "t-010"],
+  "blockedBy": ["s-c05", "s-c06"],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["daemon/src/extensions/cowork-bridge.ts", "src/background.ts"],
+  "acceptanceCriteria": [
+    "All CDP commands wrapped in EncryptedEnvelope before WebSocket send",
+    "All CDP results/events wrapped in EncryptedEnvelope",
+    "Sequence counters increment per message per direction, starting at 1",
+    "Sequence validation: seq === lastSeen + 1 (strict gap detection)",
+    "Sequence violation closes with code 4003",
+    "Decryption failure closes with code 4002",
+    "Extension decrypts CDP command, executes via chrome.debugger.sendCommand, encrypts result",
+    "Daemon decrypts CDP result and resolves pending command promise",
+    "Wire format shows only opaque base64 blobs (no plaintext CDP data)",
+    "Existing REST API (POST /api/cowork/cdp) still works (encryption is transparent)"
+  ]
+}

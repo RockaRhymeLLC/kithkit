@@ -1,0 +1,25 @@
+{
+  "id": "s-c03",
+  "title": "Extension-side crypto module (WebCrypto mirror)",
+  "description": "Create src/crypto.ts in the extension repo. Mirrors daemon crypto using WebCrypto API: X25519 key generation, ECDH deriveBits, PSK-authenticated HKDF, AES-256-GCM encrypt/decrypt. Must produce identical ciphertext/keys as daemon-side module for the same inputs.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 3,
+  "tests": ["t-004"],
+  "blockedBy": [],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["src/crypto.ts"],
+  "acceptanceCriteria": [
+    "generateKeyPair() returns X25519 CryptoKeyPair via WebCrypto",
+    "exportPublicKey(keyPair) returns base64-encoded raw 32-byte public key",
+    "deriveSessionKey(sharedBits, pskHex, extensionPubKeyB64, daemonPubKeyB64) returns CryptoKey",
+    "PSK-authenticated salt derivation uses HMAC-SHA256 via WebCrypto",
+    "encrypt(sessionKey, plaintext, seq) returns EncryptedEnvelope",
+    "decrypt(sessionKey, envelope) returns plaintext string",
+    "All functions are async (WebCrypto is Promise-based)",
+    "computeFingerprint(publicKeyB64) returns first 16 hex chars of SHA-256"
+  ]
+}

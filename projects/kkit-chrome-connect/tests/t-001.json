@@ -1,0 +1,19 @@
+{
+  "id": "t-001",
+  "title": "Extension scaffold loads in Chrome without errors",
+  "description": "Verify the MV3 extension loads as unpacked in Chrome and registers its service worker",
+  "storyRefs": ["s-c01"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Run tsc to compile TypeScript to dist/", "expected": "Compilation succeeds with zero errors" },
+    { "order": 2, "action": "Load the extension as unpacked in Chrome (chrome://extensions)", "expected": "Extension appears with correct name, no errors in manifest parsing" },
+    { "order": 3, "action": "Check the service worker status in chrome://extensions", "expected": "Service worker is registered and active" },
+    { "order": 4, "action": "Click the extension toolbar icon", "expected": "Popup opens with placeholder UI" },
+    { "order": 5, "action": "Verify manifest.json has minimum_chrome_version: '114'", "expected": "Field is present and set to '114'" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

@@ -1,0 +1,19 @@
+{
+  "id": "t-016",
+  "title": "Integration: MITM detection and security failure modes",
+  "description": "Verify all security-critical failure modes work correctly end-to-end",
+  "storyRefs": ["s-c12"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Extension connects with mismatched PSK (simulating MITM)", "expected": "Hello decryption fails, WebSocket closed with code 4002, no plaintext fallback" },
+    { "order": 2, "action": "Extension connects, then sends message with duplicated sequence number", "expected": "WebSocket closed with code 4003 (replay detection)" },
+    { "order": 3, "action": "Extension connects, intercept a ciphertext frame, flip one byte, relay it", "expected": "WebSocket closed with code 4002 (GCM auth tag failure)" },
+    { "order": 4, "action": "Rotate auth token, attempt connection with old token", "expected": "WebSocket closed with code 4000 (auth failure)" },
+    { "order": 5, "action": "Verify no plaintext CDP data appears in daemon logs during any error scenario", "expected": "Log inspection shows only encrypted payloads and error codes, never plaintext message content" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

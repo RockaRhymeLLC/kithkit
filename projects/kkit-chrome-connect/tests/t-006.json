@@ -1,0 +1,19 @@
+{
+  "id": "t-006",
+  "title": "PSK generation and storage (Keychain + DB)",
+  "description": "Verify PSK management endpoints and storage behavior",
+  "storyRefs": ["s-c04"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Call POST /api/cowork/generate-psk", "expected": "Returns 200 with { psk: '<64-char hex string>' }" },
+    { "order": 2, "action": "Verify PSK is 256 bits (64 hex characters)", "expected": "String matches /^[0-9a-f]{64}$/" },
+    { "order": 3, "action": "Read PSK from macOS Keychain (credential-cowork-token)", "expected": "Keychain contains the same PSK value" },
+    { "order": 4, "action": "Call POST /api/cowork/generate-psk again", "expected": "New PSK generated, different from previous, Keychain updated" },
+    { "order": 5, "action": "Check that auth token is auto-generated on first daemon start", "expected": "kithkit.db config table has cowork-auth-token entry (64-char hex)" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}
