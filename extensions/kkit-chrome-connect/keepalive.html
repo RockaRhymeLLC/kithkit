@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html>
+<head><title>KithKit Keepalive</title></head>
+<body>
+<script>
+// Offscreen keepalive document — sends a message to the service worker
+// every 25 seconds to prevent MV3 service worker suspension.
+const INTERVAL_MS = 25_000;
+
+setInterval(() => {
+  chrome.runtime.sendMessage({ type: 'keepalive' }).catch(() => {
+    // Service worker may not be listening — ignore
+  });
+}, INTERVAL_MS);
+</script>
+</body>
+</html>

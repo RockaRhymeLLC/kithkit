@@ -3,7 +3,7 @@
   "name": "KithKit Chrome Connect",
   "version": "1.0.0",
   "description": "Connect Chrome to a KithKit agent for shared browser sessions",
-  "permissions": ["debugger", "activeTab", "storage", "tabs", "alarms"],
+  "permissions": ["debugger", "activeTab", "storage", "tabs", "alarms", "offscreen"],
   "background": {
     "service_worker": "background.js"
   },

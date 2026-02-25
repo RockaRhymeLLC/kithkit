@@ -86,10 +86,59 @@ let currentFingerprint = null;
 let lastError = null;
 
 // ---------------------------------------------------------------------------
-// Alarm name for keepalive
+// Keepalive constants
 // ---------------------------------------------------------------------------
 const KEEPALIVE_ALARM = 'kkit-keepalive';
 const HEARTBEAT_INTERVAL_SECONDS = 30;
+const OFFSCREEN_URL = 'keepalive.html';
+
+// ---------------------------------------------------------------------------
+// Offscreen document management (MV3 keepalive layer 1)
+// ---------------------------------------------------------------------------
+let offscreenCreating = null;
+
+async function createKeepaliveOffscreen() {
+  // Check if already exists
+  const existingContexts = await chrome.runtime.getContexts({
+    contextTypes: ['OFFSCREEN_DOCUMENT'],
+    documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)],
+  });
+  if (existingContexts.length > 0) return;
+
+  // Avoid duplicate creation races
+  if (offscreenCreating) {
+    await offscreenCreating;
+    return;
+  }
+
+  offscreenCreating = chrome.offscreen.createDocument({
+    url: OFFSCREEN_URL,
+    reasons: ['WORKERS'],
+    justification: 'Keepalive ping to prevent service worker suspension',
+  });
+
+  try {
+    await offscreenCreating;
+    console.log('[kkit] Offscreen keepalive document created');
+  } finally {
+    offscreenCreating = null;
+  }
+}
+
+async function destroyKeepaliveOffscreen() {
+  try {
+    const existingContexts = await chrome.runtime.getContexts({
+      contextTypes: ['OFFSCREEN_DOCUMENT'],
+      documentUrls: [chrome.runtime.getURL(OFFSCREEN_URL)],
+    });
+    if (existingContexts.length > 0) {
+      await chrome.offscreen.closeDocument();
+      console.log('[kkit] Offscreen keepalive document destroyed');
+    }
+  } catch (err) {
+    console.warn('[kkit] Failed to destroy offscreen document', err);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Clear crypto state on disconnect
@@ -385,7 +434,8 @@ async function performHandshake(socket) {
     await attachTab(activeTab.id);
   }
 
-  // Start keepalive alarm
+  // Start keepalive: offscreen document (layer 1) + alarm (layer 2)
+  await createKeepaliveOffscreen();
   chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: HEARTBEAT_INTERVAL_SECONDS / 60 });
 
   broadcastState();
@@ -434,6 +484,7 @@ async function handleDisconnect() {
   lastError = null;
   setBadge('disconnected');
   chrome.alarms.clear(KEEPALIVE_ALARM);
+  await destroyKeepaliveOffscreen();
   clearCryptoState();
   await detachAll();
   broadcastState();
@@ -684,6 +735,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     case 'get-state':
       sendResponse({ connState, attachedTarget, encrypted: sessionKey !== null, fingerprint: currentFingerprint, error: lastError });
       return false; // synchronous
+
+    // -------------------------------------------------------------------
+    // Keepalive ping from offscreen document (no-op — resets suspension timer)
+    // -------------------------------------------------------------------
+    case 'keepalive':
+      return false;
 
     // -------------------------------------------------------------------
     // Popup requests connect
