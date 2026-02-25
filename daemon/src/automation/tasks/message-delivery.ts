@@ -110,19 +110,14 @@ function expireMessage(msg: Message, retries: number): void {
 
 /**
  * Format a short notification ping (no message content).
+ * Note: no timestamp here — injectMessage() prepends one automatically.
  */
 function formatNotificationPing(msg: Message): string {
-  const time = new Date().toLocaleTimeString('en-US', {
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-    timeZone: 'America/New_York',
-  });
   const count = getUnreadCountFor(msg.to_agent);
   if (count > 1) {
-    return `[${time}] You have ${count} unread messages — use GET /api/messages?unread=true to read`;
+    return `You have ${count} unread messages — use GET /api/messages?unread=true to read`;
   }
-  return `[${time}] You have a message from ${msg.from_agent} — use GET /api/messages?unread=true to read`;
+  return `You have a message from ${msg.from_agent} — use GET /api/messages?unread=true to read`;
 }
 
 /**
@@ -294,6 +289,61 @@ async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> 
   return repinged;
 }
 
+// ── Phase 3: Worker completion notifications ─────────────────
+
+interface CompletedJobRow {
+  id: string;
+  profile: string;
+  status: 'completed' | 'failed' | 'timeout';
+  error: string | null;
+  spawned_by: string;
+}
+
+/**
+ * Phase 3: Notify spawning agents of worker completion/failure.
+ * Injects a one-line notification into the spawner's tmux session.
+ * Marks spawner_notified_at whether or not the session is live to avoid retries.
+ */
+async function notifyWorkerCompletions(liveSessions: Set<string>): Promise<number> {
+  const completedJobs = query<CompletedJobRow>(
+    `SELECT id, profile, status, error, spawned_by
+     FROM worker_jobs
+     WHERE status IN ('completed', 'failed', 'timeout')
+       AND spawned_by IS NOT NULL
+       AND spawner_notified_at IS NULL
+       AND spawned_by IN ('comms', 'orchestrator')
+     ORDER BY finished_at ASC
+     LIMIT 50`,
+  );
+
+  if (completedJobs.length === 0) return 0;
+
+  const now = new Date().toISOString();
+  let notified = 0;
+
+  for (const job of completedJobs) {
+    const spawner = job.spawned_by;
+
+    let pingText: string;
+    if (job.status === 'completed') {
+      pingText = `[worker ${job.profile} completed]`;
+    } else {
+      const reason = job.error ? `: ${job.error.slice(0, 80)}` : '';
+      pingText = `[worker ${job.profile} ${job.status}${reason}]`;
+    }
+
+    if (liveSessions.has(spawner)) {
+      injectMessage(spawner, pingText);
+    }
+
+    exec('UPDATE worker_jobs SET spawner_notified_at = ? WHERE id = ?', now, job.id);
+    notified++;
+    log.debug('Worker completion notified', { jobId: job.id, spawner, status: job.status });
+  }
+
+  return notified;
+}
+
 /**
  * Main delivery loop: deliver new messages, then re-ping unread ones.
  */
@@ -308,8 +358,11 @@ async function deliverMessages(): Promise<void> {
   // Phase 2: Re-ping unread messages
   const repinged = await repingUnreadMessages(liveSessions);
 
-  if (delivered > 0 || failed > 0 || expired > 0 || repinged > 0) {
-    log.info('Delivery cycle complete', { delivered, failed, expired, repinged });
+  // Phase 3: Notify spawning agents of worker completions
+  const workerNotified = await notifyWorkerCompletions(liveSessions);
+
+  if (delivered > 0 || failed > 0 || expired > 0 || repinged > 0 || workerNotified > 0) {
+    log.info('Delivery cycle complete', { delivered, failed, expired, repinged, workerNotified });
   }
 }
 
