@@ -39,6 +39,25 @@ export interface SendMessageRequest {
 const VALID_MESSAGE_TYPES: MessageType[] = ['text', 'task', 'result', 'error', 'status'];
 const WORKER_ALLOWED_TYPES: MessageType[] = ['result', 'error'];
 
+// ── Deduplication ─────────────────────────────────────────────
+// Prevent identical messages from being inserted within a short window.
+// Keyed by "from:to:type:bodyPrefix", stores the message ID of the first insertion.
+const DEDUP_WINDOW_MS = 5_000;
+const _recentMessages = new Map<string, { messageId: number; timestamp: number }>();
+
+function deduplicationKey(req: SendMessageRequest): string {
+  return `${req.from}:${req.to}:${req.type}:${req.body.slice(0, 200)}`;
+}
+
+function cleanupStaleDedup(): void {
+  const now = Date.now();
+  for (const [key, entry] of _recentMessages) {
+    if (now - entry.timestamp > DEDUP_WINDOW_MS) {
+      _recentMessages.delete(key);
+    }
+  }
+}
+
 // ── Tmux injection (injectable for testing) ──────────────────
 
 type TmuxInjector = (session: string, text: string) => boolean;
@@ -67,6 +86,14 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
     );
   }
 
+  // Deduplicate: if an identical message was sent within the last few seconds, return the original
+  cleanupStaleDedup();
+  const dedupKey = deduplicationKey(req);
+  const existing = _recentMessages.get(dedupKey);
+  if (existing && Date.now() - existing.timestamp < DEDUP_WINDOW_MS) {
+    return { messageId: existing.messageId, delivered: true };
+  }
+
   // Insert message into DB
   const message = insert<Message>('messages', {
     from_agent: req.from,
@@ -75,6 +102,9 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
     body: req.body,
     metadata: req.metadata ? JSON.stringify(req.metadata) : null,
   });
+
+  // Record for deduplication
+  _recentMessages.set(dedupKey, { messageId: message.id, timestamp: Date.now() });
 
   // Route to target
   if (isPersistentAgent(req.to)) {
@@ -212,4 +242,8 @@ export class WorkerRestrictionError extends Error {
 
 export function _setTmuxInjectorForTesting(fn: TmuxInjector | null): void {
   tmuxInjector = fn ?? defaultTmuxInjector;
+}
+
+export function _clearDedupForTesting(): void {
+  _recentMessages.clear();
 }
