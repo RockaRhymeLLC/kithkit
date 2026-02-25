@@ -297,11 +297,12 @@ async function shutdown(signal: string): Promise<void> {
   closeDatabase();
   log.info('Database closed');
 
+  const forceExitHandle = setTimeout(() => process.exit(1), 5000);
   server.close(() => {
+    clearTimeout(forceExitHandle);
     log.info('Daemon stopped');
     process.exit(0);
   });
-  setTimeout(() => process.exit(1), 5000);
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
