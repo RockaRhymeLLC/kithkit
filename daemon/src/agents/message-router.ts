@@ -34,6 +34,7 @@ export interface SendMessageRequest {
   type: MessageType;
   body: string;
   metadata?: Record<string, unknown>;
+  direct?: boolean;
 }
 
 const VALID_MESSAGE_TYPES: MessageType[] = ['text', 'task', 'result', 'error', 'status'];
@@ -108,6 +109,21 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
 
   // Route to target
   if (isPersistentAgent(req.to)) {
+    // Direct channel: bypass scheduler and inject immediately
+    if (req.direct) {
+      const formatted = formatForTmux(req);
+      const injected = tmuxInjector(req.to, formatted);
+      if (injected) {
+        // Mark as processed — deliver-once, no re-notification
+        exec(
+          'UPDATE messages SET processed_at = ? WHERE id = ?',
+          new Date().toISOString(), message.id,
+        );
+        return { messageId: message.id, delivered: true };
+      }
+      // Injection failed (session not alive) — fall through to normal delivery
+    }
+
     // Queue for delivery — the message-delivery scheduler task handles tmux injection.
     // Trigger the task immediately so delivery doesn't wait for the next interval tick.
     notifyNewMessage();
