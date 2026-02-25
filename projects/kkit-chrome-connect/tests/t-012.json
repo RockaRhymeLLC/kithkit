@@ -1,0 +1,19 @@
+{
+  "id": "t-012",
+  "title": "MV3 keepalive prevents service worker suspension",
+  "description": "Verify the offscreen document keepalive prevents service worker termination during idle periods",
+  "storyRefs": ["s-c09"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Connect to establish an active WebSocket session", "expected": "Offscreen document created (check chrome://extensions for active offscreen)" },
+    { "order": 2, "action": "Wait 60 seconds with no CDP commands", "expected": "Service worker remains active (not terminated), WebSocket still connected" },
+    { "order": 3, "action": "Verify keepalive messages in service worker console", "expected": "{ type: 'keepalive' } messages appear every ~25 seconds" },
+    { "order": 4, "action": "Disconnect the WebSocket session", "expected": "Offscreen document destroyed" },
+    { "order": 5, "action": "Reconnect — verify no duplicate offscreen documents", "expected": "Exactly one offscreen document created" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

@@ -1,0 +1,20 @@
+{
+  "id": "t-003",
+  "title": "Daemon crypto: AES-256-GCM encrypt/decrypt roundtrip",
+  "description": "Verify encryption and decryption with sequence-bound AAD, and failure modes",
+  "storyRefs": ["s-c02"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Generate a session key, encrypt a JSON payload with seq=1", "expected": "Returns object with base64 payload and base64 nonce" },
+    { "order": 2, "action": "Decrypt the ciphertext with the same key and seq=1", "expected": "Returns original JSON string" },
+    { "order": 3, "action": "Attempt to decrypt with wrong session key", "expected": "Throws error (GCM auth tag verification failed)" },
+    { "order": 4, "action": "Attempt to decrypt with correct key but wrong seq (seq=2 instead of 1)", "expected": "Throws error (AAD mismatch causes GCM auth failure)" },
+    { "order": 5, "action": "Encrypt two messages with seq=1 and seq=2", "expected": "Different nonces, different ciphertexts (even for same plaintext)" },
+    { "order": 6, "action": "Tamper with one byte of the ciphertext, attempt decrypt", "expected": "Throws error (GCM detects tampering)" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

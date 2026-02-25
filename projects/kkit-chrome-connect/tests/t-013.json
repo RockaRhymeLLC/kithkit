@@ -1,0 +1,19 @@
+{
+  "id": "t-013",
+  "title": "Tab management: list, switch, detach handling",
+  "description": "Verify tab listing, switching, and debugger detach handling through encrypted channel",
+  "storyRefs": ["s-c10"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Establish encrypted session, then daemon calls listTabs()", "expected": "Returns array of { id, title, url } for open Chrome tabs, all through encrypted channel" },
+    { "order": 2, "action": "Daemon calls switchTab(tabId) for a specific tab", "expected": "Extension attaches chrome.debugger to that tab, returns success. Yellow infobar appears." },
+    { "order": 3, "action": "Daemon sends CDP command to the attached tab", "expected": "CDP command executes on the correct tab, result returned (encrypted)" },
+    { "order": 4, "action": "User opens DevTools on the debugged tab (simulating detach)", "expected": "chrome.debugger.onDetach fires, extension sends encrypted notification to daemon with reason" },
+    { "order": 5, "action": "Daemon sends CDP command after detach", "expected": "Error returned: debugger not attached to any tab" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

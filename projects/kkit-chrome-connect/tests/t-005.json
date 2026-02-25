@@ -1,0 +1,19 @@
+{
+  "id": "t-005",
+  "title": "Daemon token authentication on WebSocket connect",
+  "description": "Verify token-based auth on the WebSocket upgrade path",
+  "storyRefs": ["s-c04"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Connect WebSocket to /cowork and send valid auth token as first message", "expected": "Connection stays open, daemon proceeds to key exchange phase" },
+    { "order": 2, "action": "Connect WebSocket and send invalid auth token", "expected": "Daemon closes WebSocket with code 4000 and reason 'Authentication failed'" },
+    { "order": 3, "action": "Connect WebSocket and send no message for 5 seconds", "expected": "Daemon closes WebSocket with code 4000 (auth timeout)" },
+    { "order": 4, "action": "Connect WebSocket and send a non-auth message type first", "expected": "Daemon closes WebSocket with code 4000" },
+    { "order": 5, "action": "Rotate token via POST /api/cowork/rotate-token, then connect with old token", "expected": "Old token rejected (4000), new token accepted" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

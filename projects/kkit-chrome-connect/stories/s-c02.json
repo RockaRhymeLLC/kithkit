@@ -1,0 +1,27 @@
+{
+  "id": "s-c02",
+  "title": "Daemon-side crypto module (X25519 + PSK-HKDF + AES-256-GCM)",
+  "description": "Extract encryption logic into daemon/src/extensions/cowork-crypto.ts. Implements: X25519 keypair generation, ECDH shared secret, PSK-authenticated HKDF-SHA256 key derivation, AES-256-GCM encrypt/decrypt with AAD, sequence counter management. All using node:crypto, zero dependencies.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 2,
+  "tests": ["t-002", "t-003"],
+  "blockedBy": [],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["daemon/src/extensions/cowork-crypto.ts", "daemon/src/__tests__/cowork-crypto.test.ts"],
+  "acceptanceCriteria": [
+    "generateEphemeralKeyPair() returns X25519 public/private key pair",
+    "deriveSessionKey(sharedSecret, psk, extensionPubKey, daemonPubKey) returns 32-byte AES key using PSK-authenticated HKDF",
+    "HKDF salt is HMAC-SHA256(PSK, 'kkit-cowork-e2e-v1')",
+    "HKDF info is sorted public keys joined by colon",
+    "encrypt(sessionKey, plaintext, seq) returns { payload, nonce } using AES-256-GCM with AAD 'cowork:<seq>'",
+    "decrypt(sessionKey, payload, nonce, seq) returns plaintext or throws on auth failure",
+    "Encrypt then decrypt roundtrips correctly",
+    "Decrypt with wrong key throws",
+    "Decrypt with wrong seq (AAD mismatch) throws",
+    "computeFingerprint(publicKey) returns first 16 hex chars of SHA-256"
+  ]
+}

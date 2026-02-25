@@ -1,0 +1,20 @@
+{
+  "id": "t-015",
+  "title": "Integration: full encrypted session lifecycle",
+  "description": "End-to-end integration test covering the complete session lifecycle from connect to disconnect",
+  "storyRefs": ["s-c12"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Start daemon with cowork token and PSK configured", "expected": "Daemon running, /api/cowork/status returns connected: false" },
+    { "order": 2, "action": "Extension connects: auth → key exchange → hello/hello-ack", "expected": "/api/cowork/status returns connected: true with encryption metadata" },
+    { "order": 3, "action": "Send 10 CDP commands in sequence", "expected": "All 10 commands succeed, sequence counters reach 10 on each side" },
+    { "order": 4, "action": "List tabs and switch to a specific one", "expected": "Tab operations succeed through encrypted channel" },
+    { "order": 5, "action": "Extension disconnects gracefully", "expected": "/api/cowork/status returns connected: false, session keys zeroed" },
+    { "order": 6, "action": "Extension reconnects", "expected": "New ephemeral keys generated, different daemon public key fingerprint" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

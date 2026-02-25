@@ -1,0 +1,24 @@
+{
+  "id": "s-c09",
+  "title": "MV3 keepalive (offscreen document + alarms)",
+  "description": "Implement layered keepalive strategy: (1) offscreen document created on WebSocket connect, destroyed on disconnect, sends chrome.runtime.sendMessage every 25s; (2) chrome.alarms backup at 30s interval; (3) natural WebSocket traffic. Service worker handles keepalive pings as no-ops that reset suspension timer.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 9,
+  "tests": ["t-012"],
+  "blockedBy": ["s-c06"],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["src/background.ts", "src/keepalive.ts", "keepalive.html"],
+  "acceptanceCriteria": [
+    "Offscreen document created with reason WORKERS on WebSocket connect",
+    "Offscreen document destroyed on WebSocket disconnect",
+    "keepalive.html sends chrome.runtime.sendMessage({ type: 'keepalive' }) every 25 seconds",
+    "Service worker handles keepalive messages (no-op, receipt resets suspension timer)",
+    "chrome.alarms set with periodInMinutes: 0.5 as backup",
+    "Alarm handler is a no-op (just resets suspension timer)",
+    "No duplicate offscreen documents created on reconnect"
+  ]
+}

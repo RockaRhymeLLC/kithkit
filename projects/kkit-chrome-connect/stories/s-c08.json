@@ -1,0 +1,27 @@
+{
+  "id": "s-c08",
+  "title": "Extension popup UI (connect/disconnect/status)",
+  "description": "Build the popup UI: host input, token input, PSK configuration (stored in chrome.storage.local), connect/disconnect button, connection status display, encryption status badge, error messages. Popup recovers state from chrome.storage.session on reopen.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 8,
+  "tests": ["t-011"],
+  "blockedBy": ["s-c06"],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["src/popup.html", "src/popup.ts", "src/popup.css"],
+  "acceptanceCriteria": [
+    "Popup displays host input field (default: cowork.bmobot.ai)",
+    "Popup displays token input field (password type)",
+    "Settings section for PSK (stored in chrome.storage.local, persists across sessions)",
+    "Connect button initiates WebSocket connection",
+    "Disconnect button cleanly closes connection",
+    "Status area shows: disconnected / connecting / connected (encrypted)",
+    "Error messages displayed clearly on auth/handshake failure",
+    "Badge icon reflects state: gray (off), green (connected+encrypted), red (error)",
+    "Popup state recovered from chrome.storage.session on reopen",
+    "Token stored in chrome.storage.session (cleared on browser close)"
+  ]
+}

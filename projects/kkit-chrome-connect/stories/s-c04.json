@@ -1,0 +1,25 @@
+{
+  "id": "s-c04",
+  "title": "Daemon token auth + PSK management endpoints",
+  "description": "Add token-based authentication to the WebSocket upgrade flow. First message must be { type: 'auth', token: '<hex>' }. Add REST endpoints: POST /api/cowork/generate-psk (creates PSK, stores in Keychain + DB), POST /api/cowork/rotate-token (generates new auth token). Token and PSK are distinct: token authenticates WebSocket, PSK authenticates key exchange.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 4,
+  "tests": ["t-005", "t-006"],
+  "blockedBy": ["s-c02"],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["daemon/src/extensions/cowork-bridge.ts", "daemon/src/extensions/index.ts"],
+  "acceptanceCriteria": [
+    "WebSocket connection requires auth message within 5 seconds or closes with code 4000",
+    "Invalid token closes with code 4000 ('Authentication failed')",
+    "Valid token proceeds to key exchange phase",
+    "POST /api/cowork/generate-psk generates 256-bit random hex PSK",
+    "PSK stored in macOS Keychain (credential-cowork-token) and kithkit.db",
+    "POST /api/cowork/rotate-token generates new 256-bit auth token, invalidates old",
+    "Auth token stored in kithkit.db config table",
+    "Token generated on first daemon start if not present"
+  ]
+}

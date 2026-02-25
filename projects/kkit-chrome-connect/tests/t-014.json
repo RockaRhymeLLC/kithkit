@@ -1,0 +1,19 @@
+{
+  "id": "t-014",
+  "title": "TOFU fingerprint: daemon and extension fingerprints match",
+  "description": "Verify TOFU fingerprint display in popup matches daemon's GET /api/cowork/fingerprint",
+  "storyRefs": ["s-c11"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Establish encrypted session", "expected": "Key exchange completed, session encrypted" },
+    { "order": 2, "action": "Open extension popup", "expected": "Fingerprint displayed as 'XXXX XXXX XXXX XXXX' (16 hex chars grouped in 4s)" },
+    { "order": 3, "action": "Call GET /api/cowork/fingerprint on the daemon", "expected": "Returns { fingerprint: '<16 hex chars>' }" },
+    { "order": 4, "action": "Compare popup fingerprint with daemon API fingerprint", "expected": "Identical values" },
+    { "order": 5, "action": "Disconnect and reconnect", "expected": "New fingerprint (new ephemeral keys), different from previous session" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

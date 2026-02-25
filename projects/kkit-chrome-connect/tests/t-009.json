@@ -1,0 +1,20 @@
+{
+  "id": "t-009",
+  "title": "Encrypted CDP command roundtrip",
+  "description": "Verify CDP commands flow through the encryption layer end-to-end",
+  "storyRefs": ["s-c07"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Establish encrypted session (auth + key exchange)", "expected": "Session active with encryption confirmed" },
+    { "order": 2, "action": "Daemon sends CDP command via sendCdpCommand('Runtime.evaluate', { expression: '1+1' })", "expected": "Wire frame is { type: 'encrypted', seq: N, payload: '<base64>', nonce: '<base64>' } — no plaintext CDP visible" },
+    { "order": 3, "action": "Extension decrypts the frame", "expected": "Plaintext is { type: 'cdp', id: N, method: 'Runtime.evaluate', params: { expression: '1+1' } }" },
+    { "order": 4, "action": "Extension encrypts CDP result and sends back", "expected": "Wire frame is encrypted envelope, daemon decrypts successfully" },
+    { "order": 5, "action": "Daemon resolves the CDP command promise", "expected": "Result matches the expected CDP response" },
+    { "order": 6, "action": "Verify sequence counters are correct throughout", "expected": "Each direction's seq increments by exactly 1 per message" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

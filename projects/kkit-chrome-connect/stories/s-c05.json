@@ -1,0 +1,27 @@
+{
+  "id": "s-c05",
+  "title": "Daemon key exchange protocol (ECDH + hello/hello-ack)",
+  "description": "After token auth succeeds, implement the key exchange protocol on the daemon side: generate ephemeral X25519 keypair, receive extension's public key, send daemon's public key, derive session key using PSK-authenticated HKDF, decrypt hello message to confirm key agreement, send encrypted hello-ack. On failure, close with code 4001 or 4002.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 5,
+  "tests": ["t-007"],
+  "blockedBy": ["s-c02", "s-c04"],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["daemon/src/extensions/cowork-bridge.ts"],
+  "acceptanceCriteria": [
+    "After auth, daemon waits for { type: 'key-exchange', publicKey: '<b64>' } from extension",
+    "Daemon generates ephemeral X25519 keypair per connection",
+    "Daemon sends { type: 'key-exchange', publicKey: '<b64>' } with its public key",
+    "Session key derived via PSK-authenticated HKDF-SHA256",
+    "Daemon decrypts hello message from extension — GCM auth tag must pass",
+    "Daemon sends encrypted hello-ack",
+    "Key exchange timeout (5s) closes with code 4001",
+    "Decryption failure closes with code 4002 (MITM detection)",
+    "Ephemeral keys discarded on session close (zeroed from memory)",
+    "Session transitions to encrypted state after hello-ack"
+  ]
+}

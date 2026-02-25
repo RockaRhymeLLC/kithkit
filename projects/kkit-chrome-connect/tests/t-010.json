@@ -1,0 +1,19 @@
+{
+  "id": "t-010",
+  "title": "Sequence counter validation and tamper detection",
+  "description": "Verify strict sequence validation and ciphertext tampering detection",
+  "storyRefs": ["s-c07"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Establish encrypted session", "expected": "Session active" },
+    { "order": 2, "action": "Send encrypted message with seq=1 (correct)", "expected": "Accepted, processed normally" },
+    { "order": 3, "action": "Send encrypted message with seq=1 again (replay)", "expected": "Connection closed with code 4003 (sequence violation)" },
+    { "order": 4, "action": "In a new session, send seq=1 then seq=3 (gap)", "expected": "Connection closed with code 4003 (gap detected)" },
+    { "order": 5, "action": "In a new session, send message with tampered ciphertext payload", "expected": "Connection closed with code 4002 (decryption failed, GCM auth tag mismatch)" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

@@ -1,0 +1,20 @@
+{
+  "id": "t-011",
+  "title": "Popup UI: connect/disconnect/status display",
+  "description": "Verify popup UI displays correct state and handles user interactions",
+  "storyRefs": ["s-c08"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Open popup when not connected", "expected": "Shows host input (default: cowork.bmobot.ai), token input, PSK config section, Connect button enabled, Disconnect disabled" },
+    { "order": 2, "action": "Enter host and token, click Connect", "expected": "Status changes to 'Connecting...', Connect button disabled" },
+    { "order": 3, "action": "Wait for successful connection", "expected": "Status shows 'Connected (Encrypted)', Disconnect button enabled, badge turns green" },
+    { "order": 4, "action": "Close popup, reopen it", "expected": "Popup recovers state from chrome.storage.session — shows connected status" },
+    { "order": 5, "action": "Click Disconnect", "expected": "Status shows 'Disconnected', Connect button re-enabled, badge turns gray" },
+    { "order": 6, "action": "Enter invalid token, click Connect", "expected": "Error message 'Authentication failed' displayed in popup, badge turns red briefly" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

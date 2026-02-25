@@ -1,0 +1,21 @@
+{
+  "id": "t-004",
+  "title": "Extension crypto: WebCrypto X25519 + AES-256-GCM interop with daemon",
+  "description": "Verify extension-side crypto produces keys and ciphertext compatible with daemon-side crypto. This is the critical cross-platform interop test.",
+  "storyRefs": ["s-c03"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Generate X25519 keypair using WebCrypto", "expected": "CryptoKeyPair with extractable public key (32 bytes raw)" },
+    { "order": 2, "action": "Export public key to base64", "expected": "Base64 string encoding 32 raw bytes" },
+    { "order": 3, "action": "Perform ECDH between daemon keypair and extension keypair (cross-platform)", "expected": "Both sides derive identical 32-byte shared secret" },
+    { "order": 4, "action": "Derive session key on both sides with same PSK and public keys", "expected": "Session keys are identical (verified by encrypting on one side, decrypting on other)" },
+    { "order": 5, "action": "Encrypt a message on daemon side, decrypt on extension side", "expected": "Extension successfully decrypts, plaintext matches" },
+    { "order": 6, "action": "Encrypt a message on extension side, decrypt on daemon side", "expected": "Daemon successfully decrypts, plaintext matches" },
+    { "order": 7, "action": "Compute fingerprint on both sides for same public key", "expected": "Identical fingerprint strings" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

@@ -1,0 +1,20 @@
+{
+  "id": "t-007",
+  "title": "Daemon key exchange: ECDH + PSK-authenticated HKDF + hello/hello-ack",
+  "description": "Verify the full key exchange protocol on the daemon side, including MITM detection",
+  "storyRefs": ["s-c05"],
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "type": "story",
+  "status": "pending",
+  "steps": [
+    { "order": 1, "action": "Authenticate, then send key-exchange message with a valid X25519 public key", "expected": "Daemon responds with its own key-exchange message containing a 32-byte base64 public key" },
+    { "order": 2, "action": "Derive session key locally (same algorithm), encrypt hello message, send it", "expected": "Daemon responds with encrypted hello-ack" },
+    { "order": 3, "action": "Decrypt hello-ack with local session key", "expected": "Plaintext is { type: 'hello-ack' }" },
+    { "order": 4, "action": "Authenticate and send key-exchange, but use wrong PSK for session key derivation, send hello", "expected": "Daemon closes with code 4002 (decryption failed — MITM detection)" },
+    { "order": 5, "action": "Authenticate but do not send key-exchange for 5 seconds", "expected": "Daemon closes with code 4001 (key exchange timeout)" },
+    { "order": 6, "action": "Verify daemon generates new ephemeral keypair per connection", "expected": "Two connections produce different daemon public keys" }
+  ],
+  "created": "2026-02-25T00:30:00Z",
+  "executedAt": null,
+  "result": null
+}

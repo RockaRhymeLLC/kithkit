@@ -1,0 +1,23 @@
+{
+  "id": "s-c11",
+  "title": "TOFU fingerprint display in popup",
+  "description": "After key exchange completes, compute SHA-256 fingerprint of daemon's X25519 public key (first 16 hex chars). Display in popup as 'Daemon Fingerprint: XXXX XXXX XXXX XXXX' for manual verification. Daemon exposes GET /api/cowork/fingerprint so Dave can cross-check.",
+  "planRef": "projects/kkit-chrome-connect/20260224-kkit-chrome-connect.plan.md",
+  "todoRef": "42",
+  "status": "pending",
+  "priority": 11,
+  "tests": ["t-014"],
+  "blockedBy": ["s-c05", "s-c08"],
+  "created": "2026-02-25T00:30:00Z",
+  "updated": "2026-02-25T00:30:00Z",
+  "notes": [],
+  "files": ["src/popup.ts", "daemon/src/extensions/cowork-bridge.ts"],
+  "acceptanceCriteria": [
+    "Extension computes SHA-256 of daemon's raw X25519 public key after key exchange",
+    "First 16 hex characters displayed in popup as fingerprint (grouped in 4s: XXXX XXXX XXXX XXXX)",
+    "Fingerprint only shown when session is encrypted",
+    "GET /api/cowork/fingerprint returns current session's daemon public key fingerprint",
+    "Fingerprint matches between extension popup and daemon API endpoint",
+    "Fingerprint cleared on disconnect"
+  ]
+}

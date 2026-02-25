@@ -1,7 +1,7 @@
 # Spec: KithKit Chrome Connect
 
 **Created**: 2026-02-24
-**Status**: Draft
+**Status**: Approved
 **Reviewed**: Bob (devil's advocate), R2 (peer review)
 
 ## Goal
@@ -27,6 +27,7 @@ Replace the fragile `--remote-debugging-port` + SSH tunnel approach for shared b
 - [ ] Key exchange occurs after token auth, before any application messages
 - [ ] Graceful degradation: clear error if encryption handshake fails
 - [ ] Popup state recovery via `chrome.storage.session` (popup loses state on close in MV3)
+- [ ] TOFU fingerprint display: show daemon's X25519 public key fingerprint (SHA-256 hex, truncated to 16 chars) in extension popup during/after key exchange for manual verification
 
 ### Should Have
 
@@ -82,10 +83,10 @@ The encryption protocol follows the same pattern as the KithKit A2A agent-comms 
 **Fix**: Mix a pre-shared key (PSK) into the HKDF salt. The PSK is configured locally on both the daemon and the extension, and is **never transmitted over the wire**. Without the PSK, an attacker who substitutes ECDH keys will derive a different session key, and the hello/hello-ack confirmation will fail immediately (GCM auth tag mismatch).
 
 - **PSK format**: Random 256-bit value, hex-encoded (64 characters)
-- **PSK generation**: Created by the daemon via `POST /api/cowork/generate-psk`, stored in `kithkit.db`
-- **PSK distribution**: Displayed to Dave once (or copied from daemon CLI). Dave enters it in the extension popup. **Never transmitted over any network channel.**
+- **PSK generation**: Created by the daemon via `POST /api/cowork/generate-psk`, stored in macOS Keychain (`credential-cowork-token`) and `kithkit.db`
+- **PSK distribution**: BMO generates the token, stores it in macOS Keychain (`credential-cowork-token`). Dave copies it from the daemon CLI or Keychain and pastes it into the extension settings once. **Never transmitted over any network channel.**
 - **PSK storage (extension)**: `chrome.storage.local` (persists across sessions — unlike the auth token which uses `chrome.storage.session`)
-- **PSK storage (daemon)**: `kithkit.db` config table
+- **PSK storage (daemon)**: macOS Keychain (`credential-cowork-token`) as primary, `kithkit.db` config table as runtime cache
 
 ##### Key Exchange (on WebSocket connect, after token auth)
 
@@ -449,7 +450,7 @@ Chrome suspends MV3 service workers after **30 seconds** of inactivity. A WebSoc
 ## Open Questions
 
 - [x] ~~Should re-keying (session key rotation) be a must-have for v1?~~ → **No, deferred to v2.**
-- [ ] Should the extension show the daemon's public key fingerprint in the popup for manual verification (like SSH "trust on first use")? Low priority — PSK already provides authentication.
-- [ ] What minimum Chrome version should the manifest enforce? WebCrypto X25519 landed in Chrome 113, but Chrome 114+ is safer for stability.
+- [x] ~~Should the extension show the daemon's public key fingerprint in the popup for manual verification (like SSH "trust on first use")?~~ → **Yes. Show daemon pubkey fingerprint in the extension popup for TOFU-style verification.** Low priority but approved for v1.
+- [x] ~~What minimum Chrome version should the manifest enforce?~~ → **Chrome 114+.** WebCrypto X25519 landed in Chrome 113, 114+ chosen for stability.
 - [ ] Does X25519 via WebCrypto work in MV3 service worker context? Needs empirical verification.
-- [ ] Should the PSK be derivable from a human-readable passphrase (PBKDF2) instead of raw hex? Better UX for Dave but slightly weaker if passphrase is short.
+- [x] ~~Should the PSK be derivable from a human-readable passphrase (PBKDF2) instead of raw hex?~~ → **No. BMO generates a 256-bit hex token, stores it in macOS Keychain (`credential-cowork-token`), Dave pastes it into the extension settings once.** Raw hex, no passphrase derivation.
