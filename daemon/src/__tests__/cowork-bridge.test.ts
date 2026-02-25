@@ -29,6 +29,8 @@ import {
   deriveSessionKey,
   encryptEnvelope,
   decryptEnvelope,
+  computeFingerprint,
+  generateToken,
   type EncryptedEnvelope,
 } from '../extensions/cowork-crypto.js';
 
@@ -267,6 +269,9 @@ const PORT_007 = 3943;
 const PORT_009 = 3944;
 const PORT_010 = 3945;
 const PORT_013 = 3946;
+const PORT_014 = 3947;
+const PORT_015 = 3948;
+const PORT_016 = 3949;
 
 // ── t-240: WebSocket handshake and framing ────────────────────
 
@@ -1187,8 +1192,6 @@ describe('Tab management through encrypted channel (t-013)', () => {
 
   beforeEach(async () => {
     _resetCoworkBridgeForTesting();
-    setPsk(TEST_PSK);
-    setAuthToken('tab-test-token');
     bridge = createBridgeServer(PORT_013);
     await bridge.start();
   });
@@ -1201,13 +1204,7 @@ describe('Tab management through encrypted channel (t-013)', () => {
   });
 
   it('listTabs sends encrypted list-tabs and resolves with tab array', async () => {
-    setAuthToken(null as unknown as string);
-    _resetCoworkBridgeForTesting();
     setPsk(TEST_PSK);
-    bridge = createBridgeServer(PORT_013);
-    await bridge.stop();
-    bridge = createBridgeServer(PORT_013);
-    await bridge.start();
 
     const { sock, sessionKey, sendSeq: initSendSeq, recvSeq: initRecvSeq } =
       await establishEncryptedSession(PORT_013, TEST_PSK);
@@ -1248,12 +1245,7 @@ describe('Tab management through encrypted channel (t-013)', () => {
   });
 
   it('switchTab sends encrypted switch-tab and resolves on success', async () => {
-    setAuthToken(null as unknown as string);
-    _resetCoworkBridgeForTesting();
     setPsk(TEST_PSK);
-    await bridge.stop();
-    bridge = createBridgeServer(PORT_013);
-    await bridge.start();
 
     const { sock, sessionKey, sendSeq: initSendSeq, recvSeq: initRecvSeq } =
       await establishEncryptedSession(PORT_013, TEST_PSK);
@@ -1289,12 +1281,7 @@ describe('Tab management through encrypted channel (t-013)', () => {
   });
 
   it('debugger-detached message is accepted without error', async () => {
-    setAuthToken(null as unknown as string);
-    _resetCoworkBridgeForTesting();
     setPsk(TEST_PSK);
-    await bridge.stop();
-    bridge = createBridgeServer(PORT_013);
-    await bridge.start();
 
     const { sock, sessionKey, sendSeq: initSendSeq } =
       await establishEncryptedSession(PORT_013, TEST_PSK);
@@ -1312,6 +1299,483 @@ describe('Tab management through encrypted channel (t-013)', () => {
     // Wait a bit then verify session is still alive
     await sleep(100);
     assert.ok(isCoworkConnected(), 'Session should remain connected after detach notification');
+
+    sock.destroy();
+  });
+});
+
+// ── t-014: TOFU fingerprint management ───────────────────────
+
+describe('TOFU fingerprint management (t-014)', () => {
+  let bridge: ReturnType<typeof createBridgeServer>;
+  const TEST_PSK = 'f'.repeat(64); // distinct PSK for this suite
+
+  beforeEach(async () => {
+    _resetCoworkBridgeForTesting();
+    bridge = createBridgeServer(PORT_014);
+    await bridge.start();
+  });
+
+  afterEach(async () => {
+    shutdownCoworkBridge();
+    await bridge.stop();
+    _resetCoworkBridgeForTesting();
+    await sleep(20);
+  });
+
+  it('fingerprint matches computeFingerprint of daemon public key', async () => {
+    setPsk(TEST_PSK);
+
+    // Perform key exchange manually so we can capture the daemon's public key
+    const sock = await wsConnect(PORT_014, '/cowork');
+    await sleep(20);
+
+    const extKeyPair = generateEphemeralKeyPair();
+    sock.write(buildTextFrame(JSON.stringify({
+      type: 'key-exchange',
+      publicKey: extKeyPair.publicKeyB64,
+    })));
+
+    // Read daemon's key-exchange response and capture its public key
+    const responseText = await readServerFrame(sock, 2000);
+    const response = JSON.parse(responseText) as Record<string, unknown>;
+    assert.equal(response['type'], 'key-exchange');
+    const daemonPubKeyB64 = response['publicKey'] as string;
+
+    // Derive session key and complete the handshake with encrypted hello
+    const sharedSecret = computeSharedSecret(extKeyPair.privateKey, daemonPubKeyB64);
+    const sessionKey = deriveSessionKey(sharedSecret, TEST_PSK, extKeyPair.publicKeyB64, daemonPubKeyB64);
+
+    const helloEnvelope = encryptEnvelope(sessionKey, { type: 'hello', userAgent: 'Test/1.0' }, 1);
+    sock.write(buildTextFrame(JSON.stringify(helloEnvelope)));
+    await readServerFrame(sock, 2000); // consume hello-ack
+    await sleep(20);
+
+    // Compute expected fingerprint locally from the captured daemon public key
+    const expectedFingerprint = computeFingerprint(daemonPubKeyB64);
+
+    // Verify the API endpoint returns the same fingerprint
+    const { status, body } = await httpRequest(PORT_014, 'GET', '/api/cowork/fingerprint');
+    assert.equal(status, 200);
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    assert.equal(typeof parsed['fingerprint'], 'string');
+    assert.match(parsed['fingerprint'] as string, /^[0-9a-f]{16}$/,
+      'Fingerprint must be 16 lowercase hex characters');
+    assert.equal(parsed['fingerprint'], expectedFingerprint,
+      'API fingerprint must match computeFingerprint(daemonPubKey)');
+
+    sock.destroy();
+  });
+
+  it('fingerprint cleared after disconnect', async () => {
+    setPsk(TEST_PSK);
+
+    // Establish a full encrypted session
+    const { sock } = await establishEncryptedSession(PORT_014, TEST_PSK);
+    await sleep(20);
+
+    // Verify fingerprint is present while session is active
+    const { status: statusBefore } = await httpRequest(PORT_014, 'GET', '/api/cowork/fingerprint');
+    assert.equal(statusBefore, 200, 'Fingerprint should be available during active session');
+
+    // Disconnect the WebSocket
+    await wsClose(sock, 200);
+    await sleep(50);
+
+    // Verify session is gone and fingerprint endpoint returns 404
+    assert.equal(isCoworkConnected(), false, 'Session should be disconnected');
+    const { status: statusAfter } = await httpRequest(PORT_014, 'GET', '/api/cowork/fingerprint');
+    assert.equal(statusAfter, 404, 'Fingerprint should be cleared after disconnect');
+  });
+
+  it('fingerprint changes on new session (ephemeral keys)', async () => {
+    setPsk(TEST_PSK);
+
+    // ── First session ──
+    const sock1 = await wsConnect(PORT_014, '/cowork');
+    await sleep(20);
+
+    const extKeyPair1 = generateEphemeralKeyPair();
+    sock1.write(buildTextFrame(JSON.stringify({
+      type: 'key-exchange',
+      publicKey: extKeyPair1.publicKeyB64,
+    })));
+    const resp1Text = await readServerFrame(sock1, 2000);
+    const resp1 = JSON.parse(resp1Text) as Record<string, unknown>;
+    const daemonPubKey1 = resp1['publicKey'] as string;
+
+    const sharedSecret1 = computeSharedSecret(extKeyPair1.privateKey, daemonPubKey1);
+    const sessionKey1 = deriveSessionKey(sharedSecret1, TEST_PSK, extKeyPair1.publicKeyB64, daemonPubKey1);
+
+    const hello1 = encryptEnvelope(sessionKey1, { type: 'hello', userAgent: 'Test/1.0' }, 1);
+    sock1.write(buildTextFrame(JSON.stringify(hello1)));
+    await readServerFrame(sock1, 2000); // consume hello-ack
+    await sleep(20);
+
+    const { body: body1 } = await httpRequest(PORT_014, 'GET', '/api/cowork/fingerprint');
+    const fingerprint1 = (JSON.parse(body1) as Record<string, unknown>)['fingerprint'] as string;
+
+    // Disconnect first session
+    await wsClose(sock1, 200);
+    await sleep(50);
+
+    // ── Second session ──
+    const sock2 = await wsConnect(PORT_014, '/cowork');
+    await sleep(20);
+
+    const extKeyPair2 = generateEphemeralKeyPair();
+    sock2.write(buildTextFrame(JSON.stringify({
+      type: 'key-exchange',
+      publicKey: extKeyPair2.publicKeyB64,
+    })));
+    const resp2Text = await readServerFrame(sock2, 2000);
+    const resp2 = JSON.parse(resp2Text) as Record<string, unknown>;
+    const daemonPubKey2 = resp2['publicKey'] as string;
+
+    const sharedSecret2 = computeSharedSecret(extKeyPair2.privateKey, daemonPubKey2);
+    const sessionKey2 = deriveSessionKey(sharedSecret2, TEST_PSK, extKeyPair2.publicKeyB64, daemonPubKey2);
+
+    const hello2 = encryptEnvelope(sessionKey2, { type: 'hello', userAgent: 'Test/1.0' }, 1);
+    sock2.write(buildTextFrame(JSON.stringify(hello2)));
+    await readServerFrame(sock2, 2000); // consume hello-ack
+    await sleep(20);
+
+    const { body: body2 } = await httpRequest(PORT_014, 'GET', '/api/cowork/fingerprint');
+    const fingerprint2 = (JSON.parse(body2) as Record<string, unknown>)['fingerprint'] as string;
+
+    // Each session generates a fresh ephemeral keypair — fingerprints must differ
+    assert.notEqual(fingerprint1, fingerprint2,
+      'Fingerprint must change between sessions (ephemeral keys are regenerated each time)');
+    assert.match(fingerprint1, /^[0-9a-f]{16}$/);
+    assert.match(fingerprint2, /^[0-9a-f]{16}$/);
+
+    sock2.destroy();
+  });
+});
+
+// ── t-015: Full session lifecycle integration ─────────────────
+
+describe('Full session lifecycle (t-015)', () => {
+  let bridge: ReturnType<typeof createBridgeServer>;
+  const TEST_PSK = '0'.repeat(64); // distinct PSK for this suite
+
+  beforeEach(async () => {
+    _resetCoworkBridgeForTesting();
+    bridge = createBridgeServer(PORT_015);
+    await bridge.start();
+  });
+
+  afterEach(async () => {
+    shutdownCoworkBridge();
+    await bridge.stop();
+    _resetCoworkBridgeForTesting();
+    await sleep(20);
+  });
+
+  /** Wait for a close frame and return its code. */
+  function waitForCloseCode015(socket: net.Socket, timeoutMs = 2000): Promise<number> {
+    return new Promise(resolve => {
+      const timer = setTimeout(() => resolve(0), timeoutMs);
+      const onData = (chunk: Buffer) => {
+        if (chunk.length >= 4 && (chunk[0] & 0x0f) === 0x08) {
+          clearTimeout(timer);
+          socket.removeListener('data', onData);
+          resolve(chunk.readUInt16BE(2));
+        }
+      };
+      socket.on('data', onData);
+      socket.on('close', () => { clearTimeout(timer); resolve(0); });
+    });
+  }
+
+  it('full auth → key exchange → encrypted CDP → disconnect', async () => {
+    const testToken = generateToken();
+    setAuthToken(testToken);
+    setPsk(TEST_PSK);
+
+    // ── Step 1: WebSocket connect ──
+    const sock = await wsConnect(PORT_015, '/cowork');
+    await sleep(20);
+
+    // ── Step 2: Authenticate ──
+    sock.write(buildTextFrame(JSON.stringify({ type: 'auth', token: testToken })));
+    const authRespText = await readServerFrame(sock, 2000);
+    const authMsg = JSON.parse(authRespText) as Record<string, unknown>;
+    assert.equal(authMsg['type'], 'auth-ok', 'Server should respond with auth-ok');
+
+    // ── Step 3: Key exchange (manually, since performKeyExchange skips auth) ──
+    const extKeyPair = generateEphemeralKeyPair();
+    sock.write(buildTextFrame(JSON.stringify({
+      type: 'key-exchange',
+      publicKey: extKeyPair.publicKeyB64,
+    })));
+
+    const kxRespText = await readServerFrame(sock, 2000);
+    const kxMsg = JSON.parse(kxRespText) as Record<string, unknown>;
+    assert.equal(kxMsg['type'], 'key-exchange');
+    assert.equal(typeof kxMsg['publicKey'], 'string');
+
+    const daemonPubKeyB64 = kxMsg['publicKey'] as string;
+    const sharedSecret = computeSharedSecret(extKeyPair.privateKey, daemonPubKeyB64);
+    const sessionKey = deriveSessionKey(sharedSecret, TEST_PSK, extKeyPair.publicKeyB64, daemonPubKeyB64);
+
+    // ── Step 4: Encrypted hello → hello-ack ──
+    const helloEnv = encryptEnvelope(sessionKey, { type: 'hello', userAgent: 'IntegrationTest/1.0' }, 1);
+    sock.write(buildTextFrame(JSON.stringify(helloEnv)));
+
+    const ackText = await readServerFrame(sock, 2000);
+    const ackEnv = JSON.parse(ackText) as EncryptedEnvelope;
+    assert.equal(ackEnv.type, 'encrypted');
+    assert.equal(ackEnv.seq, 1);
+    const ackMsg = decryptEnvelope(sessionKey, ackEnv) as Record<string, unknown>;
+    assert.equal(ackMsg['type'], 'hello-ack');
+
+    await sleep(20);
+    const status = getCoworkStatus();
+    assert.equal(status.connected, true);
+    assert.equal(status.userAgent, 'IntegrationTest/1.0');
+
+    // ── Step 5: Encrypted CDP roundtrip ──
+    // clientSendSeq=1 (hello), clientRecvSeq=1 (hello-ack)
+    let clientSendSeq = 1;
+    let clientRecvSeq = 1;
+
+    const resultPromise = sendCdpCommand('Runtime.evaluate', { expression: '"integration"' });
+
+    const cdpFrameText = await readServerFrame(sock, 2000);
+    const cdpEnv = JSON.parse(cdpFrameText) as EncryptedEnvelope;
+    assert.equal(cdpEnv.type, 'encrypted');
+    clientRecvSeq += 1;
+    assert.equal(cdpEnv.seq, clientRecvSeq);
+
+    const cdpMsg = decryptEnvelope(sessionKey, cdpEnv) as Record<string, unknown>;
+    assert.equal(cdpMsg['type'], 'cdp');
+    assert.equal(cdpMsg['method'], 'Runtime.evaluate');
+    const cmdId = cdpMsg['id'] as number;
+
+    clientSendSeq += 1;
+    const replyEnv = encryptEnvelope(sessionKey, {
+      type: 'cdp-result',
+      id: cmdId,
+      result: { value: 'integration' },
+    }, clientSendSeq);
+    sock.write(buildTextFrame(JSON.stringify(replyEnv)));
+
+    const result = await resultPromise;
+    assert.deepEqual(result, { value: 'integration' });
+
+    // ── Step 6: Clean disconnect ──
+    await wsClose(sock, 200);
+    await sleep(50);
+    assert.equal(isCoworkConnected(), false, 'Session should be disconnected after clean close');
+  });
+
+  it('token rotation: new token invalidates old', async () => {
+    const tokenA = generateToken();
+    const tokenB = generateToken();
+
+    // ── Phase 1: authenticate successfully with token A ──
+    setAuthToken(tokenA);
+    setPsk(TEST_PSK);
+
+    const sock1 = await wsConnect(PORT_015, '/cowork');
+    await sleep(20);
+
+    sock1.write(buildTextFrame(JSON.stringify({ type: 'auth', token: tokenA })));
+    const authResp1 = JSON.parse(await readServerFrame(sock1, 2000)) as Record<string, unknown>;
+    assert.equal(authResp1['type'], 'auth-ok', 'Token A should authenticate successfully');
+
+    // Disconnect first session
+    await wsClose(sock1, 200);
+    await sleep(50);
+    _resetCoworkBridgeForTesting();
+    await sleep(20);
+
+    // ── Phase 2: rotate token to B, try old token A — should be rejected ──
+    setAuthToken(tokenB);
+    setPsk(TEST_PSK);
+
+    const sock2 = await wsConnect(PORT_015, '/cowork');
+    await sleep(20);
+
+    sock2.write(buildTextFrame(JSON.stringify({ type: 'auth', token: tokenA })));
+
+    // Server must close with code 4000 (auth failed)
+    const closeCode = await waitForCloseCode015(sock2, 2000);
+    assert.equal(closeCode, 4000, 'Old token A should be rejected with close code 4000 after rotation');
+    if (!sock2.destroyed) sock2.destroy();
+    await sleep(50);
+    _resetCoworkBridgeForTesting();
+    await sleep(20);
+
+    // ── Phase 3: new token B should authenticate successfully ──
+    setAuthToken(tokenB);
+    setPsk(TEST_PSK);
+
+    const sock3 = await wsConnect(PORT_015, '/cowork');
+    await sleep(20);
+
+    sock3.write(buildTextFrame(JSON.stringify({ type: 'auth', token: tokenB })));
+    const authResp3 = JSON.parse(await readServerFrame(sock3, 2000)) as Record<string, unknown>;
+    assert.equal(authResp3['type'], 'auth-ok', 'Token B should authenticate after rotation');
+
+    await wsClose(sock3, 200);
+    await sleep(50);
+  });
+});
+
+// ── t-016: Cross-module integration ──────────────────────────
+
+describe('Cross-module integration (t-016)', () => {
+  let bridge: ReturnType<typeof createBridgeServer>;
+  const TEST_PSK = '1'.repeat(64); // distinct PSK for this suite
+
+  beforeEach(async () => {
+    _resetCoworkBridgeForTesting();
+    bridge = createBridgeServer(PORT_016);
+    await bridge.start();
+  });
+
+  afterEach(async () => {
+    shutdownCoworkBridge();
+    await bridge.stop();
+    _resetCoworkBridgeForTesting();
+    await sleep(20);
+  });
+
+  it('crypto interop verified through full encrypted session — 10 roundtrips with correct sequence counters', async () => {
+    setPsk(TEST_PSK);
+
+    const { sock, sessionKey } = await establishEncryptedSession(PORT_016, TEST_PSK);
+
+    // After hello/hello-ack: both sides at sendSeq=1, recvSeq=1
+    // Extension side (client): clientSendSeq=1, clientRecvSeq=1
+    let clientSendSeq = 1;
+    let clientRecvSeq = 1;
+
+    // Send 10 CDP roundtrips, verifying sequence counters increment correctly on each side
+    for (let i = 0; i < 10; i++) {
+      const resultPromise = sendCdpCommand('Runtime.evaluate', { expression: String(i) });
+
+      // Daemon sends encrypted CDP frame: daemon sendSeq increments
+      const frameText = await readServerFrame(sock, 2000);
+      const envelope = JSON.parse(frameText) as EncryptedEnvelope;
+      assert.equal(envelope.type, 'encrypted');
+      clientRecvSeq += 1;
+      assert.equal(envelope.seq, clientRecvSeq,
+        `Roundtrip ${i}: daemon sendSeq should be ${clientRecvSeq}`);
+
+      const inner = decryptEnvelope(sessionKey, envelope) as Record<string, unknown>;
+      assert.equal(inner['type'], 'cdp');
+      assert.equal(inner['method'], 'Runtime.evaluate');
+      const cmdId = inner['id'] as number;
+
+      // Extension replies with next clientSendSeq
+      clientSendSeq += 1;
+      const replyEnv = encryptEnvelope(sessionKey, {
+        type: 'cdp-result',
+        id: cmdId,
+        result: { index: i },
+      }, clientSendSeq);
+      sock.write(buildTextFrame(JSON.stringify(replyEnv)));
+
+      const result = await resultPromise as Record<string, unknown>;
+      assert.deepEqual(result, { index: i }, `Roundtrip ${i}: result mismatch`);
+    }
+
+    // After 10 roundtrips: clientSendSeq=11, clientRecvSeq=11
+    assert.equal(clientSendSeq, 11, 'Client should have sent 11 messages total (hello + 10 replies)');
+    assert.equal(clientRecvSeq, 11, 'Client should have received 11 messages total (hello-ack + 10 CDP commands)');
+
+    // Session should still be alive
+    assert.ok(isCoworkConnected(), 'Session should remain alive after 10 roundtrips');
+
+    sock.destroy();
+  });
+
+  it('session survives rapid message exchange — 5 messages without waiting for responses', async () => {
+    setPsk(TEST_PSK);
+
+    const { sock, sessionKey } = await establishEncryptedSession(PORT_016, TEST_PSK);
+
+    // clientSendSeq=1 (hello sent), clientRecvSeq=1 (hello-ack received)
+    let clientSendSeq = 1;
+
+    // Collect all incoming frames via a queue so we don't miss frames sent before
+    // the next readServerFrame listener is installed.
+    const frameQueue: string[] = [];
+    let frameWaiter: ((text: string) => void) | null = null;
+
+    function onSocketData(chunk: Buffer) {
+      let buf = chunk;
+      while (true) {
+        const parsed = parseServerFrame(buf);
+        if (!parsed) break;
+        if (frameWaiter) {
+          const w = frameWaiter;
+          frameWaiter = null;
+          w(parsed.text);
+        } else {
+          frameQueue.push(parsed.text);
+        }
+        buf = buf.subarray(parsed.consumed);
+      }
+    }
+    sock.on('data', onSocketData);
+
+    function nextFrame(timeoutMs = 2000): Promise<string> {
+      if (frameQueue.length > 0) return Promise.resolve(frameQueue.shift()!);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          frameWaiter = null;
+          reject(new Error('nextFrame timeout'));
+        }, timeoutMs);
+        frameWaiter = (text) => {
+          clearTimeout(timer);
+          resolve(text);
+        };
+      });
+    }
+
+    // Start 5 CDP commands from the daemon without waiting for responses in between
+    const resultPromises = Array.from({ length: 5 }, (_, i) =>
+      sendCdpCommand('Runtime.evaluate', { expression: String(i * i) }),
+    );
+
+    // Read all 5 encrypted CDP frames and reply to each
+    for (let i = 0; i < 5; i++) {
+      const frameText = await nextFrame(2000);
+      const envelope = JSON.parse(frameText) as EncryptedEnvelope;
+
+      assert.equal(envelope.type, 'encrypted',
+        `Frame ${i}: should be encrypted`);
+
+      const inner = decryptEnvelope(sessionKey, envelope) as Record<string, unknown>;
+      assert.equal(inner['type'], 'cdp',
+        `Frame ${i}: inner message should be cdp`);
+      const cmdId = inner['id'] as number;
+
+      // Reply to each in order
+      clientSendSeq += 1;
+      const replyEnv = encryptEnvelope(sessionKey, {
+        type: 'cdp-result',
+        id: cmdId,
+        result: { ok: true, frame: i },
+      }, clientSendSeq);
+      sock.write(buildTextFrame(JSON.stringify(replyEnv)));
+    }
+
+    // All promises should resolve without sequence violations
+    const results = await Promise.all(resultPromises);
+    assert.equal(results.length, 5, 'All 5 commands should resolve');
+    for (const r of results) {
+      assert.equal((r as Record<string, unknown>)['ok'], true,
+        'Each result should have ok=true');
+    }
+
+    // Session must still be alive — no crashes, no 4003s
+    sock.removeListener('data', onSocketData);
+    assert.ok(isCoworkConnected(), 'Session should still be connected after rapid exchange');
 
     sock.destroy();
   });
