@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>KithKit Chrome Connect</title>
+  <style>
+    /* ------------------------------------------------------------------ */
+    /* Reset & base                                                         */
+    /* ------------------------------------------------------------------ */
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      width: 280px;
+      min-height: 200px;
+      background: #1a1a2e;
+      color: #e0e0f0;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      font-size: 13px;
+      line-height: 1.4;
+      padding: 16px;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Header                                                               */
+    /* ------------------------------------------------------------------ */
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+
+    .header-logo {
+      width: 28px;
+      height: 28px;
+      background: #00d4aa;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 14px;
+      color: #1a1a2e;
+      flex-shrink: 0;
+    }
+
+    .header-title {
+      font-weight: 600;
+      font-size: 14px;
+      color: #ffffff;
+    }
+
+    .header-subtitle {
+      font-size: 11px;
+      color: #8888aa;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Status row                                                           */
+    /* ------------------------------------------------------------------ */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: #12122a;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      margin-bottom: 14px;
+    }
+
+    .status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      transition: background 0.3s ease;
+    }
+
+    .status-dot.disconnected {
+      background: #555577;
+    }
+
+    .status-dot.connecting {
+      background: #f0a500;
+      animation: pulse 1s ease-in-out infinite;
+    }
+
+    .status-dot.connected {
+      background: #00d4aa;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.5; transform: scale(0.85); }
+    }
+
+    .status-text {
+      font-size: 12px;
+      color: #c0c0dd;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Config fields                                                        */
+    /* ------------------------------------------------------------------ */
+    .config-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .field-host {
+      flex: 3;
+    }
+
+    .field-port {
+      flex: 2;
+    }
+
+    label {
+      font-size: 11px;
+      color: #8888aa;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    input[type="text"],
+    input[type="number"] {
+      background: #12122a;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      color: #e0e0f0;
+      font-size: 13px;
+      padding: 6px 8px;
+      width: 100%;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+
+    input[type="text"]:focus,
+    input[type="number"]:focus {
+      border-color: #00d4aa;
+    }
+
+    input:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Connect / Disconnect button                                          */
+    /* ------------------------------------------------------------------ */
+    .btn-connect {
+      width: 100%;
+      padding: 9px 0;
+      border: none;
+      border-radius: 7px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s, opacity 0.2s;
+      letter-spacing: 0.02em;
+    }
+
+    .btn-connect.state-disconnected {
+      background: #00d4aa;
+      color: #1a1a2e;
+    }
+
+    .btn-connect.state-disconnected:hover {
+      background: #00efc0;
+    }
+
+    .btn-connect.state-connecting {
+      background: #f0a500;
+      color: #1a1a2e;
+      cursor: not-allowed;
+      opacity: 0.8;
+    }
+
+    .btn-connect.state-connected {
+      background: transparent;
+      color: #ff5577;
+      border: 1px solid #ff5577;
+    }
+
+    .btn-connect.state-connected:hover {
+      background: rgba(255, 85, 119, 0.1);
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Tab info panel                                                       */
+    /* ------------------------------------------------------------------ */
+    .tab-info {
+      margin-top: 12px;
+      padding: 10px 12px;
+      background: #12122a;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+    }
+
+    .tab-info-label {
+      font-size: 10px;
+      color: #8888aa;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+
+    .tab-title {
+      font-size: 12px;
+      color: #e0e0f0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-bottom: 3px;
+    }
+
+    .tab-url {
+      font-size: 11px;
+      color: #6666aa;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Error area                                                           */
+    /* ------------------------------------------------------------------ */
+    .error-area {
+      margin-top: 10px;
+      padding: 8px 10px;
+      background: rgba(255, 85, 119, 0.12);
+      border: 1px solid rgba(255, 85, 119, 0.35);
+      border-radius: 6px;
+      font-size: 11px;
+      color: #ff8899;
+      display: none;
+    }
+
+    .error-area.visible {
+      display: block;
+    }
+
+    /* ------------------------------------------------------------------ */
+    /* Hidden utility                                                       */
+    /* ------------------------------------------------------------------ */
+    .hidden {
+      display: none !important;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Header -->
+  <div class="header">
+    <div class="header-logo">K</div>
+    <div>
+      <div class="header-title">KithKit Connect</div>
+      <div class="header-subtitle">Chrome debugger bridge</div>
+    </div>
+  </div>
+
+  <!-- Status row -->
+  <div class="status-row">
+    <div class="status-dot disconnected" id="statusDot"></div>
+    <span class="status-text" id="statusText">Disconnected</span>
+  </div>
+
+  <!-- Config: host + port -->
+  <div class="config-row">
+    <div class="field field-host">
+      <label for="hostInput">Host</label>
+      <input type="text" id="hostInput" value="localhost" placeholder="localhost" spellcheck="false" />
+    </div>
+    <div class="field field-port">
+      <label for="portInput">Port</label>
+      <input type="number" id="portInput" value="3847" placeholder="3847" min="1" max="65535" />
+    </div>
+  </div>
+
+  <!-- Connect / Disconnect button -->
+  <button class="btn-connect state-disconnected" id="connectBtn">Connect</button>
+
+  <!-- Attached tab info (visible when connected) -->
+  <div class="tab-info hidden" id="tabInfo">
+    <div class="tab-info-label">Active Tab</div>
+    <div class="tab-title" id="tabTitle">—</div>
+    <div class="tab-url" id="tabUrl">—</div>
+  </div>
+
+  <!-- Error area -->
+  <div class="error-area" id="errorArea"></div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
