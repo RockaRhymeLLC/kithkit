@@ -20,19 +20,20 @@ const log = createLogger('tmux');
 const TMUX_BIN = '/opt/homebrew/bin/tmux';
 const TMUX_SOCKET = `/private/tmp/tmux-${process.getuid?.() ?? 501}/default`;
 
-let commsSession = 'agent'; // Default, overridden by config
+const COMMS_SESSION = 'comms1';
+const ORCH_SESSION = 'orch1';
+
 let projectDir = process.cwd();
 
-export function configure(opts: { commsSession: string; projectDir: string }): void {
-  commsSession = opts.commsSession;
+export function configure(opts: { projectDir: string }): void {
   projectDir = opts.projectDir;
 }
 
 // ── Session name mapping ────────────────────────────────────
 
 function resolveSession(agentId: string): string | null {
-  if (agentId === 'comms') return commsSession;
-  if (agentId === 'orchestrator') return `${commsSession}-orch`;
+  if (agentId === 'comms') return COMMS_SESSION;
+  if (agentId === 'orchestrator') return ORCH_SESSION;
   return null; // Workers don't have tmux sessions
 }
 
@@ -386,5 +387,5 @@ export function listSessions(): string[] {
 
 // ── Testing ─────────────────────────────────────────────────
 
-export function _getCommsSession(): string { return commsSession; }
-export function _getOrchestratorSession(): string { return resolveSession('orchestrator')!; }
+export function _getCommsSession(): string { return COMMS_SESSION; }
+export function _getOrchestratorSession(): string { return ORCH_SESSION; }

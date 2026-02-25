@@ -6,7 +6,11 @@
 
 import type http from 'node:http';
 import { routeMessage } from '../comms/channel-router.js';
+import { sendMessage } from '../agents/message-router.js';
+import { createLogger } from '../core/logger.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
+
+const log = createLogger('api-send');
 
 // ── Route handler ────────────────────────────────────────────
 
@@ -35,6 +39,9 @@ export async function handleSendRoute(
         channels,
       );
 
+      // Notify comms about successful external deliveries so it has context when Dave replies
+      notifyCommsOfExternalSend(results, body.message as string);
+
       json(res, 200, withTimestamp({ results }));
       return true;
     }
@@ -52,5 +59,41 @@ export async function handleSendRoute(
       }
     }
     throw err;
+  }
+}
+
+// ── Comms notification ──────────────────────────────────────
+
+const MAX_PREVIEW_LENGTH = 120;
+
+/**
+ * After a successful external channel delivery, post a brief status message
+ * to comms so it has context when Dave replies about the content.
+ */
+function notifyCommsOfExternalSend(results: Record<string, boolean>, message: string): void {
+  const delivered = Object.entries(results)
+    .filter(([, ok]) => ok)
+    .map(([ch]) => ch);
+
+  if (delivered.length === 0) return;
+
+  const preview = message.length > MAX_PREVIEW_LENGTH
+    ? message.slice(0, MAX_PREVIEW_LENGTH) + '…'
+    : message;
+
+  const channelList = delivered.join(', ');
+  const body = `[daemon sent to ${channelList}] ${preview}`;
+
+  try {
+    sendMessage({
+      from: 'daemon',
+      to: 'comms',
+      type: 'status',
+      body,
+    });
+  } catch (err) {
+    log.warn('Failed to notify comms of external send', {
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }

@@ -10,8 +10,8 @@
  *   Persistent: idle ↔ busy, stopped, crashed
  */
 
-import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
 import {
   spawnWorker as sdkSpawn,
   killWorker as sdkKill,
@@ -57,6 +57,8 @@ export interface JobRecord {
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+  spawned_by: string | null;
+  spawner_notified_at: string | null;
 }
 
 export interface SpawnRequest {
@@ -65,6 +67,8 @@ export interface SpawnRequest {
   cwd?: string;
   timeoutMs?: number;
   maxBudgetUsd?: number;
+  /** Which persistent agent spawned this worker ('comms' | 'orchestrator'). */
+  spawned_by?: string;
 }
 
 // ── State ────────────────────────────────────────────────────
@@ -100,7 +104,16 @@ function countRunningAgents(): number {
   return rows[0]?.count ?? 0;
 }
 
-// ── Session Directory Cleanup ─────────────────────────────────
+// ── Session Directories ─────────────────────────────────────
+
+/**
+ * Create a session directory for an agent. Returns the absolute path.
+ */
+export function createSessionDir(agentId: string): string {
+  const dir = resolveProjectPath('.claude', 'sessions', agentId);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
 
 /**
  * Clean up session directories older than maxAgeDays.
@@ -138,6 +151,10 @@ export function spawnWorkerJob(req: SpawnRequest): { jobId: string; status: JobS
   const jobId = randomUUID();
   const ts = now();
 
+  // Create session directory for artifacts
+  const sessionDir = createSessionDir(jobId);
+  req.prompt = `Session directory (for artifacts if needed): ${sessionDir}\n\n${req.prompt}`;
+
   // Insert agent record
   exec(
     `INSERT INTO agents (id, type, profile, status, created_at, updated_at)
@@ -147,9 +164,9 @@ export function spawnWorkerJob(req: SpawnRequest): { jobId: string; status: JobS
 
   // Insert job record
   exec(
-    `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, created_at)
-     VALUES (?, ?, ?, ?, 'queued', ?)`,
-    jobId, jobId, req.profile.name, req.prompt, ts,
+    `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, spawned_by, created_at)
+     VALUES (?, ?, ?, ?, 'queued', ?, ?)`,
+    jobId, jobId, req.profile.name, req.prompt, req.spawned_by ?? null, ts,
   );
 
   // Try to start immediately or queue
@@ -170,7 +187,7 @@ export function spawnWorkerJob(req: SpawnRequest): { jobId: string; status: JobS
 function startWorker(jobId: string, req: SpawnRequest): void {
   const ts = now();
 
-  // Build SDK spawn options
+  // Build SDK spawn options — profile budget is the default, caller can override
   const sdkOpts: SdkSpawnOptions = {
     prompt: req.prompt,
     profile: {
@@ -181,11 +198,12 @@ function startWorker(jobId: string, req: SpawnRequest): void {
       disallowedTools: req.profile.disallowedTools.length > 0 ? req.profile.disallowedTools : undefined,
       permissionMode: req.profile.permissionMode,
       maxTurns: req.profile.maxTurns,
+      effort: req.profile.effort || undefined,
       body: req.profile.body || undefined,
     },
     cwd: req.cwd,
     timeoutMs: req.timeoutMs,
-    maxBudgetUsd: req.maxBudgetUsd,
+    maxBudgetUsd: req.maxBudgetUsd ?? req.profile.maxBudgetUsd ?? undefined,
   };
 
   // SDK adapter assigns its own internal ID
