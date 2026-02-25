@@ -2,22 +2,37 @@
  * KithKit Chrome Connect — Background Service Worker
  *
  * This service worker is the core bridge between:
- *   - The KithKit daemon (via WebSocket at ws://<host>:<port>/cowork)
+ *   - The KithKit daemon (via encrypted WebSocket at ws://<host>:<port>/cowork)
  *   - The active Chrome tab (via chrome.debugger / CDP)
  *
- * Message protocol (all JSON):
- *   Client → Daemon  { type: "hello", userAgent: string }
- *   Daemon → Client  { type: "cdp", id, method, params }
- *   Client → Daemon  { type: "cdp-result", id, result }
- *   Client → Daemon  { type: "cdp-error", id, error }
- *   Client → Daemon  { type: "cdp-event", method, params }
- *   Daemon → Client  { type: "list-tabs", id }
- *   Client → Daemon  { type: "tab-list", id, tabs }
- *   Daemon → Client  { type: "switch-tab", id, tabId }
- *   Client → Daemon  { type: "tab-switched", id, tabId }
- *   Client → Daemon  { type: "tab-changed", tabId, title, url }
- *   Either direction { type: "ping" } / { type: "pong" }
+ * Encrypted message protocol:
+ *   Phase 1 — Auth:
+ *     Client → Daemon  { type: "auth", token }
+ *     Daemon → Client  { type: "auth-ok" }
+ *
+ *   Phase 2 — Key Exchange:
+ *     Client → Daemon  { type: "key-exchange", publicKey: <base64> }
+ *     Daemon → Client  { type: "key-exchange", publicKey: <base64> }
+ *
+ *   Phase 3 — Encrypted Hello:
+ *     Client → Daemon  encrypted{ type: "hello", userAgent }  (seq=1)
+ *     Daemon → Client  encrypted{ type: "hello-ack" }         (seq=1)
+ *
+ *   Phase 4 — Encrypted session (all messages wrapped in encrypted envelopes):
+ *     Daemon → Client  encrypted{ type: "cdp", id, method, params }
+ *     Client → Daemon  encrypted{ type: "cdp-result", id, result }
+ *     Client → Daemon  encrypted{ type: "cdp-error", id, error }
+ *     Client → Daemon  encrypted{ type: "cdp-event", method, params }
+ *     Daemon → Client  encrypted{ type: "list-tabs", id }
+ *     Client → Daemon  encrypted{ type: "tab-list", id, tabs }
+ *     Daemon → Client  encrypted{ type: "switch-tab", id, tabId }
+ *     Client → Daemon  encrypted{ type: "tab-switched", id, tabId }
+ *     Client → Daemon  encrypted{ type: "tab-changed", tabId, title, url }
+ *     Either direction encrypted{ type: "ping" } / encrypted{ type: "pong" }
  */
+
+// Import crypto module — sets globalThis.KKitCrypto
+importScripts('crypto.js');
 
 // ---------------------------------------------------------------------------
 // State
@@ -40,15 +55,66 @@ const DEFAULT_HOST = 'localhost';
 const DEFAULT_PORT = '3847';
 
 // ---------------------------------------------------------------------------
+// Crypto State
+// ---------------------------------------------------------------------------
+
+/** @type {{ publicKey: CryptoKey, privateKey: CryptoKey }|null} */
+let keyPair = null;
+
+/** @type {CryptoKey|null} — AES-256-GCM session key */
+let sessionKey = null;
+
+/** Send sequence counter */
+let sendSeq = 0;
+
+/** Receive sequence counter */
+let recvSeq = 0;
+
+/** Daemon's base64 public key (received during key exchange) */
+let daemonPubKeyB64 = null;
+
+/** PSK as hex string (loaded from chrome.storage.local) */
+let pskHex = null;
+
+/** Auth token (loaded from chrome.storage.session) */
+let authToken = null;
+
+// ---------------------------------------------------------------------------
 // Alarm name for keepalive
 // ---------------------------------------------------------------------------
 const KEEPALIVE_ALARM = 'kkit-keepalive';
 const HEARTBEAT_INTERVAL_SECONDS = 30;
 
 // ---------------------------------------------------------------------------
-// Utility: send over WebSocket if open
+// Clear crypto state on disconnect
 // ---------------------------------------------------------------------------
-function wsSend(obj) {
+function clearCryptoState() {
+  keyPair = null;
+  sessionKey = null;
+  sendSeq = 0;
+  recvSeq = 0;
+  daemonPubKeyB64 = null;
+}
+
+// ---------------------------------------------------------------------------
+// Utility: send an encrypted envelope over WebSocket
+// ---------------------------------------------------------------------------
+async function encryptedSend(obj) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  if (!sessionKey) {
+    // Fallback to plaintext if no session key yet (should not normally happen)
+    ws.send(JSON.stringify(obj));
+    return;
+  }
+  sendSeq += 1;
+  const envelope = await KKitCrypto.encrypt(sessionKey, JSON.stringify(obj), sendSeq);
+  ws.send(JSON.stringify(envelope));
+}
+
+// ---------------------------------------------------------------------------
+// Utility: send plaintext (used only during handshake phases)
+// ---------------------------------------------------------------------------
+function wsSendPlaintext(obj) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(obj));
   }
@@ -102,7 +168,7 @@ async function attachTab(tabId) {
     broadcastState();
 
     // Notify daemon of the new tab context
-    wsSend({ type: 'tab-changed', tabId, title: attachedTarget.title, url: attachedTarget.url });
+    encryptedSend({ type: 'tab-changed', tabId, title: attachedTarget.title, url: attachedTarget.url });
   } catch (err) {
     console.error('[kkit] Failed to attach debugger to tab', tabId, err);
     // If attach fails, try to notify popup
@@ -141,7 +207,7 @@ async function detachAll() {
 }
 
 // ---------------------------------------------------------------------------
-// WebSocket: connect to daemon
+// WebSocket: connect to daemon with encrypted handshake
 // ---------------------------------------------------------------------------
 async function connectToDaemon(host, port) {
   if (ws) {
@@ -152,6 +218,16 @@ async function connectToDaemon(host, port) {
   connState = 'connecting';
   setBadge('connecting');
   broadcastState();
+
+  // Load credentials
+  try {
+    const sessionData = await chrome.storage.session.get(['token']);
+    authToken = sessionData.token || null;
+    const localData = await chrome.storage.local.get(['psk', 'host', 'port']);
+    pskHex = localData.psk || null;
+  } catch (err) {
+    console.warn('[kkit] Failed to load credentials from storage', err);
+  }
 
   const url = `ws://${host}:${port}/cowork`;
   console.log('[kkit] Connecting to', url);
@@ -168,26 +244,24 @@ async function connectToDaemon(host, port) {
   }
 
   ws = socket;
+  clearCryptoState();
 
   socket.addEventListener('open', async () => {
     if (socket !== ws) return; // stale socket
-    console.log('[kkit] WebSocket connected');
-    connState = 'connected';
-    setBadge('connected');
+    console.log('[kkit] WebSocket connected — starting handshake');
 
-    // Send hello
-    wsSend({ type: 'hello', userAgent: navigator.userAgent });
-
-    // Attach debugger to currently active tab
-    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (activeTab) {
-      await attachTab(activeTab.id);
+    try {
+      await performHandshake(socket);
+    } catch (err) {
+      console.error('[kkit] Handshake failed', err);
+      if (socket === ws) {
+        socket.close();
+        ws = null;
+        connState = 'disconnected';
+        setBadge('disconnected');
+        broadcastState();
+      }
     }
-
-    // Start keepalive alarm
-    chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: HEARTBEAT_INTERVAL_SECONDS / 60 });
-
-    broadcastState();
   });
 
   socket.addEventListener('message', (event) => {
@@ -210,6 +284,115 @@ async function connectToDaemon(host, port) {
 }
 
 // ---------------------------------------------------------------------------
+// Handshake: auth + key exchange + encrypted hello
+// ---------------------------------------------------------------------------
+async function performHandshake(socket) {
+  // Phase 1: Auth (only if token is configured)
+  if (authToken) {
+    wsSendPlaintext({ type: 'auth', token: authToken });
+
+    const authResponse = await waitForMessage(socket, 5000);
+    if (!authResponse || authResponse.type !== 'auth-ok') {
+      throw new Error('Auth failed: expected auth-ok');
+    }
+    console.log('[kkit] Auth OK');
+  }
+
+  // Phase 2: Key Exchange (only if PSK is configured)
+  if (pskHex) {
+    keyPair = await KKitCrypto.generateKeyPair();
+    const extPubKeyB64 = await KKitCrypto.exportPublicKey(keyPair);
+
+    wsSendPlaintext({ type: 'key-exchange', publicKey: extPubKeyB64 });
+
+    const keyResponse = await waitForMessage(socket, 5000);
+    if (!keyResponse || keyResponse.type !== 'key-exchange' || typeof keyResponse.publicKey !== 'string') {
+      throw new Error('Key exchange failed: expected key-exchange response');
+    }
+
+    daemonPubKeyB64 = keyResponse.publicKey;
+    console.log('[kkit] Key exchange received daemon pubkey');
+
+    // Derive session key
+    const sharedBits = await KKitCrypto.deriveBits(keyPair.privateKey, daemonPubKeyB64);
+    sessionKey = await KKitCrypto.deriveSessionKey(sharedBits, pskHex, extPubKeyB64, daemonPubKeyB64);
+    console.log('[kkit] Session key derived');
+
+    // Phase 3: Send encrypted hello (seq=1)
+    sendSeq = 0; // reset before first encrypted message
+    await encryptedSend({ type: 'hello', userAgent: navigator.userAgent });
+
+    // Wait for encrypted hello-ack
+    const ackRaw = await waitForMessage(socket, 5000);
+    if (!ackRaw || ackRaw.type !== 'encrypted') {
+      throw new Error('Hello handshake failed: expected encrypted hello-ack');
+    }
+
+    // Validate and decrypt hello-ack
+    const expectedAckSeq = recvSeq + 1;
+    if (ackRaw.seq !== expectedAckSeq) {
+      throw new Error(`Hello handshake failed: sequence violation (got ${ackRaw.seq}, expected ${expectedAckSeq})`);
+    }
+    recvSeq = ackRaw.seq;
+
+    const ackText = await KKitCrypto.decrypt(sessionKey, ackRaw);
+    const ack = JSON.parse(ackText);
+    if (!ack || ack.type !== 'hello-ack') {
+      throw new Error(`Hello handshake failed: expected hello-ack, got ${ack && ack.type}`);
+    }
+
+    console.log('[kkit] Encrypted session established');
+  } else {
+    // No PSK — send plaintext hello
+    wsSendPlaintext({ type: 'hello', userAgent: navigator.userAgent });
+    console.log('[kkit] Plaintext hello sent (no PSK)');
+  }
+
+  // Handshake complete — mark connected
+  if (socket !== ws) return; // socket was replaced during handshake
+
+  connState = 'connected';
+  setBadge('connected');
+
+  // Attach debugger to currently active tab
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (activeTab) {
+    await attachTab(activeTab.id);
+  }
+
+  // Start keepalive alarm
+  chrome.alarms.create(KEEPALIVE_ALARM, { periodInMinutes: HEARTBEAT_INTERVAL_SECONDS / 60 });
+
+  broadcastState();
+}
+
+// ---------------------------------------------------------------------------
+// Wait for a single message from socket (for handshake phases)
+// The message listener in connectToDaemon calls handleDaemonMessage which
+// won't process handshake messages, so we use a one-time event listener here.
+// ---------------------------------------------------------------------------
+function waitForMessage(socket, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.removeEventListener('message', onMessage);
+      reject(new Error('waitForMessage timeout'));
+    }, timeoutMs);
+
+    const onMessage = (event) => {
+      clearTimeout(timer);
+      socket.removeEventListener('message', onMessage);
+      try {
+        resolve(JSON.parse(event.data));
+      } catch (err) {
+        reject(new Error('waitForMessage: invalid JSON'));
+      }
+    };
+
+    socket.addEventListener('message', onMessage);
+  });
+}
+
+// ---------------------------------------------------------------------------
 // WebSocket: disconnect
 // ---------------------------------------------------------------------------
 async function disconnectFromDaemon() {
@@ -224,15 +407,20 @@ async function handleDisconnect() {
   connState = 'disconnected';
   setBadge('disconnected');
   chrome.alarms.clear(KEEPALIVE_ALARM);
+  clearCryptoState();
   await detachAll();
   broadcastState();
   console.log('[kkit] Disconnected');
 }
 
 // ---------------------------------------------------------------------------
-// Handle incoming daemon message
+// Handle incoming daemon message (post-handshake)
 // ---------------------------------------------------------------------------
 async function handleDaemonMessage(raw) {
+  // During handshake, messages are handled by waitForMessage — ignore them here.
+  // After handshake (connState === 'connected'), all messages are encrypted.
+  if (connState !== 'connected') return;
+
   let msg;
   try {
     msg = JSON.parse(raw);
@@ -240,6 +428,46 @@ async function handleDaemonMessage(raw) {
     console.warn('[kkit] Received non-JSON message', raw);
     return;
   }
+
+  // If we have a session key, all messages must be encrypted envelopes
+  if (sessionKey) {
+    if (msg.type !== 'encrypted') {
+      console.warn('[kkit] Expected encrypted envelope, got plaintext type:', msg.type);
+      return;
+    }
+
+    // Validate sequence
+    const expectedSeq = recvSeq + 1;
+    if (msg.seq !== expectedSeq) {
+      console.error('[kkit] Sequence violation: got', msg.seq, 'expected', expectedSeq);
+      ws && ws.close(4003, 'Sequence violation');
+      return;
+    }
+    recvSeq = msg.seq;
+
+    // Decrypt
+    let inner;
+    try {
+      const plaintext = await KKitCrypto.decrypt(sessionKey, msg);
+      inner = JSON.parse(plaintext);
+    } catch (err) {
+      console.error('[kkit] Decryption failed', err);
+      ws && ws.close(4002, 'Decryption failed');
+      return;
+    }
+
+    await handleInnerMessage(inner);
+  } else {
+    // No session key — plaintext messages
+    await handleInnerMessage(msg);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Handle decrypted (or plaintext) inner message
+// ---------------------------------------------------------------------------
+async function handleInnerMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
 
   switch (msg.type) {
     // -------------------------------------------------------------------
@@ -249,16 +477,16 @@ async function handleDaemonMessage(raw) {
       const { id, method, params } = msg;
 
       if (!attachedTarget) {
-        wsSend({ type: 'cdp-error', id, error: { code: -32000, message: 'No tab attached' } });
+        await encryptedSend({ type: 'cdp-error', id, error: { code: -32000, message: 'No tab attached' } });
         return;
       }
 
       const target = { tabId: attachedTarget.tabId };
       try {
         const result = await chrome.debugger.sendCommand(target, method, params || {});
-        wsSend({ type: 'cdp-result', id, result });
+        await encryptedSend({ type: 'cdp-result', id, result });
       } catch (err) {
-        wsSend({
+        await encryptedSend({
           type: 'cdp-error',
           id,
           error: { code: -32000, message: err.message || String(err) },
@@ -280,7 +508,7 @@ async function handleDaemonMessage(raw) {
         active: t.active,
         windowId: t.windowId,
       }));
-      wsSend({ type: 'tab-list', id, tabs: tabList });
+      await encryptedSend({ type: 'tab-list', id, tabs: tabList });
       break;
     }
 
@@ -299,9 +527,9 @@ async function handleDaemonMessage(raw) {
       try {
         await chrome.tabs.update(tabId, { active: true });
         await attachTab(tabId);
-        wsSend({ type: 'tab-switched', id, tabId });
+        await encryptedSend({ type: 'tab-switched', id, tabId });
       } catch (err) {
-        wsSend({
+        await encryptedSend({
           type: 'cdp-error',
           id,
           error: { code: -32001, message: `switch-tab failed: ${err.message}` },
@@ -314,7 +542,7 @@ async function handleDaemonMessage(raw) {
     // Keepalive pong
     // -------------------------------------------------------------------
     case 'ping':
-      wsSend({ type: 'pong' });
+      await encryptedSend({ type: 'pong' });
       break;
 
     case 'pong':
@@ -331,7 +559,7 @@ async function handleDaemonMessage(raw) {
 // ---------------------------------------------------------------------------
 chrome.debugger.onEvent.addListener((source, method, params) => {
   if (connState !== 'connected') return;
-  wsSend({
+  encryptedSend({
     type: 'cdp-event',
     method,
     params: params || {},
@@ -352,7 +580,7 @@ chrome.debugger.onDetach.addListener((source, reason) => {
   }
 
   // Notify daemon
-  wsSend({ type: 'tab-changed', tabId: null, title: null, url: null });
+  encryptedSend({ type: 'tab-changed', tabId: null, title: null, url: null });
   broadcastState();
 });
 
@@ -403,7 +631,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   attachedTarget.title = tab.title || attachedTarget.title;
   attachedTarget.url = tab.url || attachedTarget.url;
 
-  wsSend({ type: 'tab-changed', tabId, title: attachedTarget.title, url: attachedTarget.url });
+  encryptedSend({ type: 'tab-changed', tabId, title: attachedTarget.title, url: attachedTarget.url });
   broadcastState();
 });
 
@@ -413,7 +641,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== KEEPALIVE_ALARM) return;
   if (connState === 'connected') {
-    wsSend({ type: 'ping' });
+    encryptedSend({ type: 'ping' });
   }
 });
 
@@ -433,9 +661,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     // Popup requests connect
     // -------------------------------------------------------------------
     case 'connect': {
-      const { host, port } = message;
-      // Save config
-      chrome.storage.local.set({ host, port });
+      const { host, port, token, psk } = message;
+      // Save config and credentials
+      chrome.storage.local.set({ host, port, psk: psk || null });
+      if (token) {
+        chrome.storage.session.set({ token });
+      } else {
+        chrome.storage.session.remove('token');
+      }
       // Async connect — respond immediately
       connectToDaemon(host, port);
       sendResponse({ ok: true });
