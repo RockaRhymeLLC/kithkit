@@ -44,6 +44,11 @@ import { initVoice, stopVoice } from './voice/index.js';
 import { registerBmoTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
 import { enableVectorSearch } from '../api/memory.js';
+import {
+  initCoworkBridge,
+  shutdownCoworkBridge,
+  handleCoworkRoute,
+} from './cowork-bridge.js';
 
 const log = createLogger('bmo-extension');
 
@@ -301,6 +306,9 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Enable vector search (sqlite-vec + ONNX embeddings)
   enableVectorSearch();
 
+  // Initialize cowork WebSocket bridge (Chrome extension relay)
+  initCoworkBridge(_server);
+
   // Initialize agent-to-agent comms (LAN + P2P SDK)
   initAgentComms(_config);
 
@@ -328,6 +336,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   registerRoute('/agent/status', handleAgentStatusEndpoint);
   registerRoute('/agent/extended-status', handleExtendedStatus);
   registerRoute('/api/context', handleContextApi);
+  registerRoute('/api/cowork/*', handleCoworkRoute);
 
   // Set up scheduler with in-process handlers
   const schedulerConfig = config.scheduler?.tasks ?? [];
@@ -375,6 +384,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 }
 
 async function onShutdown(): Promise<void> {
+  shutdownCoworkBridge();
   stopVoice();
   await stopNetworkSDK();
   stopAgentComms();
