@@ -154,15 +154,11 @@ describe('buildOrchestratorWrapperScript — task extraction logic', () => {
 // ── Session name helpers ──────────────────────────────────────
 
 describe('Session name helpers', () => {
-  it('_getCommsSession returns default session name', () => {
-    const session = _getCommsSession();
-    assert.equal(typeof session, 'string');
-    assert.ok(session.length > 0);
+  it('_getCommsSession returns the generic comms session name', () => {
+    assert.equal(_getCommsSession(), 'commsagent');
   });
 
-  it('_getOrchestratorSession returns comms session with -orch suffix', () => {
-    const comms = _getCommsSession();
-    const orch = _getOrchestratorSession();
-    assert.equal(orch, `${comms}-orch`);
+  it('_getOrchestratorSession returns the generic orchestrator session name', () => {
+    assert.equal(_getOrchestratorSession(), 'orchagent');
   });
 });
