@@ -8,6 +8,7 @@
  */
 
 import type http from 'node:http';
+import fs from 'node:fs';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import {
   spawnOrchestratorSession,
@@ -18,6 +19,7 @@ import {
 import { sendMessage } from '../agents/message-router.js';
 import { createSessionDir } from '../agents/lifecycle.js';
 import { exec, query, update } from '../core/db.js';
+import { resolveProjectPath } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
 import { logActivity } from './activity.js';
 import { isVectorSearchEnabled } from './memory.js';
@@ -213,6 +215,15 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '- If the daemon sends you a shutdown nudge (idle timeout), wrap up gracefully: send any unsent context to comms, then exit',
     '- Do not interact with the human directly — only comms talks to humans',
     '',
+    '## Worker Delegation (IMPORTANT)',
+    'You are an ORCHESTRATOR, not a worker. Your primary job is to decompose tasks and delegate to workers.',
+    '- For multi-step tasks, identify which steps can run in parallel and spawn workers for them',
+    '- Use workers (POST /api/agents/spawn) for: code changes, research, testing, file exploration',
+    '- Do coordination work yourself: task decomposition, result synthesis, dependency ordering, reporting to comms',
+    '- Only do implementation work directly when it is a single small task where spawning a worker adds overhead without benefit',
+    '- Prefer spawning 2-3 workers in parallel over doing 2-3 tasks sequentially yourself',
+    '- Available profiles: research (read-only exploration), coding (implementation), testing (test running)',
+    '',
     'Context management:',
     '- Monitor your context usage. Accuracy degrades above 60%. At 50% used, self-restart:',
     '  1. Finish any in-flight worker coordination',
@@ -263,6 +274,30 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
 
   if (context) {
     parts.push('', `Context: ${context}`);
+  }
+
+  // Load previous orchestrator state if it exists (enables context continuity)
+  try {
+    const stateFile = resolveProjectPath('.claude', 'state', 'orchestrator-state.md');
+    if (fs.existsSync(stateFile)) {
+      const stateContent = fs.readFileSync(stateFile, 'utf8').trim();
+      if (stateContent) {
+        const stats = fs.statSync(stateFile);
+        const ageMinutes = Math.round((Date.now() - stats.mtimeMs) / 60000);
+        parts.push(
+          '',
+          `Previous orchestrator state (saved ${ageMinutes} minutes ago):`,
+          '---BEGIN PREVIOUS STATE---',
+          stateContent,
+          '---END PREVIOUS STATE---',
+          '',
+          'If this state is relevant to your current task, use it to resume where the previous orchestrator left off. If the task is different, ignore the previous state.',
+        );
+        log.info('Loaded previous orchestrator state', { ageMinutes, length: stateContent.length });
+      }
+    }
+  } catch (err) {
+    log.warn('Failed to load orchestrator state file', { error: String(err) });
   }
 
   // Inject relevant memories from the database

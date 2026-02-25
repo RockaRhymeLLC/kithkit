@@ -544,6 +544,13 @@ function handleMessage(msg: unknown): void {
       });
       break;
 
+    case 'debugger-detached':
+      log.info('Debugger detached', {
+        tabId: String(m['tabId'] ?? ''),
+        reason: String(m['reason'] ?? 'unknown'),
+      });
+      break;
+
     case 'pong':
       break;
 

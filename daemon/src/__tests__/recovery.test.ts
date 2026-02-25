@@ -82,6 +82,8 @@ describe('Failed worker notifies orchestrator and cleans up (t-160)', () => {
       started_at: ts,
       finished_at: ts,
       created_at: ts,
+      spawned_by: null,
+      spawner_notified_at: null,
     };
 
     // Should not throw

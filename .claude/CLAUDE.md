@@ -176,7 +176,7 @@ When you are the orchestrator:
 
 Before asking the human for additional context, **search memory first**. Use `POST /api/memory/search` (hybrid mode if available, keyword as fallback) with terms relevant to what you need. Review the results, then re-evaluate whether you still need to ask. Often the answer is already stored — asking the human for something they've already told you wastes their time and erodes trust.
 
-This applies to both comms (before asking Dave directly) and orchestrator (before sending a clarification request back to comms).
+This applies to both comms (before asking the human directly) and orchestrator (before sending a clarification request back to comms).
 
 ### State Management
 
@@ -197,6 +197,12 @@ This applies to both comms (before asking Dave directly) and orchestrator (befor
 - If two attempts at the same approach fail, pivot to a different strategy immediately. Don't keep hammering.
 - If truly blocked (dependency on human input, missing access, external system down), update the todo with current status, escalate if appropriate, and move on to the next task.
 - Persistence means finding a way through — not repeating the same failing approach.
+
+### Availability Rule
+- **Never make yourself unavailable for an extended period without good cause.** The human or other agents may need you at any time. Blocking your session — with `bash sleep`, long-running polling loops, or any command that prevents you from receiving and responding to messages — is forbidden.
+- When waiting for an asynchronous result (orchestrator, scheduled task, external process), simply state that you're waiting and stop. The daemon's notification system will deliver results as session messages. Respond to them when they arrive.
+- If you need to schedule a future check (e.g., "verify the 5am cron ran"), use the daemon's reminder or scheduler system — not a blocking wait.
+- The comms agent must always be responsive. An unresponsive agent is a useless agent.
 
 ### Security
 

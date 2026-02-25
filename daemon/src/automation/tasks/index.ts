@@ -13,6 +13,7 @@ import { register as registerApprovalAudit } from './approval-audit.js';
 import { register as registerBackup } from './backup.js';
 import { register as registerOrchestratorIdle } from './orchestrator-idle.js';
 import { register as registerMessageDelivery } from './message-delivery.js';
+import { register as registerCommsHeartbeat } from './comms-heartbeat.js';
 
 /**
  * Register all core task handlers with the scheduler.
@@ -27,6 +28,7 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'backup', register: registerBackup },
     { name: 'orchestrator-idle', register: registerOrchestratorIdle },
     { name: 'message-delivery', register: registerMessageDelivery },
+    { name: 'comms-heartbeat', register: registerCommsHeartbeat },
   ];
 
   for (const { name, register } of registrations) {

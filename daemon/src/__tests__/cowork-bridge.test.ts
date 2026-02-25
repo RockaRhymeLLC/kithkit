@@ -266,6 +266,7 @@ const PORT_242 = 3942;
 const PORT_007 = 3943;
 const PORT_009 = 3944;
 const PORT_010 = 3945;
+const PORT_013 = 3946;
 
 // ── t-240: WebSocket handshake and framing ────────────────────
 
@@ -1173,6 +1174,144 @@ describe('Sequence violation and tamper detection (t-010)', () => {
 
     const result = await resultPromise as Record<string, unknown>;
     assert.deepEqual(result, { root: { nodeId: 1 } });
+
+    sock.destroy();
+  });
+});
+
+// ── t-013: Tab management through encrypted channel ──────────
+
+describe('Tab management through encrypted channel (t-013)', () => {
+  let bridge: ReturnType<typeof createBridgeServer>;
+  const TEST_PSK = 'e'.repeat(64);
+
+  beforeEach(async () => {
+    _resetCoworkBridgeForTesting();
+    setPsk(TEST_PSK);
+    setAuthToken('tab-test-token');
+    bridge = createBridgeServer(PORT_013);
+    await bridge.start();
+  });
+
+  afterEach(async () => {
+    shutdownCoworkBridge();
+    await bridge.stop();
+    _resetCoworkBridgeForTesting();
+    await sleep(20);
+  });
+
+  it('listTabs sends encrypted list-tabs and resolves with tab array', async () => {
+    setAuthToken(null as unknown as string);
+    _resetCoworkBridgeForTesting();
+    setPsk(TEST_PSK);
+    bridge = createBridgeServer(PORT_013);
+    await bridge.stop();
+    bridge = createBridgeServer(PORT_013);
+    await bridge.start();
+
+    const { sock, sessionKey, sendSeq: initSendSeq, recvSeq: initRecvSeq } =
+      await establishEncryptedSession(PORT_013, TEST_PSK);
+    let clientSendSeq = initSendSeq;
+    let clientRecvSeq = initRecvSeq;
+
+    // Daemon calls listTabs
+    const tabsPromise = listTabs();
+
+    // Client reads the encrypted frame
+    const frameText = await readServerFrame(sock, 2000);
+    const envelope = JSON.parse(frameText) as EncryptedEnvelope;
+    assert.equal(envelope.type, 'encrypted');
+    clientRecvSeq += 1;
+    assert.equal(envelope.seq, clientRecvSeq);
+
+    const inner = decryptEnvelope(sessionKey, envelope) as Record<string, unknown>;
+    assert.equal(inner['type'], 'list-tabs');
+    const listId = inner['id'] as number;
+
+    // Send encrypted tab-list response
+    const mockTabs = [
+      { id: 1, title: 'Google', url: 'https://google.com' },
+      { id: 2, title: 'GitHub', url: 'https://github.com' },
+    ];
+    clientSendSeq += 1;
+    const replyEnvelope = encryptEnvelope(sessionKey, {
+      type: 'tab-list',
+      id: listId,
+      tabs: mockTabs,
+    }, clientSendSeq);
+    sock.write(buildTextFrame(JSON.stringify(replyEnvelope)));
+
+    const tabs = await tabsPromise;
+    assert.deepEqual(tabs, mockTabs);
+
+    sock.destroy();
+  });
+
+  it('switchTab sends encrypted switch-tab and resolves on success', async () => {
+    setAuthToken(null as unknown as string);
+    _resetCoworkBridgeForTesting();
+    setPsk(TEST_PSK);
+    await bridge.stop();
+    bridge = createBridgeServer(PORT_013);
+    await bridge.start();
+
+    const { sock, sessionKey, sendSeq: initSendSeq, recvSeq: initRecvSeq } =
+      await establishEncryptedSession(PORT_013, TEST_PSK);
+    let clientSendSeq = initSendSeq;
+    let clientRecvSeq = initRecvSeq;
+
+    // Daemon calls switchTab
+    const switchPromise = switchTab(42);
+
+    // Client reads the encrypted frame
+    const frameText = await readServerFrame(sock, 2000);
+    const envelope = JSON.parse(frameText) as EncryptedEnvelope;
+    assert.equal(envelope.type, 'encrypted');
+    clientRecvSeq += 1;
+
+    const inner = decryptEnvelope(sessionKey, envelope) as Record<string, unknown>;
+    assert.equal(inner['type'], 'switch-tab');
+    assert.equal(inner['tabId'], 42);
+
+    // Send encrypted tab-switched response
+    clientSendSeq += 1;
+    const replyEnvelope = encryptEnvelope(sessionKey, {
+      type: 'tab-switched',
+      id: inner['id'] as number,
+      tabId: 42,
+    }, clientSendSeq);
+    sock.write(buildTextFrame(JSON.stringify(replyEnvelope)));
+
+    const result = await switchPromise as Record<string, unknown>;
+    assert.equal(result['tabId'], 42);
+
+    sock.destroy();
+  });
+
+  it('debugger-detached message is accepted without error', async () => {
+    setAuthToken(null as unknown as string);
+    _resetCoworkBridgeForTesting();
+    setPsk(TEST_PSK);
+    await bridge.stop();
+    bridge = createBridgeServer(PORT_013);
+    await bridge.start();
+
+    const { sock, sessionKey, sendSeq: initSendSeq } =
+      await establishEncryptedSession(PORT_013, TEST_PSK);
+    let clientSendSeq = initSendSeq;
+
+    // Send encrypted debugger-detached notification
+    clientSendSeq += 1;
+    const detachEnvelope = encryptEnvelope(sessionKey, {
+      type: 'debugger-detached',
+      tabId: 5,
+      reason: 'target_closed',
+    }, clientSendSeq);
+    sock.write(buildTextFrame(JSON.stringify(detachEnvelope)));
+
+    // Wait a bit then verify session is still alive
+    await sleep(100);
+    assert.ok(isCoworkConnected(), 'Session should remain connected after detach notification');
 
     sock.destroy();
   });

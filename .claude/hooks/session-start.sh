@@ -22,17 +22,20 @@ HOOK_INPUT=$(cat)
 SOURCE=$(echo "$HOOK_INPUT" | grep -o '"source"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:.*"\([^"]*\)".*/\1/')
 
 # ── Gate: comms agent only ──────────────────────────────────
-# Detect which tmux session we're in. If it's not the comms session, exit.
-# Non-tmux sessions (SDK workers) also skip — they don't need this bootstrap.
+# Require being IN the comms tmux session. SDK workers spawned by the daemon
+# run outside tmux (LaunchAgent has a clean env with no $TMUX), so they exit
+# here before producing any output or injecting prompts into the comms session.
 SESSION_NAME=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
 SESSION_NAME="${SESSION_NAME:-cc4me}"
 
-if [ -n "$TMUX" ]; then
-  CURRENT_SESSION=$($TMUX_BIN display-message -p '#{session_name}' 2>/dev/null || true)
-  if [ -n "$CURRENT_SESSION" ] && [ "$CURRENT_SESSION" != "$SESSION_NAME" ]; then
-    # Not the comms session — exit clean, no output
-    exit 0
-  fi
+if [ -z "$TMUX" ]; then
+  # Not in tmux at all — SDK worker or other non-interactive context. Exit clean.
+  exit 0
+fi
+CURRENT_SESSION=$($TMUX_BIN display-message -p '#{session_name}' 2>/dev/null || true)
+if [ -z "$CURRENT_SESSION" ] || [ "$CURRENT_SESSION" != "$SESSION_NAME" ]; then
+  # Wrong session or can't determine session — exit clean, no output
+  exit 0
 fi
 
 # ── Comms agent bootstrap ──────────────────────────────────
