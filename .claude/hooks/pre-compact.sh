@@ -36,6 +36,14 @@ if [ -n "$TMUX_PANE" ] && [ -x "$TMUX_BIN" ]; then
   fi
 fi
 
+# ── Trigger context watchdog immediately ───────────────────
+# The watchdog polls on a fixed interval and can miss rapid context jumps.
+# PreCompact fires at the exact moment of context pressure — trigger the
+# watchdog now so threshold actions (warn, restart) fire promptly.
+DAEMON_PORT="${KITHKIT_PORT:-3847}"
+curl -s -X POST "http://localhost:$DAEMON_PORT/api/tasks/context-watchdog/run" \
+  >/dev/null 2>&1 || true
+
 # ── Handle based on role ────────────────────────────────────
 
 if [ "$AGENT_ROLE" = "orchestrator" ]; then
@@ -48,6 +56,12 @@ if [ "$AGENT_ROLE" = "orchestrator" ]; then
     # Keep only the 5 most recent backups
     ls -t "$BACKUP_DIR"/orchestrator-state-*.md 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null
   fi
+
+  # Notify comms directly from the hook (safety net — don't rely on LLM doing it)
+  curl -s -X POST "http://localhost:$DAEMON_PORT/api/messages" \
+    -H "Content-Type: application/json" \
+    -d '{"from":"orchestrator","to":"comms","type":"result","body":"[orchestrator] Context compaction triggered. Instructing orchestrator to save state. Check git log for committed work if it goes silent after this."}' \
+    >/dev/null 2>&1 || true
 
   # Output orchestrator-specific instructions
   cat << 'EOF'

@@ -256,7 +256,11 @@ async function telegramSend(text: string, chatId?: string): Promise<boolean> {
     return false;
   }
 
-  const truncated = text.length > 4000 ? text.substring(0, 4000) + '...' : text;
+  // Strip MarkdownV2 escape sequences — we send plain text (no parse_mode),
+  // so backslash-escaped chars like \! \— \. \( \) render literally.
+  // Remove backslash before any non-alphanumeric, non-whitespace character.
+  const cleaned = text.replace(/\\([^a-zA-Z0-9\s])/g, '$1');
+  const truncated = cleaned.length > 4000 ? cleaned.substring(0, 4000) + '...' : cleaned;
   const data = JSON.stringify({ chat_id: targetChatId, text: truncated });
 
   return new Promise<boolean>((resolve) => {
