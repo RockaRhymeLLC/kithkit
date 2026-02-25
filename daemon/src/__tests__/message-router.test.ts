@@ -461,3 +461,113 @@ describe('Messages API validation', () => {
     assert.ok(JSON.parse(res.body).error.includes('agent'));
   });
 });
+
+describe('Direct channel — immediate delivery for persistent agents', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('direct=true injects immediately and sets processed_at', () => {
+    const injected: { session: string; text: string }[] = [];
+    _setTmuxInjectorForTesting((session, text) => {
+      injected.push({ session, text });
+      return true;
+    });
+
+    const result = sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'text',
+      body: 'Quick question about the spec',
+      direct: true,
+    });
+
+    assert.equal(result.delivered, true);
+    assert.equal(injected.length, 1);
+    assert.ok(injected[0].text.includes('Quick question about the spec'));
+
+    // Message should be marked as processed
+    const messages = query<Message>('SELECT * FROM messages WHERE id = ?', result.messageId);
+    assert.equal(messages.length, 1);
+    assert.ok(messages[0].processed_at, 'processed_at should be set for direct delivery');
+  });
+
+  it('direct=true falls back to queued delivery if injection fails', () => {
+    _setTmuxInjectorForTesting(() => false);
+
+    const result = sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'text',
+      body: 'Session is down',
+      direct: true,
+    });
+
+    // Falls back to queued delivery
+    assert.equal(result.delivered, false);
+
+    // processed_at should NOT be set (needs to be delivered by scheduler)
+    const messages = query<Message>('SELECT * FROM messages WHERE id = ?', result.messageId);
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].processed_at, null);
+  });
+
+  it('direct=false (default) queues for scheduler delivery', () => {
+    const injected: { session: string; text: string }[] = [];
+    _setTmuxInjectorForTesting((session, text) => {
+      injected.push({ session, text });
+      return true;
+    });
+
+    const result = sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'result',
+      body: 'Research complete',
+    });
+
+    // No immediate injection
+    assert.equal(injected.length, 0);
+    assert.equal(result.delivered, false);
+  });
+
+  it('direct=true has no effect for worker targets', () => {
+    const injected: { session: string; text: string }[] = [];
+    _setTmuxInjectorForTesting((session, text) => {
+      injected.push({ session, text });
+      return true;
+    });
+
+    const result = sendMessage({
+      from: 'orchestrator',
+      to: 'worker-abc',
+      type: 'task',
+      body: 'Do work',
+      direct: true,
+    });
+
+    // Workers pull their own messages — no injection
+    assert.equal(injected.length, 0);
+    assert.equal(result.delivered, true);
+  });
+
+  it('POST /api/messages with direct=true passes through to sendMessage', async () => {
+    const injected: { session: string; text: string }[] = [];
+    _setTmuxInjectorForTesting((session, text) => {
+      injected.push({ session, text });
+      return true;
+    });
+
+    const res = await request('POST', '/api/messages', {
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'text',
+      body: 'Direct via API',
+      direct: true,
+    });
+
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.delivered, true);
+    assert.equal(injected.length, 1);
+  });
+});
