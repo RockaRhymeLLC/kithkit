@@ -581,11 +581,9 @@ async function handleInnerMessage(msg) {
       const { id } = msg;
       const tabs = await chrome.tabs.query({});
       const tabList = tabs.map((t) => ({
-        tabId: t.id,
+        id: t.id,
         title: t.title || '',
         url: t.url || '',
-        active: t.active,
-        windowId: t.windowId,
       }));
       await encryptedSend({ type: 'tab-list', id, tabs: tabList });
       break;
@@ -658,8 +656,8 @@ chrome.debugger.onDetach.addListener((source, reason) => {
     attachedTarget = null;
   }
 
-  // Notify daemon
-  encryptedSend({ type: 'tab-changed', tabId: null, title: null, url: null });
+  // Notify daemon with detach reason
+  encryptedSend({ type: 'debugger-detached', tabId, reason: reason || 'unknown' });
   broadcastState();
 });
 

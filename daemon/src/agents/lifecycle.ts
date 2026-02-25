@@ -57,6 +57,8 @@ export interface JobRecord {
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+  spawned_by: string | null;
+  spawner_notified_at: string | null;
 }
 
 export interface SpawnRequest {
@@ -65,6 +67,8 @@ export interface SpawnRequest {
   cwd?: string;
   timeoutMs?: number;
   maxBudgetUsd?: number;
+  /** Which persistent agent spawned this worker ('comms' | 'orchestrator'). */
+  spawned_by?: string;
 }
 
 // ── State ────────────────────────────────────────────────────
@@ -160,9 +164,9 @@ export function spawnWorkerJob(req: SpawnRequest): { jobId: string; status: JobS
 
   // Insert job record
   exec(
-    `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, created_at)
-     VALUES (?, ?, ?, ?, 'queued', ?)`,
-    jobId, jobId, req.profile.name, req.prompt, ts,
+    `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, spawned_by, created_at)
+     VALUES (?, ?, ?, ?, 'queued', ?, ?)`,
+    jobId, jobId, req.profile.name, req.prompt, req.spawned_by ?? null, ts,
   );
 
   // Try to start immediately or queue

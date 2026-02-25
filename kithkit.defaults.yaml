@@ -39,6 +39,12 @@ scheduler:
       config:
         requires_session: false
 
+    - name: comms-heartbeat
+      interval: "60s"
+      enabled: true
+      config:
+        requires_session: true
+
 security:
   rate_limits:
     incoming_max_per_minute: 5
