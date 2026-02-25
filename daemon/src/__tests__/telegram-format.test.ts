@@ -7,7 +7,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { markdownToTelegramHtml, hasMarkdownPatterns } from '../extensions/comms/adapters/telegram-format.js';
+import { markdownToTelegramHtml, hasMarkdownPatterns } from '../comms/adapters/telegram-format.js';
 
 // ── Bold ────────────────────────────────────────────────────
 

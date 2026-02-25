@@ -36,6 +36,8 @@ export interface WorkerProfile {
   effort?: 'low' | 'medium' | 'high' | 'max';
   /** Profile body text appended to system prompt */
   body?: string;
+  /** Optional effort level */
+  effort?: string;
 }
 
 export interface SpawnOptions {
