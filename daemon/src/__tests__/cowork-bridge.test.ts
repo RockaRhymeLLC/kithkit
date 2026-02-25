@@ -264,6 +264,8 @@ const PORT_240 = 3940;
 const PORT_241 = 3941;
 const PORT_242 = 3942;
 const PORT_007 = 3943;
+const PORT_009 = 3944;
+const PORT_010 = 3945;
 
 // ── t-240: WebSocket handshake and framing ────────────────────
 
@@ -884,6 +886,293 @@ describe('Cowork bridge key exchange (t-007)', () => {
     const parsed = JSON.parse(body) as Record<string, unknown>;
     assert.equal(typeof parsed['fingerprint'], 'string');
     assert.match(parsed['fingerprint'] as string, /^[0-9a-f]{16}$/);
+
+    sock.destroy();
+  });
+});
+
+// ── t-009: Encrypted CDP roundtrip ───────────────────────────
+
+/**
+ * Helper to establish a fully encrypted session (key exchange + hello/hello-ack).
+ * Returns { sock, sessionKey, recvSeq } where recvSeq=1 (after hello-ack).
+ */
+async function establishEncryptedSession(
+  port: number,
+  psk: string,
+): Promise<{ sock: net.Socket; sessionKey: Buffer; sendSeq: number; recvSeq: number }> {
+  const { sock, sessionKey } = await performKeyExchange(port, psk);
+
+  // Send encrypted hello (seq=1)
+  const helloEnvelope = encryptEnvelope(sessionKey, { type: 'hello', userAgent: 'Test/1.0' }, 1);
+  sock.write(buildTextFrame(JSON.stringify(helloEnvelope)));
+
+  // Read encrypted hello-ack
+  const ackText = await readServerFrame(sock, 2000);
+  const ackEnvelope = JSON.parse(ackText) as EncryptedEnvelope;
+  assert.equal(ackEnvelope.type, 'encrypted');
+  assert.equal(ackEnvelope.seq, 1);
+  const ack = decryptEnvelope(sessionKey, ackEnvelope) as Record<string, unknown>;
+  assert.equal(ack['type'], 'hello-ack');
+
+  // At this point: extension sendSeq=1, recvSeq=1; daemon sendSeq=1, recvSeq=1
+  return { sock, sessionKey, sendSeq: 1, recvSeq: 1 };
+}
+
+describe('Encrypted CDP roundtrip (t-009)', () => {
+  let bridge: ReturnType<typeof createBridgeServer>;
+  const TEST_PSK = 'c'.repeat(64); // 64 hex chars = 256-bit PSK
+
+  beforeEach(async () => {
+    _resetCoworkBridgeForTesting();
+    bridge = createBridgeServer(PORT_009);
+    await bridge.start();
+  });
+
+  afterEach(async () => {
+    shutdownCoworkBridge();
+    await bridge.stop();
+    _resetCoworkBridgeForTesting();
+    await sleep(20);
+  });
+
+  it('sendCdpCommand sends encrypted CDP frame and resolves when extension replies encrypted', async () => {
+    setPsk(TEST_PSK);
+
+    const { sock, sessionKey, recvSeq: initialRecvSeq } = await establishEncryptedSession(PORT_009, TEST_PSK);
+
+    // Track client-side sequence counters
+    let clientSendSeq = 1; // sent hello (seq=1)
+    let clientRecvSeq = initialRecvSeq; // received hello-ack (seq=1)
+
+    // Start CDP command from daemon side — it will send an encrypted frame
+    const resultPromise = sendCdpCommand('Runtime.evaluate', { expression: '6*7' });
+
+    // Read the encrypted frame the daemon sent
+    const frameText = await readServerFrame(sock, 1000);
+    const envelope = JSON.parse(frameText) as EncryptedEnvelope;
+
+    // Verify it's encrypted
+    assert.equal(envelope.type, 'encrypted');
+    clientRecvSeq += 1;
+    assert.equal(envelope.seq, clientRecvSeq, 'CDP command should have incremented daemon sendSeq');
+
+    // Decrypt and verify inner message
+    const inner = decryptEnvelope(sessionKey, envelope) as Record<string, unknown>;
+    assert.equal(inner['type'], 'cdp');
+    assert.equal(inner['method'], 'Runtime.evaluate');
+    assert.ok(typeof inner['id'] === 'number', 'CDP command should have a numeric id');
+    const cmdId = inner['id'] as number;
+
+    // Send encrypted CDP result back
+    clientSendSeq += 1;
+    const replyEnvelope = encryptEnvelope(sessionKey, {
+      type: 'cdp-result',
+      id: cmdId,
+      result: { value: 42 },
+    }, clientSendSeq);
+    sock.write(buildTextFrame(JSON.stringify(replyEnvelope)));
+
+    // Verify daemon resolves the promise with correct result
+    const result = await resultPromise;
+    assert.deepEqual(result, { value: 42 });
+
+    // Verify sequence counters incremented correctly:
+    // Daemon recvSeq should now be 2 (hello=1, cdp-result=2)
+    // Daemon sendSeq should be 2 (hello-ack=1, cdp=2)
+    // We verify indirectly: send another command and check seq increments
+    const resultPromise2 = sendCdpCommand('Page.reload', {});
+    const frameText2 = await readServerFrame(sock, 1000);
+    const envelope2 = JSON.parse(frameText2) as EncryptedEnvelope;
+    assert.equal(envelope2.type, 'encrypted');
+    assert.equal(envelope2.seq, clientRecvSeq + 1, 'Second CDP command seq should be 3');
+
+    const inner2 = decryptEnvelope(sessionKey, envelope2) as Record<string, unknown>;
+    assert.equal(inner2['type'], 'cdp');
+    const cmdId2 = inner2['id'] as number;
+
+    clientSendSeq += 1;
+    const replyEnvelope2 = encryptEnvelope(sessionKey, {
+      type: 'cdp-result',
+      id: cmdId2,
+      result: { reloaded: true },
+    }, clientSendSeq);
+    sock.write(buildTextFrame(JSON.stringify(replyEnvelope2)));
+
+    const result2 = await resultPromise2;
+    assert.deepEqual(result2, { reloaded: true });
+
+    sock.destroy();
+  });
+
+  it('listTabs over encrypted session resolves with tab array', async () => {
+    setPsk(TEST_PSK);
+
+    const { sock, sessionKey } = await establishEncryptedSession(PORT_009, TEST_PSK);
+    let clientSendSeq = 1;
+    let clientRecvSeq = 1;
+
+    const tabsPromise = listTabs();
+
+    // Read encrypted list-tabs frame
+    const frameText = await readServerFrame(sock, 1000);
+    const envelope = JSON.parse(frameText) as EncryptedEnvelope;
+    assert.equal(envelope.type, 'encrypted');
+    clientRecvSeq += 1;
+    assert.equal(envelope.seq, clientRecvSeq);
+
+    const inner = decryptEnvelope(sessionKey, envelope) as Record<string, unknown>;
+    assert.equal(inner['type'], 'list-tabs');
+    assert.ok(typeof inner['id'] === 'number');
+    const cmdId = inner['id'] as number;
+
+    // Reply with encrypted tab-list
+    const tabList = [{ tabId: 1, title: 'Home', url: 'https://example.com', active: true, windowId: 1 }];
+    clientSendSeq += 1;
+    const replyEnvelope = encryptEnvelope(sessionKey, {
+      type: 'tab-list',
+      id: cmdId,
+      tabs: tabList,
+    }, clientSendSeq);
+    sock.write(buildTextFrame(JSON.stringify(replyEnvelope)));
+
+    const tabs = await tabsPromise;
+    assert.deepEqual(tabs, tabList);
+
+    sock.destroy();
+  });
+});
+
+// ── t-010: Sequence violation and tamper detection ────────────
+
+describe('Sequence violation and tamper detection (t-010)', () => {
+  let bridge: ReturnType<typeof createBridgeServer>;
+  const TEST_PSK = 'd'.repeat(64); // 64 hex chars = 256-bit PSK
+
+  beforeEach(async () => {
+    _resetCoworkBridgeForTesting();
+    bridge = createBridgeServer(PORT_010);
+    await bridge.start();
+  });
+
+  afterEach(async () => {
+    shutdownCoworkBridge();
+    await bridge.stop();
+    _resetCoworkBridgeForTesting();
+    await sleep(20);
+  });
+
+  /** Wait for a close frame and return its code. */
+  function waitForCloseCode(socket: net.Socket, timeoutMs = 2000): Promise<number> {
+    return new Promise(resolve => {
+      const timer = setTimeout(() => resolve(0), timeoutMs);
+      const onData = (chunk: Buffer) => {
+        if (chunk.length >= 4 && (chunk[0] & 0x0f) === 0x08) {
+          clearTimeout(timer);
+          socket.removeListener('data', onData);
+          resolve(chunk.readUInt16BE(2));
+        }
+      };
+      socket.on('data', onData);
+      socket.on('close', () => { clearTimeout(timer); resolve(0); });
+    });
+  }
+
+  it('replay attack (seq=2 twice after hello) causes close with 4003', async () => {
+    setPsk(TEST_PSK);
+
+    const { sock, sessionKey } = await establishEncryptedSession(PORT_010, TEST_PSK);
+
+    // Send correct seq=2
+    const msg2 = encryptEnvelope(sessionKey, { type: 'pong' }, 2);
+    sock.write(buildTextFrame(JSON.stringify(msg2)));
+
+    // Give daemon time to process seq=2
+    await sleep(30);
+
+    // Send seq=2 again — replay attack
+    const msg2Replay = encryptEnvelope(sessionKey, { type: 'pong' }, 2);
+    sock.write(buildTextFrame(JSON.stringify(msg2Replay)));
+
+    const closeCode = await waitForCloseCode(sock);
+    assert.equal(closeCode, 4003, 'Replay (seq=2 again) should close with 4003');
+    if (!sock.destroyed) sock.destroy();
+  });
+
+  it('sequence gap (seq=2 then seq=5) causes close with 4003', async () => {
+    setPsk(TEST_PSK);
+
+    const { sock, sessionKey } = await establishEncryptedSession(PORT_010, TEST_PSK);
+
+    // Send correct seq=2
+    const msg2 = encryptEnvelope(sessionKey, { type: 'pong' }, 2);
+    sock.write(buildTextFrame(JSON.stringify(msg2)));
+    await sleep(30);
+
+    // Send seq=5 — gap skips 3 and 4
+    const msg5 = encryptEnvelope(sessionKey, { type: 'pong' }, 5);
+    sock.write(buildTextFrame(JSON.stringify(msg5)));
+
+    const closeCode = await waitForCloseCode(sock);
+    assert.equal(closeCode, 4003, 'Sequence gap should close with 4003');
+    if (!sock.destroyed) sock.destroy();
+  });
+
+  it('tampered ciphertext causes close with 4002', async () => {
+    setPsk(TEST_PSK);
+
+    const { sock, sessionKey } = await establishEncryptedSession(PORT_010, TEST_PSK);
+
+    // Build a valid encrypted envelope for seq=2
+    const validEnvelope = encryptEnvelope(sessionKey, { type: 'pong' }, 2);
+
+    // Tamper: flip a byte in the middle of the payload
+    const payloadBytes = Buffer.from(validEnvelope.payload, 'base64');
+    const midPoint = Math.floor(payloadBytes.length / 2);
+    payloadBytes[midPoint] ^= 0xff;
+    const tamperedEnvelope = {
+      ...validEnvelope,
+      payload: payloadBytes.toString('base64'),
+    };
+
+    sock.write(buildTextFrame(JSON.stringify(tamperedEnvelope)));
+
+    const closeCode = await waitForCloseCode(sock);
+    assert.equal(closeCode, 4002, 'Tampered ciphertext should close with 4002');
+    if (!sock.destroyed) sock.destroy();
+  });
+
+  it('CDP roundtrip with correct seqs accepted after hello in encrypted session', async () => {
+    setPsk(TEST_PSK);
+
+    const { sock, sessionKey } = await establishEncryptedSession(PORT_010, TEST_PSK);
+    let clientSendSeq = 1;
+    let clientRecvSeq = 1;
+
+    // Start CDP command
+    const resultPromise = sendCdpCommand('DOM.getDocument', {});
+
+    const frameText = await readServerFrame(sock, 1000);
+    const envelope = JSON.parse(frameText) as EncryptedEnvelope;
+    assert.equal(envelope.type, 'encrypted');
+    clientRecvSeq += 1;
+    assert.equal(envelope.seq, clientRecvSeq);
+
+    const inner = decryptEnvelope(sessionKey, envelope) as Record<string, unknown>;
+    assert.equal(inner['type'], 'cdp');
+    const cmdId = inner['id'] as number;
+
+    // Send valid encrypted reply with next seq
+    clientSendSeq += 1;
+    const replyEnvelope = encryptEnvelope(sessionKey, {
+      type: 'cdp-result',
+      id: cmdId,
+      result: { root: { nodeId: 1 } },
+    }, clientSendSeq);
+    sock.write(buildTextFrame(JSON.stringify(replyEnvelope)));
+
+    const result = await resultPromise as Record<string, unknown>;
+    assert.deepEqual(result, { root: { nodeId: 1 } });
 
     sock.destroy();
   });
