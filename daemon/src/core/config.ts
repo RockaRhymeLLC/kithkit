@@ -37,11 +37,17 @@ export interface SecurityConfig {
   rate_limits: { incoming_max_per_minute: number; outgoing_max_per_minute: number };
 }
 
+export interface TmuxConfig {
+  session?: string;
+}
+
 export interface KithkitConfig {
   agent: AgentConfig;
   daemon: DaemonConfig;
   scheduler: SchedulerConfig;
   security: SecurityConfig;
+  /** Optional tmux session configuration */
+  tmux?: TmuxConfig;
 }
 
 // ── Defaults ─────────────────────────────────────────────────
