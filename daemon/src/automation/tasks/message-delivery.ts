@@ -49,7 +49,24 @@ const _retryCounts = new Map<number, number>();
  */
 const _lastPingTime = new Map<number, number>();
 
+/**
+ * Tracks the last time we successfully injected a notification ping into
+ * each persistent agent's tmux session. Used by comms-heartbeat to avoid
+ * duplicate nudges — if message-delivery already notified comms recently,
+ * the heartbeat skips the unread-message portion of its nudge.
+ */
+const _lastAgentNotificationTime = new Map<string, number>();
+
 // ── Public API ───────────────────────────────────────────────
+
+/**
+ * Returns the last time a notification ping was successfully injected into
+ * the given agent's tmux session (epoch ms), or 0 if never.
+ * Used by comms-heartbeat to suppress duplicate unread-message nudges.
+ */
+export function getLastNotificationTime(agentId: string): number {
+  return _lastAgentNotificationTime.get(agentId) ?? 0;
+}
 
 /**
  * Notify the delivery task that a new message was queued.
@@ -208,6 +225,7 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
           updated_at: now,
         });
       }
+      _lastAgentNotificationTime.set(agentId, nowMs);
       log.debug('Notification ping sent', { to: agentId, count: deliverable.length });
     } else {
       for (const msg of deliverable) {
@@ -281,6 +299,7 @@ async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> 
         const updatedMeta = JSON.stringify({ ...existingMeta, last_notified_at: nowIso });
         exec('UPDATE messages SET metadata = ? WHERE id = ?', updatedMeta, msg.id);
       }
+      _lastAgentNotificationTime.set(agentId, now);
       repinged += messages.length;
       log.debug('Re-ping sent for unread messages', { to: agentId, count: messages.length });
     }
@@ -384,6 +403,7 @@ export function register(scheduler: Scheduler): void {
 export function _resetRetriesForTesting(): void {
   _retryCounts.clear();
   _lastPingTime.clear();
+  _lastAgentNotificationTime.clear();
 }
 
 /** @internal Get current retry count for testing */
