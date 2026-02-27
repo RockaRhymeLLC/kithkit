@@ -1,17 +1,23 @@
 /**
  * Todo Reminder — prompts the agent to work on pending todos.
  *
- * Checks the todos directory for actionable items and injects a reminder
+ * Queries the database for actionable todos and injects a reminder
  * into the session. Skips if all todos are blocked.
  */
 
-import fs from 'node:fs';
-import { resolveProjectPath } from '../../core/config.js';
+import { query } from '../../core/db.js';
 import { injectText, sessionExists } from '../../core/session-bridge.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('todo-reminder');
+
+interface TodoRow {
+  id: string;
+  title: string;
+  status: string;
+  priority: string | null;
+}
 
 async function run(): Promise<void> {
   if (!sessionExists()) {
@@ -19,36 +25,23 @@ async function run(): Promise<void> {
     return;
   }
 
-  const todosDir = resolveProjectPath('.claude', 'state', 'todos');
-
-  if (!fs.existsSync(todosDir)) return;
-
-  // Count open, in-progress, and blocked todos
-  const files = fs.readdirSync(todosDir);
-  const openTodos = files.filter(f =>
-    (f.includes('-open-') || f.includes('-in-progress-') || f.includes('-blocked-')) && f.endsWith('.json'),
+  // Query actionable todos from the database
+  const todos = query<TodoRow>(
+    `SELECT id, title, status, priority FROM todos
+     WHERE status IN ('pending', 'in_progress', 'blocked')
+     ORDER BY
+       CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
+       created_at ASC`,
   );
 
-  if (openTodos.length === 0) {
+  if (todos.length === 0) {
     log.debug('No open todos');
     return;
   }
 
   // Categorize todos: actionable vs blocked
-  let blockedCount = 0;
-  const actionable: { id: string; title: string; file: string }[] = [];
-  for (const file of openTodos) {
-    try {
-      const todo = JSON.parse(fs.readFileSync(`${todosDir}/${file}`, 'utf8'));
-      if (todo.status === 'blocked' || file.includes('-blocked-')) {
-        blockedCount++;
-      } else {
-        actionable.push({ id: todo.id, title: todo.title, file });
-      }
-    } catch {
-      // Ignore parse errors
-    }
-  }
+  const actionable = todos.filter(t => t.status !== 'blocked');
+  const blockedCount = todos.length - actionable.length;
 
   // If ALL todos are blocked, skip the nag
   if (actionable.length === 0 && blockedCount > 0) {
@@ -56,11 +49,10 @@ async function run(): Promise<void> {
     return;
   }
 
-  // Find the highest priority actionable todo to suggest
+  // Suggest the highest priority actionable todo
   let suggestion = '';
-  const sorted = actionable.sort((a, b) => a.file.localeCompare(b.file));
-  if (sorted[0]) {
-    suggestion = ` Highest priority: [${sorted[0].id}] ${sorted[0].title}`;
+  if (actionable[0]) {
+    suggestion = ` Highest priority: [${actionable[0].id}] ${actionable[0].title}`;
   }
 
   const blockedNote = blockedCount > 0 ? ` (${blockedCount} blocked)` : '';
