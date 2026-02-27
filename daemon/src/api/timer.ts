@@ -15,7 +15,7 @@
 import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
-import { injectMessage, _getCommsSession, _getOrchestratorSession } from '../agents/tmux.js';
+import { injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { insert, update, query } from '../core/db.js';
 
@@ -24,12 +24,14 @@ const log = createLogger('timer-api');
 // ── Session resolution ───────────────────────────────────────
 
 /**
- * Resolve an agent ID to its tmux session name.
- * Accepts 'comms' or 'orchestrator'; defaults to the comms session.
+ * Normalize agent ID to a known persistent agent.
+ * Accepts 'comms' or 'orchestrator'; defaults to 'comms'.
+ * Returns the agent ID (NOT the tmux session name) so that
+ * injectMessage() can resolve it via its own resolveSession().
  */
-function resolveAgentSession(agent: string): string {
-  if (agent === 'orchestrator') return _getOrchestratorSession();
-  return _getCommsSession();
+function normalizeAgentId(agent: string): string {
+  if (agent === 'orchestrator') return 'orchestrator';
+  return 'comms';
 }
 
 // ── Constants ────────────────────────────────────────────────
@@ -227,7 +229,7 @@ export async function handleTimerRoute(
     }
 
     const agentId = typeof body.agent === 'string' ? body.agent.trim() : 'comms';
-    const session = resolveAgentSession(agentId);
+    const session = normalizeAgentId(agentId);
     const id = randomUUID();
     const fires_at = new Date(Date.now() + delay * 1000).toISOString();
     const created_at = new Date().toISOString();
