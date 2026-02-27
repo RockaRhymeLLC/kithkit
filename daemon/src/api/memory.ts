@@ -2,12 +2,16 @@
  * Memory API — store, search (structured), retrieve, and delete memories.
  * Structured search covers keyword (SQL LIKE), tags, category, and date ranges.
  * Embedding column is reserved for vector search (s-f05b).
+ *
+ * Features:
+ * - Vector dedup on store (optional, via `dedup: true` in request body)
+ * - Access tracking (last_accessed updated on retrieval/search)
  */
 
 import type http from 'node:http';
 import { insert, get, remove, query, getDatabase } from '../core/db.js';
 import { generateEmbedding, embeddingToBuffer } from '../memory/embeddings.js';
-import { initVectorSearch, indexEmbedding, vectorSearch, hybridSearch } from '../memory/vector-search.js';
+import { initVectorSearch, indexEmbedding, vectorSearch, hybridSearch, backfillEmbeddings } from '../memory/vector-search.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -21,7 +25,14 @@ interface Memory {
   embedding: Buffer | null;
   created_at: string;
   updated_at: string;
+  last_accessed: string | null;
 }
+
+/** Similarity threshold for vector dedup (0-1, higher = stricter).
+ * Empirically tested 2026-02-24: true dupes score 0.78–0.98, unrelated < 0.65.
+ * Set at 0.75 to catch semantic duplicates while letting the LLM reviewer
+ * make the final keep/skip decision on candidates. */
+const DEDUP_SIMILARITY_THRESHOLD = 0.75;
 
 interface SearchFilters {
   query?: string;
@@ -80,7 +91,18 @@ function formatMemory(m: Memory): Record<string, unknown> {
     source: m.source,
     created_at: m.created_at,
     updated_at: m.updated_at,
+    last_accessed: m.last_accessed,
   };
+}
+
+/** Update last_accessed for a batch of memory IDs. */
+function touchMemories(ids: number[]): void {
+  if (ids.length === 0) return;
+  const db = getDatabase();
+  const placeholders = ids.map(() => '?').join(',');
+  db.prepare(
+    `UPDATE memories SET last_accessed = datetime('now') WHERE id IN (${placeholders})`,
+  ).run(...ids);
 }
 
 // ── Structured search ────────────────────────────────────────
@@ -163,6 +185,17 @@ export async function handleMemoryRoute(
   const method = req.method ?? 'GET';
 
   try {
+    // POST /memory/backfill — generate embeddings for memories missing them
+    if (pathname === '/api/memory/backfill' && method === 'POST') {
+      if (!_vectorEnabled) {
+        json(res, 503, withTimestamp({ error: 'Vector search not initialized' }));
+        return true;
+      }
+      const count = await backfillEmbeddings();
+      json(res, 200, withTimestamp({ backfilled: count }));
+      return true;
+    }
+
     // POST /memory/store — create a new memory
     if (pathname === '/api/memory/store' && method === 'POST') {
       const body = await parseBody(req);
@@ -175,6 +208,39 @@ export async function handleMemoryRoute(
       if (body.type && !VALID_TYPES.includes(body.type as string)) {
         json(res, 400, withTimestamp({ error: `type must be ${VALID_TYPES.join(', ')}` }));
         return true;
+      }
+
+      // Vector dedup: if dedup=true and vector search is available, find candidates
+      // Returns candidates to the caller — the agent decides whether to store or skip.
+      // Reason: vector similarity gives false positives (e.g. "Chrissy likes pie" vs
+      // "David likes pie" score high but are different memories). The LLM decides.
+      const wantDedup = body.dedup === true;
+      if (wantDedup && _vectorEnabled) {
+        try {
+          const candidates = await vectorSearch(body.content as string, 3);
+          const similar = candidates.filter(c => c.score >= DEDUP_SIMILARITY_THRESHOLD);
+          if (similar.length > 0) {
+            json(res, 200, withTimestamp({
+              action: 'review_duplicates',
+              message: 'Potential duplicates found — caller decides whether to store',
+              duplicates: similar.map(c => ({
+                id: c.id,
+                content: c.content,
+                similarity: c.score,
+                category: c.category,
+              })),
+              proposed: {
+                content: body.content,
+                type: body.type ?? 'fact',
+                category: body.category ?? null,
+                tags: body.tags ?? [],
+              },
+            }));
+            return true;
+          }
+        } catch {
+          // Dedup check failed — fall through and store anyway
+        }
       }
 
       const data: Record<string, unknown> = {
@@ -222,12 +288,14 @@ export async function handleMemoryRoute(
 
       if (mode === 'vector') {
         const results = await vectorSearch(body.query as string, (body.limit as number) ?? 10);
+        touchMemories(results.map(r => r.id));
         json(res, 200, withTimestamp({ data: results, mode: 'vector' }));
         return true;
       }
 
       if (mode === 'hybrid') {
         const results = await hybridSearch(body.query as string, (body.limit as number) ?? 10);
+        touchMemories(results.map(r => r.id));
         json(res, 200, withTimestamp({ data: results, mode: 'hybrid' }));
         return true;
       }
@@ -254,6 +322,7 @@ export async function handleMemoryRoute(
       if (hasDateTo) filters.date_to = body.date_to as string;
 
       const results = searchMemories(filters);
+      touchMemories(results.map(r => r.id as number));
       json(res, 200, withTimestamp({ data: results, mode: 'keyword' }));
       return true;
     }
@@ -267,6 +336,7 @@ export async function handleMemoryRoute(
           json(res, 404, withTimestamp({ error: 'Not found' }));
           return true;
         }
+        touchMemories([memory.id]);
         json(res, 200, withTimestamp(formatMemory(memory)));
         return true;
       }
