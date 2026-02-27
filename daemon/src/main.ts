@@ -22,6 +22,7 @@ import { handleConfigRoute } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
 import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleTaskQueueRoute } from './api/task-queue.js';
+import { handleContactsRoute } from './api/contacts.js';
 import {
   getExtension,
   isDegraded,
@@ -191,6 +192,7 @@ const server = http.createServer((req, res) => {
         () => handleOrchestratorRoute(req, res, url.pathname),
         () => handleTimerRoute(req, res, url.pathname),
         () => handleTaskQueueRoute(req, res, url.pathname, url.searchParams),
+        () => handleContactsRoute(req, res, url.pathname, url.searchParams),
         () => handleSendRoute(req, res, url.pathname),
         () => handleStateRoute(req, res, url.pathname, url.searchParams),
         () => handleMessagesRoute(req, res, url.pathname, url.searchParams),
