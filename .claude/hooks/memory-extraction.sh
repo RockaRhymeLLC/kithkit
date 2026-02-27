@@ -19,8 +19,6 @@ export PATH="$HOME/.local/bin:$PATH"
 
 LOCK_FILE="/tmp/kithkit-memory-extraction.lock"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
-DB_PATH="$PROJECT_DIR/kithkit.db"
-
 # Read daemon port from config (default 3847)
 DAEMON_PORT=3847
 if command -v yq >/dev/null 2>&1 && [ -f "$PROJECT_DIR/kithkit.config.yaml" ]; then
@@ -40,16 +38,6 @@ fi
 
 date +%s > "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
-
-# --- Gate 2: Daily cap (max 15 memories per day) ---
-DAILY_CAP=15
-if [ -f "$DB_PATH" ]; then
-  TODAY_COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM memories WHERE date(created_at) = date('now');" 2>/dev/null || echo 0)
-  if [ "${TODAY_COUNT:-0}" -ge "$DAILY_CAP" ]; then
-    exit 0
-  fi
-  REMAINING=$(( DAILY_CAP - TODAY_COUNT ))
-fi
 
 # Read hook input from stdin
 INPUT=$(cat)
@@ -75,7 +63,7 @@ fi
 SESSION_SOURCE="extraction"
 TMUX_BIN="/opt/homebrew/bin/tmux"
 COMMS_SESSION=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
-COMMS_SESSION="${COMMS_SESSION:-bmo}"
+COMMS_SESSION="${COMMS_SESSION:-comms1}"
 
 if [ -n "$TMUX" ]; then
   CURRENT_SESSION=$($TMUX_BIN display-message -p '#{session_name}' 2>/dev/null || true)
@@ -120,7 +108,6 @@ Read only the LAST 150 lines.
 Your job: decide if this session contains any TRULY NOVEL, IMPORTANT facts
 that would be valuable months from now. The answer is usually NO.
 
-BUDGET: You may store AT MOST ${REMAINING:-2} memories from this session.
 Extracting 0 is the expected and correct outcome for most sessions.
 
 ## Storage process
@@ -157,9 +144,9 @@ NO: Bug fixes, error messages, code patterns
 NO: Architecture of the project being worked on
 
 ### Gate 2: Would it still matter in 3 months?
-YES: "Dave prefers Telegram over email"
-YES: "R2 runs on the Mac mini at 192.168.12.212"
-YES: "Dave decided to use a separate repo for bmobot.ai"
+YES: "User prefers Telegram over email"
+YES: "Peer agent runs on the Mac mini at 192.168.x.x"
+YES: "User decided to use a separate repo for the website"
 NO: "CI is now green" (status changes constantly)
 NO: "Fixed 4 bugs in orchestrator" (task completion — tracked in todos)
 NO: "Repo is 95% ready for launch" (progress updates go stale)
