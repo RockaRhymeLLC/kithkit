@@ -21,6 +21,7 @@ import { handleTasksRoute } from './api/tasks.js';
 import { handleConfigRoute } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
 import { handleTimerRoute, initTimers } from './api/timer.js';
+import { handleSelftestRoute } from './api/selftest.js';
 import { handleTaskQueueRoute } from './api/task-queue.js';
 import { handleContactsRoute } from './api/contacts.js';
 import {
@@ -199,6 +200,7 @@ const server = http.createServer((req, res) => {
         () => handleMemoryRoute(req, res, url.pathname),
         () => handleTasksRoute(req, res, url.pathname),
         () => handleConfigRoute(req, res, url.pathname),
+        () => handleSelftestRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {
         const handled = await handler();
