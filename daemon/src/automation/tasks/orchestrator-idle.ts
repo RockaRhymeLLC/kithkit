@@ -20,6 +20,8 @@ import {
   killOrchestratorSession as _killOrchestratorSession,
   injectMessage as _injectMessage,
   _getOrchestratorSession,
+  TMUX_BIN,
+  TMUX_SOCKET,
 } from '../../agents/tmux.js';
 import { cleanupSessionDirs as _cleanupSessionDirs } from '../../agents/lifecycle.js';
 import { createLogger } from '../../core/logger.js';
@@ -69,8 +71,6 @@ const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 const CONTEXT_THRESHOLD_PCT = 65; // Daemon backstop — orchestrator self-restarts at 50%
 const CONTEXT_STALE_SECONDS = 600; // Ignore context data older than 10 min
 const GRACE_PERIOD_MS = 60 * 1000; // 60 seconds to exit after nudge
-const TMUX_BIN = '/opt/homebrew/bin/tmux';
-const TMUX_SOCKET = `/private/tmp/tmux-${process.getuid?.() ?? 501}/default`;
 
 /**
  * Check if the Claude process is actively running in the orchestrator's tmux session.

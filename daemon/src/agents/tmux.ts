@@ -17,8 +17,8 @@ const log = createLogger('tmux');
 
 // ── Config ──────────────────────────────────────────────────
 
-const TMUX_BIN = '/opt/homebrew/bin/tmux';
-const TMUX_SOCKET = `/private/tmp/tmux-${process.getuid?.() ?? 501}/default`;
+export const TMUX_BIN = '/opt/homebrew/bin/tmux';
+export const TMUX_SOCKET = `/private/tmp/tmux-${process.getuid?.() ?? 501}/default`;
 
 const COMMS_SESSION = 'comms1';
 const ORCH_SESSION = 'orch1';
@@ -45,7 +45,10 @@ function resolveSession(agentId: string): string | null {
  */
 export function injectMessage(agentId: string, text: string): boolean {
   const session = resolveSession(agentId);
-  if (!session) return false;
+  if (!session) {
+    log.warn('No tmux session mapping for agent', { agentId });
+    return false;
+  }
 
   try {
     // Check if session exists first

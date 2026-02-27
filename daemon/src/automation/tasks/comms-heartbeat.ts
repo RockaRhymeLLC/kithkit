@@ -11,7 +11,7 @@
  */
 
 import { query, exec } from '../../core/db.js';
-import { injectMessage, listSessions } from '../../agents/tmux.js';
+import { injectMessage, listSessions, _getCommsSession } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 
@@ -31,7 +31,7 @@ interface MessageCount {
  * Check whether the comms session is alive.
  */
 function isCommsAlive(): boolean {
-  return listSessions().length > 0;
+  return listSessions().includes(_getCommsSession());
 }
 
 /**
