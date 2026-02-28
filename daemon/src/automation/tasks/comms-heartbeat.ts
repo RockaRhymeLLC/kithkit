@@ -37,8 +37,7 @@ interface MessageCount {
  * so a running orchestrator (orch1) doesn't produce a false positive.
  */
 function isCommsAlive(): boolean {
-  const commsSession = _getCommsSession();
-  return listSessions().includes(commsSession);
+  return listSessions().includes(_getCommsSession());
 }
 
 /**

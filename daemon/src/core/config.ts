@@ -16,6 +16,7 @@ export interface AgentConfig {
 
 export interface DaemonConfig {
   port: number;
+  bind_host?: string;
   log_level: 'debug' | 'info' | 'warn' | 'error';
   log_dir: string;
   log_rotation: { max_size_mb: number; max_files: number };
@@ -38,15 +39,15 @@ export interface SecurityConfig {
 }
 
 export interface TmuxConfig {
-  session: string;
+  session?: string;
 }
 
 export interface KithkitConfig {
   agent: AgentConfig;
+  tmux?: TmuxConfig;
   daemon: DaemonConfig;
   scheduler: SchedulerConfig;
   security: SecurityConfig;
-  tmux?: TmuxConfig;
 }
 
 // ── Defaults ─────────────────────────────────────────────────

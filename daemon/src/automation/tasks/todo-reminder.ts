@@ -1,57 +1,66 @@
 /**
  * Todo Reminder — prompts the agent to work on pending todos.
  *
- * Queries the todos table in SQLite for actionable items and injects
- * a reminder into the comms tmux session.
+ * Queries the database for actionable todos and injects a reminder
+ * into the session. Skips if all todos are blocked.
  */
 
 import { query } from '../../core/db.js';
-import { injectMessage, listSessions } from '../../agents/tmux.js';
+import { injectText, sessionExists } from '../../core/session-bridge.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('todo-reminder');
 
 interface TodoRow {
-  id: number;
+  id: string;
   title: string;
-  priority: string;
   status: string;
+  priority: string | null;
 }
 
 async function run(): Promise<void> {
-  // Check if comms session is alive using tmux.ts (works under launchd)
-  const sessions = listSessions();
-  if (sessions.length === 0) {
+  // Check if comms session is alive
+  if (!sessionExists()) {
     log.debug('Skipping reminder: no tmux session');
     return;
   }
 
-  // Query actionable todos (pending or in_progress)
-  const actionable = query<TodoRow>(
-    `SELECT id, title, priority, status FROM todos
-     WHERE status IN ('pending', 'in_progress')
+  // Query actionable todos from the database
+  const todos = query<TodoRow>(
+    `SELECT id, title, status, priority FROM todos
+     WHERE status IN ('pending', 'in_progress', 'blocked')
      ORDER BY
-       CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 ELSE 2 END,
+       CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
        created_at ASC`,
   );
 
-  if (actionable.length === 0) {
-    log.debug('No actionable todos');
+  if (todos.length === 0) {
+    log.debug('No open todos');
     return;
   }
 
-  // Pick the highest-priority todo as suggestion
-  const top = actionable[0]!;
-  const suggestion = ` Highest priority: [#${top.id}] ${top.title}`;
+  // Categorize todos: actionable vs blocked
+  const actionable = todos.filter(t => t.status !== 'blocked');
+  const blockedCount = todos.length - actionable.length;
 
-  log.info(`Reminding about ${actionable.length} actionable todo(s)`);
-
-  const reminder = `[System] You have ${actionable.length} actionable todo(s).${suggestion} Run /todo list, pick one, and start working on it now. Reminder: if you're stuck on something after 2 attempts, pivot to a different approach or move to another task.`;
-  const injected = injectMessage('comms', reminder);
-  if (!injected) {
-    log.warn('Failed to inject todo reminder into comms session');
+  // If ALL todos are blocked, skip the nag
+  if (actionable.length === 0 && blockedCount > 0) {
+    log.debug(`All ${blockedCount} todo(s) are blocked — skipping reminder`);
+    return;
   }
+
+  // Suggest the highest priority actionable todo
+  let suggestion = '';
+  if (actionable[0]) {
+    suggestion = ` Highest priority: [${actionable[0].id}] ${actionable[0].title}`;
+  }
+
+  const blockedNote = blockedCount > 0 ? ` (${blockedCount} blocked)` : '';
+  log.info(`Reminding about ${actionable.length} actionable todo(s)${blockedNote}`);
+
+  const reminder = `[System] You have ${actionable.length} actionable todo(s)${blockedNote}.${suggestion} Run /todo list, pick one, and start working on it now.`;
+  injectText(reminder);
 }
 
 /**

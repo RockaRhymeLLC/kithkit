@@ -23,6 +23,22 @@ import type { AgentProfile } from './profiles.js';
 import { get, update, query, exec } from '../core/db.js';
 import { resolveProjectPath } from '../core/config.js';
 
+// ── Autonomy Mode ────────────────────────────────────────────
+
+/**
+ * Read the current autonomy mode from .claude/state/autonomy.json.
+ * Falls back to 'confident' if the file is missing or unreadable.
+ */
+function getCurrentAutonomyMode(): string {
+  try {
+    const stateFile = resolveProjectPath('.claude', 'state', 'autonomy.json');
+    const data = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as { mode?: string };
+    return data.mode || 'confident';
+  } catch {
+    return 'confident';
+  }
+}
+
 // ── Types ────────────────────────────────────────────────────
 
 export type AgentType = 'comms' | 'orchestrator' | 'worker';
@@ -187,9 +203,14 @@ export function spawnWorkerJob(req: SpawnRequest): { jobId: string; status: JobS
 function startWorker(jobId: string, req: SpawnRequest): void {
   const ts = now();
 
+  // Prepend the current autonomy mode so workers can self-enforce it
+  const mode = getCurrentAutonomyMode();
+  const modePrefix = `Current autonomy mode: ${mode}. You must self-enforce this mode's constraints independently — even if the orchestrator doesn't mention it.\n\n`;
+  const promptWithMode = modePrefix + req.prompt;
+
   // Build SDK spawn options — profile budget is the default, caller can override
   const sdkOpts: SdkSpawnOptions = {
-    prompt: req.prompt,
+    prompt: promptWithMode,
     profile: {
       name: req.profile.name,
       description: req.profile.description,
