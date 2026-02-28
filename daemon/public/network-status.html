@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Network Status</title>
+<style>
+  :root {
+    --bg: #0a0e14;
+    --surface: #131920;
+    --border: #1f2937;
+    --text: #c5cdd8;
+    --dim: #5c6773;
+    --green: #7fd962;
+    --red: #f26d6d;
+    --yellow: #f2c94c;
+    --blue: #59c2ff;
+    --mono: 'SF Mono', 'Fira Code', 'JetBrains Mono', 'Cascadia Code', Menlo, monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 14px;
+    min-height: 100vh;
+    padding: 2rem;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 2rem;
+    padding-bottom: 1rem;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 {
+    font-size: 1.2rem;
+    font-weight: 400;
+    color: var(--blue);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+  }
+  header .subtitle {
+    color: var(--dim);
+    font-size: 0.75rem;
+    margin-top: 0.4rem;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 1.5rem;
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1.5rem;
+    position: relative;
+    transition: border-color 0.3s;
+  }
+  .card.online { border-color: #2a3a2a; }
+  .card.offline { border-color: #3a2a2a; }
+  .card.loading { border-color: var(--border); }
+  .card-header {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+  }
+  .status-dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .status-dot.online { background: var(--green); box-shadow: 0 0 8px rgba(127,217,98,0.4); }
+  .status-dot.offline { background: var(--red); box-shadow: 0 0 8px rgba(242,109,109,0.4); }
+  .status-dot.loading { background: var(--dim); animation: pulse 1.5s infinite; }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+  }
+  .agent-name {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .agent-host {
+    margin-left: auto;
+    color: var(--dim);
+    font-size: 0.75rem;
+  }
+  .fields {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 0.3rem 1rem;
+    font-size: 0.8rem;
+  }
+  .fields .label {
+    color: var(--dim);
+    text-transform: uppercase;
+    font-size: 0.65rem;
+    letter-spacing: 0.05em;
+    align-self: center;
+  }
+  .fields .value {
+    color: var(--text);
+  }
+  .fields .value.green { color: var(--green); }
+  .fields .value.red { color: var(--red); }
+  .fields .value.yellow { color: var(--yellow); }
+  footer {
+    text-align: center;
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+    color: var(--dim);
+    font-size: 0.7rem;
+  }
+  footer .refresh-info { margin-top: 0.3rem; }
+  .countdown { color: var(--blue); }
+  .error-detail {
+    font-size: 0.7rem;
+    color: var(--dim);
+    margin-top: 0.5rem;
+    font-style: italic;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>&#9632; Agent Network Status</h1>
+  <div class="subtitle">kithkit daemon health monitor</div>
+</header>
+
+<div class="grid" id="grid"></div>
+
+<footer>
+  <div>Auto-refresh every 30s &middot; Next refresh in <span class="countdown" id="countdown">30</span>s</div>
+  <div class="refresh-info" id="lastRefresh"></div>
+</footer>
+
+<script>
+const AGENTS = [
+  { name: 'BMO',    host: 'localhost:3847',         url: 'http://localhost:3847/health' },
+  { name: 'R2',     host: '192.168.12.212:3847',    url: 'http://192.168.12.212:3847/health' },
+  { name: 'Skippy', host: '192.168.12.142:3847',    url: 'http://192.168.12.142:3847/health' },
+];
+
+const REFRESH_INTERVAL = 30;
+let countdown = REFRESH_INTERVAL;
+
+function formatUptime(seconds) {
+  if (!seconds && seconds !== 0) return '—';
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const parts = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  parts.push(`${s}s`);
+  return parts.join(' ');
+}
+
+function timeAgo(ts) {
+  if (!ts) return '—';
+  const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (diff < 5) return 'just now';
+  if (diff < 60) return `${diff}s ago`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  return `${Math.floor(diff / 3600)}h ago`;
+}
+
+function renderCard(agent, data) {
+  const status = data ? (data.error ? 'offline' : 'online') : 'loading';
+  const statusLabel = status === 'online' ? 'HEALTHY' : status === 'offline' ? 'UNREACHABLE' : 'CHECKING...';
+  const statusClass = status === 'online' ? 'green' : status === 'offline' ? 'red' : '';
+
+  return `
+    <div class="card ${status}">
+      <div class="card-header">
+        <div class="status-dot ${status}"></div>
+        <span class="agent-name">${agent.name}</span>
+        <span class="agent-host">${agent.host}</span>
+      </div>
+      <div class="fields">
+        <span class="label">Status</span>
+        <span class="value ${statusClass}">${statusLabel}</span>
+
+        <span class="label">Uptime</span>
+        <span class="value">${data && !data.error ? formatUptime(data.uptime) : '—'}</span>
+
+        <span class="label">Version</span>
+        <span class="value">${data && !data.error ? (data.version || '—') : '—'}</span>
+
+        <span class="label">Extension</span>
+        <span class="value">${data && !data.error ? (data.extension || 'none') : '—'}</span>
+
+        <span class="label">Degraded</span>
+        <span class="value ${data && !data.error ? (data.degraded ? 'yellow' : 'green') : ''}">${data && !data.error ? (data.degraded ? 'YES' : 'NO') : '—'}</span>
+
+        <span class="label">Checked</span>
+        <span class="value">${data ? timeAgo(data._checkedAt) : '—'}</span>
+      </div>
+      ${data && data.error ? `<div class="error-detail">${data.error}</div>` : ''}
+    </div>
+  `;
+}
+
+async function fetchAgent(agent) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const res = await fetch(agent.url, { signal: controller.signal });
+    clearTimeout(timeout);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    data._checkedAt = new Date().toISOString();
+    return data;
+  } catch (err) {
+    return { error: err.message || 'Connection failed', _checkedAt: new Date().toISOString() };
+  }
+}
+
+async function refresh() {
+  const results = await Promise.all(AGENTS.map(a => fetchAgent(a)));
+  const grid = document.getElementById('grid');
+  grid.innerHTML = AGENTS.map((agent, i) => renderCard(agent, results[i])).join('');
+  document.getElementById('lastRefresh').textContent =
+    `Last refresh: ${new Date().toLocaleTimeString()}`;
+  countdown = REFRESH_INTERVAL;
+}
+
+function tick() {
+  countdown--;
+  document.getElementById('countdown').textContent = Math.max(0, countdown);
+  if (countdown <= 0) refresh();
+}
+
+// Initial load
+refresh();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
