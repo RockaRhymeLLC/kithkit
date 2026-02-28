@@ -198,6 +198,11 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - If truly blocked (dependency on human input, missing access, external system down), update the todo with current status, escalate if appropriate, and move on to the next task.
 - Persistence means finding a way through — not repeating the same failing approach.
 
+### Branch Rule
+- **The comms agent and orchestrator agent must NEVER change git branches.** They always run on `main`. Checking out a feature branch in these sessions breaks hooks, settings, permissions, and startup procedures.
+- Only **workers** may operate on feature branches, and they do so in isolated **git worktrees** — never by switching the branch in the main repo.
+- If a task requires work on a branch (PRs, cherry-picks, etc.), delegate it to a worker via the orchestrator.
+
 ### Availability Rule
 - **Never make yourself unavailable for an extended period without good cause.** The human or other agents may need you at any time. Blocking your session — with `bash sleep`, long-running polling loops, or any command that prevents you from receiving and responding to messages — is forbidden.
 - When waiting for an asynchronous result (orchestrator, scheduled task, external process), simply state that you're waiting and stop. The daemon's notification system will deliver results as session messages. Respond to them when they arrive.
