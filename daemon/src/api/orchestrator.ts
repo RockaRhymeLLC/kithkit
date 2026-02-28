@@ -18,6 +18,7 @@ import {
 } from '../agents/tmux.js';
 import { sendMessage } from '../agents/message-router.js';
 import { createSessionDir } from '../agents/lifecycle.js';
+import { randomUUID } from 'node:crypto';
 import { exec, query, update } from '../core/db.js';
 import { resolveProjectPath } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
@@ -55,6 +56,22 @@ export async function handleOrchestratorRoute(
     const context = typeof body.context === 'string' ? body.context : undefined;
     const alive = isOrchestratorAlive();
 
+    // Create an orchestrator_tasks row for tracking
+    const taskId = randomUUID();
+    const ts = new Date().toISOString();
+    const priority = typeof body.priority === 'number' ? body.priority : 0;
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+      taskId,
+      task.slice(0, 200),
+      context ?? task,
+      priority,
+      ts,
+      ts,
+    );
+    log.info('Created orchestrator task', { taskId, title: task.slice(0, 100) });
+
     if (!alive) {
       // Cancel any pending shutdown timer — a new spawn supersedes a pending shutdown
       if (pendingShutdownTimer) {
@@ -67,16 +84,20 @@ export async function handleOrchestratorRoute(
       const sessionDir = createSessionDir('orchestrator');
 
       // Spawn orchestrator with the task as initial prompt (includes memory context)
-      const orchestratorPrompt = await buildOrchestratorPrompt(task, context, sessionDir);
+      const orchestratorPrompt = await buildOrchestratorPrompt(task, context, sessionDir, taskId);
       const session = spawnOrchestratorSession(orchestratorPrompt);
 
       if (!session) {
+        // Mark task as failed since we couldn't spawn
+        exec(
+          `UPDATE orchestrator_tasks SET status = 'failed', error = 'Failed to spawn orchestrator session', updated_at = ? WHERE id = ?`,
+          new Date().toISOString(), taskId,
+        );
         json(res, 500, withTimestamp({ error: 'Failed to spawn orchestrator session' }));
         return true;
       }
 
       // Register in agents table
-      const ts = new Date().toISOString();
       try {
         exec(
           `INSERT INTO agents (id, type, profile, status, tmux_session, started_at, created_at, updated_at)
@@ -106,13 +127,14 @@ export async function handleOrchestratorRoute(
         from: 'comms',
         to: 'orchestrator',
         type: 'task',
-        body: JSON.stringify({ task, context }),
+        body: JSON.stringify({ task, context, task_id: taskId }),
       });
 
-      log.info('Orchestrator spawned for task', { task: task.slice(0, 100) });
+      log.info('Orchestrator spawned for task', { task: task.slice(0, 100), taskId });
       json(res, 202, withTimestamp({
         status: 'spawned',
         session,
+        task_id: taskId,
         message: 'Orchestrator session created with task',
       }));
       return true;
@@ -130,7 +152,7 @@ export async function handleOrchestratorRoute(
       from: 'comms',
       to: 'orchestrator',
       type: 'task',
-      body: JSON.stringify({ task, context }),
+      body: JSON.stringify({ task, context, task_id: taskId }),
     });
 
     // Update activity so idle checker knows we just got work
@@ -139,9 +161,10 @@ export async function handleOrchestratorRoute(
       updated_at: new Date().toISOString(),
     });
 
-    log.info('Task escalated to running orchestrator', { task: task.slice(0, 100) });
+    log.info('Task escalated to running orchestrator', { task: task.slice(0, 100), taskId });
     json(res, 200, withTimestamp({
       status: 'escalated',
+      task_id: taskId,
       message: 'Task sent to running orchestrator',
     }));
     return true;
@@ -218,7 +241,7 @@ export async function handleOrchestratorRoute(
 
 // ── Helpers ──────────────────────────────────────────────────
 
-async function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: string): Promise<string> {
+async function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: string, taskId?: string): Promise<string> {
   const parts = [
     'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality, no humor, no conversational style.',
     '',
@@ -285,6 +308,13 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '',
     `Task: ${task}`,
   ];
+
+  if (taskId) {
+    parts.push('', `Task ID: ${taskId}`,
+      'Update this task\'s status as you work: PUT http://localhost:3847/api/orchestrator/tasks/' + taskId,
+      'Write your result to the task row when done (status: completed, result: <summary>).',
+    );
+  }
 
   if (sessionDir) {
     parts.push('', `Session directory (for artifacts if needed): ${sessionDir}`);

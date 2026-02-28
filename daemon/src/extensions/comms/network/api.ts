@@ -8,6 +8,7 @@
 import type http from 'node:http';
 import { json, withTimestamp, parseBody } from '../../../api/helpers.js';
 import { createLogger } from '../../../core/logger.js';
+import { sendMessage } from '../../../agents/message-router.js';
 import { getNetworkClient, getCommunityStatus } from './sdk-bridge.js';
 import { checkRegistrationStatus } from './registration.js';
 import type { BmoConfig } from '../../config.js';
@@ -79,6 +80,20 @@ export async function handleNetworkRoute(
         return true;
       }
       const result = await network.send(body.to, body.payload as Record<string, unknown>);
+
+      // Log outbound A2A message to the messages table for audit trail
+      try {
+        sendMessage({
+          from: 'comms',
+          to: `a2a:${body.to}`,
+          type: 'text',
+          body: JSON.stringify(body.payload),
+          metadata: { channel: 'a2a', recipient: body.to, network_result: result },
+        });
+      } catch (err) {
+        log.warn('Failed to log outbound A2A message', { error: String(err) });
+      }
+
       json(res, 200, withTimestamp(result));
       return true;
     }
@@ -231,6 +246,20 @@ export async function handleNetworkRoute(
           return true;
         }
         const result = await network.sendToGroup(groupId, body.payload as Record<string, unknown>);
+
+        // Log outbound A2A group message to the messages table for audit trail
+        try {
+          sendMessage({
+            from: 'comms',
+            to: `a2a:group:${groupId}`,
+            type: 'text',
+            body: JSON.stringify(body.payload),
+            metadata: { channel: 'a2a', group_id: groupId, network_result: result },
+          });
+        } catch (err) {
+          log.warn('Failed to log outbound A2A group message', { error: String(err) });
+        }
+
         json(res, 200, withTimestamp(result));
         return true;
       }
