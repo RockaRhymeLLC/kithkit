@@ -11,7 +11,7 @@
  */
 
 import { query, exec } from '../../core/db.js';
-import { injectMessage, listSessions, _getCommsSession } from '../../agents/tmux.js';
+import { injectMessage, listSessions, _getCommsSession, getOrchestratorState } from '../../agents/tmux.js';
 import { getLastNotificationTime } from './message-delivery.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';

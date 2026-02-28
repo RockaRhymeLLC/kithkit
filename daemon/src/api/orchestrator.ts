@@ -147,12 +147,17 @@ export async function handleOrchestratorRoute(
       log.info('Cancelled pending shutdown timer — new task for running orchestrator');
     }
 
-    // Already alive — inject task as message
+    const orchState = getOrchestratorState();
+
+    // Always store the task message so the wrapper's poll loop can find it
     sendMessage({
       from: 'comms',
       to: 'orchestrator',
       type: 'task',
       body: JSON.stringify({ task, context, task_id: taskId }),
+      // When Claude is actively running, use direct=false so the message is
+      // queued for the wrapper's poll loop instead of injected into tmux
+      direct: false,
     });
 
     // Update activity so idle checker knows we just got work
@@ -161,12 +166,21 @@ export async function handleOrchestratorRoute(
       updated_at: new Date().toISOString(),
     });
 
-    log.info('Task escalated to running orchestrator', { task: task.slice(0, 100), taskId });
-    json(res, 200, withTimestamp({
-      status: 'escalated',
-      task_id: taskId,
-      message: 'Task sent to running orchestrator',
-    }));
+    if (orchState === 'active') {
+      log.info('Task queued for running orchestrator (Claude active, wrapper will poll)', { task: task.slice(0, 100), taskId });
+      json(res, 200, withTimestamp({
+        status: 'queued',
+        task_id: taskId,
+        message: 'Task queued — orchestrator is busy, wrapper will pick it up between runs',
+      }));
+    } else {
+      log.info('Task escalated to waiting orchestrator', { task: task.slice(0, 100), taskId });
+      json(res, 200, withTimestamp({
+        status: 'escalated',
+        task_id: taskId,
+        message: 'Task sent to waiting orchestrator',
+      }));
+    }
     return true;
   }
 
@@ -203,19 +217,36 @@ export async function handleOrchestratorRoute(
       return true;
     }
 
+    const body = await parseBody(req).catch(() => ({} as Record<string, unknown>));
+    const force = (body as Record<string, unknown>).force === true;
+    const orchState = getOrchestratorState();
+
+    // If Claude is actively running and this isn't a force shutdown,
+    // wait for the current task to complete before initiating shutdown.
+    // Use an extended timeout (3 min) to give the task time to finish.
+    const activeTimeout = 3 * 60_000; // 3 minutes for active tasks
+    const effectiveTimeout = (!force && orchState === 'active') ? activeTimeout : SHUTDOWN_TIMEOUT_MS;
+
     // Send shutdown message
     sendMessage({
       from: 'daemon',
       to: 'orchestrator',
       type: 'status',
-      body: JSON.stringify({ action: 'shutdown', reason: 'requested' }),
+      body: JSON.stringify({
+        action: 'shutdown',
+        reason: (body as Record<string, unknown>).reason ?? 'requested',
+        wait_for_completion: orchState === 'active',
+      }),
     });
 
     // Set a timeout to force-kill if no acknowledgment (cancellable on new spawn)
     pendingShutdownTimer = setTimeout(() => {
       pendingShutdownTimer = null;
       if (isOrchestratorAlive()) {
-        log.warn('Orchestrator did not acknowledge shutdown — force killing');
+        log.warn('Orchestrator did not shut down within timeout — force killing', {
+          timeout_ms: effectiveTimeout,
+          was_active: orchState === 'active',
+        });
         killOrchestratorSession();
         update('agents', 'orchestrator', {
           status: 'stopped',
@@ -224,14 +255,16 @@ export async function handleOrchestratorRoute(
         logActivity({
           agent_id: 'orchestrator',
           event_type: 'session_end',
-          details: 'Force-killed after shutdown timeout (no acknowledgment)',
+          details: `Force-killed after ${effectiveTimeout / 1000}s shutdown timeout (was ${orchState})`,
         });
       }
-    }, SHUTDOWN_TIMEOUT_MS);
+    }, effectiveTimeout);
 
+    log.info('Shutdown requested', { orchState, force, timeout_ms: effectiveTimeout });
     json(res, 200, withTimestamp({
       status: 'shutdown_requested',
-      timeout_ms: SHUTDOWN_TIMEOUT_MS,
+      timeout_ms: effectiveTimeout,
+      was_active: orchState === 'active',
     }));
     return true;
   }
