@@ -162,7 +162,7 @@ network:
     - name: "home"
       primary: "https://relay.bmobot.ai"
       failover: "https://relay2.bmobot.ai"
-  owner_email: "bmo@bmobot.ai"
+  owner_email: "daveh@outlook.com"
   endpoint: "https://bmo.bmobot.ai/agent/p2p"
   auto_approve_contacts: false
   heartbeat_interval: 300000

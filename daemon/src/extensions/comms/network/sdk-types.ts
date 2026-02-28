@@ -100,6 +100,70 @@ export interface GroupSendResult {
   failed: string[];
 }
 
+export interface Contact {
+  agent: string;
+  publicKey: string;
+  endpoint: string;
+  since: string;
+  online: boolean;
+  lastSeen: string | null;
+  keyUpdatedAt: string | null;
+  recoveryInProgress: boolean;
+}
+
+export interface ContactActionResult {
+  ok: boolean;
+  status?: number;
+  error?: string;
+}
+
+export interface PresenceInfo {
+  agent: string;
+  online: boolean;
+  endpoint?: string;
+  lastSeen: string;
+}
+
+export interface RelayGroup {
+  groupId: string;
+  name: string;
+  owner: string;
+  status: string;
+  role: string;
+  settings?: Record<string, unknown>;
+  memberCount?: number;
+  createdAt: string;
+}
+
+export interface RelayGroupMember {
+  agent: string;
+  role: string;
+  joinedAt: string;
+}
+
+export interface RelayGroupInvitation {
+  groupId: string;
+  groupName: string;
+  invitedBy: string;
+  greeting: string | null;
+  createdAt: string;
+}
+
+export interface DeliveryAttempt {
+  timestamp: string;
+  presenceCheck?: boolean;
+  endpoint?: string;
+  httpStatus?: number;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface DeliveryReport {
+  messageId: string;
+  attempts: DeliveryAttempt[];
+  finalStatus: string;
+}
+
 export interface A2ANetworkClient {
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -120,4 +184,33 @@ export interface A2ANetworkClient {
     getActiveRelayType(communityName: string): 'primary' | 'failover';
     getFailureCount(communityName: string): number;
   };
+
+  // Contact management
+  requestContact(nameOrQualified: string): Promise<ContactActionResult>;
+  getPendingRequests(): Promise<ContactRequest[]>;
+  denyContact(username: string): Promise<void>;
+  removeContact(username: string): Promise<void>;
+  getContacts(): Promise<Contact[]>;
+
+  // Presence
+  checkPresence(username: string): Promise<PresenceInfo>;
+
+  // Groups
+  createGroup(name: string, settings?: Record<string, unknown>): Promise<RelayGroup>;
+  inviteToGroup(groupId: string, agent: string, greeting?: string): Promise<void>;
+  acceptGroupInvitation(groupId: string): Promise<void>;
+  declineGroupInvitation(groupId: string): Promise<void>;
+  leaveGroup(groupId: string): Promise<void>;
+  removeFromGroup(groupId: string, agent: string): Promise<void>;
+  dissolveGroup(groupId: string): Promise<void>;
+  getGroups(): Promise<RelayGroup[]>;
+  getGroupMembers(groupId: string): Promise<RelayGroupMember[]>;
+  getGroupInvitations(): Promise<RelayGroupInvitation[]>;
+  transferGroupOwnership(groupId: string, newOwner: string): Promise<void>;
+
+  // Delivery tracking
+  getDeliveryReport(messageId: string): DeliveryReport | undefined;
+
+  // Broadcasts
+  checkBroadcasts(): Promise<Broadcast[]>;
 }
