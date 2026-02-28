@@ -66,6 +66,37 @@ export async function handleNetworkRoute(
       return true;
     }
 
+    // ── Direct Messaging ──────────────────────────────────────
+
+    if (subpath === 'send' && method === 'POST') {
+      const body = await parseBody(req);
+      if (!body.to || typeof body.to !== 'string') {
+        json(res, 400, withTimestamp({ error: 'to (recipient username) is required' }));
+        return true;
+      }
+      if (!body.payload || typeof body.payload !== 'object') {
+        json(res, 400, withTimestamp({ error: 'payload is required' }));
+        return true;
+      }
+      const result = await network.send(body.to, body.payload as Record<string, unknown>);
+      json(res, 200, withTimestamp(result));
+      return true;
+    }
+
+    // ── Key Rotation ─────────────────────────────────────────
+
+    if (subpath === 'keys/rotate' && method === 'POST') {
+      const body = await parseBody(req);
+      if (!body.newPublicKey || typeof body.newPublicKey !== 'string') {
+        json(res, 400, withTimestamp({ error: 'newPublicKey (base64) is required' }));
+        return true;
+      }
+      const communities = Array.isArray(body.communities) ? body.communities as string[] : undefined;
+      const result = await network.rotateKey(body.newPublicKey, communities ? { communities } : undefined);
+      json(res, 200, withTimestamp(result));
+      return true;
+    }
+
     // ── Contacts ───────────────────────────────────────────────
 
     if (subpath === 'contacts' && method === 'GET') {
@@ -192,8 +223,8 @@ export async function handleNetworkRoute(
         return true;
       }
 
-      // POST /api/network/groups/:groupId/send
-      if (action === 'send' && method === 'POST') {
+      // POST /api/network/groups/:groupId/send (or /message — alias)
+      if ((action === 'send' || action === 'message') && method === 'POST') {
         const body = await parseBody(req);
         if (!body.payload || typeof body.payload !== 'object') {
           json(res, 400, withTimestamp({ error: 'payload is required' }));
@@ -245,6 +276,20 @@ export async function handleNetworkRoute(
         json(res, 200, withTimestamp({ ok: true }));
         return true;
       }
+    }
+
+    // GET /api/network/groups/:groupId — single group details
+    const groupSingleMatch = subpath.match(/^groups\/([^/]+)$/);
+    if (groupSingleMatch && method === 'GET') {
+      const [, groupId] = groupSingleMatch;
+      const groups = await network.getGroups();
+      const group = groups.find(g => g.groupId === groupId);
+      if (!group) {
+        json(res, 404, withTimestamp({ error: 'Group not found' }));
+        return true;
+      }
+      json(res, 200, withTimestamp({ group }));
+      return true;
     }
 
     // DELETE /api/network/groups/:groupId

@@ -164,6 +164,16 @@ export interface DeliveryReport {
   finalStatus: string;
 }
 
+export interface KeyRotationCommunityResult {
+  community: string;
+  success: boolean;
+  error?: string;
+}
+
+export interface KeyRotationResult {
+  results: KeyRotationCommunityResult[];
+}
+
 export interface A2ANetworkClient {
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -176,7 +186,7 @@ export interface A2ANetworkClient {
   receiveMessage(envelope: WireEnvelope): void;
   receiveGroupMessage(envelope: WireEnvelope): Promise<GroupMessage | null>;
   acceptContact(username: string): Promise<void>;
-  rotateKey(newPublicKey: string): Promise<void>;
+  rotateKey(newPublicKey: string, options?: { communities?: string[] }): Promise<KeyRotationResult>;
   send(to: string, payload: Record<string, unknown>): Promise<SendResult>;
   sendToGroup(groupId: string, payload: Record<string, unknown>): Promise<GroupSendResult>;
   readonly communities: Array<{ name: string; primary: string; failover?: string }>;
