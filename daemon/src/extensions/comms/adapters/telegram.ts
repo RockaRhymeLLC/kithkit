@@ -27,7 +27,7 @@ import type {
 } from '../../../comms/adapter.js';
 import { readKeychain } from '../../../core/keychain.js';
 import { resolveProjectPath, loadConfig } from '../../../core/config.js';
-import { sessionExists, startSession, injectText } from '../../../core/session-bridge.js';
+import { commsSessionExists, startSession, injectToComms, COMMS_SESSION } from '../../../core/session-bridge.js';
 import { classifySender, checkRateLimit, registerTier } from '../../../core/access-control.js';
 import { createLogger } from '../../../core/logger.js';
 import { updateLastActiveChannel } from '../channel-router.js';
@@ -367,7 +367,7 @@ async function injectWithSessionWakeup(
 ): Promise<void> {
   const token = await getBotToken();
 
-  if (!sessionExists()) {
+  if (!commsSessionExists()) {
     log.info('No session found, waking up...');
     setChannel('telegram');
     if (token) startTypingLoop(token, replyChatId);
@@ -375,7 +375,7 @@ async function injectWithSessionWakeup(
 
     if (!_sessionStarting) {
       _sessionStarting = true;
-      const started = startSession();
+      const started = startSession(COMMS_SESSION);
       if (started) {
         await new Promise(resolve => setTimeout(resolve, 12_000));
       }
@@ -401,7 +401,7 @@ async function injectWithSessionWakeup(
 function doInject(text: string, firstName: string, isThirdParty: boolean): void {
   const prefix = isThirdParty ? '[3rdParty][Telegram]' : '[Telegram]';
   const formatted = `${prefix} ${firstName}: ${text}`;
-  const ok = injectText(formatted, { pressEnter: true });
+  const ok = injectToComms(formatted, { pressEnter: true });
   if (ok) {
     log.info(`Injected ${isThirdParty ? '3rd-party ' : ''}message from ${firstName} (${text.substring(0, 50)}...)`);
   }
@@ -593,8 +593,8 @@ function handleReaction(reaction: MessageReactionUpdated): void {
   _replyChatId = chatId;
   persistReplyChatId(chatId);
 
-  if (sessionExists()) {
-    injectText(`[Telegram] ${firstName} ${parts.join(', ')} on a message`);
+  if (commsSessionExists()) {
+    injectToComms(`[Telegram] ${firstName} ${parts.join(', ')} on a message`);
     log.info(`Reaction from ${firstName}: ${parts.join(', ')}`);
   }
 }
@@ -758,12 +758,12 @@ export class BmoTelegramAdapter implements ChannelAdapter {
     const token = await getBotToken();
     if (token) startTypingLoop(token, chatId);
 
-    if (!sessionExists()) {
+    if (!commsSessionExists()) {
       setChannel('telegram');
       _pendingMessages.push({ text: trimmed, senderId: chatId, replyChatId: chatId, firstName: 'User' });
       if (!_sessionStarting) {
         _sessionStarting = true;
-        startSession();
+        startSession(COMMS_SESSION);
         await new Promise(resolve => setTimeout(resolve, 12_000));
         _sessionStarting = false;
         for (const msg of _pendingMessages) {

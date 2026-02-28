@@ -15,7 +15,8 @@ import type {
 } from './sdk-types.js';
 import type { BmoConfig, NetworkCommunity } from '../../config.js';
 import { createLogger } from '../../../core/logger.js';
-import { sessionExists, injectText } from '../../../core/session-bridge.js';
+import { commsSessionExists } from '../../../core/session-bridge.js';
+import { sendMessage } from '../../../agents/message-router.js';
 import { readKeychain } from '../../../core/keychain.js';
 import { loadKeyFromKeychain } from './crypto.js';
 import { logCommsEntry, getDisplayName } from '../agent-comms.js';
@@ -222,10 +223,18 @@ function wireMessageEvent(): void {
     const verified = msg.verified ? '' : ' [UNVERIFIED]';
     const formatted = `[Network] ${displayName}${verified}: ${text}`;
 
-    if (sessionExists()) {
-      injectText(formatted);
-    } else {
-      log.info('No session — network message logged but not injected', {
+    // Persist inbound message to DB so content is never lost
+    sendMessage({
+      from: `network:${msg.sender}`,
+      to: 'comms',
+      type: 'text',
+      body: formatted,
+      metadata: { source: 'a2a-network', sender: msg.sender, messageId: msg.messageId, verified: msg.verified },
+      direct: true,  // inject immediately if comms session is alive
+    });
+
+    if (!commsSessionExists()) {
+      log.info('No comms session — network message persisted to DB but not injected', {
         from: msg.sender,
         messageId: msg.messageId,
       });
@@ -253,10 +262,18 @@ function wireGroupMessageEvent(): void {
     const groupTag = msg.groupId.slice(0, 8);
     const formatted = `[Group:${groupTag}] ${displayName}${verified}: ${text}`;
 
-    if (sessionExists()) {
-      injectText(formatted);
-    } else {
-      log.info('No session — group message logged but not injected', {
+    // Persist inbound group message to DB
+    sendMessage({
+      from: `network:${msg.sender}`,
+      to: 'comms',
+      type: 'text',
+      body: formatted,
+      metadata: { source: 'a2a-network', sender: msg.sender, messageId: msg.messageId, groupId: msg.groupId, verified: msg.verified },
+      direct: true,
+    });
+
+    if (!commsSessionExists()) {
+      log.info('No comms session — group message persisted to DB but not injected', {
         from: msg.sender,
         groupId: msg.groupId,
         messageId: msg.messageId,
@@ -284,10 +301,18 @@ function wireGroupInvitationEvent(): void {
     const greeting = inv.greeting ? `: "${inv.greeting}"` : '';
     const formatted = `[Network] Group invitation: "${inv.groupName}" from ${displayName}${greeting}. Accept with: network.acceptGroupInvitation('${inv.groupId}')`;
 
-    if (sessionExists()) {
-      injectText(formatted);
-    } else {
-      log.info('No session — group invitation logged', {
+    // Persist to DB and inject to comms
+    sendMessage({
+      from: `network:${inv.invitedBy}`,
+      to: 'comms',
+      type: 'text',
+      body: formatted,
+      metadata: { source: 'a2a-network', type: 'group-invitation', groupId: inv.groupId, groupName: inv.groupName, invitedBy: inv.invitedBy },
+      direct: true,
+    });
+
+    if (!commsSessionExists()) {
+      log.info('No comms session — group invitation persisted to DB', {
         groupId: inv.groupId,
         groupName: inv.groupName,
         invitedBy: inv.invitedBy,
@@ -307,9 +332,15 @@ function wireContactRequestEvent(autoApprove: boolean): void {
       try {
         await network.acceptContact(req.from);
         log.info(`Auto-approved contact request from ${req.from}`);
-        if (sessionExists()) {
-          injectText(`[Network] Auto-approved contact request from ${displayName}`);
-        }
+        const formatted = `[Network] Auto-approved contact request from ${displayName}`;
+        sendMessage({
+          from: `network:${req.from}`,
+          to: 'comms',
+          type: 'text',
+          body: formatted,
+          metadata: { source: 'a2a-network', type: 'contact-request', autoApproved: true, from: req.from },
+          direct: true,
+        });
       } catch (err) {
         log.error('Failed to auto-approve contact', {
           from: req.from,
@@ -322,10 +353,17 @@ function wireContactRequestEvent(autoApprove: boolean): void {
     const emailInfo = req.requesterEmail ? ` (${req.requesterEmail})` : '';
     const prompt = `[Network] Contact request from ${displayName}${emailInfo}. Accept with: network.acceptContact('${req.from}')`;
 
-    if (sessionExists()) {
-      injectText(prompt);
-    } else {
-      log.info('No session — contact request logged', { from: req.from });
+    sendMessage({
+      from: `network:${req.from}`,
+      to: 'comms',
+      type: 'text',
+      body: prompt,
+      metadata: { source: 'a2a-network', type: 'contact-request', from: req.from, email: req.requesterEmail },
+      direct: true,
+    });
+
+    if (!commsSessionExists()) {
+      log.info('No comms session — contact request persisted to DB', { from: req.from });
     }
   });
 }
@@ -338,9 +376,14 @@ function wireBroadcastEvent(): void {
     const summary = broadcast.payload?.message ?? broadcast.type;
     const formatted = `[Network Broadcast] ${displayName}: [${broadcast.type}] ${summary}`;
 
-    if (sessionExists()) {
-      injectText(formatted);
-    }
+    sendMessage({
+      from: `network:${broadcast.sender}`,
+      to: 'comms',
+      type: 'text',
+      body: formatted,
+      metadata: { source: 'a2a-network', type: 'broadcast', broadcastType: broadcast.type, sender: broadcast.sender },
+      direct: true,
+    });
 
     log.info('Received broadcast', {
       type: broadcast.type,
@@ -358,8 +401,14 @@ function wireCommunityStatusEvent(): void {
       status: event.status,
     });
 
-    if (sessionExists()) {
-      injectText(`[Network] Community '${event.community}' is now ${event.status}`);
-    }
+    const formatted = `[Network] Community '${event.community}' is now ${event.status}`;
+    sendMessage({
+      from: 'network:system',
+      to: 'comms',
+      type: 'status',
+      body: formatted,
+      metadata: { source: 'a2a-network', type: 'community-status', community: event.community, status: event.status },
+      direct: true,
+    });
   });
 }
