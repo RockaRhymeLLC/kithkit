@@ -13,6 +13,7 @@ The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It bin
 - [Memory](#memory)
 - [Config & State](#config--state)
 - [Scheduler / Tasks](#scheduler--tasks)
+- [Orchestrator Tasks](#orchestrator-tasks)
 - [Usage & Metrics](#usage--metrics)
 
 ---
@@ -920,6 +921,100 @@ curl http://localhost:3847/api/tasks/context-watchdog/history
   ],
   "timestamp": "..."
 }
+```
+
+---
+
+## Orchestrator Tasks
+
+Structured task tracking for orchestrator work. The orchestrator is solely responsible for marking tasks completed or failed — the daemon does NOT auto-complete tasks.
+
+State machine: `pending → assigned → in_progress → completed/failed`
+
+### POST /api/orchestrator/tasks
+
+Create a task directly (normally created via `POST /api/orchestrator/escalate`).
+
+```json
+// Request body
+{
+  "title": "Implement feature X",       // required
+  "description": "Details...",          // optional
+  "priority": 0,                        // optional — 0 (normal), 1 (high), 2 (urgent)
+  "work_notes": "Initial context",     // optional
+  "timeout_seconds": 300               // optional
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 201 | Task object |
+| 400 | Missing title or invalid priority |
+
+---
+
+### GET /api/orchestrator/tasks
+
+List tasks. Filter by status with `?status=pending,in_progress`.
+
+```bash
+curl 'http://localhost:3847/api/orchestrator/tasks?status=in_progress'
+```
+
+Each task in the response includes `worker_count` and `latest_activity`.
+
+---
+
+### GET /api/orchestrator/tasks/:id
+
+Get task detail including workers, activity log, and work_notes.
+
+---
+
+### PUT /api/orchestrator/tasks/:id
+
+Update task status, result, error, or work_notes.
+
+```json
+// Mark completed
+{"status": "completed", "result": "Summary of what was done"}
+
+// Append work notes (timestamped)
+{"work_notes": "Finished subtask 2", "append_work_notes": true}
+
+// Mark failed
+{"status": "failed", "error": "Description of failure"}
+```
+
+Status transitions are validated: `pending → assigned → in_progress → completed/failed`. Terminal statuses (`completed`, `failed`) cannot be changed.
+
+The `append_work_notes: true` flag appends to existing notes with a timestamp prefix instead of overwriting.
+
+| Status | Response |
+|--------|----------|
+| 200 | Updated task object |
+| 400 | Invalid status or assignee combination |
+| 404 | Task not found |
+| 409 | Invalid transition or task already terminal |
+
+---
+
+### POST /api/orchestrator/tasks/:id/activity
+
+Post an activity entry for progress visibility. `type: "progress"` entries are forwarded to the comms tmux session.
+
+```json
+{"agent": "orchestrator", "type": "progress", "stage": "coding", "message": "Spawned 2 workers"}
+```
+
+---
+
+### POST /api/orchestrator/tasks/:id/workers
+
+Assign a worker to a task for tracking.
+
+```json
+{"worker_id": "worker-abc123", "role": "coding"}
 ```
 
 ---

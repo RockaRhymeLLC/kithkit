@@ -54,6 +54,9 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `POST /api/orchestrator/escalate` | Escalate a task to the orchestrator (spawns if needed) |
 | `GET /api/orchestrator/status` | Check orchestrator status (alive, active jobs) |
 | `POST /api/orchestrator/shutdown` | Gracefully shut down orchestrator |
+| `GET /api/orchestrator/tasks` | List orchestrator tasks (filterable by status) |
+| `GET /api/orchestrator/tasks/:id` | Get task detail (+ workers + activity + work_notes) |
+| `PUT /api/orchestrator/tasks/:id` | Update task (status, result, work_notes, append_work_notes) |
 | `POST /api/messages` | Send inter-agent message |
 | `GET /api/messages?agent=X` | Get message history |
 | `POST /api/send` | Deliver message through channel router |
@@ -139,6 +142,7 @@ Store and search memories via the daemon API:
 - Conversation: chatting, answering quick questions, giving opinions
 - Simple daemon API calls: todo CRUD, calendar checks, status reports, memory lookups
 - Relaying orchestrator results back to the human
+- Responding to orchestrator questions/clarifications — answer directly if you can, or relay to Dave
 - Single `curl` calls to the daemon API (e.g., check health, trigger a task)
 
 **Escalate to orchestrator** (via `POST /api/orchestrator/escalate`) — everything else:
@@ -169,7 +173,11 @@ When you are the orchestrator:
 - Decompose the task into subtasks
 - Spawn workers via `POST /api/agents/spawn` with appropriate profiles
 - Monitor worker status via `GET /api/agents/:id/status`
-- Synthesize results and send summary to comms via `POST /api/messages {to: 'comms', type: 'result'}`
+- **Explicitly mark tasks completed** via `PUT /api/orchestrator/tasks/<task_id>` with `{status: 'completed', result: '<summary>'}`. The daemon does NOT auto-complete tasks.
+- **Write work notes** as you progress: `PUT /api/orchestrator/tasks/<task_id>` with `{work_notes: '<note>', append_work_notes: true}`
+- Send result summary to comms via `POST /api/messages {to: 'comms', type: 'result'}` after marking the task completed
+- If you need help or clarification — ask comms via `POST /api/messages {to: 'comms', type: 'question'}`. Comms monitors messages and can answer directly or relay to Dave.
+- Task lifecycle: update to in_progress → do work + write work_notes → mark completed with result → send result to comms
 - Exit when all work is complete — the daemon will clean up your session
 
 ### Memory-First Context (Comms + Orchestrator)
@@ -222,6 +230,7 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - Messages are logged and auditable via `GET /api/messages`
 - Workers can only message the orchestrator that spawned them
 - The comms agent is the only agent that talks to humans
+- **Bidirectional comms↔orchestrator**: Comms escalates tasks to orchestrator. Orchestrator can ask comms for help via `type: "question"` or `type: "clarification"` messages. Comms should watch for these and respond promptly — either answering directly or relaying to Dave.
 
 ### Channel Delivery
 
