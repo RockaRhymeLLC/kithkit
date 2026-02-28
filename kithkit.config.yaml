@@ -258,6 +258,9 @@ scheduler:
     - name: "comms-heartbeat"
       enabled: true
       interval: "60s"
+    - name: "a2a-message-cleanup"
+      enabled: true
+      cron: "0 6 * * 0"
 
 # ── Integrations ──────────────────────
 integrations:
