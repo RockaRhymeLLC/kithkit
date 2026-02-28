@@ -8,8 +8,8 @@
  * - Pane capture for reading screen content
  * - Transcript file discovery
  *
- * All operations accept an optional session name, defaulting to the
- * agent name from config.
+ * All operations accept an optional session name, defaulting to
+ * tmux.session from config (falling back to agent.name).
  */
 
 import { execFileSync } from 'node:child_process';
@@ -56,9 +56,7 @@ function validateSessionName(name: string): string {
 
 function getDefaultSessionName(): string {
   const config = loadConfig();
-  // Prefer tmux.session (matches shell scripts), fall back to agent name
-  const tmux = (config as unknown as Record<string, unknown>).tmux as { session?: string } | undefined;
-  return tmux?.session ?? config.agent.name;
+  return config.tmux?.session ?? config.agent.name;
 }
 
 /**
@@ -93,7 +91,7 @@ export function estTimestamp(): string {
 
 /**
  * Check if a tmux session exists.
- * @param name - Session name (defaults to agent name from config)
+ * @param name - Session name (defaults to tmux.session from config, falling back to agent.name)
  */
 export function sessionExists(name?: string): boolean {
   const session = validateSessionName(name ?? getDefaultSessionName());
@@ -109,7 +107,7 @@ export function sessionExists(name?: string): boolean {
 
 /**
  * Capture the current tmux pane content.
- * @param name - Session name (defaults to agent name from config)
+ * @param name - Session name (defaults to tmux.session from config, falling back to agent.name)
  */
 export function capturePane(name?: string): string {
   const session = validateSessionName(name ?? getDefaultSessionName());
@@ -139,15 +137,17 @@ export function isSessionBusy(_name?: string): boolean {
  *
  * @param text - Text to inject (will be escaped for tmux)
  * @param options - Optional settings
- * @param options.name - Session name (defaults to agent name from config)
+ * @param options.name - Session name (defaults to tmux.session from config, falling back to agent.name)
  * @param options.pressEnter - Whether to press Enter after (default: true)
+ * @param options.timestamp - Whether to prepend EST timestamp (default: true)
  */
 export function injectText(
   text: string,
-  options?: { name?: string; pressEnter?: boolean },
+  options?: { name?: string; pressEnter?: boolean; timestamp?: boolean },
 ): boolean {
   const session = validateSessionName(options?.name ?? getDefaultSessionName());
   const pressEnter = options?.pressEnter ?? true;
+  const addTimestamp = options?.timestamp ?? true;
   const tmux = getTmuxPath();
 
   if (!sessionExists(session)) {
@@ -155,8 +155,9 @@ export function injectText(
     return false;
   }
 
+  const stamped = addTimestamp ? `${estTimestamp()} ${text}` : text;
+
   try {
-    const stamped = `${estTimestamp()} ${text}`;
     execFileSync(tmux, ['send-keys', '-t', `${session}:`, '-l', stamped], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -221,7 +222,7 @@ export function getNewestTranscript(): string | null {
 
 /**
  * Start a Claude Code tmux session if not running.
- * @param name - Session name (defaults to agent name from config)
+ * @param name - Session name (defaults to tmux.session from config, falling back to agent.name)
  */
 export function startSession(name?: string): boolean {
   const session = name ?? getDefaultSessionName();

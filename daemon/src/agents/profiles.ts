@@ -29,10 +29,6 @@ export interface AgentProfile {
   maxBudgetUsd: number;
   /** Markdown body — becomes systemPrompt append content */
   body: string;
-  /** Optional effort level (e.g. 'low', 'medium', 'high') */
-  effort?: string;
-  /** Optional per-profile budget cap in USD */
-  maxBudgetUsd?: number;
 }
 
 export class ProfileValidationError extends Error {
