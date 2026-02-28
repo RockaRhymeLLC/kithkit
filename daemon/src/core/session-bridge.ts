@@ -87,6 +87,34 @@ export function estTimestamp(): string {
   }) + ']';
 }
 
+// ── Comms session constant ────────────────────────────────
+
+/**
+ * The comms agent tmux session. ALL external/inbound messages
+ * (A2A, agent-comms, Telegram, etc.) MUST be injected here.
+ * Only the comms agent talks to humans.
+ */
+export const COMMS_SESSION = 'comms1';
+
+/**
+ * Inject text into the comms agent session (comms1).
+ * Use this for ALL external/inbound messages to guarantee they
+ * always reach comms, regardless of config changes.
+ */
+export function injectToComms(
+  text: string,
+  options?: { pressEnter?: boolean; timestamp?: boolean },
+): boolean {
+  return injectText(text, { ...options, name: COMMS_SESSION });
+}
+
+/**
+ * Check if the comms agent session exists.
+ */
+export function commsSessionExists(): boolean {
+  return sessionExists(COMMS_SESSION);
+}
+
 // ── Public API ──────────────────────────────────────────────
 
 /**
