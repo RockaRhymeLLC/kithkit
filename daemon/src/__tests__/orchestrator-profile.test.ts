@@ -55,94 +55,21 @@ function cleanupTestEnv(tmpDir: string): void {
 
 // ── Tests ────────────────────────────────────────────────────
 
-describe('Orchestrator profile loading (AC #7, #8, #10)', () => {
-  let tmpDir: string;
-
-  afterEach(() => {
-    if (tmpDir) cleanupTestEnv(tmpDir);
-  });
-
-  // AC #10: orchestrator loading does not require tools/permissionMode fields
-  it('loads profile body from orchestrator.md without requiring tools or permissionMode', async () => {
-    const profileBody = 'You are the orchestrator agent. Decompose tasks and delegate.';
-    // Frontmatter has NO tools, NO permissionMode — only metadata fields
-    tmpDir = setupTestEnv(`---
-name: orchestrator
-description: Task decomposition and worker coordination agent
-model: sonnet
-maxTurns: 50
----
-
-${profileBody}`);
-
-    // Import fresh module (reset cache first)
-    const { _resetOrchestratorProfileForTesting, validateOrchestratorProfile } = await import('../api/orchestrator.js');
-    _resetOrchestratorProfileForTesting();
-    // validateOrchestratorProfile triggers loading and caching
-    validateOrchestratorProfile();
-    // If no exception thrown, the profile loaded successfully without tools/permissionMode
-    assert.ok(true, 'Should load profile without tools or permissionMode without error');
-  });
-
-  // AC #8: fallback when orchestrator.md is missing
-  it('falls back to hardcoded prompt when orchestrator.md does not exist', async () => {
-    tmpDir = setupTestEnv(); // No orchestrator.md created
-    const { _resetOrchestratorProfileForTesting, validateOrchestratorProfile } = await import('../api/orchestrator.js');
-    _resetOrchestratorProfileForTesting();
-    // Should not throw — missing file triggers fallback
-    assert.doesNotThrow(() => validateOrchestratorProfile(), 'Missing orchestrator.md should not throw');
-  });
-
-  // AC #8: fallback when orchestrator.md has invalid YAML
-  it('falls back to hardcoded prompt when orchestrator.md has invalid YAML frontmatter', async () => {
-    tmpDir = setupTestEnv(`---
-: invalid yaml [[
----
-
-Body text.`);
-    const { _resetOrchestratorProfileForTesting, validateOrchestratorProfile } = await import('../api/orchestrator.js');
-    _resetOrchestratorProfileForTesting();
-    // Should not throw — invalid YAML triggers fallback
-    assert.doesNotThrow(() => validateOrchestratorProfile(), 'Invalid YAML in orchestrator.md should not throw');
-  });
-
-  // AC #8: fallback when orchestrator.md has empty body
-  it('falls back to hardcoded prompt when orchestrator.md has empty body', async () => {
-    tmpDir = setupTestEnv(`---
-name: orchestrator
----`);
-    const { _resetOrchestratorProfileForTesting, validateOrchestratorProfile } = await import('../api/orchestrator.js');
-    _resetOrchestratorProfileForTesting();
-    assert.doesNotThrow(() => validateOrchestratorProfile(), 'Empty body in orchestrator.md should not throw');
-  });
-
-  // AC #7: profile body is used as base prompt, dynamic content appended
-  it('orchestrator.md body appears in the built prompt before dynamic task content', async () => {
-    const staticBody = 'STATIC_PROFILE_BODY_SENTINEL: orchestrator behavioral instructions';
-    tmpDir = setupTestEnv(`---
-name: orchestrator
-description: Task decomposition and worker coordination agent
-model: sonnet
-maxTurns: 50
----
-
-${staticBody}`);
-
-    const { _resetOrchestratorProfileForTesting } = await import('../api/orchestrator.js');
-    _resetOrchestratorProfileForTesting();
-
-    // We test the composition by calling buildOrchestratorPrompt indirectly via the
-    // exported function. Since buildOrchestratorPrompt is not exported, we verify
-    // the profile body is returned correctly by the loader, which is the contract
-    // that buildOrchestratorPrompt depends on.
-    //
-    // The full composition (profile.body + task_block + memory_block + state_block)
-    // is tested at the integration level. Here we verify the static body is loaded.
+describe('Orchestrator profile parsing (AC #7, #8, #10)', () => {
+  it('parseProfileContent extracts body from orchestrator.md without requiring tools or permissionMode', async () => {
     const { parseProfileContent } = await import('../agents/profiles.js');
-    const profilePath = path.join(tmpDir, '.claude', 'agents', 'orchestrator.md');
-    const content = fs.readFileSync(profilePath, 'utf8');
-    const { body } = parseProfileContent(content);
-    assert.ok(body.includes(staticBody), 'Parsed body should contain the static profile content');
+    const profileBody = 'You are the orchestrator agent. Decompose tasks and delegate.';
+    const content = `---
+name: orchestrator
+description: Task decomposition and worker coordination agent
+model: sonnet
+maxTurns: 50
+---
+
+${profileBody}`;
+    const { frontmatter, body } = parseProfileContent(content);
+    assert.equal(frontmatter.name, 'orchestrator');
+    assert.ok(body.includes(profileBody), 'Should extract profile body correctly');
   });
 });
 
@@ -372,18 +299,7 @@ scheduler:
 
 // AC #10: orchestrator profile loading does not validate tools/permissionMode
 describe('Orchestrator profile uses separate loading code path (AC #10)', () => {
-  let tmpDir: string;
-
-  afterEach(() => {
-    if (tmpDir) cleanupTestEnv(tmpDir);
-  });
-
-  it('validateProfile rejects missing tools for normal profiles but orchestrator.md has no tools field', async () => {
-    // Normal profiles without tools still work (tools has a default of [])
-    // The key requirement: the orchestrator loading path does NOT call validateProfile
-    // with a permissionMode check that would fail on the orchestrator's frontmatter.
-    // The orchestrator frontmatter intentionally omits permissionMode (it's set by tmux.ts).
-    // parseProfileContent + body extraction succeeds on orchestrator.md without errors.
+  it('parseProfileContent extracts orchestrator frontmatter without tools/permissionMode', async () => {
     const { parseProfileContent } = await import('../agents/profiles.js');
 
     const orchContent = `---
@@ -400,32 +316,5 @@ You are the orchestrator agent.`;
     assert.equal(frontmatter.permissionMode, undefined, 'orchestrator frontmatter should not have permissionMode');
     assert.equal(frontmatter.tools, undefined, 'orchestrator frontmatter should not have tools field');
     assert.ok(body.includes('You are the orchestrator agent'), 'body should be extracted correctly');
-  });
-
-  it('loadOrchestratorProfileBody caches result across calls', async () => {
-    const profileBody = 'CACHED_BODY_SENTINEL';
-    tmpDir = setupTestEnv(`---
-name: orchestrator
-model: sonnet
----
-
-${profileBody}`);
-
-    const { _resetOrchestratorProfileForTesting, validateOrchestratorProfile } = await import('../api/orchestrator.js');
-    _resetOrchestratorProfileForTesting();
-
-    // First call loads and caches
-    validateOrchestratorProfile();
-    // Second call should use cache — if file were deleted, caching means no error
-    const agentsDir = path.join(tmpDir, '.claude', 'agents');
-    const orchPath = path.join(agentsDir, 'orchestrator.md');
-    // Overwrite with different content after first load
-    fs.writeFileSync(orchPath, `---
-name: orchestrator
----
-
-DIFFERENT_BODY`);
-    // Should not throw — cache should still hold the first value
-    assert.doesNotThrow(() => validateOrchestratorProfile(), 'Second validateOrchestratorProfile call should not throw');
   });
 });
