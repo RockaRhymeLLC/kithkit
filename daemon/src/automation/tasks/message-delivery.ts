@@ -15,7 +15,7 @@
  */
 
 import { query, exec, update } from '../../core/db.js';
-import { injectMessage, isOrchestratorAlive, listSessions, _getCommsSession } from '../../agents/tmux.js';
+import { injectMessage, listSessions, _getCommsSession, _getOrchestratorSession } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 import type { Message } from '../../agents/message-router.js';
@@ -95,7 +95,7 @@ function getLiveSessions(): Set<string> {
   if (sessions.includes(_getCommsSession())) {
     live.add('comms');
   }
-  if (isOrchestratorAlive()) {
+  if (sessions.includes(_getOrchestratorSession())) {
     live.add('orchestrator');
   }
   return live;
