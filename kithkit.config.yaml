@@ -162,7 +162,7 @@ network:
     - name: "home"
       primary: "https://relay.example.com"
       failover: "https://relay2.example.com"
-  owner_email: "bmo@example.com"
+  owner_email: "redacted@outlook.com"
   endpoint: "https://bmo.example.com/agent/p2p"
   auto_approve_contacts: false
   heartbeat_interval: 300000

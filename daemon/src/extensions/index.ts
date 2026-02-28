@@ -39,6 +39,7 @@ import {
 } from './comms/agent-comms.js';
 import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P } from './comms/network/sdk-bridge.js';
 import { registerWithRelay } from './comms/network/registration.js';
+import { handleNetworkRoute, setNetworkApiConfig } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { initVoice, stopVoice } from './voice/index.js';
 import { registerBmoTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
@@ -328,6 +329,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 
   // Initialize agent-to-agent comms (LAN + P2P SDK)
   initAgentComms(_config);
+  setNetworkApiConfig(_config);
 
   // Network SDK (P2P messaging) — non-blocking
   if (_config.network?.enabled) {
@@ -354,6 +356,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   registerRoute('/agent/extended-status', handleExtendedStatus);
   registerRoute('/api/context', handleContextApi);
   registerRoute('/api/cowork/*', handleCoworkRoute);
+  registerRoute('/api/network/*', handleNetworkRoute);
 
   // Set up scheduler with in-process handlers
   const schedulerConfig = config.scheduler?.tasks ?? [];
