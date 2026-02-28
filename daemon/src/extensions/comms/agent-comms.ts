@@ -11,7 +11,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import { readKeychain } from '../../core/keychain.js';
-import { injectText } from '../../core/session-bridge.js';
+import { sendMessage } from '../../agents/message-router.js';
 import { getProjectDir } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
 import { getNetworkClient } from './network/sdk-bridge.js';
@@ -207,7 +207,16 @@ export async function handleAgentMessage(
 
   const msg = body as AgentMessage;
   const formatted = formatMessage(msg);
-  injectText(formatted);
+
+  // Persist inbound LAN message to DB and inject to comms session
+  sendMessage({
+    from: `lan:${msg.from}`,
+    to: 'comms',
+    type: 'text',
+    body: formatted,
+    metadata: { source: 'lan-agent-comms', sender: msg.from, messageId: msg.messageId, originalType: msg.type },
+    direct: true,  // inject immediately into comms1 if alive
+  });
 
   log.info(`Delivered message from ${msg.from}`, {
     messageId: msg.messageId,
