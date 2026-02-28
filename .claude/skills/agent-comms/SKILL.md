@@ -35,17 +35,56 @@ Parse the arguments to determine action:
 ## Implementation
 
 ### Sending
-Use the CLI script for reliable delivery:
-```bash
-scripts/agent-send.sh <peer> "<message>" [type]
-```
-
-Or via the daemon endpoint (uses curl internally):
+Send via the daemon's `/agent/send` endpoint (2-tier routing: LAN direct → P2P SDK fallback):
 ```bash
 curl -s -X POST http://localhost:3847/agent/send \
   -H 'Content-Type: application/json' \
   --data-raw '{"peer":"<name>","type":"text","text":"<message>"}'
 ```
+
+**Request fields:**
+| Field | Required | Description |
+|-------|----------|-------------|
+| `peer` | yes | Target peer name (e.g. `r2`) |
+| `type` | yes | `text`, `status`, `coordination`, or `pr-review` |
+| `text` | no | Message body |
+| `status` | no | For status messages (e.g. `idle`, `busy`) |
+| `action` | no | For coordination (e.g. `claim`, `release`) |
+| `task` | no | Task description |
+| `context` | no | Additional context |
+| `callbackUrl` | no | Callback endpoint for async replies |
+| `repo` | no | For PR reviews |
+| `branch` | no | For PR reviews |
+| `pr` | no | PR number string |
+
+**Success response (HTTP 200):**
+```json
+{"ok": true, "queued": false, "error": null}
+```
+
+**Failure response (HTTP 502):**
+```json
+{"ok": false, "queued": false, "error": "Failed to reach peer r2 (chrissys-mini.lan:3847): ..."}
+```
+
+If LAN delivery fails and the P2P SDK is active, the message is sent via P2P and `queued` is `true`.
+
+### Receiving (Inbound)
+Peers send to our `POST /agent/message` endpoint (handled by the daemon automatically). Inbound messages require Bearer auth and must include `messageId` and `timestamp`:
+
+```json
+{
+  "from": "r2",
+  "type": "text",
+  "text": "Hey, PR is ready for review",
+  "messageId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+  "timestamp": "2026-02-27T15:30:00.000Z"
+}
+```
+
+**Response:** `{"ok": true, "queued": false}`
+
+The daemon validates the Bearer token, formats the message, and injects it into the comms tmux session.
 
 ### Checking Status
 ```bash
@@ -63,7 +102,18 @@ tail -20 logs/agent-comms.log
 
 ## Peers
 
-Peers are configured in `cc4me.config.yaml` under `agent-comms.peers`. Each peer has a name, host, and port.
+Peers are configured in `kithkit.config.yaml` under `agent-comms.peers`. Each peer has a name, host, port, and optional fallback IP.
+
+```yaml
+agent-comms:
+  enabled: true
+  secret: "credential-agent-comms-secret"  # Keychain credential name
+  peers:
+    - name: "R2"
+      host: "chrissys-mini.lan"
+      port: 3847
+      ip: "192.168.12.212"  # Fallback IP for LAN retry
+```
 
 ## Architecture
 
@@ -75,13 +125,13 @@ Peers are configured in `cc4me.config.yaml` under `agent-comms.peers`. Each peer
 ### P2P SDK (Internet — Primary)
 - **Transport**: HTTPS directly to peer's public endpoint (E2E encrypted)
 - **Encryption**: X25519 ECDH key exchange + AES-256-GCM, Ed25519 signed envelopes
-- **Sending**: If LAN fails and CC4Me Network SDK is active, sends directly to peer via P2P SDK
+- **Sending**: If LAN fails and Kithkit A2A Network SDK is active, sends directly to peer via P2P SDK
 - **Receiving**: SDK event handler routes incoming messages to session
-- **Identity**: Agent Ed25519 keypair in Keychain (`credential-cc4me-agent-key`), public key in relay directory
+- **Identity**: Agent Ed25519 keypair in Keychain (`credential-kithkit-agent-key`), public key in relay directory
 - **Key point**: Messages go directly between agents — the relay is never in the message path
 
 ### Legacy Relay (Deprecated Fallback)
-- **Transport**: HTTPS via CC4Me Relay (configured in `cc4me.config.yaml` under `network.relay_url`) — store-and-forward
+- **Transport**: HTTPS via Kithkit Relay (configured in `kithkit.config.yaml` under `network.relay_url`) — store-and-forward
 - **Auth**: Ed25519 per-request signatures (X-Agent + X-Signature headers)
 - **Sending**: Only used if both LAN and P2P SDK fail
 - **Note**: Being deprecated in favor of P2P SDK. Messages through legacy relay are signed but not E2E encrypted

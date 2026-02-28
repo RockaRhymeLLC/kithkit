@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KithKit Architecture — BMO Instance</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --text-muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d29922;
+    --red: #f85149;
+    --purple: #bc8cff;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    padding: 2rem;
+    line-height: 1.6;
+  }
+  h1 {
+    font-size: 1.8rem;
+    margin-bottom: 0.5rem;
+    color: var(--accent);
+  }
+  .subtitle {
+    color: var(--text-muted);
+    margin-bottom: 2rem;
+    font-size: 0.9rem;
+  }
+  .diagram-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.5rem;
+    margin-bottom: 2rem;
+  }
+  .diagram-section h2 {
+    font-size: 1.2rem;
+    margin-bottom: 1rem;
+    color: var(--green);
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.5rem;
+  }
+  .mermaid {
+    display: flex;
+    justify-content: center;
+    overflow-x: auto;
+  }
+  .legend {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1rem;
+    margin-top: 1.5rem;
+  }
+  .legend-item {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+  }
+  .legend-item h3 {
+    font-size: 0.85rem;
+    color: var(--accent);
+    margin-bottom: 0.3rem;
+  }
+  .legend-item p {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  .meta {
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    text-align: center;
+    margin-top: 2rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--border);
+  }
+  .tabs {
+    display: flex;
+    gap: 0.5rem;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+  }
+  .tab {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 0.5rem 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.85rem;
+    transition: all 0.2s;
+  }
+  .tab:hover { border-color: var(--accent); color: var(--text); }
+  .tab.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .view { display: none; }
+  .view.active { display: block; }
+</style>
+</head>
+<body>
+
+<h1>KithKit Architecture — BMO Instance</h1>
+<p class="subtitle">Three-tier agent framework: Human &#8596; Comms &#8596; Daemon &#8596; Orchestrator &#8596; Workers</p>
+
+<div class="tabs">
+  <button class="tab active" onclick="showView('overview', this)">System Overview</button>
+  <button class="tab" onclick="showView('daemon', this)">Daemon Internals</button>
+  <button class="tab" onclick="showView('messages', this)">Message Flow</button>
+  <button class="tab" onclick="showView('scheduler', this)">Scheduler Tasks</button>
+  <button class="tab" onclick="showView('channels', this)">Channels &amp; Extensions</button>
+</div>
+
+<!-- VIEW 1: SYSTEM OVERVIEW -->
+<div id="view-overview" class="view active">
+<div class="diagram-section">
+<h2>System Overview</h2>
+<pre class="mermaid">
+graph TB
+    subgraph Human["Human (Dave)"]
+        TG["Telegram\n(owner: 7629737488)"]
+        Email["Email\n(Graph, JMAP, Himalaya, Outlook)"]
+        Voice["Voice\n(Whisper STT / Kokoro TTS)"]
+        Browser["Cowork Browser\n(Chrome Extension + CDP)"]
+    end
+
+    subgraph CommsAgent["Comms Agent (tmux: bmo)"]
+        Identity["identity.md\n(BMO personality)"]
+        ClaudeComms["Claude Code\n(persistent session)"]
+        Skills["Skills\n(Slash commands)"]
+    end
+
+    subgraph Daemon["Daemon (localhost:3847)"]
+        HTTP["HTTP Server\n(Node.js)"]
+        SQLite["SQLite DB\n(WAL mode)"]
+        Scheduler["Scheduler\n(cron + interval)"]
+        MsgRouter["Message Router\n(inter-agent)"]
+        ChanRouter["Channel Router\n(outbound delivery)"]
+        Memory["Memory System\n(keyword + vector search)"]
+        AgentMgr["Agent Lifecycle\n(spawn/monitor/kill)"]
+        CoworkWS["Cowork Bridge\n(WebSocket + E2E crypto)"]
+    end
+
+    subgraph Orchestrator["Orchestrator (tmux: bmo-orch)"]
+        ClaudeOrch["Claude Code\n(on-demand session)"]
+        TaskDecomp["Task Decomposition"]
+        WorkerCoord["Worker Coordination"]
+    end
+
+    subgraph Workers["Workers (ephemeral)"]
+        Research["research\n(read-only)"]
+        Coding["coding\n(implementation)"]
+        Testing["testing\n(test runner)"]
+    end
+
+    subgraph Peers["Peer Network"]
+        R2["R2D2\n(chrissys-mini.lan:3847)"]
+        A2ASDK["A2A SDK\n(P2P via relay.bmobot.ai)"]
+    end
+
+    TG -->|"webhook /telegram"| HTTP
+    Email -->|"IMAP/Graph API"| Daemon
+    Voice -->|"STT/TTS"| CommsAgent
+    Browser -->|"WebSocket /cowork"| CoworkWS
+    CommsAgent <-->|"API calls (curl localhost:3847)"| HTTP
+    CommsAgent -->|"POST /api/orchestrator/escalate"| HTTP
+    HTTP --> SQLite
+    HTTP --> Scheduler
+    HTTP --> MsgRouter
+    HTTP --> ChanRouter
+    HTTP --> Memory
+    HTTP --> AgentMgr
+    MsgRouter -->|"tmux send-keys"| CommsAgent
+    MsgRouter -->|"tmux send-keys"| Orchestrator
+    ChanRouter -->|"Telegram Bot API"| TG
+    ChanRouter -->|"Graph/JMAP"| Email
+    AgentMgr -->|"SDK spawn"| Workers
+    Orchestrator -->|"POST /api/agents/spawn"| AgentMgr
+    Orchestrator -->|"POST /api/messages"| MsgRouter
+    Workers -->|"result/error msgs"| MsgRouter
+    CommsAgent <-->|"agent-comms"| R2
+    CommsAgent <-->|"P2P envelope"| A2ASDK
+</pre>
+
+<div class="legend">
+  <div class="legend-item">
+    <h3>Comms Agent</h3>
+    <p>Persistent tmux session "bmo". Full BMO personality from identity.md. Talks to human, delegates complex tasks to orchestrator. Never does multi-step implementation work.</p>
+  </div>
+  <div class="legend-item">
+    <h3>Daemon</h3>
+    <p>Node.js HTTP server on localhost:3847. Owns SQLite DB (WAL). Routes messages, manages agent lifecycle, runs scheduler, handles channel delivery. Extension-based architecture.</p>
+  </div>
+  <div class="legend-item">
+    <h3>Orchestrator</h3>
+    <p>On-demand tmux session "bmo-orch". Spawned via POST /api/orchestrator/escalate. Decomposes tasks, spawns workers, synthesizes results. Auto-kills after 15min idle.</p>
+  </div>
+  <div class="legend-item">
+    <h3>Workers</h3>
+    <p>Ephemeral Claude Code agents. Profiles: research (read-only), coding (implementation), testing (test runner). Spawned by orchestrator via SDK adapter. Results sent via message router.</p>
+  </div>
+</div>
+</div>
+</div>
+
+<!-- VIEW 2: DAEMON INTERNALS -->
+<div id="view-daemon" class="view">
+<div class="diagram-section">
+<h2>Daemon Internal Architecture</h2>
+<pre class="mermaid">
+graph TB
+    subgraph Server["HTTP Server (localhost:3847)"]
+        Router["Route Registry\n(registerRoute)"]
+    end
+
+    subgraph CoreAPI["Core API Routes"]
+        Health["/health, /status"]
+        AgentsAPI["/api/agents/*\n(spawn, list, kill)"]
+        OrchAPI["/api/orchestrator/*\n(escalate, status, shutdown)"]
+        MsgsAPI["/api/messages\n(inter-agent)"]
+        SendAPI["/api/send\n(channel delivery)"]
+        TodosAPI["/api/todos"]
+        CalendarAPI["/api/calendar"]
+        MemoryAPI["/api/memory/*\n(store, search)"]
+        TasksAPI["/api/tasks\n(scheduler control)"]
+        TimerAPI["/api/timer\n(self-timer alarms)"]
+        ConfigAPI["/api/config/reload"]
+        UsageAPI["/api/usage"]
+        ActivityAPI["/api/agents/:id/activity"]
+    end
+
+    subgraph ExtRoutes["Extension Routes (BMO)"]
+        TelegramWH["/telegram\n(webhook)"]
+        ShortcutRT["/shortcut"]
+        AgentP2P["/agent/p2p\n(A2A envelope)"]
+        AgentMsg["/agent/message"]
+        AgentSend["/agent/send"]
+        AgentStatus["/agent/status"]
+        ExtStatus["/agent/extended-status"]
+        CoworkAPI["/api/cowork/*\n(tabs, cdp, psk)"]
+        ContextAPI["/api/context"]
+    end
+
+    subgraph CoreModules["Core Modules"]
+        DB["SQLite\n(kithkit.db, WAL)"]
+        Logger["Logger\n(winston-style)"]
+        Config["Config Loader\n(YAML deep-merge)"]
+        Keychain["Keychain Reader\n(macOS security)"]
+        RouteReg["Route Registry"]
+        ExtReg["Extension Registry"]
+    end
+
+    subgraph AgentSys["Agent System"]
+        Lifecycle["lifecycle.ts\n(spawn/monitor/kill/queue)"]
+        SDKAdapter["sdk-adapter.ts\n(Claude SDK wrapper)"]
+        Profiles["profiles.ts\n(YAML frontmatter)"]
+        TmuxMgr["tmux.ts\n(session management)"]
+        MsgRouterMod["message-router.ts\n(dedup, inject, store)"]
+    end
+
+    subgraph MemSys["Memory System"]
+        KeywordSearch["Keyword Search\n(AND matching, relevance)"]
+        VectorSearch["Vector Search\n(MiniLM-L6-v2 ONNX)"]
+        HybridSearch["Hybrid Search\n(keyword + vector)"]
+        SQLiteVec["sqlite-vec\n(native extension)"]
+    end
+
+    Router --> CoreAPI
+    Router --> ExtRoutes
+    AgentsAPI --> Lifecycle
+    OrchAPI --> TmuxMgr
+    MsgsAPI --> MsgRouterMod
+    SendAPI --> ChanRouterMod["channel-router.ts"]
+    MemoryAPI --> KeywordSearch
+    MemoryAPI --> HybridSearch
+    Lifecycle --> SDKAdapter
+    Lifecycle --> Profiles
+    Lifecycle --> DB
+    MsgRouterMod --> TmuxMgr
+    MsgRouterMod --> DB
+    HybridSearch --> KeywordSearch
+    HybridSearch --> VectorSearch
+    VectorSearch --> SQLiteVec
+</pre>
+
+<div class="legend">
+  <div class="legend-item">
+    <h3>Route Registry</h3>
+    <p>Core routes handle agents, messages, todos, memory, scheduler. Extension routes (BMO) add Telegram webhook, agent-comms, cowork bridge, and more. Routes registered via registerRoute().</p>
+  </div>
+  <div class="legend-item">
+    <h3>Agent Lifecycle</h3>
+    <p>Workers: queued -> running -> completed/failed/timeout. Persistent agents: idle / busy. Max concurrent enforcement with FIFO queue. SDK adapter wraps Claude Code SDK for spawning.</p>
+  </div>
+  <div class="legend-item">
+    <h3>Memory System</h3>
+    <p>Three search modes: keyword (AND matching, always available), vector (MiniLM-L6-v2 ONNX via sqlite-vec, requires enableVectorSearch()), hybrid (combines both scores).</p>
+  </div>
+  <div class="legend-item">
+    <h3>SQLite Database</h3>
+    <p>Tables: agents, worker_jobs, memories, todos, todo_actions, calendar, messages, config, feature_state, task_results, migrations. WAL mode for concurrent reads.</p>
+  </div>
+</div>
+</div>
+</div>
+
+<!-- VIEW 3: MESSAGE FLOW -->
+<div id="view-messages" class="view">
+<div class="diagram-section">
+<h2>Message Flow Paths</h2>
+<pre class="mermaid">
+sequenceDiagram
+    participant H as Human (Dave)
+    participant TG as Telegram
+    participant D as Daemon
+    participant C as Comms Agent
+    participant O as Orchestrator
+    participant W as Worker
+
+    Note over H,W: Inbound: Human to Agent
+    H->>TG: Send message
+    TG->>D: POST /telegram (webhook)
+    D->>D: Access control check (5-tier)
+    D->>C: tmux send-keys (inject message)
+    C->>C: Process and respond
+
+    Note over H,W: Outbound: Agent to Human
+    C->>D: POST /api/send (message, channels: telegram)
+    D->>D: Channel router selects adapter
+    D->>TG: Telegram Bot API (sendMessage)
+    TG->>H: Deliver message
+
+    Note over H,W: Task Escalation Flow
+    C->>D: POST /api/orchestrator/escalate (task)
+    D->>D: Check if orchestrator alive
+    alt Orchestrator not running
+        D->>D: buildOrchestratorPrompt + memory injection
+        D->>O: spawnOrchestratorSession (tmux: bmo-orch)
+    end
+    D->>D: sendMessage(comms to orch, type task)
+    D->>O: tmux send-keys (inject task)
+    O->>O: Decompose task
+
+    Note over H,W: Worker Spawning
+    O->>D: POST /api/agents/spawn (profile, prompt)
+    D->>D: Load profile (.claude/agents/*.md)
+    D->>W: SDK spawn (Claude Code)
+    W->>W: Execute task
+    W->>D: POST /api/messages (type result)
+    D->>D: Store in SQLite and notify
+    D->>O: tmux send-keys (result notification)
+
+    Note over H,W: Result Delivery
+    O->>D: POST /api/messages (from orch, to comms, type result)
+    D->>C: tmux send-keys (inject result)
+    C->>D: POST /api/send (message, channels: telegram)
+    D->>TG: Telegram Bot API
+    TG->>H: Final result
+</pre>
+</div>
+
+<div class="diagram-section">
+<h2>Inter-Agent Communication</h2>
+<pre class="mermaid">
+sequenceDiagram
+    participant BMO as BMO (localhost:3847)
+    participant R2 as R2D2 (192.168.12.212:3847)
+    participant Relay as Relay (relay.bmobot.ai)
+    participant Remote as Remote Agent
+
+    Note over BMO,Remote: LAN: Direct Agent-to-Agent
+    BMO->>R2: POST /agent/message (Bearer token auth)
+    R2->>R2: Validate HMAC and process
+    R2->>BMO: POST /agent/message (response)
+
+    Note over BMO,Remote: Peer Heartbeat (every 5min)
+    BMO->>R2: POST /agent/status (agent, status)
+    R2->>BMO: 200 (agent, status, latencyMs)
+
+    Note over BMO,Remote: P2P: Via Network SDK
+    BMO->>Relay: WebSocket (register, heartbeat)
+    Remote->>Relay: Route envelope to BMO
+    Relay->>BMO: POST /agent/p2p (WireEnvelope)
+    BMO->>BMO: handleIncomingP2P()
+</pre>
+</div>
+</div>
+
+<!-- VIEW 4: SCHEDULER -->
+<div id="view-scheduler" class="view">
+<div class="diagram-section">
+<h2>Scheduler Tasks</h2>
+<pre class="mermaid">
+graph LR
+    subgraph Core["Core Tasks (kithkit framework)"]
+        CW["context-watchdog\ninterval: 3m\nMonitors comms context usage"]
+        TR["todo-reminder\ninterval: 30m\nNudges on open todos"]
+        AA["approval-audit\ncron: biannual\nApproval review"]
+        BK["backup\ncron: Sun 03:00\nWeekly backup"]
+        OI["orchestrator-idle\ninterval: 2m\nKills idle orch (15min timeout)"]
+        MD["message-delivery\ninterval: 5s\nDelivers pending messages"]
+        CH["comms-heartbeat\ninterval: 60s\nChecks unacked workers/msgs"]
+    end
+
+    subgraph BMO["BMO Extension Tasks"]
+        EC["email-check\ninterval: 15m\nIMAP/Graph inbox scan"]
+        NT["nightly-todo\ncron: 22:00\nEnd-of-day todo review"]
+        HC["health-check\ncron: Mon 08:00\nWeekly system health"]
+        MC["memory-consolidation\ncron: 05:00\nDaily memory cleanup"]
+        MB["morning-briefing\ncron: 07:00\nDaily briefing"]
+        PH["peer-heartbeat\ninterval: 5m\nLAN peer status exchange"]
+        AD["a2a-digest\ncron: Mon 09:00\nWeekly A2A network digest"]
+        MS["memory-sync\ninterval: 30m\nCross-agent memory sync"]
+        LI["lindee-inbox-watch\ninterval: 15m\nEmail monitoring"]
+        SK["supabase-keep-alive\ncron: every 3 days\nPrevent free tier pause"]
+        BR["blog-reminder\ncron: Mon,Thu 14:00\nBlog writing nudge"]
+        WP["weekly-progress-report\ncron: Fri 16:00\nSend progress report"]
+    end
+
+    subgraph Engine["Scheduler Engine"]
+        Tick["Tick Loop (1s)"]
+        Cron["Cron Parser"]
+        Interval["Interval Tracker"]
+        Runner["Task Runner\n(in-process handlers\nor subprocess)"]
+    end
+
+    Tick --> Cron
+    Tick --> Interval
+    Cron --> Runner
+    Interval --> Runner
+    Runner --> Core
+    Runner --> BMO
+</pre>
+</div>
+</div>
+
+<!-- VIEW 5: CHANNELS & EXTENSIONS -->
+<div id="view-channels" class="view">
+<div class="diagram-section">
+<h2>Communication Channels and BMO Extension</h2>
+<pre class="mermaid">
+graph TB
+    subgraph Extension["BMO Extension (extensions/index.ts)"]
+        onInit["onInit()"]
+        onShutdown["onShutdown()"]
+    end
+
+    subgraph Channels["Communication Channels"]
+        subgraph TGChan["Telegram"]
+            TGBot["Bot API\n(webhook: /telegram)"]
+            TGOwner["Owner: 7629737488"]
+            TGAccess["5-tier Access Control"]
+        end
+        subgraph EmailChan["Email"]
+            Graph["Microsoft Graph"]
+            JMAP["Fastmail JMAP"]
+            Himalaya["Himalaya CLI (Gmail)"]
+            OutlookIMAP["Outlook IMAP"]
+            Triage["Email Triage\n(VIP, junk, newsletters,\nreceipts, auto-read)"]
+        end
+        subgraph VoiceChan["Voice"]
+            STT["Whisper-cpp (small.en)"]
+            TTS["Kokoro (am_adam)"]
+            Wake["OpenWakeWord\n(Hey BMO)"]
+        end
+    end
+
+    subgraph AgentNet["Agent Networking"]
+        subgraph LAN["LAN Comms"]
+            HB["Peer Heartbeat\n(5min interval)"]
+            HMAC["HMAC Auth\n(keychain secret)"]
+            R2Peer["R2D2 at chrissys-mini.lan"]
+        end
+        subgraph P2P["P2P Network"]
+            SDK["A2A SDK"]
+            RelayWS["Relay: relay.bmobot.ai"]
+            Endpoint["Endpoint: bmo.bmobot.ai/agent/p2p"]
+        end
+    end
+
+    subgraph Cowork["Cowork Bridge"]
+        WS["WebSocket Server\n(ws library, /cowork)"]
+        Auth["Token Auth\n(5s timeout)"]
+        KeyEx["ECDH Key Exchange\n(X25519 + PSK)"]
+        E2E["E2E Encryption\n(AES-256-GCM + seq numbers)"]
+        CDP["Chrome DevTools Protocol\n(tab control, JS eval)"]
+    end
+
+    onInit --> TGChan
+    onInit --> EmailChan
+    onInit --> VoiceChan
+    onInit --> LAN
+    onInit --> P2P
+    onInit --> Cowork
+</pre>
+</div>
+</div>
+
+<p class="meta">
+  Generated from source: daemon/src/ | Config: kithkit.config.yaml | Instance: BMO (localhost:3847)<br/>
+  Daemon: com.assistant.daemon | Comms: tmux "bmo" | Orchestrator: tmux "bmo-orch"<br/>
+  Database: kithkit.db (SQLite WAL) | Peers: R2D2 (192.168.12.212:3847)<br/>
+  Last updated: <span id="timestamp"></span>
+</p>
+
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: 'dark',
+    themeVariables: {
+      primaryColor: '#1a2332',
+      primaryTextColor: '#c9d1d9',
+      primaryBorderColor: '#58a6ff',
+      lineColor: '#58a6ff',
+      secondaryColor: '#231a2e',
+      tertiaryColor: '#1a2320',
+      noteBkgColor: '#161b22',
+      noteTextColor: '#c9d1d9',
+      noteBorderColor: '#30363d',
+      actorBkg: '#1a2332',
+      actorTextColor: '#58a6ff',
+      actorBorder: '#58a6ff',
+      signalColor: '#c9d1d9',
+      signalTextColor: '#c9d1d9',
+    },
+    flowchart: { curve: 'basis', padding: 20 },
+    sequence: { mirrorActors: false, messageMargin: 40 },
+  });
+
+  await mermaid.run({ querySelector: '.mermaid' });
+
+  document.getElementById('timestamp').textContent = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+</script>
+
+<script>
+  function showView(name, btn) {
+    document.querySelectorAll('.view').forEach(function(v) { v.classList.remove('active'); });
+    document.querySelectorAll('.tab').forEach(function(t) { t.classList.remove('active'); });
+    document.getElementById('view-' + name).classList.add('active');
+    btn.classList.add('active');
+  }
+</script>
+
+</body>
+</html>

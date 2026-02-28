@@ -7,7 +7,7 @@ agent:
   identity_file: "identity.md"
 
 tmux:
-  session: "bmo"
+  session: "comms1"
 
 daemon:
   port: 3847
@@ -53,7 +53,6 @@ channels:
         - "tournament.*registration"
         - "kyle.*hurley"
         - "kp.hurley"
-        - "reedwealthmanagement"
       junk:
         - "linkedin"
         - "reddit"
@@ -113,6 +112,7 @@ channels:
       auto_read:
         - "bmo@bmobot.ai"
         - "bmo_hurley@fastmail.com"
+        - "notifications@github.com"
         - "security alert"
         - "sign-in detected"
         - "new app.*connected"
@@ -176,6 +176,10 @@ agent-comms:
       host: "chrissys-mini.lan"
       port: 3847
       ip: "192.168.12.212"
+    - name: "skippy"
+      host: "192.168.12.142"
+      port: 3847
+      ip: "192.168.12.142"
 
 # ── Automation ────────────────────────
 scheduler:
