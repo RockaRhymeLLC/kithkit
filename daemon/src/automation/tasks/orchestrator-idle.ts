@@ -74,19 +74,39 @@ const GRACE_PERIOD_MS = 60 * 1000; // 60 seconds to exit after nudge
 
 /**
  * Check if the Claude process is actively running in the orchestrator's tmux session.
- * Uses `tmux list-panes -t <session> -F '#{pane_current_command}'` to see the foreground process.
- * If the pane is running 'claude' (or a child of it), the orchestrator is still working.
+ *
+ * The orchestrator runs inside a bash wrapper script, so tmux's pane_current_command
+ * always reports "bash" — not "claude". Instead, we get the wrapper's PID via
+ * `#{pane_pid}` and use `pgrep -P <panePid> -f claude` to check whether a claude
+ * process is a descendant of the wrapper. This matches the approach used by
+ * `getOrchestratorState()` in agents/tmux.ts.
  */
 function isClaudeProcessRunning(): boolean {
   try {
     const session = _getOrchestratorSession();
-    const output = execFileSync(TMUX_BIN, [
+
+    // Get the PID of the wrapper bash process that owns the tmux pane
+    const panePid = execFileSync(TMUX_BIN, [
       '-S', TMUX_SOCKET,
-      'list-panes', '-t', session, '-F', '#{pane_current_command}',
+      'display-message',
+      '-t', `${session}:`,
+      '-p', '#{pane_pid}',
     ], { encoding: 'utf8', timeout: 5000 }).trim();
-    // The pane's foreground command should be 'claude' (or 'node' running claude)
-    // If it's 'zsh' or 'bash' with no child, Claude has exited
-    return output.includes('claude') || output.includes('node');
+
+    if (!panePid || !/^\d+$/.test(panePid)) {
+      return false;
+    }
+
+    // Check if any "claude" process is a descendant of the wrapper PID.
+    // pgrep exits 0 if found, non-zero if not.
+    try {
+      execFileSync('/usr/bin/pgrep', ['-P', panePid, '-f', 'claude'], {
+        timeout: 5000,
+      });
+      return true;
+    } catch {
+      return false;
+    }
   } catch {
     return false;
   }
