@@ -9,6 +9,7 @@ import type http from 'node:http';
 import { json, withTimestamp, parseBody } from '../../../api/helpers.js';
 import { createLogger } from '../../../core/logger.js';
 import { sendMessage } from '../../../agents/message-router.js';
+import { query } from '../../../core/db.js';
 import { getNetworkClient, getCommunityStatus } from './sdk-bridge.js';
 import { checkRegistrationStatus } from './registration.js';
 import type { BmoConfig } from '../../config.js';
@@ -61,6 +62,32 @@ export async function handleNetworkRoute(
       return true;
     }
 
+    // ── Inbox (received A2A messages) ─────────────────────────
+    // Returns messages from the daemon messages table where source is a2a-network.
+    // Does NOT require SDK — messages persist in DB even if SDK goes offline.
+
+    if (subpath === 'inbox' && method === 'GET') {
+      const limit = Math.min(parseInt(_searchParams.get('limit') ?? '50', 10), 200);
+      const since = _searchParams.get('since') ?? undefined;
+
+      // Query messages from A2A network sources directly (newest first)
+      let sql = `SELECT * FROM messages WHERE from_agent LIKE 'network:%'`;
+      const params: unknown[] = [];
+
+      if (since) {
+        // Normalize ISO 'T' separator to space to match SQLite datetime() format
+        sql += ' AND created_at > ?';
+        params.push(since.replace('T', ' '));
+      }
+
+      sql += ' ORDER BY created_at DESC LIMIT ?';
+      params.push(limit);
+
+      const messages = query<Record<string, unknown>>(sql, ...params);
+      json(res, 200, withTimestamp({ messages, count: messages.length }));
+      return true;
+    }
+
     // ── SDK guard: all remaining routes need network initialized ──
     if (!network) {
       json(res, 503, withTimestamp({ error: 'Network SDK not initialized' }));
@@ -88,6 +115,47 @@ export async function handleNetworkRoute(
           to: `a2a:${body.to}`,
           type: 'text',
           body: JSON.stringify(body.payload),
+          metadata: { channel: 'a2a', recipient: body.to, network_result: result },
+        });
+      } catch (err) {
+        log.warn('Failed to log outbound A2A message', { error: String(err) });
+      }
+
+      json(res, 200, withTimestamp(result));
+      return true;
+    }
+
+    // ── Direct Message (convenience alias) ───────────────────
+    // Accepts {to, message} (string body) and wraps into send format.
+    // Also supports {to, payload} for full compatibility with /send.
+
+    if (subpath === 'message' && method === 'POST') {
+      const body = await parseBody(req);
+      if (!body.to || typeof body.to !== 'string') {
+        json(res, 400, withTimestamp({ error: 'to (recipient username) is required' }));
+        return true;
+      }
+
+      // Accept either a string `message` or a structured `payload`
+      let payload: Record<string, unknown>;
+      if (body.payload && typeof body.payload === 'object') {
+        payload = body.payload as Record<string, unknown>;
+      } else if (body.message && typeof body.message === 'string') {
+        payload = { type: 'message', text: body.message };
+      } else {
+        json(res, 400, withTimestamp({ error: 'message (string) or payload (object) is required' }));
+        return true;
+      }
+
+      const result = await network.send(body.to, payload);
+
+      // Log outbound A2A message for audit trail
+      try {
+        sendMessage({
+          from: 'comms',
+          to: `a2a:${body.to}`,
+          type: 'text',
+          body: JSON.stringify(payload),
           metadata: { channel: 'a2a', recipient: body.to, network_result: result },
         });
       } catch (err) {
