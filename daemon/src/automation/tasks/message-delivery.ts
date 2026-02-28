@@ -15,7 +15,7 @@
  */
 
 import { query, exec, update } from '../../core/db.js';
-import { injectMessage, listSessions, _getCommsSession, _getOrchestratorSession } from '../../agents/tmux.js';
+import { injectMessage, listSessions, _getCommsSession, _getOrchestratorSession, getOrchestratorState } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 import type { Message } from '../../agents/message-router.js';
@@ -202,6 +202,13 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
 
     if (deliverable.length === 0) continue;
 
+    // Gate orchestrator injection: never inject when Claude is actively running.
+    // The wrapper's poll loop will pick up queued messages between runs.
+    if (agentId === 'orchestrator' && getOrchestratorState() === 'active') {
+      log.debug('Skipping orchestrator injection — Claude is active, wrapper will poll');
+      continue;
+    }
+
     // Inject a single notification ping for the batch
     const pingText = formatNotificationPing(deliverable[0]!);
     const success = injectMessage(agentId, pingText);
@@ -288,6 +295,12 @@ async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> 
     if (!liveSessions.has(agentId)) continue;
     if (messages.length === 0) continue;
 
+    // Gate orchestrator re-ping: skip when Claude is actively running
+    if (agentId === 'orchestrator' && getOrchestratorState() === 'active') {
+      log.debug('Skipping orchestrator re-ping — Claude is active');
+      continue;
+    }
+
     const pingText = formatNotificationPing(messages[0]!);
     const success = injectMessage(agentId, pingText);
 
@@ -352,7 +365,12 @@ async function notifyWorkerCompletions(liveSessions: Set<string>): Promise<numbe
     }
 
     if (liveSessions.has(spawner)) {
-      injectMessage(spawner, pingText);
+      // Gate orchestrator injection: skip when Claude is actively running
+      if (spawner === 'orchestrator' && getOrchestratorState() === 'active') {
+        log.debug('Skipping worker completion injection to orchestrator — Claude is active');
+      } else {
+        injectMessage(spawner, pingText);
+      }
     }
 
     exec('UPDATE worker_jobs SET spawner_notified_at = ? WHERE id = ?', now, job.id);
