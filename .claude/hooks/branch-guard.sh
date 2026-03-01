@@ -25,7 +25,7 @@ fi
 # If stdin has tool_name JSON, we're in PreToolUse mode.
 # Otherwise, SessionStart mode.
 
-if [[ -n "$INPUT" ]] && echo "$INPUT" | python3 -c "import sys,json; json.load(sys.stdin).get('tool_name')" 2>/dev/null; then
+if [[ -n "$INPUT" ]] && echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'tool_name' in d" 2>/dev/null; then
   # ── PreToolUse mode ──────────────────────────────────────────
   echo "$INPUT" | python3 -c '
 import json, sys, re
@@ -58,10 +58,6 @@ for sub in subcmds:
         continue
     if args == ".":
         continue
-    if re.match(r"-[bB]\b", args):
-        continue
-    if re.match(r"-[cC]\b", args):
-        continue
     first_arg = args.split()[0] if args.split() else ""
     if first_arg == "main":
         continue
@@ -69,12 +65,12 @@ for sub in subcmds:
     if tokens and all(t.startswith("-") for t in tokens):
         continue
 
-    result = {
-        "decision": "block",
-        "reason": "Branch guard: comms/orchestrator sessions must stay on main. "
-                  "Use a worker in a worktree for feature branch work."
-    }
-    print(json.dumps(result))
+    reason = "Branch guard: comms/orchestrator sessions must stay on main. "
+    if re.match(r"-[bBcC]\b", args):
+        reason += "Branch creation is also forbidden — use a worker in a worktree."
+    else:
+        reason += "Use a worker in a worktree for feature branch work."
+    print(json.dumps({"decision": "block", "reason": reason}))
     sys.exit(0)
 
 sys.exit(0)
