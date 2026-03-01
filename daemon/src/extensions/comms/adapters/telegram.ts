@@ -103,6 +103,7 @@ interface MessageContext {
   replyChatId: string;
   isSelf: boolean;
   firstName: string;
+  chatType: string;
 }
 
 // ── Channel file management ─────────────────────────────────
@@ -170,7 +171,7 @@ function extractMessageContext(msg: TelegramMessage, botToken: string): MessageC
   const ownBotId = getOwnBotId(botToken);
   const isSelf = msg.from?.is_bot === true && msg.from?.id?.toString() === ownBotId;
 
-  return { senderId, replyChatId, isSelf, firstName: msg.from?.first_name ?? 'User' };
+  return { senderId, replyChatId, isSelf, firstName: msg.from?.first_name ?? 'User', chatType };
 }
 
 // ── Typing indicator ─────────────────────────────────────────
@@ -360,10 +361,10 @@ let _inboundBuffer: InboundMessage[] = [];
 // ── Session wakeup + injection ───────────────────────────────
 
 let _sessionStarting = false;
-let _pendingMessages: Array<{ text: string; senderId: string; replyChatId: string; firstName: string }> = [];
+let _pendingMessages: Array<{ text: string; senderId: string; replyChatId: string; firstName: string; chatType?: string }> = [];
 
 async function injectWithSessionWakeup(
-  text: string, senderId: string, replyChatId: string, firstName: string, isThirdParty: boolean,
+  text: string, senderId: string, replyChatId: string, firstName: string, isThirdParty: boolean, chatType?: string,
 ): Promise<void> {
   const token = await getBotToken();
 
@@ -371,7 +372,7 @@ async function injectWithSessionWakeup(
     log.info('No session found, waking up...');
     setChannel('telegram');
     if (token) startTypingLoop(token, replyChatId);
-    _pendingMessages.push({ text, senderId, replyChatId, firstName });
+    _pendingMessages.push({ text, senderId, replyChatId, firstName, chatType });
 
     if (!_sessionStarting) {
       _sessionStarting = true;
@@ -382,7 +383,7 @@ async function injectWithSessionWakeup(
       _sessionStarting = false;
 
       for (const msg of _pendingMessages) {
-        doInject(msg.text, msg.firstName, isThirdParty);
+        doInject(msg.text, msg.firstName, isThirdParty, msg.chatType, msg.replyChatId);
       }
       _pendingMessages = [];
     }
@@ -390,16 +391,18 @@ async function injectWithSessionWakeup(
   }
 
   if (_sessionStarting) {
-    _pendingMessages.push({ text, senderId, replyChatId, firstName });
+    _pendingMessages.push({ text, senderId, replyChatId, firstName, chatType });
     return;
   }
 
   if (token) startTypingLoop(token, replyChatId);
-  doInject(text, firstName, isThirdParty);
+  doInject(text, firstName, isThirdParty, chatType, replyChatId);
 }
 
-function doInject(text: string, firstName: string, isThirdParty: boolean): void {
-  const prefix = isThirdParty ? '[3rdParty][Telegram]' : '[Telegram]';
+function doInject(text: string, firstName: string, isThirdParty: boolean, chatType?: string, chatId?: string): void {
+  const isGroup = chatType === 'group' || chatType === 'supergroup';
+  const channelTag = isGroup ? `Telegram - group:${chatId}` : 'Telegram';
+  const prefix = isThirdParty ? `[3rdParty][${channelTag}]` : `[${channelTag}]`;
   const formatted = `${prefix} ${firstName}: ${text}`;
   const ok = injectToComms(formatted, { pressEnter: true });
   if (ok) {
@@ -479,7 +482,7 @@ function loadJsonFile<T>(relPath: string): T | null {
 
 // ── Incoming message processing ──────────────────────────────
 
-async function processIncomingMessage(text: string, senderId: string, replyChatId: string, firstName: string): Promise<void> {
+async function processIncomingMessage(text: string, senderId: string, replyChatId: string, firstName: string, chatType?: string): Promise<void> {
   const tier = classifySender(senderId);
   log.debug(`Sender ${firstName} (${senderId}) classified as: ${tier}`);
 
@@ -501,7 +504,7 @@ async function processIncomingMessage(text: string, senderId: string, replyChatI
       }
     }
 
-    await injectWithSessionWakeup(text, senderId, replyChatId, firstName, false);
+    await injectWithSessionWakeup(text, senderId, replyChatId, firstName, false, chatType);
     return;
   }
 
@@ -511,7 +514,7 @@ async function processIncomingMessage(text: string, senderId: string, replyChatI
       await telegramSend("You're sending messages faster than I can process them. Please slow down.", replyChatId);
       return;
     }
-    await injectWithSessionWakeup(text, senderId, replyChatId, firstName, true);
+    await injectWithSessionWakeup(text, senderId, replyChatId, firstName, true, chatType);
     return;
   }
 
@@ -683,7 +686,7 @@ export class BmoTelegramAdapter implements ChannelAdapter {
     _replyChatId = ctx.replyChatId;
     persistReplyChatId(ctx.replyChatId);
 
-    const { senderId, replyChatId, firstName } = ctx;
+    const { senderId, replyChatId, firstName, chatType } = ctx;
 
     // Track that Telegram is the last active text channel (for voice response routing)
     updateLastActiveChannel('telegram');
@@ -701,7 +704,7 @@ export class BmoTelegramAdapter implements ChannelAdapter {
 
     // Handle text
     if (msg.text) {
-      await processIncomingMessage(msg.text, senderId, replyChatId, firstName);
+      await processIncomingMessage(msg.text, senderId, replyChatId, firstName, chatType);
       return;
     }
 
@@ -713,7 +716,7 @@ export class BmoTelegramAdapter implements ChannelAdapter {
       if (localPath) {
         const caption = msg.caption ?? '';
         const text = caption ? `[Sent a photo: ${localPath}] ${caption}` : `[Sent a photo: ${localPath}]`;
-        await processIncomingMessage(text, senderId, replyChatId, firstName);
+        await processIncomingMessage(text, senderId, replyChatId, firstName, chatType);
       }
       return;
     }
@@ -725,7 +728,7 @@ export class BmoTelegramAdapter implements ChannelAdapter {
       if (localPath) {
         const caption = msg.caption ?? '';
         const text = caption ? `[Sent a document: ${localPath}] ${caption}` : `[Sent a document: ${localPath}]`;
-        await processIncomingMessage(text, senderId, replyChatId, firstName);
+        await processIncomingMessage(text, senderId, replyChatId, firstName, chatType);
       }
       return;
     }
