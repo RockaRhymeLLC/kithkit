@@ -4,21 +4,33 @@
  * Every 5 minutes (configurable), sends a `status` type message to each peer
  * via `sendAgentMessage`. Updates peer state based on responses.
  *
+ * Uses dynamic imports for agent-comms so the task skips gracefully when
+ * the agent-comms extension is not loaded.
+ *
  * Uses message type `status` (not `ping` — valid types are:
  * text, status, coordination, pr-review).
  */
 
-import { createLogger } from '../../../core/logger.js';
-import { loadConfig } from '../../../core/config.js';
-import { asBmoConfig } from '../../config.js';
-import { sendAgentMessage, updatePeerState } from '../../comms/agent-comms.js';
-import type { Scheduler } from '../../../automation/scheduler.js';
+import { createLogger } from '../../core/logger.js';
+import { loadConfig } from '../../core/config.js';
+import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('peer-heartbeat');
 
+interface PeerConfig {
+  name: string;
+  host: string;
+  port: number;
+}
+
+interface AgentCommsConfig {
+  enabled: boolean;
+  peers?: PeerConfig[];
+}
+
 async function run(): Promise<void> {
-  const config = asBmoConfig(loadConfig());
-  const agentComms = config['agent-comms'];
+  const config = loadConfig();
+  const agentComms = (config as unknown as Record<string, unknown>)['agent-comms'] as AgentCommsConfig | undefined;
 
   if (!agentComms?.enabled) {
     log.debug('Agent comms disabled, skipping heartbeat');
@@ -31,24 +43,34 @@ async function run(): Promise<void> {
     return;
   }
 
+  // Dynamic import — agent-comms module may not exist if the extension isn't installed
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let comms: any;
+  try {
+    comms = await import('../../extensions/comms/agent-comms.js');
+  } catch {
+    log.debug('Agent-comms module not available, skipping heartbeat');
+    return;
+  }
+
   let sent = 0;
   let failed = 0;
 
   for (const peer of peers) {
     try {
-      const result = await sendAgentMessage(peer.name, 'status', undefined, {
+      const result = await comms.sendAgentMessage(peer.name, 'status', undefined, {
         status: 'idle',
       });
 
       if (result.ok) {
-        updatePeerState(peer.name, {
+        comms.updatePeerState(peer.name, {
           status: 'idle',
           updatedAt: Date.now(),
         });
         sent++;
         log.debug(`Heartbeat sent to ${peer.name}`, { queued: result.queued });
       } else {
-        updatePeerState(peer.name, {
+        comms.updatePeerState(peer.name, {
           status: 'unknown',
           updatedAt: Date.now(),
         });
@@ -56,7 +78,7 @@ async function run(): Promise<void> {
         log.debug(`Heartbeat failed for ${peer.name}`, { error: result.error });
       }
     } catch (err) {
-      updatePeerState(peer.name, {
+      comms.updatePeerState(peer.name, {
         status: 'unknown',
         updatedAt: Date.now(),
       });

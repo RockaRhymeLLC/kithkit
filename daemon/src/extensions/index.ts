@@ -292,7 +292,6 @@ const BMO_TASK_HANDLERS = [
   'nightly-todo',
   'health-check',
   'memory-consolidation',
-  'peer-heartbeat',
   'a2a-digest',
   'memory-sync',
   'lindee-inbox-watch',

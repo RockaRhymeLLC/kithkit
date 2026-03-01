@@ -189,7 +189,6 @@ The `text` field is the canonical field for message content in P2P payloads (LAN
 The `message` field is accepted as a legacy alias on the receiving side, but senders should always use `text`.
 See issue #118 for background.
 
-
 ## Error Codes
 
 | Code | Meaning |

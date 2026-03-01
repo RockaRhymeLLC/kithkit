@@ -28,9 +28,9 @@ Parse the arguments to determine action:
 - `log <n>` - Show last n log entries
 
 ### Examples
-- `/agent-comms send r2d2 "Hey, are you free to review a PR?"`
-- `/agent-comms send r2d2 "Claiming the auth refactor" coordination`
-- `/agent-comms send r2d2 "idle" status`
+- `/agent-comms send alice "Hey, are you free to review a PR?"`
+- `/agent-comms send alice "Claiming the auth refactor" coordination`
+- `/agent-comms send alice "idle" status`
 - `/agent-comms status`
 - `/agent-comms log 10`
 
