@@ -4,7 +4,7 @@
  * Initializes the A2ANetwork client, wires SDK events to session bridge,
  * and exposes the network client for agent-comms (P2P fallback).
  *
- * cc4me-network is loaded dynamically. If not installed, daemon degrades
+ * kithkit-a2a-client is loaded dynamically. If not installed, daemon degrades
  * gracefully to LAN-only mode.
  */
 
@@ -61,14 +61,14 @@ export async function initNetworkSDK(config: R2Config): Promise<boolean> {
   }
 
   try {
-    // Dynamic import — cc4me-network is optional
+    // Dynamic import — kithkit-a2a-client is optional
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let CC4MeNetworkClass: any;
     try {
-      const sdk = await import('cc4me-network');
-      CC4MeNetworkClass = sdk.CC4MeNetwork;
+      const sdk = await import('kithkit-a2a-client');
+      CC4MeNetworkClass = sdk.A2ANetwork;
     } catch {
-      log.warn('cc4me-network package not installed — P2P messaging unavailable. Install with: npm install cc4me-network');
+      log.warn('kithkit-a2a-client package not installed — P2P messaging unavailable. Install with: npm install kithkit-a2a-client');
       return false;
     }
 
