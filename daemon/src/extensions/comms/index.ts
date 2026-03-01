@@ -70,7 +70,8 @@ export async function initComms(config: BmoConfig): Promise<void> {
             break;
           }
           case 'jmap': {
-            _jmapAdapter = new BmoJmapAdapter();
+            const ownerEmail = config.network?.owner_email;
+            _jmapAdapter = new BmoJmapAdapter(ownerEmail);
             if (await _jmapAdapter.isConfigured()) {
               registerEmailAdapter(_jmapAdapter);
               log.info('JMAP email adapter enabled');

@@ -288,6 +288,38 @@ async function run(config: Record<string, unknown>): Promise<void> {
     return; // Not idle long enough
   }
 
+  // --- Check 3: Pending tasks ---
+  // Before nudging shutdown, check if there are tasks waiting in the queue.
+  // If so, wake the orchestrator with a task notification instead of shutting it down.
+  // This covers the case where a task arrived while Claude was active and the
+  // orchestrator went idle before the message-delivery cycle injected it.
+  const pendingTaskRows = query<{ count: number; title: string }>(
+    `SELECT COUNT(*) as count, MIN(title) as title FROM orchestrator_tasks
+     WHERE status = 'pending'`,
+  );
+  const pendingTaskCount = pendingTaskRows[0]?.count ?? 0;
+  if (pendingTaskCount > 0) {
+    const taskTitle = pendingTaskRows[0]?.title ?? 'unknown';
+    const wakeMsg = pendingTaskCount === 1
+      ? `You have 1 pending task: "${taskTitle}" — check GET /api/orchestrator/tasks?status=pending`
+      : `You have ${pendingTaskCount} pending tasks — check GET /api/orchestrator/tasks?status=pending`;
+    log.info('Orchestrator idle but has pending tasks — waking instead of shutdown', { pendingTaskCount });
+    const injected = injectMessage('orchestrator', wakeMsg);
+    if (injected) {
+      // Touch last_activity so we don't immediately re-trigger
+      update('agents', 'orchestrator', {
+        last_activity: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      logActivity({
+        agent_id: 'orchestrator',
+        event_type: 'task_received',
+        details: `Woken for ${pendingTaskCount} pending task(s): ${taskTitle}`,
+      });
+    }
+    return;
+  }
+
   const reason = `idle for ${Math.round(idleMs / 60000)} minutes — Claude process not running, no pending work`;
   log.info('Orchestrator idle — sending shutdown nudge', { idleMinutes: Math.round(idleMs / 60000) });
   const injected = injectMessage('orchestrator', buildShutdownPrompt(reason));

@@ -67,6 +67,13 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `POST /api/orchestrator/escalate` | Escalate a task to the orchestrator (spawns if needed) |
 | `GET /api/orchestrator/status` | Check orchestrator status (alive, active jobs) |
 | `POST /api/orchestrator/shutdown` | Gracefully shut down orchestrator |
+| `POST /api/orchestrator/tasks` | Create an orchestrator task in the queue |
+| `GET /api/orchestrator/tasks` | List tasks (filter: `?status=pending\|assigned\|in_progress\|completed\|failed`) |
+| `GET /api/orchestrator/tasks/:id` | Get task detail (includes workers + activity log) |
+| `PUT /api/orchestrator/tasks/:id` | Update task (status, assignee, result) |
+| `POST /api/orchestrator/tasks/:id/activity` | Post an activity entry to a task |
+| `GET /api/orchestrator/tasks/:id/activity` | Get task activity log (paginated) |
+| `POST /api/orchestrator/tasks/:id/workers` | Assign a worker job to a task |
 | `POST /api/config/reload` | Hot-reload config from disk |
 
 See `docs/api-reference.md` for full request/response details.
@@ -173,8 +180,11 @@ After escalating, tell the human what you sent and that you're waiting for resul
 ### Task Execution (Orchestrator)
 
 When you are the orchestrator:
-- Decompose the task into subtasks
+- Check your task queue first: `GET /api/orchestrator/tasks?status=pending` — work through pending tasks before accepting new ones ad-hoc
+- Decompose each task into subtasks
 - Spawn workers via `POST /api/agents/spawn` with appropriate profiles
+- Track worker assignments: `POST /api/orchestrator/tasks/:id/workers`
+- Log progress: `POST /api/orchestrator/tasks/:id/activity`
 - Monitor worker status via `GET /api/agents/:id/status`
 - **Explicitly mark tasks completed** via `PUT /api/orchestrator/tasks/<task_id>` with `{status: 'completed', result: '<summary>'}`. The daemon does NOT auto-complete tasks.
 - **Write work notes** as you progress: `PUT /api/orchestrator/tasks/<task_id>` with `{work_notes: '<note>', append_work_notes: true}`
@@ -182,6 +192,8 @@ When you are the orchestrator:
 - If you need help or clarification — ask comms via `POST /api/messages {to: 'comms', type: 'question'}`. Comms monitors messages and can answer directly or relay to Dave.
 - Task lifecycle: update to in_progress → do work + write work_notes → mark completed with result → send result to comms
 - Exit when all work is complete — the daemon will clean up your session
+
+**Task queue**: The `orchestrator_tasks` table is the authoritative record of work. The daemon's idle monitor wakes the orchestrator when pending tasks arrive. Always check and update task status rather than relying on in-session memory alone.
 
 ### Memory-First Context (Comms + Orchestrator)
 
@@ -211,9 +223,10 @@ This applies to both comms (before asking the human directly) and orchestrator (
 
 ### Branch Rule
 - **The comms agent AND orchestrator agent must NEVER change git branches.** They always run on `main`. Checking out a feature branch in these sessions breaks hooks, settings, permissions, and startup procedures.
+- **Forbidden commands** (comms + orchestrator): `git checkout <branch>`, `git checkout -b <branch>`, `git switch <branch>`, `git switch -c <branch>`. These move `HEAD` off `main`.
+- **Allowed** (comms + orchestrator): `git push origin <branch>` (pushes without switching), `gh pr create`, `gh pr merge`, `git pull origin main`. These are safe — HEAD stays on `main`.
 - Only **workers** may operate on feature branches, and they do so in isolated **git worktrees** — never by switching the branch in the main repo.
-- If an orchestrator or its workers need to work on a branch, the **worker** does it in a worktree — the orchestrator stays on `main`.
-- If a task requires work on a branch (PRs, cherry-picks, etc.), delegate it to a worker via the orchestrator.
+- If a task requires work on a branch (PRs, cherry-picks, new features), delegate it to a worker via the orchestrator.
 
 ### Availability Rule
 - **Never make yourself unavailable for an extended period without good cause.** The human or other agents may need you at any time. Blocking your session — with `bash sleep`, long-running polling loops, or any command that prevents you from receiving and responding to messages — is forbidden.

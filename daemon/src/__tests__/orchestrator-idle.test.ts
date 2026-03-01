@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
-import { openDatabase, closeDatabase, _resetDbForTesting, insert, update, query } from '../core/db.js';
+import { openDatabase, closeDatabase, _resetDbForTesting, insert, update, query, exec } from '../core/db.js';
 import { _resetConfigForTesting, loadConfig } from '../core/config.js';
 import {
   _resetNudgeStateForTesting,
@@ -226,5 +226,35 @@ describe('Orchestrator idle: liveness check', () => {
     const state = _getNudgeStateForTesting();
     assert.notEqual(state.nudgedAt, null, 'should have set nudge state');
     assert.ok(injectedText.includes('Shutdown requested'), 'should inject shutdown prompt');
+  });
+
+  it('wakes orchestrator with task notification instead of shutdown when pending tasks exist', async () => {
+    let injectedText = '';
+    _setDepsForTesting({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { throw new Error('should not kill'); },
+      injectMessage: (_target: string, text: string) => { injectedText = text; return true; },
+      cleanupSessionDirs: () => 0,
+    });
+
+    // Set last_activity to 15 minutes ago (past 10 min default)
+    update('agents', 'orchestrator', {
+      last_activity: new Date(Date.now() - 15 * 60_000).toISOString(),
+    });
+
+    // Insert a pending orchestrator task
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('test-task-idle-1', 'Fix the login bug', 'description', 'pending', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    await _runForTesting({});
+
+    const state = _getNudgeStateForTesting();
+    assert.equal(state.nudgedAt, null, 'should NOT set shutdown nudge state');
+    assert.ok(injectedText.includes('pending task'), 'should inject task notification not shutdown');
+    assert.ok(injectedText.includes('Fix the login bug'), 'should include task title');
+    assert.ok(!injectedText.includes('Shutdown requested'), 'should NOT inject shutdown prompt');
   });
 });
