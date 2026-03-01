@@ -155,6 +155,58 @@ function cleanupZombieTasks(): number {
   return zombies.length;
 }
 
+/**
+ * Detect tasks orphaned by a previous orchestrator instance.
+ * When a new orchestrator spawns (e.g., via task escalation) while the old one's
+ * tasks are still in_progress/assigned, those tasks belong to the dead instance.
+ * We detect this by comparing task timestamps against the current orchestrator's started_at.
+ * Returns count of orphaned tasks cleaned up.
+ */
+function cleanupOrphanedTasks(): number {
+  // Get the current orchestrator's started_at
+  const orchRows = query<{ started_at: string | null }>(
+    "SELECT started_at FROM agents WHERE id = 'orchestrator'",
+  );
+  const orchStartedAt = orchRows[0]?.started_at;
+  if (!orchStartedAt) return 0;
+
+  const ts = new Date().toISOString();
+
+  // Find tasks that are in_progress or assigned but whose relevant timestamp
+  // predates the current orchestrator's started_at.
+  // For in_progress: use started_at (when it transitioned to in_progress), fall back to created_at.
+  // For assigned: use assigned_at, fall back to created_at.
+  const orphans = query<{ id: string; status: string }>(
+    `SELECT id, status FROM orchestrator_tasks
+     WHERE status IN ('in_progress', 'assigned')
+     AND (
+       (status = 'in_progress' AND COALESCE(started_at, created_at) < ?)
+       OR
+       (status = 'assigned' AND COALESCE(assigned_at, created_at) < ?)
+     )`,
+    orchStartedAt, orchStartedAt,
+  );
+
+  for (const task of orphans) {
+    exec(
+      `UPDATE orchestrator_tasks SET status = 'failed', error = 'orchestrator_restarted', completed_at = ?, updated_at = ? WHERE id = ?`,
+      ts, ts, task.id,
+    );
+    exec(
+      `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+       VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
+      task.id, `Task failed: orchestrator restarted while task was ${task.status}`, ts,
+    );
+  }
+  if (orphans.length > 0) {
+    log.info('Cleaned up orphaned tasks from previous orchestrator instance', {
+      count: orphans.length,
+      taskIds: orphans.map(t => t.id),
+    });
+  }
+  return orphans.length;
+}
+
 const PENDING_TIMEOUT_MS = 5 * 60 * 1000;   // 5 minutes
 const STALE_WORK_NOTES_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -228,6 +280,11 @@ async function run(config: Record<string, unknown>): Promise<void> {
   // Check task timeouts on every tick — runs even when orchestrator is dead.
   // This catches stale/zombie tasks from a dead orchestrator early.
   checkTaskTimeouts();
+
+  // Detect orphaned tasks from a previous orchestrator instance.
+  // Runs unconditionally — even when the orchestrator IS alive — because the new
+  // orchestrator's liveness masks the dead one's abandoned tasks.
+  cleanupOrphanedTasks();
 
   // If we previously nudged, check the outcome BEFORE the alive check.
   // The orchestrator may have exited gracefully in response to our nudge —
