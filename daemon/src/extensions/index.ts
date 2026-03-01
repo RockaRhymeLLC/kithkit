@@ -351,6 +351,9 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     }
   }
 
+  // Load external task handlers from configured directories (tasks_dirs)
+  await _scheduler.loadExternalTasks(config.scheduler.tasks_dirs ?? []);
+
   // Wire scheduler to the tasks API
   setScheduler(_scheduler);
   _scheduler.start();
