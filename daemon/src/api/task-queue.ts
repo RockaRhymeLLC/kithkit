@@ -445,8 +445,45 @@ export async function handleTaskQueueRoute(
         ...values, taskId,
       );
 
+      // Fix 4: Auto-log activity on status change
+      if (updates.status) {
+        const activityMessage = updates.status === 'completed'
+          ? `Status → completed. Result: ${(updates.result as string)?.slice(0, 200) ?? '(none)'}`
+          : updates.status === 'failed'
+            ? `Status → failed. Error: ${(updates.error as string)?.slice(0, 200) ?? '(none)'}`
+            : `Status → ${updates.status}`;
+
+        exec(
+          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+           VALUES (?, 'daemon', 'note', 'status_change', ?, ?)`,
+          taskId, activityMessage, ts,
+        );
+      }
+
       const updated = getTask(taskId)!;
       log.info('Task updated', { id: taskId, status: updated.status, assignee: updated.assignee });
+
+      // Fix 2: Auto-notify comms on task completion/failure
+      if (updates.status && TERMINAL_STATUSES.includes(updates.status as TaskStatus)) {
+        const msgBody = updates.status === 'completed'
+          ? `Task completed: ${updated.title}\n\nResult: ${updated.result ?? '(no result provided)'}`
+          : `Task failed: ${updated.title}\n\nError: ${updated.error ?? '(no error details)'}`;
+
+        try {
+          exec(
+            `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+             VALUES ('daemon', 'comms', 'result', ?, ?)`,
+            msgBody, new Date().toISOString(),
+          );
+          log.info('Auto-notified comms of task completion', { taskId, status: updates.status });
+        } catch (err) {
+          log.warn('Failed to auto-notify comms', { taskId, error: String(err) });
+        }
+
+        // Also inject directly into comms tmux session for immediate visibility
+        injectMessage('comms', `[task ${updates.status}] ${updated.title.slice(0, 100)}`);
+      }
+
       json(res, 200, withTimestamp(updated));
       return true;
     }

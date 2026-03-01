@@ -151,6 +151,47 @@ describe('buildOrchestratorWrapperScript — task extraction logic', () => {
   });
 });
 
+describe('buildOrchestratorWrapperScript — robust task status transitions (Fix 5)', () => {
+  it('checks HTTP status code before marking task in_progress', () => {
+    const script = buildOrchestratorWrapperScript('/usr/bin/claude', 'Task');
+    // Should capture HTTP response code for the assign step
+    assert.ok(
+      script.includes("ASSIGN_OK="),
+      'should capture assign HTTP status code in ASSIGN_OK variable',
+    );
+    assert.ok(
+      script.includes('-w \'%{http_code}\''),
+      'should use curl -w to capture HTTP status code',
+    );
+  });
+
+  it('skips in_progress transition when assign fails', () => {
+    const script = buildOrchestratorWrapperScript('/usr/bin/claude', 'Task');
+    // Should check ASSIGN_OK before transitioning to in_progress
+    assert.ok(
+      script.includes('if [ "$ASSIGN_OK" = "200" ]'),
+      'should only transition to in_progress if assign returned HTTP 200',
+    );
+    assert.ok(
+      script.includes('WARN: Failed to assign task'),
+      'should log a warning when assign fails',
+    );
+    assert.ok(
+      script.includes('continue'),
+      'should skip to next iteration when assign fails',
+    );
+  });
+
+  it('still transitions to in_progress on successful assign', () => {
+    const script = buildOrchestratorWrapperScript('/usr/bin/claude', 'Task');
+    // in_progress transition should be inside the if block
+    assert.ok(
+      script.includes('"status":"in_progress"'),
+      'should still set in_progress on successful assign',
+    );
+  });
+});
+
 // ── Session name helpers ──────────────────────────────────────
 
 describe('Session name helpers', () => {
