@@ -262,4 +262,4 @@ This applies to both comms (before asking the human directly) and orchestrator (
   4. Verify the peer is responding before resuming normal work
 - Notify the human (Dave) when you begin restoration and when it's complete.
 - If you cannot restore the peer alone, escalate to Dave immediately with a clear diagnosis.
-- This rule applies equally to all agents: R2D2, BMO, and Skippy.
+- This rule applies equally to all configured peer agents.
