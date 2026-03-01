@@ -3,7 +3,7 @@
  *
  * Every 60 seconds:
  * 1. Check for completed or failed worker agents not yet acknowledged.
- * 2. Check for unread messages addressed to comms.
+ * 2. Check for undelivered messages addressed to comms (processed_at IS NULL).
  * 3. If EITHER has results, inject a brief nudge into the comms tmux session:
  *    "[heartbeat] 2 workers completed, 1 unread message — check in"
  * 4. Mark notified workers as acknowledged so they don't re-trigger.
@@ -12,14 +12,10 @@
 
 import { query, exec } from '../../core/db.js';
 import { injectMessage, listSessions, _getCommsSession, getOrchestratorState } from '../../agents/tmux.js';
-import { getLastNotificationTime } from './message-delivery.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('comms-heartbeat');
-
-/** Skip heartbeat unread-message nudge if message-delivery notified within this window. */
-const DEDUP_WINDOW_MS = 60_000;
 
 interface AgentRow {
   id: string;
@@ -53,14 +49,15 @@ function getPendingWorkers(): AgentRow[] {
 }
 
 /**
- * Count unread messages addressed to comms.
+ * Count undelivered messages addressed to comms.
+ * Only counts messages where message-delivery has not yet successfully
+ * injected content (processed_at IS NULL) — avoids duplicating delivered messages.
  */
 function getUnreadMessageCount(): number {
   const result = query<MessageCount>(
     `SELECT COUNT(*) as count FROM messages
      WHERE to_agent = 'comms'
-       AND read_at IS NULL
-       AND processed_at IS NOT NULL`,
+       AND processed_at IS NULL`,
   );
   return result[0]?.count ?? 0;
 }
@@ -105,12 +102,9 @@ async function run(): Promise<void> {
 
   const pendingWorkers = getPendingWorkers();
 
-  // Skip unread-message nudge if message-delivery already notified comms recently.
-  // This prevents the agent from receiving both a real-time notification and a
-  // heartbeat nudge for the same unread messages (kithkit #30).
-  const lastMessageNotification = getLastNotificationTime('comms');
-  const recentlyNotified = (Date.now() - lastMessageNotification) < DEDUP_WINDOW_MS;
-  const unreadCount = recentlyNotified ? 0 : getUnreadMessageCount();
+  // Only count messages not yet processed by message-delivery (processed_at IS NULL).
+  // Delivered messages are already visible in the tmux pane — no heartbeat nudge needed.
+  const unreadCount = getUnreadMessageCount();
 
   if (pendingWorkers.length === 0 && unreadCount === 0) {
     log.debug('Nothing pending — heartbeat silent');
