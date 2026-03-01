@@ -81,9 +81,23 @@ Check if enabled:
 osascript -e 'tell application "System Events" to keystroke ""'
 ```
 
-## Browser Automation
+## Playwright (Browser Automation)
 
-For web browsing tasks, see the **browser** skill — it covers local Playwright (free) and Browserbase (cloud/stealth) with decision matrix, form filling, and hand-off protocol. Use the browser skill instead of rolling your own browser automation with AppleScript.
+Best for complex browser interactions. Already configured as MCP server.
+
+```javascript
+// Via Playwright MCP
+// Use playwright_navigate, playwright_click, playwright_fill, etc.
+```
+
+Advantages:
+- Handles dynamic pages
+- Waits for elements automatically
+- Screenshots, PDFs
+
+Limitations:
+- Can't bypass CAPTCHAs (Cloudflare "verify you're human")
+- Some sites detect automation
 
 ## open Command
 

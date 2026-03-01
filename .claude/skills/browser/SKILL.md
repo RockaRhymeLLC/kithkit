@@ -10,6 +10,30 @@ Operational guide for web browsing tasks. Two browser options are available — 
 
 **See also**: [reference.md](reference.md) for detailed API reference, troubleshooting, credentials, and plan limits.
 
+## Site Knowledge
+
+Before browsing a new site, check if we have prior learnings:
+
+```bash
+# Search for site-specific memories
+grep -l "category: website" .claude/state/memory/memories/*.md | xargs grep -l "example.com"
+```
+
+**Before navigating**: Grep memories for the domain. Prior knowledge includes:
+- Field selectors (login forms, search boxes, data tables)
+- Navigation flows (how to reach specific pages)
+- Anti-bot patterns (Cloudflare, rate limits, headless detection)
+- Auth requirements (OAuth, cookies, session handling)
+- Known quirks (JS-heavy rendering, iframe issues, dynamic IDs)
+
+**After successful interaction**: Capture learnings as a memory:
+```
+/memory add "Site example.com: login form is #auth-form, submit button .btn-primary,
+rate limited to 10 req/min, requires JS for form validation" category:website tags:selectors,auth
+```
+
+Site knowledge is stored as memories (not in this skill) so the skill stays portable while learnings accumulate per-agent.
+
 ## Decision Matrix
 
 ### Option A: Local Playwright (MCP tools) — FREE, unlimited
@@ -42,7 +66,7 @@ The Playwright MCP server provides `mcp__playwright__browser_*` tools directly i
 
 ### Option B: Browserbase Cloud (sidecar on port 3849) — METERED
 
-Remote Chrome with stealth mode, CAPTCHA solving, human hand-off, and **`/session/eval`** for efficient form filling via `page.evaluate()`.
+Remote Chrome with stealth mode, CAPTCHA solving, and human hand-off. Costs hours from 100 hrs/month budget.
 
 **Use when:**
 - Site requires authentication (human enters credentials via hand-off)
@@ -51,16 +75,14 @@ Remote Chrome with stealth mode, CAPTCHA solving, human hand-off, and **`/sessio
 - Utility account management (bill pay, account changes)
 - CAPTCHA-gated workflows
 - Need persistent cookies across sessions (context persistence)
-- **Form filling tasks** — `/session/eval` enables batch-filling all fields in one call
 
 **Pattern:**
 ```
 1. POST http://localhost:3849/session/start { "url": "...", "contextName": "sitename" }
-2. POST /session/eval — discover fields, batch-fill forms (see Form Filling Protocol)
-3. POST /session/navigate, /session/click, /session/type — interact as needed
-4. GET /session/screenshot — visual check
-5. If blocked → hand off to human (see Hand-Off below)
-6. POST /session/stop { "saveContext": true } — clean up, save cookies
+2. POST /session/navigate, /session/click, /session/type — interact
+3. GET /session/screenshot — visual check
+4. If blocked → hand off to human (see Hand-Off below)
+5. POST /session/stop { "saveContext": true } — clean up, save cookies
 ```
 
 ### Decision Flowchart
@@ -82,10 +104,6 @@ Need human to enter credentials or approve something?
   YES → Browserbase (hand-off)
   NO ↓
 
-Need to fill forms on a site with bot protection?
-  YES → Browserbase (/session/eval for efficient batch fill)
-  NO ↓
-
 Need persistent cookies across sessions?
   YES → Browserbase (context persistence)
   NO → Local Playwright (free)
@@ -97,40 +115,16 @@ When the assistant hits a blocker (CAPTCHA, login, MFA, payment approval):
 
 1. **Take screenshot**, assess the blocker
 2. **Start hand-off**: `POST http://localhost:3847/browser/handoff/start`
-3. **Get session info**: `GET http://localhost:3849/session/status` → extract `wrapperPath`
-4. **Build the public hand-off URL**: `https://yourdomain.com{wrapperPath}`
-   - **IMPORTANT**: Always use your configured public domain URL, NEVER `localhost` — the human is on their phone/laptop, not on this machine
-   - The daemon proxies `/handoff/*` to the sidecar automatically
-5. **Message human** on the active channel with:
-   - Hand-off URL (tappable link to the interactive web UI)
+3. **Message human** on Telegram with:
+   - Live view URL (tappable link)
    - Screenshot of current page
    - Clear description: "I'm stuck on [X] — need you to [Y]"
-   - **Always include the available commands** (see below)
-6. **Human interacts** via the web UI or channel commands:
+4. **Human interacts** via Telegram commands:
    - `type: [text]` — types into focused field (NEVER logged — safe for passwords)
    - `screenshot` — sends fresh screenshot
-   - `done` / `all yours` — completes hand-off (shows confirmation overlay in web UI)
+   - `done` / `all yours` — completes hand-off
    - `abort` — cancels and closes session
-7. **Done confirmation**: When the human taps Done in the web UI, a confirmation overlay appears asking them to confirm. This prevents accidental hand-back while still interacting.
-8. **Assistant resumes** autonomous navigation after `done` is confirmed
-
-### Hand-Off Message Template
-
-Always include this in the initial hand-off message to the human:
-
-```
-I need your help with [description of blocker].
-
-Hand-off page: https://yourdomain.com/handoff/page?token=TOKEN_HERE
-
-[Description of what's on screen and what you need them to do]
-
-Available commands:
-• type: [text] — type into the focused field
-• screenshot — get a fresh screenshot
-• done — hand control back to me
-• abort — cancel and close the session
-```
+5. **Assistant resumes** autonomous navigation after `done`
 
 ### Hand-Off Triggers
 - CAPTCHA that auto-solve can't handle
@@ -140,183 +134,13 @@ Available commands:
 - Payment confirmation (human must explicitly approve)
 - Anything the assistant can't figure out from screenshots
 
-## Form Filling Protocol (Browserbase)
-
-When filling forms via Browserbase, follow this efficient workflow:
-
-### 1. Navigate to the Form Page
-
-```bash
-curl -s -X POST http://localhost:3849/session/start \
-  -H 'Content-Type: application/json' \
-  -d '{"url": "https://example.com/application", "contextName": "sitename"}'
-```
-
-### 2. Discover All Form Fields
-
-Use `/session/eval` to enumerate every field on the page:
-
-```bash
-curl -s -X POST http://localhost:3849/session/eval \
-  -H 'Content-Type: application/json' \
-  -d '{"script": "Array.from(document.querySelectorAll(\"input, select, textarea\")).map(el => ({tag: el.tagName, type: el.type, name: el.name, id: el.id, label: el.labels?.[0]?.textContent?.trim() || null, options: el.tagName===\"SELECT\" ? Array.from(el.options).map(o=>({val:o.value,text:o.text})) : undefined})).filter(f => f.type !== \"hidden\" && f.name !== \"\")"}'
-```
-
-For complex discovery scripts, use Python to avoid escaping issues (see reference.md for the Python eval helper pattern).
-
-### 3. Batch-Fill All Fields in One Call
-
-Use `/session/eval` with the React-compatible native setter pattern:
-
-```bash
-# Use Python for the actual call — much cleaner than curl with escaped JSON
-python3 -c "
-import json, subprocess
-script = '''(() => {
-  const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-  const fields = {'firstName': 'John', 'lastName': 'Smith', 'email': 'john@example.com'};
-  for (const [id, val] of Object.entries(fields)) {
-    const el = document.getElementById(id);
-    if (el) { setter.call(el, val); el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); }
-  }
-  return 'filled';
-})()'''
-r = subprocess.run(['curl', '-s', '-X', 'POST', 'http://localhost:3849/session/eval',
-  '-H', 'Content-Type: application/json', '-d', json.dumps({'script': script})],
-  capture_output=True, text=True)
-print(r.stdout)
-"
-```
-
-### 4. Screenshot to Verify
-
-```bash
-curl -s http://localhost:3849/session/screenshot > /tmp/form-filled.png
-```
-
-Review the screenshot to confirm all fields are populated correctly.
-
-### 5. Submit or Hand Off
-
-- If the form is ready: use `/session/click` to submit
-- If there is a CAPTCHA or login blocker: hand off to human (see Hand-Off Protocol)
-- If the human needs to review before submitting: hand off with instructions to review and click Submit
-
-### Tips
-
-- **Use Python for eval scripts**: Shell escaping of JSON containing JavaScript is error-prone. Python's `json.dumps()` handles it cleanly.
-- **Session timeout is 300s by default**: For multi-page forms, work quickly. You can set `SESSION_TIMEOUT` env var on the sidecar for longer workflows.
-- **Discover before filling**: Never guess field IDs. Always run the discovery script first. Field IDs vary wildly across sites.
-- **Dropdowns need separate handling**: Native `<select>` uses `.value` + `change` event. Custom dropdowns (React Select, etc.) need click-based interaction via `/session/click`.
-- **Masked fields need `/session/type`**: For SSN, phone, credit card fields with input masks, use `/session/type` with the field selector instead of eval. Masks rely on keystroke events.
-- **Government sites**: Watch for ASP.NET postbacks (dropdown changes reload the page), aggressive session timeouts, and CAPTCHA on submission. See reference.md for detailed tips.
-
 ## Security Rules
 
 1. **`type:` relay text is NEVER logged** — passwords, SSNs, account numbers are safe
-2. **Live view URLs only sent via private channel DM** — never in group chats or logs
+2. **Live view URLs only sent via private Telegram DM** — never in group chats or logs
 3. **Financial transactions require explicit human approval**
 4. **Session recording is OFF** — no video of banking/password screens on Browserbase servers
 5. **Proxy providers block banking domains** — hand-off to human is the approach for those
-
-## Site Knowledge (Memory-Based)
-
-Per-site learnings (field selectors, navigation flows, quirks, anti-bot patterns) are stored as **memories** in `.claude/state/memory/memories/`, NOT in this skill. This keeps the skill shareable without leaking site-specific knowledge.
-
-### Before Browsing: Look Up What You Know
-
-Before interacting with any site, check memory for prior learnings:
-
-```bash
-# Search by domain
-Grep "egov.maryland.gov" path=".claude/state/memory/memories/"
-
-# Search by category
-Grep "category: website" path=".claude/state/memory/memories/"
-
-# Search by tag
-Grep "tags:.*md-business-express" path=".claude/state/memory/memories/"
-```
-
-If you find a matching memory, read it. It may contain field IDs, navigation steps, known quirks, or auth requirements that save you from re-discovering everything.
-
-### After Browsing: Capture What You Learned
-
-When you discover something useful about a site, store it immediately using `/memory add`:
-
-**Memory format for website learnings:**
-```yaml
----
-date: 2026-02-11T21:00:00
-category: website
-importance: medium
-subject: egov.maryland.gov — LLC Filing Form
-tags: [maryland, business-express, llc, government, form-filling]
-confidence: 0.9
-source: observation
----
-
-# egov.maryland.gov — LLC Filing Form
-
-## Access
-- URL: https://egov.maryland.gov/BusinessExpress
-- Auth: account required (credential-md-business-express-username)
-- Anti-bot: minimal (no Cloudflare, no CAPTCHA on forms)
-- Browser: Browserbase recommended (account login required)
-
-## Navigation
-- Register LLC: Dashboard → Register → Maryland Limited Liability Company → "Use Online Forms"
-- 6-step wizard: Business Name → Business Info → Resident Agent → Additional → Confirm → Pay
-
-## Form Fields (Step 1 — Business Name)
-- `#BusinessSuffix`: select, options: ", LLC" / ", L.L.C." / ", Limited Liability Company"
-- `#BusinessName`: input, the LLC name without suffix
-- Availability check button: `#btnCheckAvailability`
-
-## Quirks
-- Dropdown changes trigger ASP.NET postbacks (full page reload)
-- County dropdown populates after state selection — wait for reload
-- Session timeout: aggressive, ~15 min idle
-```
-
-### What to Capture
-
-| Category | Examples |
-|----------|----------|
-| **Access** | URL, auth method, anti-bot level, which browser option to use |
-| **Navigation** | How to reach key pages, menu paths, wizard steps |
-| **Form fields** | IDs, names, types, labels, dropdown options, masked fields |
-| **Quirks** | Postbacks, session timeouts, dynamic field loading, JS framework |
-| **Anti-bot** | Cloudflare, reCAPTCHA, headless detection, rate limits |
-| **Auth flow** | Login URL, MFA type, credential keychain keys |
-| **Failures** | What didn't work and why (stale selectors, blocked approaches) |
-
-### Staleness & Verification
-
-Site knowledge can go stale (redesigns, updated field IDs). Handle this with verify-on-use:
-
-1. **Try the stored knowledge** — use remembered selectors/flows
-2. **If it fails** — re-discover (run field enumeration, take screenshots)
-3. **Update the memory** — correct the stale data immediately
-4. **Note the last verified date** in the memory content
-
-Don't preemptively invalidate — trust stored knowledge until it actually fails.
-
-### Naming Convention
-
-Website memory files follow the standard memory naming:
-```
-YYYYMMDD-HHMM-site-slug.md
-```
-
-Examples:
-- `20260211-2100-egov-maryland-llc-filing.md`
-- `20260212-1400-chase-bank-login.md`
-- `20260213-0900-irs-ein-application.md`
-
-### Sharing
-
-This skill (SKILL.md, reference.md) can be shared upstream or with peers. Per-site memories stay in each agent's private `.claude/state/memory/memories/` directory. An agent receiving this skill will build their own site knowledge through use.
 
 ## Cost Awareness
 

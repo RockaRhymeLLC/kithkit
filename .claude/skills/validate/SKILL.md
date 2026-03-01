@@ -16,7 +16,7 @@ Run comprehensive validation checks to ensure specifications, plans, and impleme
 
 Examples:
 - `/validate` - Validate current state (finds most recent plan)
-- `/validate projects/feature/20260127-feature.plan.md` - Validate specific plan
+- `/validate plans/20260127-feature.plan.md` - Validate specific plan
 
 ## Validation Layers
 
@@ -59,12 +59,12 @@ Execute each layer in order. All must pass for validation success.
 ### Layer 6: Documentation Freshness (Post-Build)
 **If the spec has a Documentation Impact section:**
 - Read the spec's Documentation Impact checklist
-- For each listed doc (CLAUDE.md, SKILL.md files, README.md, kithkit.config.yaml):
+- For each listed doc (CLAUDE.md, SKILL.md files, README.md, cc4me.config.yaml):
   - Check if the file was modified since the build started (git diff or timestamp)
   - If not modified, flag as potentially stale
 - If no Documentation Impact section exists, check common docs heuristically:
   - New skill added → CLAUDE.md skills table updated?
-  - Config changes → kithkit.config.yaml documented?
+  - Config changes → cc4me.config.yaml documented?
   - New behavior → CLAUDE.md Core Behaviors section current?
 - Result: PASS (all docs updated), WARN (some flagged), or SKIP (no doc impact)
 
@@ -87,7 +87,7 @@ Execute each layer in order. All must pass for validation success.
 Result: PASS
 
 ### Layer 2: Plan Completeness
-- Spec reference: projects/feature/20260127-feature.spec.md (exists)
+- Spec reference: specs/20260127-feature.spec.md (exists)
 - Technical approach: Found
 - Tasks: 4 defined
 Result: PASS
@@ -134,7 +134,3 @@ If any layer fails:
 2. Explain what's wrong
 3. Suggest how to fix
 4. Do NOT proceed until fixed
-
-## References
-
-- [reference.md](reference.md) — Detailed documentation for multi-layer validation of spec-plan-implementation alignment

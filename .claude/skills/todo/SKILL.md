@@ -1,12 +1,12 @@
 ---
 name: todo
-description: Manage persistent to-dos that survive across sessions. List, add, update, and complete to-dos via the daemon HTTP API.
+description: Manage persistent to-dos that survive across sessions. List, add, update, and complete to-dos stored in .claude/state/todos/.
 argument-hint: [list | add "description" | note id "text" | update id | complete id | show id]
 ---
 
 # To-Do Management
 
-Manage persistent to-dos via the daemon HTTP API. To-dos survive context clears and compaction.
+Manage persistent to-dos stored in `.claude/state/todos/`. To-dos survive context clears and compaction.
 
 ## Commands
 
@@ -16,7 +16,7 @@ Parse $ARGUMENTS to determine the action:
 - `list` or `ls` or no arguments - Show all open to-dos
 - `list all` - Show all to-dos including completed
 - `list priority:high` - Filter by priority
-- `list status:in_progress` - Filter by status (valid: pending, in_progress, blocked, completed, cancelled)
+- `list status:blocked` - Filter by status
 
 ### Add To-Do
 - `add "To-do description"` - Add with default priority (medium)
@@ -38,81 +38,43 @@ Parse $ARGUMENTS to determine the action:
 
 ### Update To-Do
 - `update {id} status:in-progress` - Change status
-- `update {id} blocked:"Waiting on X"` - Set status to blocked and log a blocker note
 - `update {id} priority:high` - Change priority
 - `update {id} note:"Progress note"` - Add action/note to history (same as `note` command)
+- `update {id} blocked:"Waiting on X"` - Mark as blocked with reason
 
 ### Complete To-Do
 - `complete {id}` - Mark to-do as completed
 - `done {id}` - Alias for complete
 
-**Documentation nudge on completion**: When completing a to-do, scan its work notes for references to doc-adjacent files (`SKILL.md`, `CLAUDE.md`, `README.md`, `kithkit.config.yaml`). Also check if the to-do involved changes to skills, config, core behaviors, or daemon features. If any apply, remind yourself (or the user) to verify the relevant docs are up to date. Example: "This todo touched skills — is the CLAUDE.md skills table still accurate?"
+**Documentation nudge on completion**: When completing a to-do, scan its work notes for references to doc-adjacent files (`SKILL.md`, `CLAUDE.md`, `README.md`, `cc4me.config.yaml`). Also check if the to-do involved changes to skills, config, core behaviors, or daemon features. If any apply, remind yourself (or the user) to verify the relevant docs are up to date. Example: "This todo touched skills — is the CLAUDE.md skills table still accurate?"
 
-## API Endpoints
+## File Format
 
-To-dos are managed via the daemon HTTP API (default: `http://localhost:3847`):
+To-dos are stored as individual JSON files in `.claude/state/todos/`.
 
-| Action | Method | Endpoint | Body / Notes |
-|--------|--------|----------|--------------|
-| List todos | `GET` | `/api/todos` | Returns all todos (filter client-side) |
-| Create todo | `POST` | `/api/todos` | JSON body: `{ title, description, priority, due_date, tags }` |
-| Get todo detail | `GET` | `/api/todos/:id` | Returns full todo object |
-| Update todo | `PUT` | `/api/todos/:id` | JSON body with fields to update (title, description, priority, status, due_date, tags) |
-| Get todo history | `GET` | `/api/todos/:id/actions` | Returns audit trail of all actions |
-| Delete todo | `DELETE` | `/api/todos/:id` | Permanently removes todo |
+**Naming Convention**: `{priority}-{status}-{id}-{slug}.json`
+- Priority: 1-critical, 2-high, 3-medium, 4-low
+- Status: open, in-progress, blocked, completed
+- ID: auto-incrementing integer, zero-padded to 3 digits (e.g., 001, 032)
+- Slug: kebab-case from title (first 30 chars)
 
-Work notes and progress updates are tracked through the `todo_actions` audit trail. The daemon auto-logs status and priority changes. For free-form notes, use `POST /api/todos/:id/actions` (not yet implemented) or track notes in the todo's `description` field via `PUT /api/todos/:id`.
+**Example**: `2-high-open-032-implement-login-flow.json`
 
-### Example: List all todos
-```bash
-curl http://localhost:3847/api/todos
-```
+**Counter file**: `.claude/state/todos/.counter` stores the next available ID number. Read it, use the value as the new ID, then write back the incremented value.
 
-The API returns all todos. Filter by status or priority client-side (e.g., parse JSON and filter in your logic).
-
-### Example: Create a todo
-```bash
-curl -X POST http://localhost:3847/api/todos \
-  -H "Content-Type: application/json" \
-  -d '{"title": "Set up CI/CD pipeline", "priority": "high", "due_date": "2026-02-15"}'
-```
-
-### Example: Add a work note / update status
-```bash
-curl -X PUT http://localhost:3847/api/todos/32 \
-  -H "Content-Type: application/json" \
-  -d '{"status": "in_progress"}'
-```
-
-### Example: Complete a todo
-```bash
-curl -X PUT http://localhost:3847/api/todos/32 \
-  -H "Content-Type: application/json" \
-  -d '{"status": "completed"}'
-```
-
-### Example: Get todo action history
-```bash
-curl http://localhost:3847/api/todos/32/actions
-```
-
-## Data Format
-
-The daemon manages file storage internally. The JSON schema for todo objects:
+**Legacy IDs**: Older to-dos may use 3-character alphanumeric IDs (e.g., a1b). These are still valid and should be accepted for show/update/complete commands.
 
 See `reference.md` for the full JSON schema.
 
 ## Workflow
 
-1. **Call the API**: Use curl to hit the appropriate `/api/todos` endpoint
+1. **Read existing to-dos**: Glob `.claude/state/todos/*.json` and parse
 2. **Parse command**: Determine action from $ARGUMENTS
 3. **Execute action**:
-   - List: `GET /api/todos` with optional filters, display formatted
-   - Add: `POST /api/todos` with title/priority/due_date, confirm
-   - Update: `PUT /api/todos/:id` with changed fields
-   - Note: `PUT /api/todos/:id` with status/priority change — daemon auto-logs to audit trail
-   - Complete: `PUT /api/todos/:id` with `status: "completed"`
-   - History: `GET /api/todos/:id/actions` to see full audit trail
+   - List: Display formatted to-do list
+   - Add: Generate ID, create file, confirm
+   - Update: Load to-do, modify, save with new filename if status/priority changed
+   - Complete: Update status, rename file, add completion action
 4. **Report result**: Confirm what was done
 
 ## Output Format
@@ -188,12 +150,16 @@ Before you start working on the to-do, briefly outline your planned approach (2-
 Use the Task tool with subagent_type="general-purpose":
 - Give it your planned approach and the to-do description
 - Ask it to challenge: Is this overcomplicated? Is there a simpler way? What could go wrong?
-- Ask it to flag documentation impact: Will this change affect CLAUDE.md, any SKILL.md, README.md, or kithkit.config.yaml? If so, which ones?
+- Ask it to flag documentation impact: Will this change affect CLAUDE.md, any SKILL.md, README.md, or cc4me.config.yaml? If so, which ones?
 - Ask for a GO / PAUSE verdict and any specific concerns
 - Keep it fast — this should take seconds, not minutes
 ```
 
 If the sub-agent says PAUSE with good reasons, reconsider your approach before proceeding. If it says GO, carry on with confidence.
+
+### Peer Review Gate
+
+For to-dos involving **shared work** (new skills, daemon features, upstream pipeline, agent-comms), also consider sending R2 a heads-up via agent-comms before starting. See `/review` Peer Review Protocol for the full criteria. Not every to-do needs R2's input — but shared capabilities always benefit from a second perspective.
 
 ## Integration
 
@@ -201,14 +167,12 @@ If the sub-agent says PAUSE with good reasons, reconsider your approach before p
 - SessionStart hook loads high-priority to-dos into context
 - PreCompact hook saves active to-do state
 - Bob (devil's advocate sub-agent) runs automatically for non-trivial work
+- R2 peer review triggered selectively for shared capabilities
 
 ## Notes
 
-- IDs are auto-incrementing integers managed by the daemon
-- Legacy alphanumeric IDs (a1b, z6f, etc.) are still recognized by the API
+- New IDs are auto-incrementing integers from `.counter` file
+- Legacy alphanumeric IDs (a1b, z6f, etc.) are still recognized
+- When status or priority changes, the file is renamed to maintain sort order
 - Completed to-dos are kept for history (can be archived manually)
 - The `actions` array provides a full audit trail
-
-## References
-
-- [reference.md](reference.md) — Complete JSON schema and examples for to-do structure
