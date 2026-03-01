@@ -54,7 +54,12 @@ export async function handleOrchestratorRoute(
 
     const task = body.task as string;
     const context = typeof body.context === 'string' ? body.context : undefined;
-    const alive = isOrchestratorAlive();
+
+    // Use getOrchestratorState() as the authoritative check — it verifies the tmux session
+    // AND whether Claude is running inside it. If it returns 'dead', the session is truly gone
+    // even if a prior isOrchestratorAlive() check cached a stale 'true'.
+    const orchStateCheck = getOrchestratorState();
+    const alive = orchStateCheck !== 'dead';
 
     // Create an orchestrator_tasks row for tracking
     const taskId = randomUUID();
@@ -149,7 +154,7 @@ export async function handleOrchestratorRoute(
       log.info('Cancelled pending shutdown timer — new task for running orchestrator');
     }
 
-    const orchState = getOrchestratorState();
+    const orchState = orchStateCheck; // already computed above
 
     // Always store the task message so the wrapper's poll loop can find it
     sendMessage({
@@ -311,9 +316,14 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '  4. Exit cleanly. The daemon will respawn a fresh orchestrator if there is pending work.',
     '- The daemon enforces a hard backstop at 65% — if you reach it, the daemon will force a shutdown',
     '',
+    'Branch rule (CRITICAL):',
+    '- NEVER change git branches. You always run on main. Checking out a feature branch breaks hooks, settings, and startup procedures.',
+    '- Only WORKERS may operate on feature branches, and they do so in isolated git worktrees — never by switching the branch in the main repo.',
+    '- If a task requires branch work (PRs, cherry-picks, etc.), spawn a worker to do it in a worktree.',
+    '',
     'Service restart rules (CRITICAL):',
-    '- NEVER restart the comms agent (tmux session, com.assistant.bmo, or restart flag file)',
-    '- NEVER use launchctl for com.assistant.bmo — that kills the human\'s active session',
+    '- NEVER restart the comms agent (tmux session or restart flag file)',
+    '- NEVER use launchctl for the comms agent plist — that kills the human\'s active session',
     '- Daemon restart IS allowed when needed: send results to comms first, wait 2s, then: launchctl kickstart -k gui/$(id -u)/com.assistant.daemon',
     '- After daemon restart, verify health (curl localhost:3847/health), then exit',
     '',
@@ -352,6 +362,31 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
       'Update this task\'s status as you work: PUT http://localhost:3847/api/orchestrator/tasks/' + taskId,
       'Write your result to the task row when done (status: completed, result: <summary>).',
     );
+  }
+
+  // Inject any other pending tasks so the orchestrator knows its full queue.
+  // This is critical for recovery after crash/restart — pending tasks would otherwise
+  // silently stall with no orchestrator to process them.
+  try {
+    interface PendingTask { id: string; title: string; description: string }
+    const pendingTasks = query<PendingTask>(
+      `SELECT id, title, description FROM orchestrator_tasks
+       WHERE status = 'pending' AND id != ?
+       ORDER BY created_at ASC LIMIT 10`,
+      taskId ?? '',
+    );
+    if (pendingTasks.length > 0) {
+      parts.push('', `## Additional pending tasks in queue (${pendingTasks.length} total):`);
+      parts.push('Work through these after completing the primary task above. Update each task\'s status via PUT http://localhost:3847/api/orchestrator/tasks/:id');
+      for (const t of pendingTasks) {
+        parts.push(`- Task ${t.id}: ${t.title}`);
+        if (t.description && t.description !== t.title) {
+          parts.push(`  Details: ${t.description.slice(0, 200)}`);
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — prompt still works without pending task list
   }
 
   if (sessionDir) {

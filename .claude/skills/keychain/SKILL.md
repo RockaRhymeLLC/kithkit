@@ -30,8 +30,8 @@ security add-generic-password -a "assistant" -s "credential-service-name" -w "se
 # Delete a value
 security delete-generic-password -s "credential-service-name"
 
-# Search for items (verbose output — pipe through grep to filter)
-security dump-keychain | grep -A 3 '"credential-\|pii-\|financial-"'
+# Search for items
+security dump-keychain | grep "credential-\|pii-\|financial-"
 ```
 
 ## Security Rules

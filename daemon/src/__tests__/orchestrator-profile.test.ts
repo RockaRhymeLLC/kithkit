@@ -220,7 +220,7 @@ scheduler:
     assert.ok(profile.disallowedTools.includes('NotebookEdit'), 'review profile should disallow NotebookEdit');
   });
 
-  it('all 5 user profiles have non-empty bodies with Memory and Skills Reference sections', async () => {
+  it('all worker profiles have non-empty bodies with Memory and Skills Reference sections', async () => {
     const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..');
     const agentsDir = path.join(repoRoot, '.claude', 'agents');
 
@@ -291,13 +291,13 @@ scheduler:
       'research profile should have Bash safe-use rule',
     );
     assert.ok(
-      profile.body.toLowerCase().includes('accepted tradeoff') || profile.body.toLowerCase().includes('bypassPermissions'),
+      profile.body.toLowerCase().includes('accepted tradeoff') || profile.body.toLowerCase().includes('bypassPermissions') || profile.body.toLowerCase().includes('bypasspermissions'),
       'research profile should acknowledge the Bash + bypassPermissions accepted tradeoff',
     );
   });
 });
 
-// AC #10: orchestrator profile loading does not validate tools/permissionMode
+// AC #10: orchestrator profile uses separate loading code path
 describe('Orchestrator profile uses separate loading code path (AC #10)', () => {
   it('parseProfileContent extracts orchestrator frontmatter without tools/permissionMode', async () => {
     const { parseProfileContent } = await import('../agents/profiles.js');

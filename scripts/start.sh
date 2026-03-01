@@ -26,7 +26,7 @@ cd "$BASE_DIR"
 # Identity file: config > legacy fallback
 IDENTITY_FILE="$(read_config '.agent.identity_file' '')"
 if [ -z "$IDENTITY_FILE" ]; then
-    # Legacy fallback for CC4Me-era installations
+    # Legacy fallback for older installations
     IDENTITY_FILE=".claude/state/system-prompt.txt"
 fi
 

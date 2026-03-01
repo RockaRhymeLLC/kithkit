@@ -10,6 +10,7 @@ import { CronExpressionParser } from 'cron-parser';
 import { parseInterval, type TaskScheduleConfig } from '../core/config.js';
 import { runTask, type TaskResult } from './task-runner.js';
 import { registerCoreTasks } from './tasks/index.js';
+import { createLogger } from '../core/logger.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -310,14 +311,32 @@ export class Scheduler {
 
       // Use in-process handler if registered, otherwise spawn subprocess
       const handler = this._handlers.get(task.name);
-      const result = handler
-        ? await this._runInProcess(task, handler)
-        : await runTask(task.name, {
-            command: task.command,
-            args: task.args,
-            timeoutMs: (task.config.timeout_ms as number) ?? 300_000,
-            cwd: task.config.cwd as string | undefined,
-          });
+      let result: TaskResult;
+      if (handler) {
+        result = await this._runInProcess(task, handler);
+      } else if (task.command) {
+        result = await runTask(task.name, {
+          command: task.command,
+          args: task.args,
+          timeoutMs: (task.config.timeout_ms as number) ?? 300_000,
+          cwd: task.config.cwd as string | undefined,
+        });
+      } else {
+        // No handler registered and no command configured — skip gracefully.
+        // This happens when an extension task is in the scheduler config but
+        // the extension hasn't loaded yet (e.g. peer-heartbeat before agent-comms loads).
+        const log = createLogger('scheduler');
+        log.debug(`Task "${task.name}" has no handler or command — skipping`);
+        result = {
+          id: 0,
+          task_name: task.name,
+          status: 'success',
+          output: 'Skipped: no handler registered and no command configured',
+          duration_ms: 0,
+          started_at: new Date().toISOString(),
+          finished_at: new Date().toISOString(),
+        };
+      }
 
       task.lastRunAt = new Date();
       task.nextRunAt = this._calculateNextRun(task);

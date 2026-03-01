@@ -19,9 +19,9 @@ Define WHAT we're building and WHY, before planning HOW to build it. Specificati
 /spec [feature-name]
 ```
 Examples:
-- `/spec telegram-integration` → creates `projects/telegram-integration/YYYYMMDD-telegram-integration.spec.md`
-- `/spec state-manager` → creates `projects/state-manager/YYYYMMDD-state-manager.spec.md`
-- `/spec breakfast-maker` → creates `projects/breakfast-maker/YYYYMMDD-breakfast-maker.spec.md`
+- `/spec telegram-integration`
+- `/spec state-manager`
+- `/spec breakfast-maker`
 
 **When to use**: Starting a new feature from scratch
 
@@ -44,7 +44,7 @@ Examples:
    - Single word/slug → Create new spec
    - Natural sentence → Update existing spec
 2. **Conversation context**: What spec are we working on?
-3. **File system**: What specs exist in `projects/`?
+3. **File system**: What specs exist in `specs/`?
 
 If ambiguous, I'll ask you to clarify.
 
@@ -54,7 +54,7 @@ If ambiguous, I'll ask you to clarify.
 1. Parse feature name
 2. Interview you to gather requirements
 3. Use template structure
-4. Create `projects/<feature-name>/` directory if it doesn't exist, then write `projects/<feature-name>/YYYYMMDD-feature-name.spec.md`
+4. Create `specs/YYYYMMDD-feature-name.spec.md`
 5. Set as active spec (context tracker)
 6. Suggest next steps: `/plan`
 
@@ -83,7 +83,7 @@ If ambiguous, I'll ask you to clarify.
 
 ## Peer Review for Shared Specs
 
-When a spec defines **shared capabilities** — things that will be used by peer agents or that get upstreamed — consider requesting peer review before moving to `/plan`. A peer agent may catch requirements you missed or suggest approaches based on their own experience.
+When a spec defines **shared capabilities** — things R2 will also use or that get upstreamed — consider requesting R2 peer review before moving to `/plan`. She may catch requirements you missed or suggest approaches based on her own experience.
 
 **Always request peer review for specs covering:**
 - New skills or skill upgrades
@@ -92,10 +92,10 @@ When a spec defines **shared capabilities** — things that will be used by peer
 - Anything touching agent-comms
 
 **Skip peer review for:**
-- Personal tasks, instance-specific config
+- Personal tasks, BMO-specific config
 - Quick features that only affect your own workflows
 
-Send via agent-comms: `/agent-comms send <peer-agent-name> "Spec review: [feature]. [Summary]. Looking for feedback on [concern]."`
+Send via agent-comms: `/agent-comms send r2d2 "Spec review: [feature]. [Summary]. Looking for feedback on [concern]."`
 
 ## Documentation Impact Section
 
@@ -104,7 +104,7 @@ Every spec includes a **Documentation Impact** section that identifies which doc
 - `CLAUDE.md` — new skills, config options, behavior changes
 - `SKILL.md` files — new or modified skills
 - `README.md` — user-facing feature additions
-- `kithkit.config.yaml` — new config options
+- `cc4me.config.yaml` — new config options
 
 If the feature has no doc impact, document "None expected."
 
@@ -113,10 +113,6 @@ If the feature has no doc impact, document "None expected."
 **Context Tracker**: Remembers which spec is active across conversation
 **History Logger**: Records all spec changes for audit
 **Validation**: Specs are validated before moving to plan phase; doc impact is checked post-build
-**Peer Review**: Shared specs should get peer input before planning (see above)
+**Peer Review**: Shared specs should get R2's input before planning (see above)
 
 See `reference.md` for detailed step-by-step workflows.
-
-## References
-
-- [reference.md](reference.md) — Detailed workflow for creating and updating specifications with templates and interview process

@@ -20,6 +20,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.50",
     "@huggingface/transformers": "^3.8.1",
     "better-sqlite3": "^12.6.2",
+    "cc4me-network": "file:../../cc4me-network/packages/sdk",
     "cron-parser": "^5.5.0",
     "js-yaml": "^4.1.1",
     "kithkit-a2a-client": "file:../.a2a-sdk/packages/sdk",

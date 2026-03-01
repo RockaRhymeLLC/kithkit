@@ -206,6 +206,16 @@ export async function handleAgentMessage(
   }
 
   const msg = body as AgentMessage;
+
+  // Status pings are liveness checks only — do not store or inject
+  if (msg.type === 'status') {
+    log.debug(`Status ping from ${msg.from} — acknowledged, not stored`);
+    return {
+      status: 200,
+      body: { ok: true, queued: false },
+    };
+  }
+
   const formatted = formatMessage(msg);
 
   // Persist inbound LAN message to DB and inject to comms session
@@ -249,8 +259,15 @@ function sendViaLAN(
   agentName: string,
 ): Promise<AgentMessageResponse> {
   const payload = JSON.stringify(msg);
-  const hosts: string[] = [peer.host];
+
+  // Build ordered host list: try direct IP first (most reliable), then mDNS .local,
+  // then configured hostname last. On macOS home networks, .lan hostnames fail DNS
+  // (NXDOMAIN), causing 5s timeouts before falling back to the IP.
+  const hosts: string[] = [];
   if (peer.ip && peer.ip !== peer.host) hosts.push(peer.ip);
+  if (peer.host.endsWith('.lan')) hosts.push(peer.host.replace(/\.lan$/, '.local'));
+  if (!hosts.includes(peer.host)) hosts.push(peer.host);
+
   const startTime = Date.now();
 
   return new Promise<AgentMessageResponse>((resolve) => {
@@ -259,7 +276,7 @@ function sendViaLAN(
       const url = `http://${host}:${peer.port}/agent/message`;
 
       const args = [
-        '-s', '--connect-timeout', '5',
+        '-s', '--connect-timeout', '3',
         '-w', '\n%{http_code}',
         '-X', 'POST', url,
         '-H', 'Content-Type: application/json',

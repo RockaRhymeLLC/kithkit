@@ -64,6 +64,9 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `POST /api/memory/search` | Search memories (keyword, vector, hybrid) |
 | `GET /api/tasks` | List scheduler tasks |
 | `POST /api/tasks/:name/run` | Manually trigger a task |
+| `POST /api/orchestrator/escalate` | Escalate a task to the orchestrator (spawns if needed) |
+| `GET /api/orchestrator/status` | Check orchestrator status (alive, active jobs) |
+| `POST /api/orchestrator/shutdown` | Gracefully shut down orchestrator |
 | `POST /api/config/reload` | Hot-reload config from disk |
 
 See `docs/api-reference.md` for full request/response details.
@@ -207,8 +210,9 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - Persistence means finding a way through — not repeating the same failing approach.
 
 ### Branch Rule
-- **The comms agent and orchestrator agent must NEVER change git branches.** They always run on `main`. Checking out a feature branch in these sessions breaks hooks, settings, permissions, and startup procedures.
+- **The comms agent AND orchestrator agent must NEVER change git branches.** They always run on `main`. Checking out a feature branch in these sessions breaks hooks, settings, permissions, and startup procedures.
 - Only **workers** may operate on feature branches, and they do so in isolated **git worktrees** — never by switching the branch in the main repo.
+- If an orchestrator or its workers need to work on a branch, the **worker** does it in a worktree — the orchestrator stays on `main`.
 - If a task requires work on a branch (PRs, cherry-picks, etc.), delegate it to a worker via the orchestrator.
 
 ### Availability Rule
@@ -216,6 +220,14 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - When waiting for an asynchronous result (orchestrator, scheduled task, external process), simply state that you're waiting and stop. The daemon's notification system will deliver results as session messages. Respond to them when they arrive.
 - If you need to schedule a future check (e.g., "verify the 5am cron ran"), use the daemon's reminder or scheduler system — not a blocking wait.
 - The comms agent must always be responsive. An unresponsive agent is a useless agent.
+
+### Recovery Rule
+- **If a peer agent (R2, Skippy) goes silent — missed heartbeats, failed A2A pings, unreachable daemon — recovery becomes your primary directive.** Pause non-urgent work immediately.
+- Detection: the `peer-heartbeat` scheduler task and A2A network pings are the canary. Two consecutive failures = agent down. Don't wait for a third.
+- **If a peer goes down, BMO coordinates recovery.** Escalate to the orchestrator with a recovery task. Steps: (1) A2A ping to confirm down, (2) SSH to the peer's machine and check daemon health (`curl localhost:3847/health`), (3) check tmux sessions (`tmux ls`), (4) restart the daemon or comms session as needed, (5) diagnose crash from logs, (6) notify Dave with status and root cause.
+- **If BMO goes down, R2 or Skippy takes over coordination.** The first peer to detect BMO's absence assumes the coordinator role, follows the same restoration steps, and notifies Dave.
+- After restoration, verify the recovered agent is responsive (A2A ping + daemon health), then resume normal work.
+- **Always notify Dave** when entering or exiting recovery mode — via Telegram, with a summary of what happened and current status.
 
 ### Security
 

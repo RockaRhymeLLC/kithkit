@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(security add-generic-password:*)",
+      "Bash(security unlock-keychain:*)",
+      "Bash(security find-generic-password:*)",
+      "Bash(curl -s \"https://api.telegram.org/bot8204937651:AAEAi3T861sIJI9ensMJg9rjTXU76PExhNQ/getUpdates\")",
+      "Bash(brew install:*)",
+      "Bash(cloudflared tunnel login:*)",
+      "Bash(node scripts/telegram-setup/setup.js:*)",
+      "Bash(npx playwright install chromium)",
+      "Bash(node:*)",
+      "Bash(npm install:*)",
+      "Bash(bash scripts/cloudflare-safari-setup.sh:*)",
+      "Bash(open:*)",
+      "Bash(screencapture:*)",
+      "Bash(osascript:*)",
+      "Bash(./scripts/transcript-watcher.sh:*)",
+      "Bash(env)",
+      "Bash(TELEGRAM_CHAT_ID=8254610246 ./scripts/telegram-send.sh \"Yes! I can respond through Telegram. The gateway is working perfectly - your messages are coming through. Right now I''m responding manually, but once we set up the transcript watcher, my responses will go to Telegram automatically. 🤖\")",
+      "Bash(ls:*)",
+      "Bash(pkill:*)",
+      "Bash(launchctl load:*)",
+      "Bash(launchctl list:*)"
+    ]
+  }
+}

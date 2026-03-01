@@ -1,6 +1,6 @@
 ---
 name: plan
-description: Create implementation plans with stories and tests from an approved spec. Use when converting a spec into actionable stories, tests, and a technical approach ready for /build.
+description: Create implementation plans with stories and tests using the spec-driven workflow. Use after completing a spec, ready for technical planning.
 argument-hint: [spec-file or story description]
 ---
 
@@ -22,8 +22,8 @@ Define HOW to build features by creating:
 /plan <spec-file-path>
 ```
 Examples:
-- `/plan projects/telegram-integration/20260127-telegram-integration.spec.md`
-- `/plan projects/auth-system/20260127-auth-system.spec.md`
+- `/plan specs/20260127-telegram-integration.spec.md`
+- `/plan specs/20260127-auth-system.spec.md`
 
 ### Add Story to Existing Plan
 ```bash
@@ -37,42 +37,40 @@ Examples:
 
 1. **Read spec file** - Understand requirements and constraints
 2. **Design technical approach** - Architecture, patterns, decisions
-3. **Create plan.md** - Document the approach in `projects/<feature-name>/YYYYMMDD-feature.plan.md`
-4. **Create stories** - One JSON per work unit in `projects/<feature-name>/stories/`
-5. **Create tests** - One JSON per test in `projects/<feature-name>/tests/`
+3. **Create plan.md** - Document the approach in `plans/YYYYMMDD-feature.plan.md`
+4. **Create stories** - One JSON per work unit in `plans/stories/`
+5. **Create tests** - One JSON per test in `plans/tests/`
 6. **Link to to-do** - If this plan was spawned from a to-do, add references
 7. **Run /validate** - Verify completeness
-8. **Run /review** - Sanity-check before building (Bob + optional peer review)
-9. **Peer review gate** - If this plan involves shared work (skills, daemon, upstream, agent-comms), request peer review before building. See `/review` Peer Review Protocol
+8. **Run /review** - Sanity-check before building (Bob + optional R2 peer review)
+9. **Peer review gate** - If this plan involves shared work (skills, daemon, upstream, agent-comms), request R2 peer review before building. See `/review` Peer Review Protocol
 10. **Suggest /build** - Ready for implementation
 
 ## Output Structure
 
 ```
-projects/
-└── auth-system/
-    ├── 20260128-auth-system.spec.md
-    ├── 20260128-auth-system.plan.md
-    ├── stories/
-    │   ├── s-a1b.json    # "Implement login form"
-    │   ├── s-c2d.json    # "Create session management"
-    │   └── s-e3f.json    # "Add logout functionality"
-    └── tests/
-        ├── t-001.json    # "Login with valid credentials"
-        ├── t-002.json    # "Session persists on refresh"
-        └── t-003.json    # "Logout clears session"
+plans/
+├── 20260128-auth-system.plan.md
+├── stories/
+│   ├── s-a1b.json    # "Implement login form"
+│   ├── s-c2d.json    # "Create session management"
+│   └── s-e3f.json    # "Add logout functionality"
+└── tests/
+    ├── t-001.json    # "Login with valid credentials"
+    ├── t-002.json    # "Session persists on refresh"
+    └── t-003.json    # "Logout clears session"
 ```
 
 ## Story Creation
 
-For each story, create `projects/<feature-name>/stories/s-{id}.json`:
+For each story, create `plans/stories/s-{id}.json`:
 
 ```json
 {
   "id": "s-a1b",
   "title": "Implement login form",
   "description": "Build the login UI with email/password fields",
-  "planRef": "projects/auth-system/20260128-auth-system.plan.md",
+  "planRef": "plans/20260128-auth-system.plan.md",
   "todoRef": "xyz",
   "status": "pending",
   "priority": 1,
@@ -92,7 +90,7 @@ For each story, create `projects/<feature-name>/stories/s-{id}.json`:
 
 ## Test Creation
 
-For each test, create `projects/<feature-name>/tests/t-{id}.json`:
+For each test, create `plans/tests/t-{id}.json`:
 
 ```json
 {
@@ -100,7 +98,7 @@ For each test, create `projects/<feature-name>/tests/t-{id}.json`:
   "title": "Login with valid credentials",
   "description": "Verify successful login flow",
   "storyRefs": ["s-a1b"],
-  "planRef": "projects/auth-system/20260128-auth-system.plan.md",
+  "planRef": "plans/20260128-auth-system.plan.md",
   "type": "story",
   "status": "pending",
   "steps": [
@@ -156,7 +154,7 @@ Check existing IDs to avoid collisions.
 ```markdown
 # Plan: [Feature Name]
 
-**Spec**: projects/<feature-name>/YYYYMMDD-feature.spec.md
+**Spec**: specs/YYYYMMDD-feature.spec.md
 **To-Do**: [id] (if applicable)
 **Created**: YYYY-MM-DD
 
@@ -188,12 +186,8 @@ Check existing IDs to avoid collisions.
 
 - **To-Do system**: Plans can reference parent to-do via `todoRef`
 - **Validation**: /validate checks story-test coverage
-- **Review**: /review runs Bob (devil's advocate) + optional peer review before /build
-- **Peer review**: Plans for shared work must go through peer review before building (see `/review` Peer Review Protocol)
+- **Review**: /review runs Bob (devil's advocate) + optional R2 peer review before /build
+- **Peer review**: Plans for shared work must go through R2 before building (see `/review` Peer Review Protocol)
 - **Build**: /build works through stories in priority order
 
 See `reference.md` for detailed schemas.
-
-## References
-
-- [reference.md](reference.md) — Step-by-step instructions for creating plans and managing implementation tasks

@@ -1,6 +1,6 @@
 ---
 name: mode
-description: Views or changes the assistant's autonomy mode (yolo, confident, cautious, supervised). Use when adjusting how much freedom or confirmation the assistant has, or checking the current mode.
+description: View or change the assistant's autonomy mode. Controls how much confirmation is required for actions.
 argument-hint: [yolo | confident | cautious | supervised]
 ---
 
@@ -42,39 +42,16 @@ View or change the assistant's autonomy mode. This controls how much confirmatio
 - Use when learning or for critical systems
 - Slowest but most controlled
 
-**Default**: `confident` (if not explicitly configured)
-
 ## Implementation
 
 1. **Parse Arguments**: Check if `$ARGUMENTS` contains a mode name
-2. **If no arguments**: Read and display current mode via `GET /api/config/autonomy`
-3. **If mode provided**: Validate mode name and update via `PUT /api/config/autonomy`
+2. **If no arguments**: Read and display current mode from `.claude/state/autonomy.json`
+3. **If mode provided**: Validate mode name and update the JSON file
 4. **Report result**: Confirm the action taken
 
-## API Endpoints
+## State File
 
-Autonomy mode is managed via the daemon HTTP API (default: `http://localhost:3847`):
-
-| Action | Method | Endpoint | Body / Notes |
-|--------|--------|----------|--------------|
-| Get current mode | `GET` | `/api/config/autonomy` | Returns `{ mode, setAt, setBy }` |
-| Set mode | `PUT` | `/api/config/autonomy` | JSON body: `{ mode }` |
-
-### Example: Get current mode
-```bash
-curl http://localhost:3847/api/config/autonomy
-```
-
-### Example: Set mode
-```bash
-curl -X PUT http://localhost:3847/api/config/autonomy \
-  -H "Content-Type: application/json" \
-  -d '{"mode": "confident"}'
-```
-
-## State Format
-
-The API returns/accepts:
+The mode is stored in `.claude/state/autonomy.json`:
 
 ```json
 {
@@ -87,13 +64,13 @@ The API returns/accepts:
 ## Workflow
 
 ### Viewing Mode
-1. Call `GET /api/config/autonomy`
+1. Read `.claude/state/autonomy.json`
 2. Display current mode with description
 3. List all available modes for reference
 
 ### Setting Mode
 1. Validate mode is one of: yolo, confident, cautious, supervised
-2. Call `PUT /api/config/autonomy` with `{ mode }`
+2. Update `.claude/state/autonomy.json`
 3. Confirm the change
 4. Note: Changes take effect on next action (no restart needed)
 
@@ -129,13 +106,13 @@ I'll ask for confirmation before destructive operations.
 
 ## Integration
 
-- SessionStart hook reads autonomy mode and injects it into context
+- SessionStart hook reads autonomy.json and injects mode into context
 - CLAUDE.md contains behavior instructions per mode
 - Mode affects how the assistant approaches confirmation prompts
 
 ## Notes
 
-- Mode persists across sessions (stored via daemon API)
+- Mode persists across sessions (stored in state file)
 - User can always override individual actions regardless of mode
-- Mode changes are logged with `setAt` timestamp
-- Mode is stored persistently; see daemon API for current value
+- Mode changes are logged in the file's `setAt` timestamp
+- Default mode if file doesn't exist: `confident`

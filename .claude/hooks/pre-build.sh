@@ -1,37 +1,18 @@
 #!/bin/bash
+
+# Pre-Build Hook
 #
-# PreToolUse Hook: Pre-Build Validation
+# Runs before the /build skill executes
+# Does basic file existence checks - Claude handles deeper validation
 #
-# Runs before Bash tool calls. Since this is registered as a PreToolUse
-# hook matching ALL Bash invocations, we must detect whether we're in an
-# active /build context before doing any work.
-#
-# The /build skill should create a flag file at /tmp/kithkit-build-active
-# containing the plan file path to signal that pre-build checks should run.
-# Without the flag, this hook exits immediately (no overhead on normal
-# Bash commands).
-#
-# Exit code 0: Proceed (or not a build context)
+# Exit code 0: Proceed with build
 # Exit code 1: Block build
-
-BUILD_FLAG="/tmp/kithkit-build-active"
-
-# Early exit: only run pre-build checks when the build skill is active
-if [ ! -f "$BUILD_FLAG" ]; then
-  exit 0
-fi
-
-# Read the plan file path from the flag, then consume it
-PLAN_FILE="$(cat "$BUILD_FLAG" 2>/dev/null || true)"
-rm -f "$BUILD_FLAG"
 
 echo "Running pre-build checks..."
 echo ""
 
-# Fallback: try to get it from command arguments
-if [ -z "$PLAN_FILE" ]; then
-  PLAN_FILE="$1"
-fi
+# Find the plan file path from command arguments
+PLAN_FILE="$1"
 
 if [ -z "$PLAN_FILE" ]; then
   echo "Error: No plan file specified"

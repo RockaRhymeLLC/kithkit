@@ -1,25 +1,46 @@
 {
   "permissions": {
     "allow": [
-      "Bash(*)",
-      "Edit(*)",
-      "Write(*)",
-      "Read(*)",
-      "Glob(*)",
-      "Grep(*)",
-      "WebFetch(*)",
-      "WebSearch(*)",
-      "NotebookEdit(*)",
-      "mcp__playwright__*",
-      "mcp__*"
-    ]
+      ".*"
+    ],
+    "deny": [],
+    "defaultMode": "bypassPermissions"
   },
   "statusLine": {
     "type": "command",
     "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/context-monitor-statusline.sh"
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/branch-guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/github-rate-check.py",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/branch-guard.sh",
+            "timeout": 5
+          }
+        ]
+      },
       {
         "hooks": [
           {
@@ -41,24 +62,41 @@
         ]
       }
     ],
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "test -f \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-build.sh\" && bash \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/pre-build.sh || true",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "UserPromptSubmit": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/set-channel.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/notify-response.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/notify-response.sh",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/github-rate-log.py",
             "timeout": 5
           }
         ]
@@ -69,9 +107,29 @@
         "hooks": [
           {
             "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/notify-response.sh",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/memory-extraction.sh",
             "async": true,
             "timeout": 120
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/notify-response.sh",
+            "timeout": 5
           }
         ]
       }

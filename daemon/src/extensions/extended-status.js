@@ -1,0 +1,164 @@
+/**
+ * BMO Extended Status — rich operational data for the /agent/status endpoint.
+ *
+ * Gathers BMO-specific status beyond what the kithkit framework provides:
+ * - Todo counts from filesystem
+ * - Git status (branch, dirty, ahead of origin)
+ * - Context usage from context-usage.json
+ * - Service statuses (Telegram, email, voice, agent-comms)
+ * - Memory stats (local count, peer sync state)
+ * - Recent commits
+ */
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import fs from 'node:fs';
+import path from 'node:path';
+import { getProjectDir } from '../core/config.js';
+import { sessionExists } from '../core/session-bridge.js';
+import { createLogger } from '../core/logger.js';
+const execFileAsync = promisify(execFile);
+const log = createLogger('bmo-extended-status');
+// ── Data Gatherers ──────────────────────────────────────────
+export function getTodoCounts() {
+    const todosDir = path.join(getProjectDir(), '.claude', 'state', 'todos');
+    const counts = { open: 0, inProgress: 0, blocked: 0 };
+    try {
+        const files = fs.readdirSync(todosDir).filter(f => f.endsWith('.json') && !f.startsWith('.'));
+        for (const file of files) {
+            if (file.includes('-completed-'))
+                continue;
+            if (file.includes('-open-'))
+                counts.open++;
+            else if (file.includes('-in-progress-'))
+                counts.inProgress++;
+            else if (file.includes('-blocked-'))
+                counts.blocked++;
+        }
+    }
+    catch {
+        // Todos dir might not exist
+    }
+    return counts;
+}
+export async function getRecentCommits(limit = 3) {
+    try {
+        const { stdout } = await execFileAsync('git', [
+            'log', `--max-count=${limit}`, '--format=%h|%s|%aI',
+        ], { cwd: getProjectDir(), encoding: 'utf8', timeout: 5000 });
+        return stdout.trim().split('\n').filter(Boolean).map(line => {
+            const [hash, message, time] = line.split('|');
+            return { hash: hash, message: message, time: time };
+        });
+    }
+    catch {
+        return [];
+    }
+}
+export async function getGitStatus() {
+    const cwd = getProjectDir();
+    try {
+        const [branchResult, aheadResult, statusResult] = await Promise.all([
+            execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, encoding: 'utf8', timeout: 3000 }),
+            execFileAsync('git', ['rev-list', '--count', 'origin/main..HEAD'], { cwd, encoding: 'utf8', timeout: 3000 }).catch(() => ({ stdout: '0' })),
+            execFileAsync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8', timeout: 3000 }),
+        ]);
+        return {
+            branch: branchResult.stdout.trim(),
+            aheadOfOrigin: parseInt(aheadResult.stdout.trim(), 10) || 0,
+            dirty: statusResult.stdout.trim().length > 0,
+        };
+    }
+    catch {
+        return undefined;
+    }
+}
+export function getContextUsage() {
+    try {
+        const filePath = path.join(getProjectDir(), '.claude', 'state', 'context-usage.json');
+        const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+        // Only report if data is recent (within 5 minutes)
+        const age = (Date.now() / 1000) - (data.timestamp || 0);
+        if (age > 300)
+            return undefined;
+        return {
+            usedPercent: data.used_percentage ?? 0,
+            remainingPercent: data.remaining_percentage ?? 100,
+        };
+    }
+    catch {
+        return undefined;
+    }
+}
+export function getMemoryStats() {
+    const memoriesDir = path.join(getProjectDir(), '.claude', 'state', 'memory', 'memories');
+    const syncStatePath = path.join(getProjectDir(), '.claude', 'state', 'memory', 'sync-state.json');
+    try {
+        const files = fs.readdirSync(memoriesDir).filter(f => f.endsWith('.md'));
+        let peerCount = 0;
+        try {
+            const peers = JSON.parse(fs.readFileSync(syncStatePath, 'utf-8'));
+            peerCount = Object.keys(peers).length;
+        }
+        catch { /* no sync state */ }
+        return { totalLocal: files.length, peerCount };
+    }
+    catch {
+        return undefined;
+    }
+}
+export function getServiceStatuses(config) {
+    const services = [];
+    services.push({
+        name: 'telegram',
+        status: config.channels?.telegram?.enabled ? 'ok' : 'down',
+        detail: config.channels?.telegram?.enabled ? 'enabled' : 'disabled',
+    });
+    services.push({
+        name: 'email',
+        status: config.channels?.email?.enabled ? 'ok' : 'down',
+        detail: config.channels?.email?.enabled
+            ? `${config.channels.email.providers?.length ?? 0} provider(s)`
+            : 'disabled',
+    });
+    services.push({
+        name: 'voice',
+        status: config.channels?.voice?.enabled ? 'ok' : 'down',
+        detail: config.channels?.voice?.enabled ? 'enabled' : 'disabled',
+    });
+    services.push({
+        name: 'agent-comms',
+        status: config['agent-comms']?.enabled ? 'ok' : 'down',
+        detail: config['agent-comms']?.enabled
+            ? `${config['agent-comms'].peers?.length ?? 0} peer(s)`
+            : 'disabled',
+    });
+    return services;
+}
+// ── Public API ──────────────────────────────────────────────
+/**
+ * Gather BMO extended status for the /agent/status endpoint.
+ */
+export async function getBmoExtendedStatus(config) {
+    // Read current channel
+    let channel = 'unknown';
+    try {
+        channel = fs.readFileSync(path.join(getProjectDir(), '.claude', 'state', 'channel.txt'), 'utf8').trim();
+    }
+    catch { /* default */ }
+    const [git, commits] = await Promise.all([
+        getGitStatus(),
+        getRecentCommits(),
+    ]);
+    return {
+        agent: config.agent?.name ?? 'BMO',
+        session: sessionExists() ? 'active' : 'stopped',
+        channel,
+        todos: getTodoCounts(),
+        services: getServiceStatuses(config),
+        ...(git && { git }),
+        context: getContextUsage(),
+        memory: getMemoryStats(),
+        ...(commits.length > 0 && { commits }),
+    };
+}
+//# sourceMappingURL=extended-status.js.map

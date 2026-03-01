@@ -22,6 +22,37 @@ export function setNetworkApiConfig(config: BmoConfig): void {
   _config = config;
 }
 
+/**
+ * Detect if a "to" value targets a group rather than a contact.
+ * Supported formats:
+ *   - "group:<uuid>"  (explicit prefix)
+ *   - bare UUID that matches a known group
+ */
+async function resolveGroupId(to: string): Promise<string | null> {
+  // Explicit group: prefix
+  if (to.startsWith('group:')) {
+    return to.slice('group:'.length);
+  }
+
+  // Bare UUID pattern — check if it matches a known group
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (uuidPattern.test(to)) {
+    const network = getNetworkClient();
+    if (network) {
+      try {
+        const groups = await network.getGroups();
+        if (groups.some(g => g.groupId === to)) {
+          return to;
+        }
+      } catch {
+        // Fall through — treat as contact
+      }
+    }
+  }
+
+  return null;
+}
+
 export async function handleNetworkRoute(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -99,13 +130,35 @@ export async function handleNetworkRoute(
     if (subpath === 'send' && method === 'POST') {
       const body = await parseBody(req);
       if (!body.to || typeof body.to !== 'string') {
-        json(res, 400, withTimestamp({ error: 'to (recipient username) is required' }));
+        json(res, 400, withTimestamp({ error: 'to (recipient username or group:<groupId>) is required' }));
         return true;
       }
       if (!body.payload || typeof body.payload !== 'object') {
         json(res, 400, withTimestamp({ error: 'payload is required' }));
         return true;
       }
+
+      // Check if this targets a group
+      const groupId = await resolveGroupId(body.to);
+      if (groupId) {
+        const result = await network.sendToGroup(groupId, body.payload as Record<string, unknown>);
+
+        try {
+          sendMessage({
+            from: 'comms',
+            to: `a2a:group:${groupId}`,
+            type: 'text',
+            body: JSON.stringify(body.payload),
+            metadata: { channel: 'a2a', group_id: groupId, network_result: result },
+          });
+        } catch (err) {
+          log.warn('Failed to log outbound A2A group message', { error: String(err) });
+        }
+
+        json(res, 200, withTimestamp(result));
+        return true;
+      }
+
       const result = await network.send(body.to, body.payload as Record<string, unknown>);
 
       // Log outbound A2A message to the messages table for audit trail
@@ -132,7 +185,7 @@ export async function handleNetworkRoute(
     if (subpath === 'message' && method === 'POST') {
       const body = await parseBody(req);
       if (!body.to || typeof body.to !== 'string') {
-        json(res, 400, withTimestamp({ error: 'to (recipient username) is required' }));
+        json(res, 400, withTimestamp({ error: 'to (recipient username or group:<groupId>) is required' }));
         return true;
       }
 
@@ -144,6 +197,27 @@ export async function handleNetworkRoute(
         payload = { type: 'message', text: body.message };
       } else {
         json(res, 400, withTimestamp({ error: 'message (string) or payload (object) is required' }));
+        return true;
+      }
+
+      // Check if this targets a group
+      const groupId = await resolveGroupId(body.to);
+      if (groupId) {
+        const result = await network.sendToGroup(groupId, payload);
+
+        try {
+          sendMessage({
+            from: 'comms',
+            to: `a2a:group:${groupId}`,
+            type: 'text',
+            body: JSON.stringify(payload),
+            metadata: { channel: 'a2a', group_id: groupId, network_result: result },
+          });
+        } catch (err) {
+          log.warn('Failed to log outbound A2A group message', { error: String(err) });
+        }
+
+        json(res, 200, withTimestamp(result));
         return true;
       }
 

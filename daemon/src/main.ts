@@ -19,7 +19,7 @@ import { recoverFromRestart } from './agents/recovery.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
-import { handleConfigRoute } from './api/config.js';
+import { handleConfigRoute, setConfigWatcher } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
 import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleSelftestRoute } from './api/selftest.js';
@@ -51,6 +51,7 @@ import {
   type CheckResult,
   type HealthCheckFn,
 } from './core/extended-status.js';
+import { createConfigWatcher } from './core/config-watcher.js';
 
 export const VERSION = '0.1.0';
 
@@ -101,6 +102,13 @@ openDatabase(projectDir);
 
 // Reload persisted timers (must run after openDatabase)
 initTimers();
+
+// Wire up config hot-reload watcher
+const configPath = path.resolve(projectDir, 'kithkit.config.yaml');
+const configWatcher = createConfigWatcher(configPath, config);
+setConfigWatcher(configWatcher);
+configWatcher.start();
+log.info('Config watcher started', { path: configPath });
 
 // Wire up agent profiles directory
 setProfilesDir(path.resolve(projectDir, '.claude', 'agents'));
@@ -344,14 +352,16 @@ async function shutdown(signal: string): Promise<void> {
     }
   }
 
+  configWatcher.stop();
   closeDatabase();
   log.info('Database closed');
 
+  const forceExitHandle = setTimeout(() => process.exit(1), 5000);
   server.close(() => {
+    clearTimeout(forceExitHandle);
     log.info('Daemon stopped');
     process.exit(0);
   });
-  setTimeout(() => process.exit(1), 5000);
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));

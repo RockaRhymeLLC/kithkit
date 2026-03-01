@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.r2d2.restart-watcher</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/agent/KKit-R2/scripts/restart-watcher.sh</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/agent/KKit-R2</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/agent/KKit-R2/logs/restart-watcher.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/agent/KKit-R2/logs/restart-watcher-error.log</string>
+</dict>
+</plist>

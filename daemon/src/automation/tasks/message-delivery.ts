@@ -1,17 +1,14 @@
 /**
- * Message Delivery — notification-ping delivery for inter-agent messages.
+ * Message Delivery — content delivery for inter-agent messages.
  *
- * Instead of injecting full message content into tmux, this task:
  * 1. Messages arrive via POST /api/messages → stored as undelivered (processed_at IS NULL)
  * 2. This task runs on a short interval, pulls undelivered messages for persistent agents
- * 3. Injects a SHORT NOTIFICATION PING into the target tmux session:
- *    "[12:05 PM] You have a message from orchestrator — use GET /api/messages?unread=true to read"
- * 4. Marks as delivered (processed_at set) on successful ping injection
- * 5. For unread messages (delivered but read_at IS NULL), re-pings every 60 seconds
- * 6. Expires undelivered messages after MAX_RETRIES failed injection attempts
+ * 3. Injects the FULL MESSAGE CONTENT into the target tmux session
+ * 4. Marks as delivered AND read (processed_at + read_at set) on successful injection
+ * 5. Expires undelivered messages after MAX_RETRIES failed injection attempts
  *
- * The comms agent pulls full message content via GET /api/messages?unread=true,
- * which also marks messages as read (sets read_at).
+ * Because read_at is set on delivery, neither the re-ping phase nor comms-heartbeat
+ * will follow up — the agent already has the content in their session.
  */
 
 import { query, exec, update } from '../../core/db.js';
@@ -69,6 +66,15 @@ export function getLastNotificationTime(agentId: string): number {
 }
 
 /**
+ * Record that a message was successfully injected into an agent's tmux session.
+ * Called by the direct injection path in message-router so the heartbeat's
+ * dedup window respects direct injections (not just message-delivery ones).
+ */
+export function recordDirectInjection(agentId: string): void {
+  _lastAgentNotificationTime.set(agentId, Date.now());
+}
+
+/**
  * Notify the delivery task that a new message was queued.
  * Triggers the task immediately rather than waiting for the next interval tick.
  */
@@ -122,35 +128,25 @@ function expireMessage(msg: Message, retries: number): void {
     msg.id,
   );
   _retryCounts.delete(msg.id);
-  _lastPingTime.delete(msg.id);
 }
 
 /**
- * Format a short notification ping (no message content).
+ * Format the full message content for tmux injection.
  * Note: no timestamp here — injectMessage() prepends one automatically.
  */
-function formatNotificationPing(msg: Message): string {
-  const count = getUnreadCountFor(msg.to_agent);
-  if (count > 1) {
-    return `You have ${count} unread messages — use GET /api/messages?unread=true to read`;
-  }
-  return `You have a message from ${msg.from_agent} — use GET /api/messages?unread=true to read`;
+function formatMessageContent(msg: Message): string {
+  return `[${msg.type}] from ${msg.from_agent}: ${msg.body}`;
 }
 
 /**
- * Get count of unread messages for an agent.
+ * Format a batch of messages for a single tmux injection.
  */
-function getUnreadCountFor(agentId: string): number {
-  const result = query<{ count: number }>(
-    `SELECT COUNT(*) as count FROM messages
-     WHERE to_agent = ? AND processed_at IS NOT NULL AND read_at IS NULL`,
-    agentId,
-  );
-  return result[0]?.count ?? 0;
+function formatBatchContent(messages: Message[]): string {
+  return messages.map(formatMessageContent).join('\n');
 }
 
 /**
- * Phase 1: Deliver undelivered messages (inject notification ping, mark processed).
+ * Phase 1: Deliver undelivered messages (inject content, mark processed + read).
  */
 async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivered: number; failed: number; expired: number }> {
   const undelivered = query<Message>(
@@ -209,9 +205,9 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
       continue;
     }
 
-    // Inject a single notification ping for the batch
-    const pingText = formatNotificationPing(deliverable[0]!);
-    const success = injectMessage(agentId, pingText);
+    // Inject the full message content into the tmux session
+    const contentText = formatBatchContent(deliverable);
+    const success = injectMessage(agentId, contentText);
 
     if (success) {
       const now = new Date().toISOString();
@@ -219,9 +215,10 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
       for (const msg of deliverable) {
         const existingMeta = msg.metadata ? JSON.parse(msg.metadata) : {};
         const updatedMeta = JSON.stringify({ ...existingMeta, last_notified_at: now });
-        exec('UPDATE messages SET processed_at = ?, metadata = ? WHERE id = ?', now, updatedMeta, msg.id);
+        // Set both processed_at AND read_at — the agent already has the content
+        // in their session, so no follow-up notification is needed.
+        exec('UPDATE messages SET processed_at = ?, read_at = ?, metadata = ? WHERE id = ?', now, now, updatedMeta, msg.id);
         _retryCounts.delete(msg.id);
-        _lastPingTime.set(msg.id, nowMs);
         delivered++;
       }
       // If we just delivered to the orchestrator, touch last_activity so the
@@ -233,14 +230,14 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
         });
       }
       _lastAgentNotificationTime.set(agentId, nowMs);
-      log.debug('Notification ping sent', { to: agentId, count: deliverable.length });
+      log.debug('Message content delivered', { to: agentId, count: deliverable.length });
     } else {
       for (const msg of deliverable) {
         const newCount = (_retryCounts.get(msg.id) ?? 0) + 1;
         _retryCounts.set(msg.id, newCount);
         failed++;
       }
-      log.warn('Failed to inject notification ping', { to: agentId });
+      log.warn('Failed to inject message content', { to: agentId });
     }
   }
 
@@ -248,8 +245,10 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
 }
 
 /**
- * Phase 2: Re-ping for unread messages (delivered but not yet read).
- * Sends a reminder notification every REPING_INTERVAL_MS.
+ * Phase 2: Re-deliver unread messages (processed but read_at still NULL — e.g. injection
+ * succeeded on a previous run but read_at wasn't set due to older code path).
+ * Re-injects content and sets read_at. With the current code, this phase is rarely
+ * needed since Phase 1 now sets read_at, but it handles legacy unread rows.
  */
 async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> {
   const unread = query<Message>(
@@ -301,20 +300,20 @@ async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> 
       continue;
     }
 
-    const pingText = formatNotificationPing(messages[0]!);
-    const success = injectMessage(agentId, pingText);
+    const contentText = formatBatchContent(messages);
+    const success = injectMessage(agentId, contentText);
 
     if (success) {
       for (const msg of messages) {
         _lastPingTime.set(msg.id, now);
-        // Persist last_notified_at in DB metadata so it survives daemon restarts
+        // Mark as read + persist metadata so heartbeat and future re-pings skip this message
         const existingMeta = msg.metadata ? JSON.parse(msg.metadata) : {};
         const updatedMeta = JSON.stringify({ ...existingMeta, last_notified_at: nowIso });
-        exec('UPDATE messages SET metadata = ? WHERE id = ?', updatedMeta, msg.id);
+        exec('UPDATE messages SET read_at = ?, metadata = ? WHERE id = ?', nowIso, updatedMeta, msg.id);
       }
       _lastAgentNotificationTime.set(agentId, now);
       repinged += messages.length;
-      log.debug('Re-ping sent for unread messages', { to: agentId, count: messages.length });
+      log.debug('Re-delivery sent for unread messages', { to: agentId, count: messages.length });
     }
   }
 
@@ -389,7 +388,7 @@ async function deliverMessages(): Promise<void> {
 
   const liveSessions = getLiveSessions();
 
-  // Phase 1: Deliver new messages (inject ping, mark processed)
+  // Phase 1: Deliver new messages (inject content, mark processed + read)
   const { delivered, failed, expired } = await deliverNewMessages(liveSessions);
 
   // Phase 2: Re-ping unread messages
@@ -427,9 +426,4 @@ export function _resetRetriesForTesting(): void {
 /** @internal Get current retry count for testing */
 export function _getRetryCount(messageId: number): number {
   return _retryCounts.get(messageId) ?? 0;
-}
-
-/** @internal Get last ping time for testing */
-export function _getLastPingTime(messageId: number): number {
-  return _lastPingTime.get(messageId) ?? 0;
 }

@@ -11,6 +11,9 @@
 import { insert, query, exec } from '../core/db.js';
 import { injectMessage } from './tmux.js';
 import { notifyNewMessage } from '../automation/tasks/message-delivery.js';
+import { createLogger } from '../core/logger.js';
+
+const log = createLogger('message-router');
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -106,6 +109,29 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
 
   // Record for deduplication
   _recentMessages.set(dedupKey, { messageId: message.id, timestamp: Date.now() });
+
+  // Auto-complete orchestrator task when orchestrator sends a result message
+  if (req.from === 'orchestrator' && req.type === 'result') {
+    try {
+      const rows = query<{ id: string }>(
+        `SELECT id FROM orchestrator_tasks
+         WHERE status IN ('assigned', 'in_progress', 'pending')
+         ORDER BY created_at DESC LIMIT 1`,
+      );
+      if (rows.length > 0) {
+        const now = new Date().toISOString();
+        exec(
+          `UPDATE orchestrator_tasks SET status = 'completed', result = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+          req.body.slice(0, 5000), now, now, rows[0]!.id,
+        );
+        log.info('Auto-completed orchestrator task on result message', { taskId: rows[0]!.id });
+      }
+    } catch (err) {
+      log.warn('Failed to auto-complete orchestrator task', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   // Route to target
   if (isPersistentAgent(req.to)) {

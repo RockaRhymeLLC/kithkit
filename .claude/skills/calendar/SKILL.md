@@ -1,118 +1,65 @@
 ---
 name: calendar
-description: Checks the user's calendar events from macOS Calendar. Also manages the assistant's internal schedule, reminders, and to-do deadlines. Use when anyone asks about calendar, schedule, events, what's coming up, or needs to add reminders.
+description: Manage calendar entries for scheduled events, task due dates, and reminders.
 argument-hint: [show [date] | add "event" date [time] | remove "event" date]
 ---
 
-# Calendar
+# Calendar Management
 
-View the user's real calendar and manage the assistant's internal schedule.
+Manage scheduled events in `.claude/state/calendar.md`. Track appointments, deadlines, and reminders.
 
-## User's Calendar (macOS Calendar via icalBuddy)
-
-The user's actual calendar lives in macOS Calendar.app — synced from iCloud, Exchange, subscriptions. Use `icalBuddy` to read it. This is **read-only** — events are managed by the user in Calendar.app.
-
-### Quick Commands
-
-```bash
-export PATH="/opt/homebrew/bin:/usr/bin:$PATH"
-
-# Today's events
-icalBuddy eventsToday
-
-# Tomorrow
-icalBuddy eventsFrom:'tomorrow' to:'tomorrow'
-
-# Next 7 days
-icalBuddy eventsToday+7
-
-# Specific date
-icalBuddy eventsFrom:'2026-02-15' to:'2026-02-15'
-
-# Events happening right now
-icalBuddy eventsNow
-
-# This week
-icalBuddy eventsFrom:'today' to:'saturday'
-```
-
-### Discovering Calendars
-
-Calendars vary per user. Run `icalBuddy calendars` to discover available calendars and their types (CalDAV, iCloud, Exchange, Local, etc.).
-
-### Filtering Options
-
-```bash
-# Exclude all-day events (holidays, etc.)
-icalBuddy -ea eventsToday
-
-# Only specific calendar
-icalBuddy -ic "Work" eventsToday+7
-
-# No calendar names in output (cleaner)
-icalBuddy -nc eventsToday
-
-# No property names (minimal output)
-icalBuddy -npn eventsToday
-
-# Strip ANSI formatting (for parsing)
-icalBuddy -f eventsToday
-
-# Combine: clean work events for this week
-icalBuddy -nc -npn -f -ic "Work" eventsToday+7
-```
-
-### When the User Asks About Their Calendar
-
-If the user asks "what's on my calendar?" or "am I free Thursday?" — **always use icalBuddy**. This is their real calendar with real appointments. Don't look at calendar.md — that's the assistant's internal schedule.
-
----
-
-## Assistant's Internal Schedule (calendar.md)
-
-The assistant's own scheduling layer for reminders, to-do deadlines, and assistant-managed events. Stored in `.claude/state/calendar.md`.
-
-### Commands
+## Commands
 
 Parse $ARGUMENTS to determine the action:
 
-#### Show
-- `show` or no arguments — Show upcoming events (next 7 days, both the user's + the assistant's)
-- `show today` — Today's events
-- `show tomorrow` — Tomorrow
-- `show 2026-02-01` — Specific date
-- `show week` — This week
-- `show month` — This month
+### Show Calendar
+- `show` or no arguments - Show upcoming events (next 7 days)
+- `show today` - Show today's events
+- `show tomorrow` - Show tomorrow's events
+- `show 2026-02-01` - Show specific date
+- `show week` - Show this week
+- `show month` - Show this month
+- `show 2026-02` - Show specific month
 
-**For `show` commands**: Always check **both** icalBuddy (the user's calendar) AND calendar.md (the assistant's schedule), then present a combined view.
+### Add Event
+- `add "Event description" 2026-02-01` - All-day event
+- `add "Event description" 2026-02-01 14:00` - Timed event
+- `add "Event description" 2026-02-01 (reminder:morning)` - With reminder note
 
-#### Add (the assistant's schedule only)
-- `add "Event description" 2026-02-01` — All-day event
-- `add "Event description" 2026-02-01 14:00` — Timed event
-- `add "Event description" 2026-02-01 (reminder:morning)` — With reminder note
+### Remove Event
+- `remove "Event description" 2026-02-01` - Remove matching event
 
-#### Remove (the assistant's schedule only)
-- `remove "Event description" 2026-02-01` — Remove matching event
+### Link to To-Do
+- `add "Work on login [todo:a1b]" 2026-02-01` - Reference a to-do
 
-#### Link to To-Do
-- `add "Work on feature [todo:032]" 2026-02-01` — Reference a to-do
+## File Format
 
-### File Format
+Calendar is stored in `.claude/state/calendar.md` organized by year/month:
 
 ```markdown
 # Calendar
 
+## 2026-01
+
+### 2026-01-28
+- 09:00 - Team standup
+- 14:00 - Dentist appointment (send reminder morning of)
+- Review PR for auth feature [task:a1b]
+
+### 2026-01-30
+- Project deadline [task:c2d]
+
 ## 2026-02
 
-### 2026-02-14
-- 09:00 - Remind user: Valentine's Day
-- Check in on revenue research [todo:095]
+### 2026-02-01
+- 10:00 - Meeting with James
+- Submit expense report
 
-### 2026-02-15
-- Submit expense report reminder
+### 2026-02-14
+- Valentine's Day (order flowers by Feb 12)
 ```
 
-### Entry Format
+## Entry Format
 
 Each entry is a markdown list item:
 - `- HH:MM - Event description` (timed event)
@@ -120,76 +67,162 @@ Each entry is a markdown list item:
 - `- Event description [todo:id]` (linked to to-do)
 - `- Event description (note)` (with reminder/note)
 
-### Workflow
+## Workflow
 
-**Showing events:**
-1. Run icalBuddy for the user's calendar events
-2. Read calendar.md for the assistant's scheduled items
-3. Merge and display by date/time
-
-**Adding events:**
+### Showing Events
 1. Read calendar.md
-2. Find or create the year/month section and date heading
-3. Insert entry in time order
-4. Write updated file, confirm
+2. Parse entries into date structures
+3. Filter by requested range
+4. Format and display
+5. Resolve to-do references to show to-do titles
 
-**Removing events:**
-1. Read calendar.md, find matching entry
-2. Remove the line, clean up empty sections
-3. Confirm removal
+### Adding Events
+1. Read calendar.md
+2. Find or create the appropriate year/month section
+3. Find or create the date heading
+4. Insert entry in time order (timed events) or at end (all-day)
+5. Write updated file
+6. Confirm what was added
+
+### Removing Events
+1. Read calendar.md
+2. Find matching entry (by text and date)
+3. Remove the line
+4. Clean up empty date/month sections
+5. Confirm removal
+
+## To-Do Integration
+
+Reference to-dos in calendar entries using `[todo:id]` syntax:
+
+```markdown
+### 2026-02-01
+- Start work on authentication [todo:a1b]
+
+### 2026-02-15
+- Authentication feature due [todo:a1b]
+```
+
+When displaying, resolve to show to-do title:
+```
+### 2026-02-01
+- Start work on authentication → [a1b] Implement login flow
+```
 
 ## Output Format
 
-### Combined Day View
-```
-## Today — Tuesday, Feb 11
-
-### User's Calendar
-- 9:30 AM - Team Standup (Teams)
-- 2:00 PM - Planning Meeting (Teams)
-
-### Assistant's Schedule
-- Check research progress [todo:095]
-- Send weekly digest email
-```
-
 ### Week View
 ```
-## This Week (Feb 10-16, 2026)
+## This Week (Jan 27 - Feb 2, 2026)
 
-### Monday, Feb 10
-User: No events
-Assistant: Morning briefing sent
+### Monday, Jan 27
+No events
 
-### Tuesday, Feb 11
-User: 9:30 AM Team Standup, 2:00 PM Planning Meeting
-Assistant: Weekly check-in
+### Tuesday, Jan 28
+- 09:00 - Team standup
+- 14:00 - Dentist appointment
 
-(etc.)
+### Wednesday, Jan 29
+No events
+
+### Thursday, Jan 30
+- Project deadline [c2d] Write documentation
+
+### Friday, Jan 31
+No events
+
+### Saturday, Feb 1
+- 10:00 - Meeting with James
+
+### Sunday, Feb 2
+No events
+```
+
+### Add Confirmation
+```
+Added to calendar:
+2026-02-01 at 10:00 - Meeting with James
 ```
 
 ## Reminders
 
-Reminder notes in parentheses are for the assistant to act on:
-- `(send reminder morning of)` — Prompt to remind user
-- `(order flowers by Feb 12)` — Action needed before event
+Reminder notes in parentheses are for reference:
+- `(send reminder morning of)` - Prompt to remind user
+- `(order flowers by Feb 12)` - Action needed before event
 
 The assistant should:
-1. Check calendar at session start
+1. Check calendar at session start (via SessionStart hook)
 2. Note upcoming events with reminder notes
 3. Proactively mention relevant reminders
 
 ## Best Practices
 
 - Use ISO dates (YYYY-MM-DD) for consistency
-- Use 24-hour time (HH:MM) in calendar.md
+- Use 24-hour time (HH:MM)
 - Keep descriptions concise
 - Link to to-dos when relevant
 - Add reminder notes for actions needed
 
-## Integration
+## macOS Calendar (icalBuddy)
 
-- To-dos referenced via `[todo:id]` syntax
-- icalBuddy is read-only for the user's real calendar
-- calendar.md is the assistant's read-write scheduling layer
-- `/remind` skill creates timed reminders (different from calendar entries)
+The macOS Calendar app has synced calendars (iCloud, Exchange, subscriptions). Use `icalBuddy` to read them.
+
+**Important**: `icalBuddy` is read-only for the user's real calendar. Use `calendar.md` for your own scheduling/reminders.
+
+### Common Commands
+
+```bash
+export PATH="/opt/homebrew/bin:/usr/bin:$PATH"
+
+# Today's events
+icalBuddy eventsToday
+
+# Tomorrow's events
+icalBuddy eventsFrom:'tomorrow' to:'tomorrow'
+
+# Next 7 days
+icalBuddy eventsToday+7
+
+# Events on a specific date
+icalBuddy eventsFrom:'2026-02-01' to:'2026-02-01'
+
+# Events happening right now
+icalBuddy eventsNow
+
+# List all calendars
+icalBuddy calendars
+```
+
+### Available Calendars
+
+Run `icalBuddy calendars` to discover what calendars are synced on this machine.
+
+Common calendar types: CalDAV, Exchange, iCloud, Subscriptions, Birthdays, Holidays.
+
+### Useful Options
+
+```bash
+# Exclude all-day events (holidays, etc.)
+icalBuddy -ea eventsToday
+
+# Only specific calendars
+icalBuddy -ic "Work" eventsToday+7
+
+# No calendar names in output
+icalBuddy -nc eventsToday
+
+# No property names (cleaner output)
+icalBuddy -npn eventsToday
+
+# Strip ANSI formatting (for parsing)
+icalBuddy -f eventsToday
+```
+
+## Notes
+
+- Calendar file is human-readable and editable
+- User can modify directly via text editor
+- Empty date sections can be cleaned up
+- Past events are kept for reference (can archive manually)
+- icalBuddy reads macOS Calendar app — use it for the user's real-world schedule
+- `calendar.md` is your own scheduling layer (reminders, to-do deadlines)

@@ -277,3 +277,4 @@ export function startSession(name?: string): boolean {
     return false;
   }
 }
+

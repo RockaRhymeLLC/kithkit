@@ -162,3 +162,8 @@ kithkit.config.yaml
 identity.md
 .claude/state/
 models/
+
+# Python virtual environments
+.venv/
+*/.venv/
+**/.venv/

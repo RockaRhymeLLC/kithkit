@@ -4,9 +4,15 @@
  * Framework provides 3 base tiers: Safe, Unknown, Blocked.
  * Extensions can register additional tiers via registerTier().
  * Rate limits are enforced per tier with configurable windows.
+ *
+ * Safe/blocked senders are resolved from both config and the contacts
+ * table (contacts tagged with tier:safe or tier:blocked). The contacts
+ * table is checked when a sender isn't found in the config-based sets,
+ * giving the DB a fallback role that works without any extension code.
  */
 
 import { createLogger } from './logger.js';
+import { getDatabase } from './db.js';
 
 const log = createLogger('access-control');
 
@@ -84,11 +90,42 @@ export function registerTier(name: string, classifier: TierClassifier): void {
   log.info(`Registered custom tier classifier: ${name}`);
 }
 
+// ── Contacts DB lookup ──────────────────────────────────────
+
+/**
+ * Check the contacts table for a sender's tier tag.
+ * Looks up by telegram_id or email, returns the first tier:* tag found.
+ * Returns null if no matching contact or no tier tag.
+ */
+function checkContactsTier(senderId: string): string | null {
+  try {
+    const db = getDatabase();
+    const row = db.prepare(
+      "SELECT tags, role FROM contacts WHERE telegram_id = ? OR email LIKE ? LIMIT 1"
+    ).get(senderId, `%${senderId}%`) as { tags: string; role: string | null } | undefined;
+    if (!row) return null;
+
+    // Owner role implies safe
+    if (row.role === 'owner') return SenderTier.Safe;
+
+    let tags: string[] = [];
+    try { tags = JSON.parse(row.tags); } catch { /* ignore */ }
+
+    if (tags.includes('tier:blocked')) return SenderTier.Blocked;
+    if (tags.includes('tier:safe')) return SenderTier.Safe;
+    return null;
+  } catch {
+    // DB not available (e.g., during tests or early init) — skip silently
+    return null;
+  }
+}
+
 // ── Classification ──────────────────────────────────────────
 
 /**
  * Classify a sender into a tier.
- * Custom classifiers are checked first, then default rules.
+ * Custom classifiers are checked first, then config-based sets,
+ * then the contacts table as a fallback.
  */
 export function classifySender(senderId: string): string {
   // Check custom classifiers first (extensions)
@@ -97,9 +134,14 @@ export function classifySender(senderId: string): string {
     if (result !== null) return result;
   }
 
-  // Default classification
+  // Config-based classification
   if (_blockedSenders.has(senderId)) return SenderTier.Blocked;
   if (_safeSenders.has(senderId)) return SenderTier.Safe;
+
+  // Contacts DB fallback — check for tier tags on matching contacts
+  const contactTier = checkContactsTier(senderId);
+  if (contactTier !== null) return contactTier;
+
   return SenderTier.Unknown;
 }
 
