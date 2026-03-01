@@ -242,6 +242,58 @@ describe('Orchestrator idle: zombie task cleanup', () => {
     assert.ok(activity[0]!.message.includes('orchestrator died'), `message: ${activity[0]!.message}`);
   });
 
+  it('marks tasks from a previous orchestrator as failed when new orchestrator is running', async () => {
+    // Insert an in_progress task with started_at BEFORE the orchestrator's started_at
+    // (simulating a task from a previous orchestrator instance)
+    const oldTime = new Date(Date.now() - 10 * 60_000).toISOString();
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, started_at, created_at, updated_at)
+       VALUES ('orphan-task-1', 'Orphaned task', null, 'in_progress', 0, ?, ?, ?)`,
+      oldTime, oldTime, oldTime,
+    );
+
+    // Orchestrator is alive (new instance)
+    _setDepsForTesting({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => false,
+      injectMessage: () => true,
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const tasks = query<{ id: string; status: string; error: string }>(
+      `SELECT id, status, error FROM orchestrator_tasks WHERE id = 'orphan-task-1'`,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]!.status, 'failed', 'orphaned task should be marked failed');
+    assert.equal(tasks[0]!.error, 'orchestrator_restarted');
+  });
+
+  it('does not mark tasks from the current orchestrator as orphaned', async () => {
+    // Insert an in_progress task with started_at AFTER the orchestrator's started_at
+    const recentTime = new Date(Date.now() + 1000).toISOString();
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, started_at, created_at, updated_at)
+       VALUES ('current-task-1', 'Current task', null, 'in_progress', 0, ?, ?, ?)`,
+      recentTime, recentTime, recentTime,
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => false,
+      injectMessage: () => true,
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const tasks = query<{ id: string; status: string }>(
+      `SELECT id, status FROM orchestrator_tasks WHERE id = 'current-task-1'`,
+    );
+    assert.equal(tasks[0]!.status, 'in_progress', 'current task should NOT be marked as orphaned');
+  });
+
   it('does not touch completed or failed tasks during zombie cleanup', async () => {
     // Insert a completed task — should remain completed
     exec(
