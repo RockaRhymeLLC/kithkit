@@ -18,6 +18,7 @@ import {
 } from '../agents/tmux.js';
 import { sendMessage } from '../agents/message-router.js';
 import { createSessionDir } from '../agents/lifecycle.js';
+import { randomUUID } from 'node:crypto';
 import { exec, query, update } from '../core/db.js';
 import { resolveProjectPath } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
@@ -55,6 +56,22 @@ export async function handleOrchestratorRoute(
     const context = typeof body.context === 'string' ? body.context : undefined;
     const alive = isOrchestratorAlive();
 
+    // Create an orchestrator_tasks row for tracking
+    const taskId = randomUUID();
+    const ts = new Date().toISOString();
+    const priority = typeof body.priority === 'number' ? body.priority : 0;
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+      taskId,
+      task.slice(0, 200),
+      context ?? task,
+      priority,
+      ts,
+      ts,
+    );
+    log.info('Created orchestrator task', { taskId, title: task.slice(0, 100) });
+
     if (!alive) {
       // Cancel any pending shutdown timer — a new spawn supersedes a pending shutdown
       if (pendingShutdownTimer) {
@@ -67,16 +84,20 @@ export async function handleOrchestratorRoute(
       const sessionDir = createSessionDir('orchestrator');
 
       // Spawn orchestrator with the task as initial prompt (includes memory context)
-      const orchestratorPrompt = await buildOrchestratorPrompt(task, context, sessionDir);
+      const orchestratorPrompt = await buildOrchestratorPrompt(task, context, sessionDir, taskId);
       const session = spawnOrchestratorSession(orchestratorPrompt);
 
       if (!session) {
+        // Mark task as failed since we couldn't spawn
+        exec(
+          `UPDATE orchestrator_tasks SET status = 'failed', error = 'Failed to spawn orchestrator session', updated_at = ? WHERE id = ?`,
+          new Date().toISOString(), taskId,
+        );
         json(res, 500, withTimestamp({ error: 'Failed to spawn orchestrator session' }));
         return true;
       }
 
       // Register in agents table
-      const ts = new Date().toISOString();
       try {
         exec(
           `INSERT INTO agents (id, type, profile, status, tmux_session, started_at, created_at, updated_at)
@@ -106,13 +127,14 @@ export async function handleOrchestratorRoute(
         from: 'comms',
         to: 'orchestrator',
         type: 'task',
-        body: JSON.stringify({ task, context }),
+        body: JSON.stringify({ task, context, task_id: taskId }),
       });
 
-      log.info('Orchestrator spawned for task', { task: task.slice(0, 100) });
+      log.info('Orchestrator spawned for task', { task: task.slice(0, 100), taskId });
       json(res, 202, withTimestamp({
         status: 'spawned',
         session,
+        task_id: taskId,
         message: 'Orchestrator session created with task',
       }));
       return true;
@@ -125,12 +147,17 @@ export async function handleOrchestratorRoute(
       log.info('Cancelled pending shutdown timer — new task for running orchestrator');
     }
 
-    // Already alive — inject task as message
+    const orchState = getOrchestratorState();
+
+    // Always store the task message so the wrapper's poll loop can find it
     sendMessage({
       from: 'comms',
       to: 'orchestrator',
       type: 'task',
-      body: JSON.stringify({ task, context }),
+      body: JSON.stringify({ task, context, task_id: taskId }),
+      // When Claude is actively running, use direct=false so the message is
+      // queued for the wrapper's poll loop instead of injected into tmux
+      direct: false,
     });
 
     // Update activity so idle checker knows we just got work
@@ -139,11 +166,21 @@ export async function handleOrchestratorRoute(
       updated_at: new Date().toISOString(),
     });
 
-    log.info('Task escalated to running orchestrator', { task: task.slice(0, 100) });
-    json(res, 200, withTimestamp({
-      status: 'escalated',
-      message: 'Task sent to running orchestrator',
-    }));
+    if (orchState === 'active') {
+      log.info('Task queued for running orchestrator (Claude active, wrapper will poll)', { task: task.slice(0, 100), taskId });
+      json(res, 200, withTimestamp({
+        status: 'queued',
+        task_id: taskId,
+        message: 'Task queued — orchestrator is busy, wrapper will pick it up between runs',
+      }));
+    } else {
+      log.info('Task escalated to waiting orchestrator', { task: task.slice(0, 100), taskId });
+      json(res, 200, withTimestamp({
+        status: 'escalated',
+        task_id: taskId,
+        message: 'Task sent to waiting orchestrator',
+      }));
+    }
     return true;
   }
 
@@ -180,19 +217,36 @@ export async function handleOrchestratorRoute(
       return true;
     }
 
+    const body = await parseBody(req).catch(() => ({} as Record<string, unknown>));
+    const force = (body as Record<string, unknown>).force === true;
+    const orchState = getOrchestratorState();
+
+    // If Claude is actively running and this isn't a force shutdown,
+    // wait for the current task to complete before initiating shutdown.
+    // Use an extended timeout (3 min) to give the task time to finish.
+    const activeTimeout = 3 * 60_000; // 3 minutes for active tasks
+    const effectiveTimeout = (!force && orchState === 'active') ? activeTimeout : SHUTDOWN_TIMEOUT_MS;
+
     // Send shutdown message
     sendMessage({
       from: 'daemon',
       to: 'orchestrator',
       type: 'status',
-      body: JSON.stringify({ action: 'shutdown', reason: 'requested' }),
+      body: JSON.stringify({
+        action: 'shutdown',
+        reason: (body as Record<string, unknown>).reason ?? 'requested',
+        wait_for_completion: orchState === 'active',
+      }),
     });
 
     // Set a timeout to force-kill if no acknowledgment (cancellable on new spawn)
     pendingShutdownTimer = setTimeout(() => {
       pendingShutdownTimer = null;
       if (isOrchestratorAlive()) {
-        log.warn('Orchestrator did not acknowledge shutdown — force killing');
+        log.warn('Orchestrator did not shut down within timeout — force killing', {
+          timeout_ms: effectiveTimeout,
+          was_active: orchState === 'active',
+        });
         killOrchestratorSession();
         update('agents', 'orchestrator', {
           status: 'stopped',
@@ -201,14 +255,16 @@ export async function handleOrchestratorRoute(
         logActivity({
           agent_id: 'orchestrator',
           event_type: 'session_end',
-          details: 'Force-killed after shutdown timeout (no acknowledgment)',
+          details: `Force-killed after ${effectiveTimeout / 1000}s shutdown timeout (was ${orchState})`,
         });
       }
-    }, SHUTDOWN_TIMEOUT_MS);
+    }, effectiveTimeout);
 
+    log.info('Shutdown requested', { orchState, force, timeout_ms: effectiveTimeout });
     json(res, 200, withTimestamp({
       status: 'shutdown_requested',
-      timeout_ms: SHUTDOWN_TIMEOUT_MS,
+      timeout_ms: effectiveTimeout,
+      was_active: orchState === 'active',
     }));
     return true;
   }
@@ -218,7 +274,7 @@ export async function handleOrchestratorRoute(
 
 // ── Helpers ──────────────────────────────────────────────────
 
-async function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: string): Promise<string> {
+async function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: string, taskId?: string): Promise<string> {
   const parts = [
     'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality, no humor, no conversational style.',
     '',
@@ -285,6 +341,13 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '',
     `Task: ${task}`,
   ];
+
+  if (taskId) {
+    parts.push('', `Task ID: ${taskId}`,
+      'Update this task\'s status as you work: PUT http://localhost:3847/api/orchestrator/tasks/' + taskId,
+      'Write your result to the task row when done (status: completed, result: <summary>).',
+    );
+  }
 
   if (sessionDir) {
     parts.push('', `Session directory (for artifacts if needed): ${sessionDir}`);
