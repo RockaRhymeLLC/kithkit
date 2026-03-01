@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.assistant.r2d2</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/agent/KKit-R2/scripts/start-tmux.sh</string>
+        <string>--detach</string>
+        <string>--skip-permissions</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/agent/KKit-R2</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/agent/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>HOME</key>
+        <string>/Users/agent</string>
+    </dict>
+    <key>ProcessType</key>
+    <string>Interactive</string>
+    <key>StandardOutPath</key>
+    <string>/Users/agent/.claude/logs/assistant.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/agent/.claude/logs/assistant.error.log</string>
+</dict>
+</plist>

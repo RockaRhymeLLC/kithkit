@@ -1,7 +1,6 @@
 ---
 name: playwright-cli
-description: Automate browser interactions — navigation, form filling, screenshots, testing, and data extraction. Use when controlling a web browser programmatically.
-argument-hint: [url "action description"]
+description: Automates browser interactions for web testing, form filling, screenshots, and data extraction. Use when the user needs to navigate websites, interact with web pages, fill forms, take screenshots, test web applications, or extract information from web pages.
 allowed-tools: Bash(playwright-cli:*)
 ---
 
@@ -249,7 +248,7 @@ playwright-cli tracing-stop
 playwright-cli close
 ```
 
-## References
+## Specific tasks
 
 * **Request mocking** [references/request-mocking.md](references/request-mocking.md)
 * **Running Playwright code** [references/running-code.md](references/running-code.md)

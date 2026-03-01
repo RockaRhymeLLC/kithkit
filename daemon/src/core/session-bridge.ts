@@ -249,3 +249,19 @@ export function startSession(name?: string): boolean {
     return false;
   }
 }
+
+// ── Comms Session Convenience Wrappers ──────────────────────
+// Used by extension code to target the comms session specifically.
+
+export const COMMS_SESSION = 'comms1';
+
+export function injectToComms(
+  text: string,
+  options: { pressEnter?: boolean } = {},
+): boolean {
+  return injectText(text, { ...options, name: COMMS_SESSION });
+}
+
+export function commsSessionExists(): boolean {
+  return sessionExists(COMMS_SESSION);
+}

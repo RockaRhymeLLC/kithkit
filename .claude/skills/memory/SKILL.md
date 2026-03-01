@@ -1,12 +1,12 @@
 ---
 name: memory
-description: Stores and retrieves persistent facts across sessions. Use when remembering something, looking up a fact, searching past conversations, or when information the user previously shared is needed.
+description: Look up and add facts to persistent memory. Use before asking the user questions they may have already answered.
 argument-hint: [lookup "query" | add "fact" | list | search "term"]
 ---
 
-# Memory Management
+# Memory Management (v2)
 
-Store and retrieve persistent facts using the memory system. The daemon manages storage via HTTP API; individual memory files use YAML frontmatter for rich metadata.
+Store and retrieve persistent facts using the v2 memory system: individual files in `.claude/state/memory/memories/` with YAML frontmatter.
 
 ## Philosophy
 
@@ -33,7 +33,7 @@ Examples:
 
 Examples:
 - `/memory add "Prefers dark mode in all applications"`
-- `/memory add "Partner's name is Sarah" category:person importance:high tags:family`
+- `/memory add "Wife's name is Sarah" category:person importance:high tags:family`
 
 ### List
 - `list` - Show all memory entries
@@ -44,48 +44,145 @@ Examples:
 
 ### Conflicts
 - `conflicts` - Scan for potential contradictions across memory files
-- Searches by category/subject, groups overlapping memories, flags where content may conflict
+- Groups memories by subject/person overlap and flags where content may conflict
 - Advisory only — review results and resolve manually
-- Note: No dedicated API endpoint — uses search to find and compare related memories
 
-## API
+## File Format (v2)
 
-Memory is managed via the daemon HTTP API (default: `http://localhost:3847`):
+Memories are stored as individual markdown files in `.claude/state/memory/memories/`.
 
-| Action | Method | Endpoint |
-|--------|--------|----------|
-| Store | `POST` | `/api/memory/store` |
-| Search | `POST` | `/api/memory/search` |
-| Get by ID | `GET` | `/api/memory/:id` |
-| Delete | `DELETE` | `/api/memory/:id` |
+**Naming Convention**: `YYYYMMDD-HHMM-slug.md`
 
-Note: There is no list-all or conflict-detection endpoint. To list, search with a `category` filter and no `query`. See [reference.md](reference.md) for full API details and curl examples.
+**File Structure**:
+```markdown
+---
+date: 2026-01-27T09:00:00
+category: person
+importance: high
+subject: Jane Smith
+tags: [owner, identity]
+confidence: 1.0
+source: user
+---
+
+# Jane Smith — Identity
+
+- **Name**: Jane Smith
+- **Role**: Assistant owner/operator
+```
+
+### Frontmatter Fields
+
+| Field | Required | Values | Default |
+|-------|----------|--------|---------|
+| `date` | Yes | ISO 8601 timestamp | Current time |
+| `category` | Yes | person, preference, technical, account, event, decision, other | other |
+| `importance` | Yes | critical, high, medium, low | medium |
+| `subject` | Yes | Brief subject line | Derived from fact |
+| `tags` | Yes | Array of searchable tags | [] |
+| `confidence` | Yes | 0.0 to 1.0 | 0.9 (user-stated), 0.7 (auto-extracted), 0.5 (inferred) |
+| `source` | Yes | user, observation, system, auto-extraction, email, conversation | user |
+| `correction_for` | No | Filename of the memory this corrects (e.g., `20260201-1200-old-fact.md`) | — |
+
+**All required fields are mandatory.** Use defaults when the value isn't obvious. The `source` field helps distinguish human-curated memories from auto-extracted ones.
+
+### Authority Hierarchy
+
+When multiple memories cover the same topic, authority determines which is trusted:
+
+1. **Source** (highest to lowest): `user` > `observation` > `email`/`conversation` > `auto-extraction` > `system`
+2. **Recency**: For equal source authority, the most recent memory wins
+3. **Confidence**: Tiebreaker when source and date are similar
+
+**Key rules:**
+- User-stated facts are canonical. Auto-extraction should never contradict a `source: user` memory.
+- When a user explicitly corrects a fact, set `correction_for` on the new memory to link it to the old one. The old memory remains for audit trail but the corrected version is authoritative.
+- Use `/memory conflicts` to surface potential contradictions for manual review.
+
+### Categories
+- `person` — People, contacts, relationships
+- `preference` — How the user likes things
+- `technical` — Dev environment, tools, architecture
+- `account` — Usernames, services, non-secret identifiers
+- `event` — Things that happened (decays over time)
+- `decision` — Decisions made (decays over time)
+- `other` — Anything else
 
 ## Workflow
 
 ### Adding a Fact
 1. Determine category, importance, tags from the fact and any explicit options
-2. Call `POST /api/memory/store` with the fact and metadata
-3. Confirm what was added (the API returns the created file details)
+2. Generate a slug from the subject (kebab-case, max 40 chars)
+3. Generate timestamp: `YYYYMMDD-HHMM`
+4. Create the file at `.claude/state/memory/memories/YYYYMMDD-HHMM-slug.md`
+5. Write YAML frontmatter + markdown content
+6. Confirm what was added
+
+**Generating the filename**:
+```
+Date: 2026-02-03 04:45 → 20260203-0445
+Subject: "Prefers dark mode" → prefers-dark-mode
+Filename: 20260203-0445-prefers-dark-mode.md
+```
 
 ### Looking Up
-1. Call `POST /api/memory/search` with `{"query": "search term"}`
-2. Return matching facts with their metadata
-3. If nothing found, say so (don't guess)
+1. Use Grep to search `.claude/state/memory/memories/` by keyword
+2. Search both file content and frontmatter (tags, category, subject)
+3. Return matching facts with their source file
+4. If nothing found, say so (don't guess)
 
 ### Listing
-1. Call `POST /api/memory/search` with `{"category": "person"}` (or other category filter, no `query` needed)
-2. Display grouped by category
+1. Glob all `.md` files in `memories/` directory
+2. If filtering by category, use Grep on frontmatter `category:` field
+3. Display grouped by category
 
 ### Searching
-1. Call `POST /api/memory/search` with `{"query": "term"}`
-2. Return matching memories with metadata
+1. Use Grep to search `.claude/state/memory/memories/` for the search term
+2. Return matching lines with file context
+3. Include frontmatter metadata (category, importance) in results
 
 ### Conflict Detection
-There is no daemon endpoint for conflict detection. To surface potential contradictions:
-1. Search by relevant category or subject filters using `POST /api/memory/search`
-2. Review returned memories for contradictions
-3. Display as advisory report — flag potential conflicts, let user decide resolution
+1. Glob all `.md` files in `memories/` directory
+2. Parse frontmatter from each file (subject, category, source, date, confidence)
+3. Group memories by similarity:
+   - Same person (category: person, same name in subject or body)
+   - Same topic (similar subject lines or overlapping tags)
+4. For each group with 2+ memories, compare content for contradictions
+5. Display as advisory report — flag potential conflicts, let user decide resolution
+6. When correcting a conflict: use `/memory add` with `correction_for:filename.md`
+
+**Output format:**
+```
+## Memory Conflicts Report
+
+### Group: Dave Hurley
+- 20260201-1200-dave-identity.md (user, confidence 0.9) — "Prefers Dave, works at Acme"
+- 20260205-0900-dave-work.md (auto-extraction, confidence 0.7) — "Dave works at Initech"
+⚠️  Possible conflict: workplace
+
+### No other conflicts found.
+```
+
+## Memory Architecture
+
+### Sources of Truth
+- **memories/** — Individual fact files with YAML frontmatter. The knowledge store. Created by `/memory add`, the Stop hook auto-extractor, or nightly consolidation.
+- **timeline/** — Daily files with YAML frontmatter (date, sessions, topics, todos, highlights). Append-only, no compression. Created by nightly consolidation from 24hr.md entries.
+- **24hr.md** — Ephemeral rolling state log. Entries rotate to timeline/ after 24 hours.
+
+### Auto-Extraction
+A Stop hook agent automatically scans conversation transcripts after each response and extracts new persistent facts into individual memory files. Tagged `source: auto-extraction`, `confidence: 0.7`.
+
+### Nightly Consolidation (5am)
+1. Reads 24hr.md entries older than 24 hours
+2. Creates/appends to timeline/YYYY-MM-DD.md daily files (with frontmatter)
+3. Extracts new facts as individual memory files
+4. Removes processed entries from 24hr.md
+
+### Timeline Retrieval
+- Scan frontmatter without loading body: `Read(file, limit: 10)` or `Grep("topics:.*voice", path: "timeline/")`
+- Load specific days: `Glob("timeline/2026-02-0[1-7].md")`
+- Search across timeline: `Grep("highlights:.*shipped", path: "timeline/")`
 
 ## Output Format
 
@@ -127,13 +224,13 @@ Added to memory:
 - One-time context
 - Sensitive data without permission
 
-### Writing Good Memory Facts
-- One fact or closely related group of facts per entry
+### Writing Good Memory Files
+- One fact or closely related group of facts per file
 - Use descriptive subjects for easy scanning
 - Tag generously — tags are searchable
 - Set importance appropriately (critical/high for permanent facts, medium for context-dependent)
 - Use `source: user` when the user stated it directly
 
-## References
+## Migration Note
 
-- [reference.md](reference.md) — File format, frontmatter fields, categories, authority hierarchy, memory architecture, API endpoint details, and conflict detection
+The legacy `.claude/state/memory.md` file is deprecated. All new facts should be written to individual files in `memory/memories/`. The legacy file is kept for reference but is no longer updated.
