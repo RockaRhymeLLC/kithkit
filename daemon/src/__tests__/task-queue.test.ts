@@ -11,7 +11,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { openDatabase, _resetDbForTesting } from '../core/db.js';
+import { openDatabase, _resetDbForTesting, query } from '../core/db.js';
 import { handleTaskQueueRoute } from '../api/task-queue.js';
 
 const TEST_PORT = 19870;
@@ -532,6 +532,135 @@ describe('Task Queue API', { concurrency: 1 }, () => {
       const listRes = await request('GET', '/api/orchestrator/tasks?status=pending');
       const body = JSON.parse(listRes.body);
       assert.equal(body.data.length, 5);
+    });
+  });
+
+  // ── Auto-activity on status change (Fix 4) ─────────────────
+
+  describe('Auto-activity log on status change', () => {
+    beforeEach(setup);
+    afterEach(teardown);
+
+    it('auto-logs activity when task transitions to assigned', async () => {
+      const task = await createTask();
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'assigned', assignee: 'orchestrator',
+      });
+
+      const actRes = await request('GET', `/api/orchestrator/tasks/${task.id}/activity`);
+      const actBody = JSON.parse(actRes.body);
+      const statusChanges = actBody.data.filter((a: { stage: string }) => a.stage === 'status_change');
+      assert.ok(statusChanges.length > 0, 'should have auto-logged a status_change activity');
+      assert.ok(statusChanges[0].message.includes('assigned'), `message: ${statusChanges[0].message}`);
+    });
+
+    it('auto-logs activity with result when task completes', async () => {
+      const task = await createTask();
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'assigned', assignee: 'orchestrator',
+      });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'in_progress',
+      });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'completed', result: 'All tasks completed successfully',
+      });
+
+      const actRes = await request('GET', `/api/orchestrator/tasks/${task.id}/activity`);
+      const actBody = JSON.parse(actRes.body);
+      const completionLog = actBody.data.find(
+        (a: { stage: string; message: string }) => a.stage === 'status_change' && a.message.includes('completed'),
+      );
+      assert.ok(completionLog, 'should have auto-logged completion activity');
+      assert.ok(completionLog.message.includes('All tasks completed'), `message: ${completionLog.message}`);
+    });
+
+    it('auto-logs activity with error when task fails', async () => {
+      const task = await createTask();
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'assigned', assignee: 'orchestrator',
+      });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'in_progress',
+      });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'failed', error: 'Worker crashed unexpectedly',
+      });
+
+      const actRes = await request('GET', `/api/orchestrator/tasks/${task.id}/activity`);
+      const actBody = JSON.parse(actRes.body);
+      const failureLog = actBody.data.find(
+        (a: { stage: string; message: string }) => a.stage === 'status_change' && a.message.includes('failed'),
+      );
+      assert.ok(failureLog, 'should have auto-logged failure activity');
+      assert.ok(failureLog.message.includes('Worker crashed'), `message: ${failureLog.message}`);
+    });
+  });
+
+  // ── Auto-notification to comms on completion (Fix 2) ───────
+
+  describe('Auto-notification to comms on task completion', () => {
+    beforeEach(setup);
+    afterEach(teardown);
+
+    it('sends a message to comms when task completes', async () => {
+      const task = await createTask({ title: 'Deploy feature X' });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'assigned', assignee: 'orchestrator',
+      });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'in_progress',
+      });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'completed', result: 'Feature deployed to staging',
+      });
+
+      // Check the messages table for auto-notification
+      const msgs = query<{ from_agent: string; to_agent: string; type: string; body: string }>(
+        `SELECT from_agent, to_agent, type, body FROM messages WHERE to_agent = 'comms' AND from_agent = 'daemon'`,
+      );
+      assert.ok(msgs.length > 0, 'should have sent a message to comms');
+      const completionMsg = msgs.find(m => m.body.includes('Deploy feature X'));
+      assert.ok(completionMsg, 'message should include task title');
+      assert.ok(completionMsg!.body.includes('Feature deployed to staging'), 'message should include result');
+      assert.equal(completionMsg!.type, 'result');
+    });
+
+    it('sends a message to comms when task fails', async () => {
+      const task = await createTask({ title: 'Run integration tests' });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'assigned', assignee: 'orchestrator',
+      });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'in_progress',
+      });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'failed', error: 'Tests timed out',
+      });
+
+      const msgs = query<{ from_agent: string; to_agent: string; type: string; body: string }>(
+        `SELECT from_agent, to_agent, type, body FROM messages WHERE to_agent = 'comms' AND from_agent = 'daemon'`,
+      );
+      assert.ok(msgs.length > 0, 'should have sent a message to comms on failure');
+      const failureMsg = msgs.find(m => m.body.includes('Run integration tests'));
+      assert.ok(failureMsg, 'message should include task title');
+      assert.ok(failureMsg!.body.includes('Tests timed out'), 'message should include error detail');
+    });
+
+    it('does not send comms message on non-terminal status transitions', async () => {
+      const task = await createTask({ title: 'Background work' });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'assigned', assignee: 'orchestrator',
+      });
+      await request('PUT', `/api/orchestrator/tasks/${task.id}`, {
+        status: 'in_progress',
+      });
+
+      // No completion — check no messages sent
+      const msgs = query<{ id: number }>(
+        `SELECT id FROM messages WHERE to_agent = 'comms' AND from_agent = 'daemon'`,
+      );
+      assert.equal(msgs.length, 0, 'should NOT send comms message for non-terminal transitions');
     });
   });
 });

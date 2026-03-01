@@ -61,6 +61,7 @@ curl -L -o models/voices-v1.0.bin \
 
 ```bash
 source daemon/src/voice/.venv/bin/activate
+pip install soundfile   # required for the manual test below
 python3 - <<'EOF'
 from kokoro_onnx import Kokoro
 import soundfile as sf

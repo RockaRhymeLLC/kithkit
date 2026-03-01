@@ -13,7 +13,7 @@
 
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { query, update } from '../../core/db.js';
+import { query, exec, update } from '../../core/db.js';
 import { resolveProjectPath } from '../../core/config.js';
 import {
   isOrchestratorAlive as _isOrchestratorAlive,
@@ -129,6 +129,77 @@ function buildShutdownPrompt(reason: string): string {
 }
 
 /**
+ * Mark all in_progress and assigned tasks as failed when the orchestrator dies.
+ * Returns count of zombie tasks cleaned up.
+ */
+function cleanupZombieTasks(): number {
+  const ts = new Date().toISOString();
+  const zombies = query<{ id: string; status: string }>(
+    `SELECT id, status FROM orchestrator_tasks WHERE status IN ('in_progress', 'assigned')`,
+  );
+  for (const task of zombies) {
+    exec(
+      `UPDATE orchestrator_tasks SET status = 'failed', error = 'orchestrator_died', completed_at = ?, updated_at = ? WHERE id = ?`,
+      ts, ts, task.id,
+    );
+    // Auto-log activity for each zombie task
+    exec(
+      `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+       VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
+      task.id, `Task failed: orchestrator died while task was ${task.status}`, ts,
+    );
+  }
+  if (zombies.length > 0) {
+    log.warn('Cleaned up zombie tasks after orchestrator death', { count: zombies.length, taskIds: zombies.map(t => t.id) });
+  }
+  return zombies.length;
+}
+
+const PENDING_TIMEOUT_MS = 5 * 60 * 1000;   // 5 minutes
+const STALE_WORK_NOTES_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Warn about tasks that are stale in the queue or have no recent activity.
+ * Runs even when the orchestrator is dead — helps detect zombie tasks.
+ */
+function checkTaskTimeouts(): void {
+  const now = Date.now();
+
+  // Check pending/assigned tasks older than 5 minutes
+  const stalePending = query<{ id: string; title: string; status: string; created_at: string; assigned_at: string | null }>(
+    `SELECT id, title, status, created_at, assigned_at FROM orchestrator_tasks WHERE status IN ('pending', 'assigned')`,
+  );
+  for (const task of stalePending) {
+    const refTime = task.assigned_at ?? task.created_at;
+    const ageMs = now - new Date(refTime).getTime();
+    if (ageMs > PENDING_TIMEOUT_MS) {
+      log.warn('Task stale in queue', {
+        taskId: task.id,
+        title: task.title.slice(0, 80),
+        status: task.status,
+        ageMinutes: Math.round(ageMs / 60000),
+      });
+    }
+  }
+
+  // Check in_progress tasks with no recent work_notes updates
+  const activeTaskRows = query<{ id: string; title: string; updated_at: string; work_notes: string | null }>(
+    `SELECT id, title, updated_at, work_notes FROM orchestrator_tasks WHERE status = 'in_progress'`,
+  );
+  for (const task of activeTaskRows) {
+    const lastUpdate = new Date(task.updated_at).getTime();
+    if (now - lastUpdate > STALE_WORK_NOTES_MS) {
+      log.warn('In-progress task with no recent updates', {
+        taskId: task.id,
+        title: task.title.slice(0, 80),
+        lastUpdateMinutes: Math.round((now - lastUpdate) / 60000),
+        hasWorkNotes: !!task.work_notes,
+      });
+    }
+  }
+}
+
+/**
  * Read the orchestrator's context usage from its separate state file.
  */
 function getOrchestratorContextUsage(): number | null {
@@ -154,6 +225,10 @@ async function run(config: Record<string, unknown>): Promise<void> {
     log.warn('Session dir cleanup failed', { error: String(err) });
   }
 
+  // Check task timeouts on every tick — runs even when orchestrator is dead.
+  // This catches stale/zombie tasks from a dead orchestrator early.
+  checkTaskTimeouts();
+
   // If we previously nudged, check the outcome BEFORE the alive check.
   // The orchestrator may have exited gracefully in response to our nudge —
   // if we check alive first and reset nudge state, we'd never log the graceful exit.
@@ -166,6 +241,8 @@ async function run(config: Record<string, unknown>): Promise<void> {
         event_type: 'session_end',
         details: `Graceful exit after nudge: ${shutdownReason}`,
       });
+      // Clean up any tasks that were left in-progress or assigned
+      cleanupZombieTasks();
       shutdownNudgedAt = null;
       shutdownReason = null;
       return;
@@ -190,6 +267,8 @@ async function run(config: Record<string, unknown>): Promise<void> {
         event_type: 'session_end',
         details: `Force-killed: grace period expired (${shutdownReason})`,
       });
+      // Clean up any tasks that were left in-progress or assigned
+      cleanupZombieTasks();
       shutdownNudgedAt = null;
       shutdownReason = null;
       return;
@@ -199,8 +278,9 @@ async function run(config: Record<string, unknown>): Promise<void> {
     return;
   }
 
-  // Not alive and no pending nudge — nothing to do
+  // Not alive and no pending nudge — check for zombie tasks left behind
   if (!isOrchestratorAlive()) {
+    cleanupZombieTasks();
     return;
   }
 
