@@ -211,6 +211,63 @@ if msgs:
         elapsed=0
       fi
     fi
+    # Message found and processed — skip task check this iteration
+    continue
+  fi
+
+  # ── Check for pending orchestrator tasks (lower priority than messages) ──
+  TASK_RESPONSE=$(curl -s -f "http://localhost:$DAEMON_PORT/api/orchestrator/tasks?status=pending" 2>/dev/null || printf '{"data":[]}')
+  TASK_COUNT=$(printf '%s' "$TASK_RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d.get('data',[])))" 2>/dev/null || printf '0')
+
+  if [ "$TASK_COUNT" -gt "0" ]; then
+    # Extract the first pending task's id, title, and description
+    TASK_PARSED=$(printf '%s' "$TASK_RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+tasks = d.get('data', [])
+if tasks:
+    t = tasks[0]
+    tid = t.get('id', '')
+    title = t.get('title', '')
+    desc = t.get('description', '')
+    print(tid)
+    print(title)
+    sys.stdout.write(desc)
+" 2>/dev/null || printf '')
+
+    if [ -n "$TASK_PARSED" ]; then
+      TASK_ID=$(printf '%s' "$TASK_PARSED" | head -1)
+      TASK_TITLE=$(printf '%s' "$TASK_PARSED" | sed -n '2p')
+      TASK_DESC=$(printf '%s' "$TASK_PARSED" | tail -n +3)
+
+      if [ -n "$TASK_ID" ]; then
+        # Mark task as assigned, then in_progress
+        curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID" \\
+          -H "Content-Type: application/json" \\
+          -d '{"status":"assigned","assignee":"orchestrator"}' || true
+        curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID" \\
+          -H "Content-Type: application/json" \\
+          -d '{"status":"in_progress"}' || true
+
+        # Build a prompt that includes the task ID so the orchestrator can update status
+        TASK_PROMPT="You have a pending orchestrator task to work on.
+
+Task ID: $TASK_ID
+Title: $TASK_TITLE
+
+$TASK_DESC
+
+When you finish this task, update its status:
+  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"completed\",\"result\":\"<summary of what you did>\"}'
+If the task fails:
+  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"failed\",\"result\":\"<what went wrong>\"}'"
+
+        printf '%s' "$TASK_PROMPT" > "$PROMPT_FILE"
+        run_claude "$PROMPT_FILE"
+        # Reset idle timer so we wait the full window for the next task
+        elapsed=0
+      fi
+    fi
   fi
 done
 
