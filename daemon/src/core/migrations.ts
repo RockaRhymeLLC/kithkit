@@ -99,9 +99,11 @@ export function runMigrations(db: Database.Database, migrationsDir?: string): nu
   const dir = migrationsDir ?? getMigrationsDir();
   ensureMigrationsTable(db);
 
-  const currentVersion = getCurrentVersion(db);
+  const applied = new Set(
+    (db.prepare('SELECT version FROM migrations').all() as { version: number }[]).map(r => r.version),
+  );
   const available = discoverMigrations(dir);
-  const pending = available.filter(m => m.version > currentVersion);
+  const pending = available.filter(m => !applied.has(m.version));
 
   if (pending.length === 0) return 0;
 
