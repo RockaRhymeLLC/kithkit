@@ -135,10 +135,12 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
 
   // Route to target
   if (isPersistentAgent(req.to)) {
-    // Direct channel: bypass scheduler and inject immediately
+    // Direct channel: bypass scheduler and inject immediately.
+    // Use body as-is — callers that set direct=true (agent-comms, sdk-bridge)
+    // have already formatted the display text (e.g. "[Agent] R2d2: message").
+    // Applying formatForTmux on top would double-wrap the prefix.
     if (req.direct) {
-      const formatted = formatForTmux(req);
-      const injected = tmuxInjector(req.to, formatted);
+      const injected = tmuxInjector(req.to, req.body);
       if (injected) {
         // Mark as processed — deliver-once, no re-notification
         exec(
