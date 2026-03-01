@@ -291,7 +291,7 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '- Output structured results, not conversational prose',
     '- Spawn workers via POST http://localhost:3847/api/agents/spawn (profiles: research, coding, testing)',
     '- Check worker status via GET http://localhost:3847/api/agents/:id/status',
-    '- Report results to comms via: curl -s -X POST http://localhost:3847/api/messages -H "Content-Type: application/json" -d \'{"from":"orchestrator","to":"comms","type":"result","body":"<your result>"}\'',
+    '- Report results to comms via: curl -s -X POST http://localhost:3847/api/messages -H "Content-Type: application/json" -d \'{"from":"orchestrator","to":"comms","type":"result","body":"<your result>","metadata":{"task_id":"<task-id>"}}\'',
     '- YOU must explicitly mark tasks completed via PUT /api/orchestrator/tasks/<task_id> with status: completed and result: <summary>. The daemon does NOT auto-complete tasks.',
     '- Write work notes as you progress: PUT /api/orchestrator/tasks/<task_id> with work_notes: "<note>" and append_work_notes: true',
     '- If you need help or context, ask comms: POST /api/messages with {from: "orchestrator", to: "comms", type: "question", body: "<what you need>"}',

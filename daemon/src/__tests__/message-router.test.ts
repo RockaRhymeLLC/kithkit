@@ -572,3 +572,86 @@ describe('Direct channel — immediate delivery for persistent agents', () => {
     assert.equal(injected.length, 1);
   });
 });
+
+describe('Auto-complete orchestrator task on result message (#70)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  function createTask(id: string, status: string, createdAt: string): void {
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, status, priority, created_at, updated_at)
+       VALUES (?, ?, ?, 0, ?, ?)`,
+      id, `Task ${id}`, status, createdAt, createdAt,
+    );
+  }
+
+  it('completes in_progress task over newer pending task', () => {
+    // Task A: older, in_progress (should be matched)
+    createTask('task-a', 'in_progress', '2026-01-01T00:00:00Z');
+    // Task B: newer, pending (should NOT be matched)
+    createTask('task-b', 'pending', '2026-01-02T00:00:00Z');
+
+    sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'result',
+      body: 'Result for task A',
+    });
+
+    const taskA = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-a');
+    const taskB = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-b');
+    assert.equal(taskA[0]!.status, 'completed', 'in_progress task should be completed');
+    assert.equal(taskB[0]!.status, 'pending', 'pending task should remain pending');
+  });
+
+  it('matches by metadata.task_id when provided', () => {
+    createTask('task-a', 'in_progress', '2026-01-01T00:00:00Z');
+    createTask('task-b', 'pending', '2026-01-02T00:00:00Z');
+
+    sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'result',
+      body: 'Result for task B',
+      metadata: { task_id: 'task-b' },
+    });
+
+    const taskA = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-a');
+    const taskB = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-b');
+    assert.equal(taskA[0]!.status, 'in_progress', 'task A should remain in_progress');
+    assert.equal(taskB[0]!.status, 'completed', 'task B should be completed via metadata match');
+  });
+
+  it('falls back to FIFO when no in_progress task exists', () => {
+    // Both pending — oldest should be completed first
+    createTask('task-old', 'pending', '2026-01-01T00:00:00Z');
+    createTask('task-new', 'pending', '2026-01-02T00:00:00Z');
+
+    sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'result',
+      body: 'Some result',
+    });
+
+    const taskOld = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-old');
+    const taskNew = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-new');
+    assert.equal(taskOld[0]!.status, 'completed', 'oldest pending task should be completed');
+    assert.equal(taskNew[0]!.status, 'pending', 'newer pending task should remain');
+  });
+
+  it('does not match already-completed tasks', () => {
+    createTask('task-done', 'completed', '2026-01-01T00:00:00Z');
+    createTask('task-active', 'in_progress', '2026-01-02T00:00:00Z');
+
+    sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'result',
+      body: 'New result',
+    });
+
+    const taskActive = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-active');
+    assert.equal(taskActive[0]!.status, 'completed');
+  });
+});

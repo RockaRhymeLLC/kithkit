@@ -202,6 +202,8 @@ echo "---"
 # instead of the hook parsing JSON in bash. Works for all session start types.
 if [ "${CC4ME_QUIET_START:-0}" != "1" ]; then
   TMUX_SOCKET="/private/tmp/tmux-$(id -u)/default"
+  SESSION_NAME=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
+  SESSION_NAME="${SESSION_NAME:-comms1}"
 
   if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
     PROMPT="Session cleared and restored. Review the most recent saved state and follow the Next Steps in order."
