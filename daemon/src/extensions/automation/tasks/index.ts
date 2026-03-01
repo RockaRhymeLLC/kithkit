@@ -11,7 +11,6 @@
 
 import type { Scheduler } from '../../../automation/scheduler.js';
 
-import { register as registerPeerHeartbeat } from './peer-heartbeat.js';
 import { register as registerMemoryConsolidation } from './memory-consolidation.js';
 
 /**
@@ -23,7 +22,6 @@ import { register as registerMemoryConsolidation } from './memory-consolidation.
  */
 export function registerR2Tasks(scheduler: Scheduler): void {
   const registrations: Array<[string, (s: Scheduler) => void]> = [
-    ['peer-heartbeat', registerPeerHeartbeat],
     ['memory-consolidation', registerMemoryConsolidation],
   ];
 
@@ -36,6 +34,5 @@ export function registerR2Tasks(scheduler: Scheduler): void {
 
 /** Task names that have real implementations (used to skip stubs). */
 export const REAL_TASK_NAMES = new Set([
-  'peer-heartbeat',
   'memory-consolidation',
 ]);
