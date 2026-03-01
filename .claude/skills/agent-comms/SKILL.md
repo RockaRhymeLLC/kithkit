@@ -140,6 +140,23 @@ agent-comms:
 - All messages logged as JSONL to `logs/agent-comms.log`
 - Directions: `in` (LAN inbound), `out` (LAN outbound), `relay-in`, `relay-out`
 
+## Canonical P2P Message Schema
+
+All agents MUST use these field names when sending P2P messages:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `from` | string | yes | Sender agent name (lowercase) |
+| `type` | string | yes | Message type: `text`, `status`, `coordination`, `pr-review` |
+| `text` | string | no | Message content body (**canonical field name**) |
+| `timestamp` | string | yes | ISO 8601 timestamp |
+| `messageId` | string | yes | UUID for deduplication |
+
+**Important — field name convention:**
+- Always send message content in the `text` field (not `message`, `body`, or `content`)
+- The receiving daemon accepts `message` as a legacy alias for `text`, but senders MUST use `text`
+- This was standardized in issue #118 after field name mismatches caused empty message delivery
+
 ## Usage Protocol
 
 This protocol governs how and when agents use agent-to-agent comms.
