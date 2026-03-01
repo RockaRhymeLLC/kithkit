@@ -22,16 +22,16 @@ STATE_DIR="$PROJECT_DIR/.claude/state"
 SETTINGS_FILE="$PROJECT_DIR/.claude/settings.json"
 if [ -f "$SETTINGS_FILE" ]; then
   if ! python3 -c "import json, sys; json.load(open(sys.argv[1]))" "$SETTINGS_FILE" 2>/dev/null; then
-    echo "ERROR: .claude/settings.json contains invalid JSON."
-    echo ""
-    echo "  File: $SETTINGS_FILE"
-    echo ""
-    echo "  Common causes:"
-    echo "    - Merge conflict markers (<<<<<<, ======, >>>>>>) left by git stash/merge"
-    echo "    - Trailing commas or missing brackets"
-    echo "    - Manual edits that broke syntax"
-    echo ""
-    echo "  Fix the file and try again."
+    echo "ERROR: .claude/settings.json contains invalid JSON." >&2
+    echo "" >&2
+    echo "  File: $SETTINGS_FILE" >&2
+    echo "" >&2
+    echo "  Common causes:" >&2
+    echo "    - Merge conflict markers (<<<<<<<, =======, >>>>>>>) left by git stash/merge" >&2
+    echo "    - Trailing commas or missing brackets" >&2
+    echo "    - Manual edits that broke syntax" >&2
+    echo "" >&2
+    echo "  Fix the file and restart Claude." >&2
     exit 1
   fi
 fi
