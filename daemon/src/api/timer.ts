@@ -250,10 +250,20 @@ export async function handleTimerRoute(
     return true;
   }
 
-  // GET /api/timers — list all timers
+  // GET /api/timers — list all timers (from DB so completed/expired survive restart)
   if (pathname === '/api/timers' && method === 'GET') {
-    const list = [...timers.values()].map(({ id, session, message, fires_at, created_at, status, fired_at, completed_at }) => ({
-      id, session, message, fires_at, created_at, status, fired_at, completed_at,
+    const rows = query<DbTimerRow>(
+      `SELECT id, session, message, fires_at, created_at, status, fired_at, completed_at FROM timers ORDER BY created_at DESC`,
+    );
+    const list = rows.map(r => ({
+      id: r.id,
+      session: r.session,
+      message: r.message,
+      fires_at: r.fires_at,
+      created_at: r.created_at,
+      status: r.status,
+      fired_at: r.fired_at ?? undefined,
+      completed_at: r.completed_at ?? undefined,
     }));
     json(res, 200, withTimestamp({ timers: list, count: list.length }));
     return true;
