@@ -241,13 +241,18 @@ if tasks:
       TASK_DESC=$(printf '%s' "$TASK_PARSED" | tail -n +3)
 
       if [ -n "$TASK_ID" ]; then
-        # Mark task as assigned, then in_progress
-        curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID" \\
+        # Transition pending → assigned → in_progress (both must succeed)
+        ASSIGN_OK=$(curl -s -w '%{http_code}' -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID" \\
           -H "Content-Type: application/json" \\
-          -d '{"status":"assigned","assignee":"orchestrator"}' || true
-        curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID" \\
-          -H "Content-Type: application/json" \\
-          -d '{"status":"in_progress"}' || true
+          -d '{"status":"assigned","assignee":"orchestrator"}')
+        if [ "$ASSIGN_OK" = "200" ]; then
+          curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID" \\
+            -H "Content-Type: application/json" \\
+            -d '{"status":"in_progress"}' || true
+        else
+          echo "WARN: Failed to assign task $TASK_ID (HTTP $ASSIGN_OK) — skipping" >&2
+          continue
+        fi
 
         # Build a prompt that includes the task ID so the orchestrator can update status
         TASK_PROMPT="You have a pending orchestrator task to work on.
