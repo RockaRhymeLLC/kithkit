@@ -15,7 +15,7 @@ if [ -z "$TMUX_BIN" ]; then
 fi
 
 if session_exists; then
-    exec $TMUX_CMD attach-session -t "$SESSION_NAME"
+    exec $TMUX_CMD attach-session -t "=$SESSION_NAME"
 else
     echo "No active session '$SESSION_NAME'. Start with: ./scripts/start-tmux.sh"
     exit 1
