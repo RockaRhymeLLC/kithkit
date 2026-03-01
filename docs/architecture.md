@@ -239,6 +239,21 @@ Hooks are bash scripts in `.claude/hooks/` that run at specific points in the Cl
 
 Hooks are configured in `.claude/settings.json`.
 
+### Status Line
+
+The `statusLine` setting in `.claude/settings.json` must point to the context monitor script for the context watchdog to function:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/context-monitor-statusline.sh"
+  }
+}
+```
+
+This script writes context usage data to `.claude/state/context-usage.json` (and `-orch.json` / `-other.json` for orchestrator/worker sessions). The `context-watchdog` scheduler task reads these files to issue proactive warnings before context limits are hit.
+
 ### State Files
 
 Kithkit uses two layers of state persistence:
@@ -325,7 +340,7 @@ The `scripts/` directory provides session management and operational utilities.
 | `dashboard.sh` | Live ops dashboard (tasks, usage, memory counts) |
 | `backup.sh` | Manual backup of state and database |
 | `repo-audit.sh` | Audit repository for uncommitted changes |
-| `context-monitor-statusline.sh` | Output context usage for tmux status bar |
+| `context-monitor-statusline.sh` | Write context usage JSON for the watchdog and tmux status bar |
 | `daemon-smoke-test.sh` | Integration smoke test against running daemon |
 
 ### Shared Library
