@@ -11,6 +11,7 @@ import { parseInterval, type TaskScheduleConfig } from '../core/config.js';
 import { runTask, type TaskResult } from './task-runner.js';
 import { registerCoreTasks, loadExternalTasks, type LoadResult } from './tasks/index.js';
 import { createLogger } from '../core/logger.js';
+import { exec as dbExec, query } from '../core/db.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -374,25 +375,48 @@ export class Scheduler {
     try {
       await handler({ taskName: task.name, config: task.config });
       const durationMs = Date.now() - start;
-      return {
+      const finishedAt = new Date().toISOString();
+
+      // Persist to DB (same pattern as runTask in task-runner.ts)
+      dbExec(
+        'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
+        task.name, 'success', 'In-process handler completed', durationMs, startedAt, finishedAt,
+      );
+      const rows = query<TaskResult>(
+        'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
+        task.name,
+      );
+      return rows[0] ?? {
         id: 0,
         task_name: task.name,
         status: 'success',
         output: 'In-process handler completed',
         duration_ms: durationMs,
         started_at: startedAt,
-        finished_at: new Date().toISOString(),
+        finished_at: finishedAt,
       };
     } catch (err) {
       const durationMs = Date.now() - start;
-      return {
+      const finishedAt = new Date().toISOString();
+      const output = err instanceof Error ? err.message : String(err);
+
+      // Persist to DB
+      dbExec(
+        'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
+        task.name, 'failure', output, durationMs, startedAt, finishedAt,
+      );
+      const rows = query<TaskResult>(
+        'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
+        task.name,
+      );
+      return rows[0] ?? {
         id: 0,
         task_name: task.name,
         status: 'failure',
-        output: err instanceof Error ? err.message : String(err),
+        output,
         duration_ms: durationMs,
         started_at: startedAt,
-        finished_at: new Date().toISOString(),
+        finished_at: finishedAt,
       };
     }
   }

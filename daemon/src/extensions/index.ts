@@ -283,7 +283,7 @@ function registerR2HealthChecks(): void {
 const R2_TASK_HANDLERS = [
   'health-check',
   'memory-consolidation',
-  'peer-heartbeat',
+
   'weekly-progress-report',
 ] as const;
 
