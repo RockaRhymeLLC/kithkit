@@ -133,31 +133,42 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
     }
   }
 
-  // Route to target
-  if (isPersistentAgent(req.to)) {
-    // Direct channel: bypass scheduler and inject immediately
-    if (req.direct) {
-      const formatted = formatForTmux(req);
-      const injected = tmuxInjector(req.to, formatted);
-      if (injected) {
-        // Mark as processed — deliver-once, no re-notification
-        exec(
-          'UPDATE messages SET processed_at = ? WHERE id = ?',
-          new Date().toISOString(), message.id,
-        );
-        return { messageId: message.id, delivered: true };
+  // Route to target — wrapped in try/catch so routing failures never
+  // bubble up as 500s.  The message is already persisted; delivery
+  // failures are non-fatal and can be retried by the scheduler.
+  try {
+    if (isPersistentAgent(req.to)) {
+      // Direct channel: bypass scheduler and inject immediately
+      if (req.direct) {
+        const formatted = formatForTmux(req);
+        const injected = tmuxInjector(req.to, formatted);
+        if (injected) {
+          // Mark as processed — deliver-once, no re-notification
+          exec(
+            'UPDATE messages SET processed_at = ? WHERE id = ?',
+            new Date().toISOString(), message.id,
+          );
+          return { messageId: message.id, delivered: true };
+        }
+        // Injection failed (session not alive) — fall through to normal delivery
       }
-      // Injection failed (session not alive) — fall through to normal delivery
-    }
 
-    // Queue for delivery — the message-delivery scheduler task handles tmux injection.
-    // Trigger the task immediately so delivery doesn't wait for the next interval tick.
-    notifyNewMessage();
+      // Queue for delivery — the message-delivery scheduler task handles tmux injection.
+      // Trigger the task immediately so delivery doesn't wait for the next interval tick.
+      notifyNewMessage();
+      return { messageId: message.id, delivered: false };
+    }
+    // Workers pull their own messages — no active delivery needed
+
+    return { messageId: message.id, delivered: true };
+  } catch (err) {
+    log.warn('Message routing failed after storage — delivery will be retried', {
+      messageId: message.id,
+      to: req.to,
+      error: err instanceof Error ? err.message : String(err),
+    });
     return { messageId: message.id, delivered: false };
   }
-  // Workers pull their own messages — no active delivery needed
-
-  return { messageId: message.id, delivered: true };
 }
 
 /**
