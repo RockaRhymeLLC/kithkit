@@ -87,6 +87,34 @@ export function estTimestamp(): string {
   }) + ']';
 }
 
+// ── Comms session constant ────────────────────────────────
+
+/**
+ * The comms agent tmux session. ALL external/inbound messages
+ * (A2A, agent-comms, Telegram, etc.) MUST be injected here.
+ * Only the comms agent talks to humans.
+ */
+export const COMMS_SESSION = 'comms1';
+
+/**
+ * Inject text into the comms agent session (comms1).
+ * Use this for ALL external/inbound messages to guarantee they
+ * always reach comms, regardless of config changes.
+ */
+export function injectToComms(
+  text: string,
+  options?: { pressEnter?: boolean; timestamp?: boolean },
+): boolean {
+  return injectText(text, { ...options, name: COMMS_SESSION });
+}
+
+/**
+ * Check if the comms agent session exists.
+ */
+export function commsSessionExists(): boolean {
+  return sessionExists(COMMS_SESSION);
+}
+
 // ── Public API ──────────────────────────────────────────────
 
 /**
@@ -96,7 +124,7 @@ export function estTimestamp(): string {
 export function sessionExists(name?: string): boolean {
   const session = validateSessionName(name ?? getDefaultSessionName());
   try {
-    execFileSync(getTmuxPath(), ['has-session', '-t', session], {
+    execFileSync(getTmuxPath(), ['has-session', '-t', `=${session}`], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     return true;
@@ -112,7 +140,7 @@ export function sessionExists(name?: string): boolean {
 export function capturePane(name?: string): string {
   const session = validateSessionName(name ?? getDefaultSessionName());
   try {
-    return execFileSync(getTmuxPath(), ['capture-pane', '-t', session, '-p'], {
+    return execFileSync(getTmuxPath(), ['capture-pane', '-t', `${session}:`, '-p'], {
       encoding: 'utf8',
       stdio: ['pipe', 'pipe', 'pipe'],
     });
@@ -158,7 +186,7 @@ export function injectText(
   const stamped = addTimestamp ? `${estTimestamp()} ${text}` : text;
 
   try {
-    execFileSync(tmux, ['send-keys', '-t', session, '-l', stamped], {
+    execFileSync(tmux, ['send-keys', '-t', `${session}:`, '-l', stamped], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
@@ -168,7 +196,7 @@ export function injectText(
       const MAX_ENTER_ATTEMPTS = 3;
       const ENTER_DELAYS = [300, 500, 800];
       for (let attempt = 1; attempt <= MAX_ENTER_ATTEMPTS; attempt++) {
-        execFileSync(tmux, ['send-keys', '-t', session, 'Enter'], {
+        execFileSync(tmux, ['send-keys', '-t', `${session}:`, 'Enter'], {
           stdio: ['pipe', 'pipe', 'pipe'],
         });
 

@@ -181,7 +181,6 @@ export async function vectorSearch(
   interface MemRow {
     id: number;
     content: string;
-    type: string;
     category: string | null;
     tags: string;
     source: string | null;
@@ -189,7 +188,7 @@ export async function vectorSearch(
   }
 
   const memories = db.prepare(
-    `SELECT id, content, type, category, tags, source, created_at FROM memories WHERE id IN (${memPlaceholders})`,
+    `SELECT id, content, category, tags, source, created_at FROM memories WHERE id IN (${memPlaceholders})`,
   ).all(...memoryIds) as MemRow[];
 
   const memMap = new Map(memories.map(m => [m.id, m]));
@@ -208,7 +207,7 @@ export async function vectorSearch(
       return {
         id: mem.id,
         content: mem.content,
-        type: mem.type,
+        type: mem.category ?? 'fact',
         category: mem.category,
         tags: JSON.parse(mem.tags || '[]'),
         source: mem.source,
@@ -304,13 +303,13 @@ function keywordSearch(queryText: string, limit: number): Promise<KeywordResult[
   const scoreParams = words.map(w => `%${w}%`);
 
   interface MemRow {
-    id: number; content: string; type: string;
+    id: number; content: string;
     category: string | null; tags: string; source: string | null;
     created_at: string; kw_score: number;
   }
 
   const sql = `
-    SELECT id, content, type, category, tags, source, created_at,
+    SELECT id, content, category, tags, source, created_at,
            (${scoreExpr}) as kw_score
     FROM memories
     WHERE ${conditions.join(' OR ')}
@@ -321,7 +320,7 @@ function keywordSearch(queryText: string, limit: number): Promise<KeywordResult[
   const rows = query<MemRow>(sql, ...params, ...scoreParams, limit);
 
   return Promise.resolve(rows.map(r => ({
-    id: r.id, content: r.content, type: r.type, category: r.category,
+    id: r.id, content: r.content, type: r.category ?? 'fact', category: r.category,
     tags: JSON.parse(r.tags || '[]'), source: r.source,
     score: r.kw_score, distance: 0, created_at: r.created_at,
   })));

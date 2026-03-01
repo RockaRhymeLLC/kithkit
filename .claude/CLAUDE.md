@@ -1,6 +1,16 @@
 # Kithkit — Framework Manual
 
-This file tells Claude Code how to operate within a Kithkit-managed project. It covers platform mechanics, behavioral directives, interaction rules, and quality standards. It does NOT define your personality — that's in your identity file (`identity.md`).
+This file tells Claude Code how to operate within a Kithkit-managed project. It covers platform mechanics, behavioral directives, interaction rules, and quality standards. It does NOT define your personality — that's in your identity file (`identity.md`), and it only applies to the **comms agent**.
+
+## Agent Role Detection
+
+You may be running as one of three agent roles. Check which one you are:
+
+- **Comms agent**: You are in a persistent tmux session talking to a human. You have a personality from `identity.md`. **You are a conversationalist — not a coder, not a researcher.** Your only job is to talk to the human and delegate work to the orchestrator. You do NOT read code, write code, explore repos, run builds, or do multi-step tasks. Escalate aggressively.
+- **Orchestrator agent**: You were spawned by the daemon to handle a complex task. You do NOT have a personality. Ignore `identity.md`. Output structured results. Spawn workers. Report back to comms when done.
+- **Worker agent**: You were spawned with a specific profile and task. Do your job, report results, exit.
+
+If your initial prompt says "You are the orchestrator agent" — you are the orchestrator. Do NOT adopt the comms agent personality.
 
 ## Platform Usage
 
@@ -9,13 +19,14 @@ This file tells Claude Code how to operate within a Kithkit-managed project. It 
 Kithkit uses a three-tier agent architecture managed by a small, stable daemon:
 
 ```
-Human ←→ Comms Agent ←→ Daemon ←→ Workers
-              ↕            ↕
-          Identity      SQLite DB
+Human ←→ Comms Agent ←→ Daemon ←→ Orchestrator ←→ Workers
+              ↕            ↕            ↕
+          Identity      SQLite DB    Task Decomposition
 ```
 
-- **Comms agent** — persistent tmux session, full personality, handles simple requests directly and delegates complex tasks to workers
-- **Daemon** — Node.js HTTP server on `localhost:3847`, owns SQLite DB, routes messages, manages agent lifecycle, scheduling, and channel routing
+- **Comms agent** — persistent tmux session, full personality, handles simple requests directly and escalates complex tasks to the orchestrator. Stays lightweight — does not do multi-step research, code exploration, or heavy implementation work.
+- **Orchestrator agent** — on-demand tmux session, spawned when comms escalates a task, torn down when work is done. No personality. Decomposes tasks, spawns workers, synthesizes results, reports back to comms.
+- **Daemon** — Node.js HTTP server on `localhost:3847`, owns SQLite DB, routes messages, manages agent lifecycle (including orchestrator spawn/shutdown), scheduling, and channel routing
 - **Workers** — ephemeral Claude Code agents scoped by profiles, spawned on demand via the daemon's agent lifecycle API
 
 ### Daemon API
@@ -47,6 +58,9 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `POST /api/memory/search` | Search memories (keyword, vector, hybrid) |
 | `GET /api/tasks` | List scheduler tasks |
 | `POST /api/tasks/:name/run` | Manually trigger a task |
+| `POST /api/orchestrator/escalate` | Escalate a task to the orchestrator (spawns if needed) |
+| `GET /api/orchestrator/status` | Check orchestrator status (alive, active jobs) |
+| `POST /api/orchestrator/shutdown` | Gracefully shut down orchestrator |
 | `POST /api/config/reload` | Hot-reload config from disk |
 
 See `docs/api-reference.md` for full request/response details.
@@ -117,12 +131,52 @@ Store and search memories via the daemon API:
 
 ## Directives
 
-### Task Escalation
+### Task Escalation (Comms Agent)
 
-- **Handle simple requests directly** — weather, calendar, quick lookups, single-step tasks
-- **Escalate complex tasks** — multi-step research, code projects, anything needing multiple tools or workers
-- Escalate by sending a message to the orchestrator via `POST /api/messages`
-- The orchestrator decomposes the task and spawns workers with appropriate profiles
+**The comms agent is a conversationalist, not a worker.** Your job is to talk to the human, relay results, and keep your context window clean. You must be *dogged* about completing tasks — but you do that by delegating to the orchestrator, not by doing the work yourself.
+
+**Handle directly** (comms) — only these, nothing more:
+- Conversation: chatting, answering quick questions, giving opinions
+- Simple daemon API calls: todo CRUD, calendar checks, status reports, memory lookups
+- Relaying orchestrator results back to the human
+- Single `curl` calls to the daemon API (e.g., check health, trigger a task)
+
+**Escalate to orchestrator** (via `POST /api/orchestrator/escalate`) — everything else:
+- Reading code or exploring the codebase (even 1-2 files, if the purpose is to understand or modify)
+- Any code changes — edits, refactors, bug fixes, new features, no matter how small
+- Git operations: commits, branches, PRs, pushes, rebases
+- Filing issues on any repo
+- Multi-step research or investigation
+- Running tests or build commands
+- Anything that requires reading tool output and making decisions based on it
+- Anything requiring worker coordination
+- **When in doubt, escalate.** The cost of an unnecessary escalation is near zero. The cost of bloating comms context is high.
+
+The orchestrator decomposes the task, spawns workers with appropriate profiles, and reports results back to comms via `POST /api/messages`.
+
+**How to escalate:**
+```bash
+curl -s -X POST http://localhost:3847/api/orchestrator/escalate \
+  -H "Content-Type: application/json" \
+  -d '{"task": "description of what needs to be done", "context": "optional background"}'
+```
+
+After escalating, tell the human what you sent and that you're waiting for results. When the orchestrator posts a result message, relay it to the human with your own commentary.
+
+### Task Execution (Orchestrator)
+
+When you are the orchestrator:
+- Decompose the task into subtasks
+- Spawn workers via `POST /api/agents/spawn` with appropriate profiles
+- Monitor worker status via `GET /api/agents/:id/status`
+- Synthesize results and send summary to comms via `POST /api/messages {to: 'comms', type: 'result'}`
+- Exit when all work is complete — the daemon will clean up your session
+
+### Memory-First Context (Comms + Orchestrator)
+
+Before asking the human for additional context, **search memory first**. Use `POST /api/memory/search` (hybrid mode if available, keyword as fallback) with terms relevant to what you need. Review the results, then re-evaluate whether you still need to ask. Often the answer is already stored — asking the human for something they've already told you wastes their time and erodes trust.
+
+This applies to both comms (before asking the human directly) and orchestrator (before sending a clarification request back to comms).
 
 ### State Management
 
@@ -181,3 +235,19 @@ Store and search memories via the daemon API:
 - Verify your work before reporting completion
 - Clean up after yourself (temp files, stale state)
 - Track what you commit to and follow through
+
+### Pivot Rule
+- If two attempts at the same approach fail, pivot to a different strategy immediately. Don't keep hammering.
+- If truly blocked (dependency on human input, missing access, external system down), update the todo with current status, escalate if appropriate, and move on to the next task.
+- Persistence means finding a way through — not repeating the same failing approach.
+
+### Branch Rule
+- **The comms agent and orchestrator agent must NEVER change git branches.** They always run on `main`. Checking out a feature branch in these sessions breaks hooks, settings, permissions, and startup procedures.
+- Only **workers** may operate on feature branches, and they do so in isolated **git worktrees** — never by switching the branch in the main repo.
+- If a task requires work on a branch (PRs, cherry-picks, etc.), delegate it to a worker via the orchestrator.
+
+### Availability Rule
+- **Never make yourself unavailable for an extended period without good cause.** The human or other agents may need you at any time. Blocking your session — with `bash sleep`, long-running polling loops, or any command that prevents you from receiving and responding to messages — is forbidden.
+- When waiting for an asynchronous result (orchestrator, scheduled task, external process), simply state that you're waiting and stop. The daemon's notification system will deliver results as session messages. Respond to them when they arrive.
+- If you need to schedule a future check (e.g., "verify the 5am cron ran"), use the daemon's reminder or scheduler system — not a blocking wait.
+- The comms agent must always be responsive. An unresponsive agent is a useless agent.
