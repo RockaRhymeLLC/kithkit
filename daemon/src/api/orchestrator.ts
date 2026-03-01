@@ -289,7 +289,7 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '- Output structured results, not conversational prose',
     '- Spawn workers via POST http://localhost:3847/api/agents/spawn (profiles: research, coding, testing)',
     '- Check worker status via GET http://localhost:3847/api/agents/:id/status',
-    '- Report results to comms via: curl -s -X POST http://localhost:3847/api/messages -H "Content-Type: application/json" -d \'{"from":"orchestrator","to":"comms","type":"result","body":"<your result>"}\'',
+    '- Report results to comms via: curl -s -X POST http://localhost:3847/api/messages -H "Content-Type: application/json" -d \'{"from":"orchestrator","to":"comms","type":"result","body":"<your result>","metadata":{"task_id":"<task-id>"}}\'',
     '- When a task is complete, send a result message to comms and wait for the next task',
     '- If the daemon sends you a shutdown nudge (idle timeout), wrap up gracefully: send any unsent context to comms, then exit',
     '- Do not interact with the human directly — only comms talks to humans',
