@@ -242,9 +242,11 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - Persistence means finding a way through — not repeating the same failing approach.
 
 ### Branch Rule
-- **The comms agent and orchestrator agent must NEVER change git branches.** They always run on `main`. Checking out a feature branch in these sessions breaks hooks, settings, permissions, and startup procedures.
+- **The comms agent AND the orchestrator agent must NEVER change git branches.** Both always run on `main`. Switching branches in these sessions breaks hooks, settings, permissions, and startup procedures.
+- **Forbidden commands** (comms + orchestrator): `git checkout <branch>`, `git checkout -b <branch>`, `git switch <branch>`, `git switch -c <branch>`. These move `HEAD` off `main`.
+- **Allowed** (comms + orchestrator): `git push origin <branch>` (pushes without switching), `gh pr create`, `gh pr merge`, `git pull origin main`. These are safe — HEAD stays on `main`.
 - Only **workers** may operate on feature branches, and they do so in isolated **git worktrees** — never by switching the branch in the main repo.
-- If a task requires work on a branch (PRs, cherry-picks, etc.), delegate it to a worker via the orchestrator.
+- If a task requires work on a branch (PRs, cherry-picks, new features), delegate it to a worker via `POST /api/agents/spawn`.
 
 ### Availability Rule
 - **Never make yourself unavailable for an extended period without good cause.** The human or other agents may need you at any time. Blocking your session — with `bash sleep`, long-running polling loops, or any command that prevents you from receiving and responding to messages — is forbidden.
