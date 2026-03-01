@@ -21,7 +21,7 @@ PROMPT=$(echo "$INPUT" | /usr/bin/jq -r '.prompt // empty')
 if [[ "$PROMPT" == "[Agent]"* ]] || [[ "$PROMPT" == "[Network]"* ]]; then
   # Agent-to-agent messages: set to terminal so responses don't forward to Telegram
   echo "terminal" > "$CHANNEL_FILE"
-elif [[ "$PROMPT" == "[Telegram]"* ]] || [[ "$PROMPT" == "[3rdParty][Telegram]"* ]] || [[ "$PROMPT" == "[Voice]"* ]]; then
+elif [[ "$PROMPT" == "[Telegram"* ]] || [[ "$PROMPT" == "[3rdParty][Telegram"* ]] || [[ "$PROMPT" == "[Voice]"* ]]; then
   # Keep verbose if already in verbose mode
   if [ "$CURRENT" = "telegram-verbose" ]; then
     echo "telegram-verbose" > "$CHANNEL_FILE"
