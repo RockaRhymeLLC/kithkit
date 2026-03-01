@@ -30,6 +30,7 @@ export interface AgentMessage {
   from: string;
   type: string;
   text?: string;
+  message?: string;  // legacy alias for 'text', accepted for backwards compat
   timestamp: string;
   messageId: string;
   status?: string;
@@ -77,6 +78,18 @@ export function getDisplayName(agentId: string, config?: BmoConfig | null): stri
     }
   }
   return agentId.charAt(0).toUpperCase() + agentId.slice(1);
+}
+
+/**
+ * Normalize incoming message: prefer 'text', fall back to 'message' (legacy alias).
+ * Mutates the message in place for downstream consistency.
+ */
+function normalizeMessageText(msg: AgentMessage): void {
+  if (!msg.text && msg.message) {
+    msg.text = msg.message;
+  }
+  // Clean up legacy field so downstream code only sees 'text'
+  delete msg.message;
 }
 
 // ── Message Formatting ────────────────────────────────────────
@@ -206,6 +219,7 @@ export async function handleAgentMessage(
   }
 
   const msg = body as AgentMessage;
+  normalizeMessageText(msg);  // prefer 'text', fall back to 'message' (legacy alias)
 
   // Status pings are liveness checks only — do not store or inject
   if (msg.type === 'status') {
