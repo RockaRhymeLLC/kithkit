@@ -10,7 +10,7 @@
 
 import { insert, query, exec } from '../core/db.js';
 import { injectMessage } from './tmux.js';
-import { notifyNewMessage } from '../automation/tasks/message-delivery.js';
+import { notifyNewMessage, recordDirectInjection } from '../automation/tasks/message-delivery.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('message-router');
@@ -140,11 +140,16 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
       const formatted = formatForTmux(req);
       const injected = tmuxInjector(req.to, formatted);
       if (injected) {
-        // Mark as processed — deliver-once, no re-notification
+        // Mark as processed AND read — the full content was already displayed
+        // in the tmux session, so no follow-up notification is needed.
+        const now = new Date().toISOString();
         exec(
-          'UPDATE messages SET processed_at = ? WHERE id = ?',
-          new Date().toISOString(), message.id,
+          'UPDATE messages SET processed_at = ?, read_at = ? WHERE id = ?',
+          now, now, message.id,
         );
+        // Tell the heartbeat dedup that comms was just notified, so it
+        // doesn't fire a redundant "[heartbeat] N unread messages" nudge.
+        recordDirectInjection(req.to);
         return { messageId: message.id, delivered: true };
       }
       // Injection failed (session not alive) — fall through to normal delivery

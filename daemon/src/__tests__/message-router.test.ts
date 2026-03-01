@@ -466,7 +466,7 @@ describe('Direct channel — immediate delivery for persistent agents', () => {
   beforeEach(setup);
   afterEach(teardown);
 
-  it('direct=true injects immediately and sets processed_at', () => {
+  it('direct=true injects immediately and sets processed_at and read_at', () => {
     const injected: { session: string; text: string }[] = [];
     _setTmuxInjectorForTesting((session, text) => {
       injected.push({ session, text });
@@ -485,10 +485,11 @@ describe('Direct channel — immediate delivery for persistent agents', () => {
     assert.equal(injected.length, 1);
     assert.ok(injected[0].text.includes('Quick question about the spec'));
 
-    // Message should be marked as processed
+    // Message should be marked as processed AND read (full content was displayed)
     const messages = query<Message>('SELECT * FROM messages WHERE id = ?', result.messageId);
     assert.equal(messages.length, 1);
     assert.ok(messages[0].processed_at, 'processed_at should be set for direct delivery');
+    assert.ok(messages[0].read_at, 'read_at should be set — content was already displayed in tmux');
   });
 
   it('direct=true falls back to queued delivery if injection fails', () => {
