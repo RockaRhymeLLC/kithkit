@@ -154,6 +154,118 @@ describe('Orchestrator idle: graceful exit logging', () => {
   });
 });
 
+describe('Orchestrator idle: zombie task cleanup', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = setupTestEnv();
+  });
+
+  afterEach(() => {
+    cleanupTestEnv(tmpDir);
+  });
+
+  it('marks in_progress tasks as failed when orchestrator dies after nudge', async () => {
+    // Insert an in_progress task
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('zombie-task-1', 'In-progress task', null, 'in_progress', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    // Simulate: nudge was sent, orchestrator has since exited
+    _setNudgeStateForTesting(Date.now() - 10_000, 'idle timeout');
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => { throw new Error('should not be called'); },
+      injectMessage: () => { throw new Error('should not be called'); },
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    // Task should now be failed
+    const tasks = query<{ id: string; status: string; error: string }>(
+      `SELECT id, status, error FROM orchestrator_tasks WHERE id = 'zombie-task-1'`,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]!.status, 'failed', 'zombie task should be marked failed');
+    assert.equal(tasks[0]!.error, 'orchestrator_died', 'error should indicate orchestrator death');
+  });
+
+  it('marks assigned tasks as failed when orchestrator is dead with no nudge', async () => {
+    // Insert an assigned task
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, assignee, priority, created_at, updated_at)
+       VALUES ('zombie-task-2', 'Assigned task', null, 'assigned', 'orchestrator', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const tasks = query<{ id: string; status: string; error: string }>(
+      `SELECT id, status, error FROM orchestrator_tasks WHERE id = 'zombie-task-2'`,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]!.status, 'failed', 'assigned zombie task should be marked failed');
+    assert.equal(tasks[0]!.error, 'orchestrator_died');
+  });
+
+  it('logs activity for each zombie task cleaned up', async () => {
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('zombie-task-3', 'Another zombie', null, 'in_progress', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const activity = query<{ task_id: string; stage: string; message: string }>(
+      `SELECT task_id, stage, message FROM orchestrator_task_activity WHERE task_id = 'zombie-task-3'`,
+    );
+    assert.ok(activity.length > 0, 'should have logged activity for zombie task');
+    assert.equal(activity[0]!.stage, 'cleanup');
+    assert.ok(activity[0]!.message.includes('orchestrator died'), `message: ${activity[0]!.message}`);
+  });
+
+  it('does not touch completed or failed tasks during zombie cleanup', async () => {
+    // Insert a completed task — should remain completed
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, status, priority, created_at, updated_at)
+       VALUES ('completed-task-1', 'Already done', 'completed', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const tasks = query<{ status: string }>(
+      `SELECT status FROM orchestrator_tasks WHERE id = 'completed-task-1'`,
+    );
+    assert.equal(tasks[0]!.status, 'completed', 'completed task should not be touched by zombie cleanup');
+  });
+});
+
 describe('Orchestrator idle: liveness check', () => {
   let tmpDir: string;
 
