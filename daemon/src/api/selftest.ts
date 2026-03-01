@@ -210,22 +210,30 @@ async function checkGit(): Promise<CheckOutcome> {
     issues.push('git user.email not configured');
   }
 
-  // Check SSH keys — exit code 0 = keys loaded, 1 = agent running but no keys,
-  // anything else (agent not running, etc.) = warn but don't hard-fail
-  try {
-    await execFileAsync('ssh-add', ['-l'], { timeout: 5000 });
-    // exit code 0 — keys are loaded
-  } catch (err) {
-    // ssh-add -l exits 1 when no identities, which execFileAsync treats as an error
-    const errObj = err as NodeJS.ErrnoException & { code?: number | string };
-    // code 1 from ssh-add means "no identities" — still fail
-    issues.push('No SSH keys loaded (ssh-add -l returned no identities)');
+  // SSH key check — only meaningful when SSH_AUTH_SOCK is set.
+  // The daemon process (launchd) does not inherit the user's SSH agent;
+  // workers run in tmux sessions that do. Skip when no agent socket is present.
+  const sshNote: string[] = [];
+  if (process.env.SSH_AUTH_SOCK) {
+    try {
+      await execFileAsync('ssh-add', ['-l'], { timeout: 5000 });
+      // exit code 0 — keys are loaded
+    } catch {
+      sshNote.push('SSH agent running but no keys loaded (ssh-add -l)');
+    }
   }
+  // SSH_AUTH_SOCK absent = daemon running without agent (e.g. launchd) — skip silently
 
-  if (issues.length === 0) {
-    return { status: 'pass', message: 'git user config and SSH keys OK' };
+  const allIssues = [...issues, ...sshNote];
+  if (allIssues.length === 0) {
+    return { status: 'pass', message: 'git user config OK' };
   }
-  return { status: 'fail', message: issues.join('; ') };
+  // Only fail if git config is missing; SSH issues are informational
+  const hardFails = issues; // git config issues
+  if (hardFails.length > 0) {
+    return { status: 'fail', message: allIssues.join('; ') };
+  }
+  return { status: 'pass', message: `git user config OK (note: ${sshNote.join('; ')})` };
 }
 
 /** 11. channel_router — list registered channel adapters. */
