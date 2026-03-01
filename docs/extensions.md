@@ -8,10 +8,12 @@ An extension is a single TypeScript module that exports an object implementing t
 
 Extensions are registered in your project's daemon entry point (`daemon/src/main.ts` or equivalent), before the daemon starts listening.
 
+> **Import paths**: All code examples use relative imports from within `daemon/src/`. Agent repos extend the daemon by adding files to the daemon source tree (typically in an `extensions/` subdirectory) and using a `bootstrap.ts` entry point.
+
 ## The Extension Interface
 
 ```typescript
-// From kithkit/daemon/core/extensions.ts
+// From daemon/src/core/extensions.ts
 export interface Extension {
   /** Human-readable name for logging. */
   name: string;
@@ -41,7 +43,7 @@ All three methods are optional. Implement only the ones you need.
 
 ```typescript
 // extensions/my-agent/index.ts
-import type { Extension } from 'kithkit/daemon';
+import type { Extension } from '../../core/extensions.js';
 
 export default {
   name: 'my-agent',
@@ -54,7 +56,7 @@ export default {
 
 ## Registering Custom Routes
 
-Use `registerRoute(pattern, handler)` from `kithkit/daemon/core/route-registry` to add HTTP endpoints. Routes are checked in registration order; the first match wins.
+Use `registerRoute(pattern, handler)` from `core/route-registry.ts` to add HTTP endpoints. Routes are checked in registration order; the first match wins.
 
 **Pattern types:**
 - Exact path: `'/my-ext/status'` — matches only that path
@@ -74,7 +76,7 @@ type RouteHandler = (
 **Example — status endpoint:**
 
 ```typescript
-import { registerRoute } from 'kithkit/daemon/core/route-registry';
+import { registerRoute } from '../../core/route-registry.js';
 
 registerRoute('/my-ext/status', async (req, res) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -163,7 +165,7 @@ curl -X POST http://localhost:3847/api/tasks/my-custom-task/run
 Extensions can add custom health checks that appear in `GET /status/extended`.
 
 ```typescript
-import { registerCheck } from 'kithkit/daemon/core/extended-status';
+import { registerCheck } from '../../core/extended-status.js';
 
 registerCheck('my-service', async () => {
   try {
@@ -193,9 +195,10 @@ All checks run when `GET /status/extended` is called. If any check returns `ok: 
 ```typescript
 // extensions/my-agent/index.ts
 import http from 'node:http';
-import type { Extension, KithkitConfig } from 'kithkit/daemon';
-import { registerRoute } from 'kithkit/daemon/core/route-registry';
-import { registerCheck } from 'kithkit/daemon/core/extended-status';
+import type { Extension } from '../../core/extensions.js';
+import type { KithkitConfig } from '../../core/config.js';
+import { registerRoute } from '../../core/route-registry.js';
+import { registerCheck } from '../../core/extended-status.js';
 
 // Internal state
 let _initialized = false;
@@ -267,7 +270,7 @@ If your extension reads custom config keys, use TypeScript module augmentation t
 // extensions/my-agent/config-ext.ts
 
 // Augment the KithkitConfig interface to include your extension's config
-declare module 'kithkit/daemon/core/config' {
+declare module '../../core/config.js' {
   interface KithkitConfig {
     my_agent?: {
       api_url: string;
@@ -280,7 +283,7 @@ declare module 'kithkit/daemon/core/config' {
 Then in your extension:
 
 ```typescript
-import type { KithkitConfig } from 'kithkit/daemon';
+import type { KithkitConfig } from '../../core/config.js';
 import './config-ext.js'; // import to apply augmentation
 
 async onInit(config: KithkitConfig) {
@@ -303,21 +306,21 @@ my_agent:
 In your project's daemon entry point, register before the daemon starts listening:
 
 ```typescript
-// my-project/daemon/main.ts
-import { registerExtension } from 'kithkit/daemon';
+// my-project/daemon/src/bootstrap.ts
+import { registerExtension } from './core/extensions.js';
 import myExtension from '../extensions/my-agent/index.js';
 
 registerExtension(myExtension);
 
 // Start the daemon (framework handles the rest)
-import 'kithkit/daemon/main.js';
+import './main.js';
 ```
 
 **Important**: Only one extension can be registered per daemon instance. If you have multiple sub-modules, aggregate them in a single extension object:
 
 ```typescript
 // extensions/index.ts
-import type { Extension } from 'kithkit/daemon';
+import type { Extension } from '../../core/extensions.js';
 import { initEmailModule } from './email.js';
 import { initCalendarModule } from './calendar.js';
 import { initWebhookModule } from './webhook.js';
@@ -368,13 +371,13 @@ For unit testing, the extension system provides reset helpers:
 import {
   registerExtension,
   _resetExtensionForTesting,
-} from 'kithkit/daemon/core/extensions';
+} from '../../core/extensions.js';
 import {
   _resetRoutesForTesting,
-} from 'kithkit/daemon/core/route-registry';
+} from '../../core/route-registry.js';
 import {
   _resetForTesting as _resetExtendedStatus,
-} from 'kithkit/daemon/core/extended-status';
+} from '../../core/extended-status.js';
 
 beforeEach(() => {
   _resetExtensionForTesting();
