@@ -76,6 +76,7 @@ export async function handleMessagesRoute(
         json(res, 200, withTimestamp({
           messageId: result.messageId,
           delivered: result.delivered,
+          ...(result.warning !== undefined ? { warning: result.warning } : {}),
         }));
       } catch (err) {
         if (err instanceof WorkerRestrictionError) {
