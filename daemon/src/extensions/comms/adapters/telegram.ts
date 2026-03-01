@@ -794,6 +794,22 @@ export class BmoTelegramAdapter implements ChannelAdapter {
   async sendDirect(text: string, chatId?: string): Promise<boolean> {
     return telegramSend(text, chatId);
   }
+
+  /**
+   * Send a message to the configured home group chat.
+   * Group chat ID is read from channels.telegram.home_group_chat_id in config.
+   * Returns false if no group chat ID is configured.
+   */
+  async sendToGroup(text: string): Promise<boolean> {
+    const config = loadConfig();
+    const groupChatId = (config.channels as Record<string, Record<string, unknown>> | undefined)
+      ?.telegram?.home_group_chat_id as string | undefined;
+    if (!groupChatId) {
+      log.warn('sendToGroup: channels.telegram.home_group_chat_id not configured');
+      return false;
+    }
+    return telegramSend(text, groupChatId);
+  }
 }
 
 /**
