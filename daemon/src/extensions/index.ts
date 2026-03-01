@@ -288,7 +288,6 @@ const BMO_TASK_HANDLERS = [
   'nightly-todo',
   'health-check',
   'memory-consolidation',
-  'morning-briefing',
   'peer-heartbeat',
   'a2a-digest',
   'memory-sync',
@@ -378,6 +377,9 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
       _scheduler.registerHandler(taskName, stubHandler(taskName));
     }
   }
+
+  // Load external task handlers from configured directories (tasks_dirs)
+  await _scheduler.loadExternalTasks(config.scheduler.tasks_dirs ?? []);
 
   // Wire scheduler to the tasks API
   setScheduler(_scheduler);

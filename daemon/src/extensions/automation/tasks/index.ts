@@ -1,8 +1,11 @@
 /**
  * BMO Scheduler Tasks — registers all BMO-specific task handlers.
  *
- * Each task module exports a `register(scheduler)` function that hooks
- * the task's handler into the scheduler. This barrel calls them all.
+ * NOTE: Upstream moved instance-specific tasks to per-agent directories
+ * loaded via external task loader. BMO keeps them here since they're
+ * actively used and registered in the BMO extension.
+ *
+ * Remaining tasks here are generic/core — useful for all agents.
  */
 
 import type { Scheduler } from '../../../automation/scheduler.js';
@@ -15,7 +18,6 @@ import { register as registerA2aDigest } from './a2a-digest.js';
 import { register as registerMemorySync } from './memory-sync.js';
 import { register as registerLindeeInboxWatch } from './lindee-inbox-watch.js';
 import { register as registerPeerHeartbeat } from './peer-heartbeat.js';
-import { register as registerEmailCheck } from './email-check.js';
 import { register as registerMemoryConsolidation } from './memory-consolidation.js';
 
 /**
@@ -35,7 +37,6 @@ export function registerBmoTasks(scheduler: Scheduler): void {
     ['memory-sync', registerMemorySync],
     ['lindee-inbox-watch', registerLindeeInboxWatch],
     ['peer-heartbeat', registerPeerHeartbeat],
-    ['email-check', registerEmailCheck],
     ['memory-consolidation', registerMemoryConsolidation],
   ];
 
@@ -56,6 +57,5 @@ export const REAL_TASK_NAMES = new Set([
   'memory-sync',
   'lindee-inbox-watch',
   'peer-heartbeat',
-  'email-check',
   'memory-consolidation',
 ]);
