@@ -104,7 +104,7 @@ LOG_DIR="$BASE_DIR/logs"
 
 # Check if the Kithkit tmux session exists
 session_exists() {
-    [ -n "$TMUX_BIN" ] && $TMUX_CMD has-session -t "$SESSION_NAME" 2>/dev/null
+    [ -n "$TMUX_BIN" ] && $TMUX_CMD has-session -t "=$SESSION_NAME" 2>/dev/null
 }
 
 # Check if claude is actually running inside the tmux session pane
@@ -116,7 +116,7 @@ claude_alive() {
         return 1
     fi
     local pane_pid
-    pane_pid=$($TMUX_CMD list-panes -t "$SESSION_NAME" -F '#{pane_pid}' 2>/dev/null | head -1)
+    pane_pid=$($TMUX_CMD list-panes -t "=$SESSION_NAME" -F '#{pane_pid}' 2>/dev/null | head -1)
     if [ -z "$pane_pid" ]; then
         return 1
     fi

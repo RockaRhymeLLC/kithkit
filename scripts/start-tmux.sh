@@ -46,7 +46,7 @@ if session_exists; then
     else
         # Session exists but claude is dead — kill stale session and recreate
         echo "Session '$SESSION_NAME' exists but claude is not running — restarting"
-        $TMUX_CMD kill-session -t "$SESSION_NAME" 2>/dev/null
+        $TMUX_CMD kill-session -t "=$SESSION_NAME" 2>/dev/null
     fi
 fi
 
