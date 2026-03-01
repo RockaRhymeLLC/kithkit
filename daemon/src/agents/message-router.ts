@@ -117,18 +117,39 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
   // Auto-complete orchestrator task when orchestrator sends a result message
   if (req.from === 'orchestrator' && req.type === 'result') {
     try {
-      const rows = query<{ id: string }>(
-        `SELECT id FROM orchestrator_tasks
-         WHERE status IN ('assigned', 'in_progress', 'pending')
-         ORDER BY created_at DESC LIMIT 1`,
-      );
-      if (rows.length > 0) {
+      let taskId: string | undefined;
+
+      // Prefer exact match via metadata.task_id if provided
+      if (req.metadata?.task_id && typeof req.metadata.task_id === 'string') {
+        const exact = query<{ id: string }>(
+          `SELECT id FROM orchestrator_tasks
+           WHERE id = ? AND status IN ('assigned', 'in_progress', 'pending')`,
+          req.metadata.task_id,
+        );
+        if (exact.length > 0) taskId = exact[0]!.id;
+      }
+
+      // Fallback: prefer in_progress tasks (FIFO by creation order)
+      if (!taskId) {
+        const rows = query<{ id: string }>(
+          `SELECT id FROM orchestrator_tasks
+           WHERE status IN ('assigned', 'in_progress', 'pending')
+           ORDER BY CASE status
+             WHEN 'in_progress' THEN 0
+             WHEN 'assigned' THEN 1
+             WHEN 'pending' THEN 2
+           END, created_at ASC LIMIT 1`,
+        );
+        if (rows.length > 0) taskId = rows[0]!.id;
+      }
+
+      if (taskId) {
         const now = new Date().toISOString();
         exec(
           `UPDATE orchestrator_tasks SET status = 'completed', result = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
-          req.body.slice(0, 5000), now, now, rows[0]!.id,
+          req.body.slice(0, 5000), now, now, taskId,
         );
-        log.info('Auto-completed orchestrator task on result message', { taskId: rows[0]!.id });
+        log.info('Auto-completed orchestrator task on result message', { taskId });
       }
     } catch (err) {
       log.warn('Failed to auto-complete orchestrator task', {
