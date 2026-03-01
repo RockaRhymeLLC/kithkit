@@ -14,6 +14,18 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": {
+          "tool_name": "Bash"
+        },
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/branch-guard.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "SessionStart": [
@@ -22,6 +34,15 @@
           {
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-start.sh",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/branch-guard.sh",
             "timeout": 10
           }
         ]
