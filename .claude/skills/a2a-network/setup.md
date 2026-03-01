@@ -176,7 +176,7 @@ try {
 
 // 2. Create client
 const network = new A2ANetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'my-agent',
   privateKey: Buffer.from(privateKey, 'base64'),
   endpoint: 'https://my-agent.example.com/a2a/incoming',

@@ -257,6 +257,49 @@ interface GroupMemberChangeEvent {
 
 ---
 
+## Daemon HTTP API (for curl/agent use)
+
+The daemon exposes these endpoints for group operations. Use these from the comms agent or orchestrator via curl.
+
+### Send a group message
+
+```bash
+curl -s -X POST http://localhost:3847/api/network/send \
+  -H "Content-Type: application/json" \
+  -d '{"to": "home-agents", "payload": {"content": "Hello group!"}}'
+```
+
+**Important:** Use the group NAME (e.g., `home-agents`), not the group ID. The `to` field is the group name, same field used for P2P sends (where `to` is the peer agent name).
+
+Response:
+```json
+{"messageId": "...", "delivered": ["r2d2", "skippy"], "queued": [], "failed": []}
+```
+
+### Send a P2P message
+
+```bash
+curl -s -X POST http://localhost:3847/api/network/send \
+  -H "Content-Type: application/json" \
+  -d '{"to": "r2d2", "payload": {"content": "Hello R2!"}}'
+```
+
+### List groups
+
+```bash
+curl -s http://localhost:3847/api/network/groups
+```
+
+### Check network status
+
+```bash
+curl -s http://localhost:3847/api/network/status
+```
+
+**Note:** There is NO `/api/network/groups/:id/messages` endpoint. Always use `/api/network/send` with `to` set to the group name.
+
+---
+
 ## Complete Group Flow (Agent-Executable)
 
 ```typescript

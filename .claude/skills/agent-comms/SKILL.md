@@ -8,6 +8,8 @@ argument-hint: [send <peer> "<message>" | status | log]
 
 Send and receive messages with peer agents on the local network.
 
+> **Scope**: This skill covers A2A peer-to-peer messaging (LAN direct + P2P SDK). For A2A network features (groups, discovery, relay), see the `a2a-network` skill. For Telegram messaging to humans, see the `telegram` skill.
+
 ## Commands
 
 Parse the arguments to determine action:
@@ -35,11 +37,18 @@ Parse the arguments to determine action:
 ## Implementation
 
 ### Sending
-Send via the daemon's `/agent/send` endpoint (2-tier routing: LAN direct → P2P SDK fallback):
+Send via the daemon's `/agent/send` endpoint (2-tier routing: LAN direct → P2P SDK fallback).
+
+**IMPORTANT:** Always use python3 to generate JSON for curl to avoid shell quoting issues. Raw `--data-raw` with shell-interpolated strings causes "Bad escaped character" JSON parse errors.
+
 ```bash
-curl -s -X POST http://localhost:3847/agent/send \
-  -H 'Content-Type: application/json' \
-  --data-raw '{"peer":"<name>","type":"text","text":"<message>"}'
+python3 -c "
+import json, subprocess, sys
+data = json.dumps({'peer': '<name>', 'type': 'text', 'text': '<message>'})
+r = subprocess.run(['curl', '-s', '-X', 'POST', 'http://localhost:3847/agent/send',
+  '-H', 'Content-Type: application/json', '-d', data], capture_output=True, text=True)
+print(r.stdout)
+"
 ```
 
 **Request fields:**
@@ -118,7 +127,7 @@ agent-comms:
 ## Architecture
 
 ### LAN (Direct)
-- **Inbound**: Daemon receives on `POST /agent/message`, validates auth (bearer token from Keychain), injects directly into tmux session with `[Agent] Name:` prefix (same as Telegram — tmux buffers input natively)
+- **Inbound**: Daemon receives on `POST /agent/message`, validates auth (bearer token from Keychain), injects directly into tmux session with `[Network] Name:` prefix
 - **Outbound**: Daemon sends via `curl` subprocess (not Node.js `http.request`, which has macOS LAN networking issues)
 - **Auth**: Shared secret stored in macOS Keychain (`credential-agent-comms-secret`)
 
@@ -139,6 +148,9 @@ agent-comms:
 ### Logging
 - All messages logged as JSONL to `logs/agent-comms.log`
 - Directions: `in` (LAN inbound), `out` (LAN outbound), `relay-in`, `relay-out`
+
+### Group Messaging
+For A2A group messaging (broadcast to multiple peers), use the `a2a-network` skill — specifically `POST /api/network/groups/:id/message`. This skill (`agent-comms`) handles only 1:1 peer messaging.
 
 ## Usage Protocol
 

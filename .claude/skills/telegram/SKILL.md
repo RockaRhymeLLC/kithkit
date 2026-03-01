@@ -58,3 +58,6 @@ curl -s -X POST http://localhost:3847/api/send \
 - The owner chat ID is configured in `kithkit.config.yaml` under `channels.telegram.owner`
 - Max message length: 4000 chars (Telegram limit, auto-truncated by the adapter)
 - This skill is for the comms agent to send outbound messages — inbound Telegram messages are handled automatically by the webhook
+
+### Group Chat Routing
+The Telegram channel adapter handles both DM and group chat messages. Inbound group messages are tagged with `[group:<group_name>]` in the injection prefix. Outbound messages to groups require specifying the group chat ID instead of the owner chat ID — configure additional chat IDs in `kithkit.config.yaml` under `channels.telegram.groups`.

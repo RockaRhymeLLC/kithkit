@@ -1,6 +1,6 @@
 ---
 name: delivery-stats
-description: Analyze Telegram delivery logs for success rates, retry patterns, and failures.
+description: Analyze Telegram delivery logs for success rates, retry patterns, and failures. Telegram-specific — covers the daemon's Telegram delivery pipeline only (not A2A or email).
 argument-hint: [recent | failures | layers | dedup]
 ---
 
@@ -161,3 +161,6 @@ Same as the "By Layer" table from the dashboard, but with additional per-layer d
 - Hashes are truncated to 8 chars in output for readability
 - Elapsed time is shown in human-friendly format (ms for <1s, s for <60s, m:ss for >=60s)
 - Chat IDs can be cross-referenced with safe-senders.json and 3rd-party-senders.json for names
+
+### Scope
+This skill analyzes **Telegram delivery** only — the daemon's multi-layer delivery pipeline for getting messages to the human via Telegram Bot API. It does not cover A2A peer messaging delivery or email delivery. For A2A message status, check `/api/network/inbox` or agent-comms logs.

@@ -126,9 +126,10 @@ async function handleAgentP2P(
     res.writeHead(handled ? 200 : 503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: handled }));
   } catch (err) {
-    log.error('P2P endpoint error', { error: err instanceof Error ? err.message : String(err) });
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error('P2P endpoint error', { error: detail });
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
+    res.end(JSON.stringify({ ok: false, error: `Invalid request: ${detail}` }));
   }
   return true;
 }
@@ -150,9 +151,10 @@ async function handleAgentMessageRoute(
     res.writeHead(result.status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result.body));
   } catch (err) {
-    log.error('Agent message endpoint error', { error: err instanceof Error ? err.message : String(err) });
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error('Agent message endpoint error', { error: detail });
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Invalid request' }));
+    res.end(JSON.stringify({ error: `Invalid request: ${detail}` }));
   }
   return true;
 }
@@ -177,9 +179,10 @@ async function handleAgentSend(
     res.writeHead(result.ok ? 200 : 502, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
   } catch (err) {
-    log.error('Agent send endpoint error', { error: err instanceof Error ? err.message : String(err) });
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error('Agent send endpoint error', { error: detail });
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Invalid request' }));
+    res.end(JSON.stringify({ error: `Invalid request: ${detail}` }));
   }
   return true;
 }
@@ -213,9 +216,10 @@ async function handleAgentStatusEndpoint(
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(ourStatus));
     } catch (err) {
-      log.error('Agent status POST error', { error: err instanceof Error ? err.message : String(err) });
+      const detail = err instanceof Error ? err.message : String(err);
+      log.error('Agent status POST error', { error: detail });
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid request' }));
+      res.end(JSON.stringify({ error: `Invalid request: ${detail}` }));
     }
     return true;
   }

@@ -19,6 +19,11 @@ import type { BmoConfig, PeerConfig } from '../config.js';
 
 const log = createLogger('agent-comms');
 
+/** Mask Bearer tokens and other secrets in strings before logging. */
+function sanitizeForLog(s: string): string {
+  return s.replace(/Bearer\s+\S+/gi, 'Bearer [REDACTED]');
+}
+
 // ── Types ─────────────────────────────────────────────────────
 
 export interface AgentMessage {
@@ -288,7 +293,7 @@ function sendViaLAN(
             trySend(hostIdx + 1);
             return;
           }
-          const detail = stderr?.trim() || err.message || 'unknown error';
+          const detail = sanitizeForLog(stderr?.trim() || err.message || 'unknown error');
           const errorResponse: AgentMessageResponse = {
             ok: false,
             queued: false,

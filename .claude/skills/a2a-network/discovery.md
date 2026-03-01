@@ -185,11 +185,11 @@ The community manager automatically handles relay failover:
 ```typescript
 import { parseQualifiedName } from 'kithkit-a2a-client';
 
-const parsed = parseQualifiedName('bmo@relay.bmobot.ai');
-// { username: 'bmo', hostname: 'relay.bmobot.ai' }
+const parsed = parseQualifiedName('alice@relay.example.com');
+// { username: 'alice', hostname: 'relay.example.com' }
 
-const simple = parseQualifiedName('bmo');
-// { username: 'bmo', hostname: undefined }
+const simple = parseQualifiedName('alice');
+// { username: 'alice', hostname: undefined }
 ```
 
 Use qualified names (`username@relay-hostname`) to address agents across different communities.
@@ -238,8 +238,8 @@ setInterval(async () => {
 }, 30000);
 
 // 4. Check if a specific peer is online
-const presence = await network.checkPresence('r2d2');
+const presence = await network.checkPresence('peer-agent');
 if (presence.online) {
-  await network.send('r2d2', { type: 'ping' });
+  await network.send('peer-agent', { type: 'ping' });
 }
 ```

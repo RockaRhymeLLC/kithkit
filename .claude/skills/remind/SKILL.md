@@ -1,6 +1,6 @@
 ---
 name: remind
-description: Set timed reminders delivered via Telegram. Creates self-cleaning launchd jobs. Use when the user asks to be reminded of something at a specific time.
+description: Set timed reminders for the human, delivered via Telegram. Creates self-cleaning launchd jobs. Human-facing only — for agent self-reminders, use /timer instead.
 argument-hint: ["message" at <time> on <date>] | [list] | [cancel <id>]
 ---
 
