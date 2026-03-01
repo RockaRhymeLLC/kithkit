@@ -683,10 +683,26 @@ export class BmoTelegramAdapter implements ChannelAdapter {
     const ctx = extractMessageContext(msg, token);
     if (ctx.isSelf) return;
 
-    _replyChatId = ctx.replyChatId;
-    persistReplyChatId(ctx.replyChatId);
-
     const { senderId, replyChatId, firstName, chatType } = ctx;
+    const isGroup = chatType === 'group' || chatType === 'supergroup';
+
+    if (isGroup) {
+      // Only process messages from the configured home group
+      const rawConfig = loadConfig() as unknown as Record<string, unknown>;
+      const channels = rawConfig.channels as Record<string, unknown> | undefined;
+      const telegramConfig = channels?.telegram as Record<string, unknown> | undefined;
+      const homeGroupId = telegramConfig?.home_group_chat_id != null ? String(telegramConfig.home_group_chat_id) : null;
+
+      if (!homeGroupId || replyChatId !== homeGroupId) {
+        log.debug(`Ignoring message from non-home group: ${replyChatId}`);
+        return;
+      }
+      // Don't overwrite _replyChatId — preserve DM reply context
+    } else {
+      // DM: update reply context as before
+      _replyChatId = ctx.replyChatId;
+      persistReplyChatId(ctx.replyChatId);
+    }
 
     // Track that Telegram is the last active text channel (for voice response routing)
     updateLastActiveChannel('telegram');
