@@ -20,6 +20,10 @@
  *
  * The watchdog reads context-usage.json (comms) and context-usage-orch.json
  * (orchestrator), both written by the statusline script on every turn.
+ *
+ * DEPENDENCY: Requires statusLine in .claude/settings.json to point to
+ * scripts/context-monitor-statusline.sh, which writes the JSON state files
+ * this watchdog reads. Without this, the watchdog silently no-ops.
  */
 
 import fs from 'node:fs';
@@ -77,6 +81,11 @@ let commsSessionId: string | null = null;
 let orchFiredTiers: Set<number> = new Set();
 let orchSessionId: string | null = null;
 
+// Track consecutive misses to warn about persistent missing state files
+let commsFileMissCount = 0;
+let orchFileMissCount = 0;
+const MISS_WARN_THRESHOLD = 3; // Warn after 3 consecutive misses (~9 minutes with 3m interval)
+
 interface ContextData {
   remaining_percentage?: number;
   used_percentage?: number;
@@ -110,7 +119,18 @@ function readContextFile(filePath: string): ContextData | null {
 function monitorComms(): void {
   const stateFile = resolveProjectPath('.claude', 'state', 'context-usage.json');
   const data = readContextFile(stateFile);
-  if (!data) return;
+  if (!data) {
+    commsFileMissCount++;
+    if (commsFileMissCount === MISS_WARN_THRESHOLD) {
+      log.warn(
+        'Context usage file missing for comms agent — watchdog cannot monitor context. ' +
+        'Ensure statusLine in .claude/settings.json points to scripts/context-monitor-statusline.sh',
+        { file: stateFile, consecutiveMisses: commsFileMissCount },
+      );
+    }
+    return;
+  }
+  commsFileMissCount = 0; // Reset on successful read
 
   const remaining = data.remaining_percentage ?? 100;
   const used = data.used_percentage ?? 0;
@@ -156,7 +176,18 @@ function monitorOrchestrator(): void {
 
   const stateFile = resolveProjectPath('.claude', 'state', 'context-usage-orch.json');
   const data = readContextFile(stateFile);
-  if (!data) return;
+  if (!data) {
+    orchFileMissCount++;
+    if (orchFileMissCount === MISS_WARN_THRESHOLD) {
+      log.warn(
+        'Context usage file missing for orchestrator — watchdog cannot monitor orchestrator context. ' +
+        'Ensure the orchestrator statusLine is configured correctly.',
+        { file: stateFile, consecutiveMisses: orchFileMissCount },
+      );
+    }
+    return;
+  }
+  orchFileMissCount = 0; // Reset on successful read
 
   const remaining = data.remaining_percentage ?? 100;
   const used = data.used_percentage ?? 0;
@@ -204,4 +235,17 @@ export function register(scheduler: Scheduler): void {
   scheduler.registerHandler('context-watchdog', async () => {
     await run();
   });
+}
+
+/**
+ * Reset module-level state for testing purposes.
+ * @internal
+ */
+export function _resetForTesting(): void {
+  commsFiredTiers = new Set();
+  commsSessionId = null;
+  orchFiredTiers = new Set();
+  orchSessionId = null;
+  commsFileMissCount = 0;
+  orchFileMissCount = 0;
 }
