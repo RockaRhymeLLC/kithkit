@@ -206,6 +206,16 @@ export async function handleAgentMessage(
   }
 
   const msg = body as AgentMessage;
+
+  // Status pings are liveness checks only — do not store or inject
+  if (msg.type === 'status') {
+    log.debug(`Status ping from ${msg.from} — acknowledged, not stored`);
+    return {
+      status: 200,
+      body: { ok: true, queued: false },
+    };
+  }
+
   const formatted = formatMessage(msg);
 
   // Persist inbound LAN message to DB and inject to comms session
