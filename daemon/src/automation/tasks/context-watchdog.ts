@@ -77,6 +77,11 @@ let commsSessionId: string | null = null;
 let orchFiredTiers: Set<number> = new Set();
 let orchSessionId: string | null = null;
 
+// Track consecutive missing-file checks to warn about misconfiguration
+let commsMissingCount = 0;
+let orchMissingCount = 0;
+const MISSING_WARN_THRESHOLD = 3; // Warn after 3 consecutive misses (~9 minutes)
+
 interface ContextData {
   remaining_percentage?: number;
   used_percentage?: number;
@@ -110,7 +115,17 @@ function readContextFile(filePath: string): ContextData | null {
 function monitorComms(): void {
   const stateFile = resolveProjectPath('.claude', 'state', 'context-usage.json');
   const data = readContextFile(stateFile);
-  if (!data) return;
+  if (!data) {
+    commsMissingCount++;
+    if (commsMissingCount === MISSING_WARN_THRESHOLD) {
+      log.info(
+        `Comms context-usage.json missing for ${MISSING_WARN_THRESHOLD} consecutive checks — ` +
+        'is settings.json statusLine pointing to scripts/context-monitor-statusline.sh?',
+      );
+    }
+    return;
+  }
+  commsMissingCount = 0;
 
   const remaining = data.remaining_percentage ?? 100;
   const used = data.used_percentage ?? 0;
@@ -156,7 +171,17 @@ function monitorOrchestrator(): void {
 
   const stateFile = resolveProjectPath('.claude', 'state', 'context-usage-orch.json');
   const data = readContextFile(stateFile);
-  if (!data) return;
+  if (!data) {
+    orchMissingCount++;
+    if (orchMissingCount === MISSING_WARN_THRESHOLD) {
+      log.info(
+        `Orchestrator context-usage-orch.json missing for ${MISSING_WARN_THRESHOLD} consecutive checks — ` +
+        'is settings.json statusLine pointing to scripts/context-monitor-statusline.sh?',
+      );
+    }
+    return;
+  }
+  orchMissingCount = 0;
 
   const remaining = data.remaining_percentage ?? 100;
   const used = data.used_percentage ?? 0;
