@@ -1,4 +1,13 @@
 {
+  "permissions": {
+    "allow": [".*"],
+    "deny": [],
+    "defaultMode": "bypassPermissions"
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/statusline.sh"
+  },
   "hooks": {
     "PreToolUse": [
       {
