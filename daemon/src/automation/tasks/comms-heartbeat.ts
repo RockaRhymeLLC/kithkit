@@ -59,8 +59,7 @@ function getUnreadMessageCount(): number {
   const result = query<MessageCount>(
     `SELECT COUNT(*) as count FROM messages
      WHERE to_agent = 'comms'
-       AND read_at IS NULL
-       AND processed_at IS NOT NULL`,
+       AND processed_at IS NULL`,
   );
   return result[0]?.count ?? 0;
 }

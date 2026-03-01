@@ -218,6 +218,12 @@ function wireMessageEvent(): void {
   if (!_network) return;
 
   _network.on('message', (msg: Message) => {
+    // Status pings are liveness checks only — do not store or inject
+    if (msg.payload?.type === 'status') {
+      log.debug(`Status ping from ${msg.sender} via network — acknowledged, not stored`);
+      return;
+    }
+
     const displayName = getDisplayName(msg.sender, _config);
     const text = msg.payload?.text ?? JSON.stringify(msg.payload);
     const verified = msg.verified ? '' : ' [UNVERIFIED]';
