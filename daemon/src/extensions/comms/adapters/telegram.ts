@@ -383,7 +383,7 @@ async function injectWithSessionWakeup(
       _sessionStarting = false;
 
       for (const msg of _pendingMessages) {
-        doInject(msg.text, msg.firstName, isThirdParty, isGroup);
+        doInject(msg.text, msg.firstName, isThirdParty, isGroup, msg.replyChatId);
       }
       _pendingMessages = [];
     }
@@ -396,13 +396,14 @@ async function injectWithSessionWakeup(
   }
 
   if (token) startTypingLoop(token, replyChatId);
-  doInject(text, firstName, isThirdParty, isGroup);
+  doInject(text, firstName, isThirdParty, isGroup, replyChatId);
 }
 
-function doInject(text: string, firstName: string, isThirdParty: boolean, isGroup: boolean = false): void {
+function doInject(text: string, firstName: string, isThirdParty: boolean, isGroup: boolean = false, chatId?: string): void {
   let prefix: string;
   if (isGroup) {
-    prefix = isThirdParty ? '[3rdParty][Group][Telegram]' : '[Group][Telegram]';
+    const groupTag = `telegram - group:${chatId ?? 'unknown'}`;
+    prefix = isThirdParty ? `[3rdParty][${groupTag}]` : `[${groupTag}]`;
   } else {
     prefix = isThirdParty ? '[3rdParty][Telegram]' : '[Telegram]';
   }
