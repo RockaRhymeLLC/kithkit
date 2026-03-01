@@ -167,6 +167,19 @@ scheduler:
       enabled: true
 ```
 
+**Context watchdog dependency**: The `context-watchdog` task reads JSON state files written by the statusline script on every Claude turn. For it to work, add this to `.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/context-monitor-statusline.sh"
+  }
+}
+```
+
+Without this, the watchdog silently no-ops — it has no context data to read. After 3 consecutive misses (~9 minutes), the daemon logs a warning to help diagnose the misconfiguration.
+
 Hot-reload the config without restarting the daemon:
 
 ```bash
