@@ -54,7 +54,12 @@ export async function handleOrchestratorRoute(
 
     const task = body.task as string;
     const context = typeof body.context === 'string' ? body.context : undefined;
-    const alive = isOrchestratorAlive();
+
+    // Use getOrchestratorState() as the authoritative check — it verifies the tmux session
+    // AND whether Claude is running inside it. If it returns 'dead', the session is truly gone
+    // even if a prior isOrchestratorAlive() check cached a stale 'true'.
+    const orchStateCheck = getOrchestratorState();
+    const alive = orchStateCheck !== 'dead';
 
     // Create an orchestrator_tasks row for tracking
     const taskId = randomUUID();
@@ -147,7 +152,7 @@ export async function handleOrchestratorRoute(
       log.info('Cancelled pending shutdown timer — new task for running orchestrator');
     }
 
-    const orchState = getOrchestratorState();
+    const orchState = orchStateCheck; // already computed above
 
     // Always store the task message so the wrapper's poll loop can find it
     sendMessage({
@@ -352,6 +357,31 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
       'Update this task\'s status as you work: PUT http://localhost:3847/api/orchestrator/tasks/' + taskId,
       'Write your result to the task row when done (status: completed, result: <summary>).',
     );
+  }
+
+  // Inject any other pending tasks so the orchestrator knows its full queue.
+  // This is critical for recovery after crash/restart — pending tasks would otherwise
+  // silently stall with no orchestrator to process them.
+  try {
+    interface PendingTask { id: string; title: string; description: string }
+    const pendingTasks = query<PendingTask>(
+      `SELECT id, title, description FROM orchestrator_tasks
+       WHERE status = 'pending' AND id != ?
+       ORDER BY created_at ASC LIMIT 10`,
+      taskId ?? '',
+    );
+    if (pendingTasks.length > 0) {
+      parts.push('', `## Additional pending tasks in queue (${pendingTasks.length} total):`);
+      parts.push('Work through these after completing the primary task above. Update each task\'s status via PUT http://localhost:3847/api/orchestrator/tasks/:id');
+      for (const t of pendingTasks) {
+        parts.push(`- Task ${t.id}: ${t.title}`);
+        if (t.description && t.description !== t.title) {
+          parts.push(`  Details: ${t.description.slice(0, 200)}`);
+        }
+      }
+    }
+  } catch {
+    // Non-fatal — prompt still works without pending task list
   }
 
   if (sessionDir) {
