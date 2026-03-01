@@ -20,7 +20,7 @@ Automatically triage incoming email on a schedule — sort junk into folders, fi
 Before enabling triage, ensure at least one provider is configured and can connect. Test with the daemon admin endpoint:
 
 ```bash
-curl -X POST http://localhost:3847/tasks/email-check/run
+curl -X POST http://localhost:3847/api/tasks/email-check/run
 # → { "status": "ok", "result": "..." }
 ```
 
@@ -353,7 +353,7 @@ scheduler:
 **Emails not being checked**
 
 - Confirm the provider reports as configured: check daemon logs for `[email-check] Provider X error`
-- Test the provider connection directly: `curl -X POST http://localhost:3847/tasks/email-check/run`
+- Test the provider connection directly: `curl -X POST http://localhost:3847/api/tasks/email-check/run`
 - Verify your email credentials are current — OAuth tokens expire and may need re-authorization
 
 **Rules not matching expected senders**

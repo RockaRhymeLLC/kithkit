@@ -177,7 +177,7 @@ export interface EmailProvider {
 The TypeScript provider is a thin wrapper that shells out to the Python script and parses its JSON output. All IMAP protocol logic lives in Python.
 
 ```typescript
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "util";
 import type { EmailProvider, EmailMessage, SendOptions } from "./types.js";
 
@@ -195,7 +195,6 @@ export class OutlookImapProvider implements EmailProvider {
 
   isConfigured(): boolean {
     try {
-      const { execFileSync } = require("child_process");
       execFileSync("security", [
         "find-generic-password", "-s", this.keychainClientId,
       ], { stdio: "pipe" });
