@@ -272,19 +272,18 @@ function registerR2HealthChecks(): void {
 
 // ── Extension Implementation ────────────────────────────────
 
-/** R2 task names that get in-process handlers.
+/** Extension task names that get in-process handlers.
  * NOTE: Do NOT include core tasks here (context-watchdog, todo-reminder,
  * approval-audit, backup, orchestrator-idle, message-delivery) — those are
- * registered by registerCoreTasks() and would be overwritten by stubs. */
+ * registered by registerCoreTasks() and would be overwritten by stubs.
+ *
+ * Instance-specific tasks (morning-briefing, blog-reminder, nightly-todo,
+ * a2a-digest, email-check, memory-sync, supabase-keep-alive) have been moved
+ * to per-agent directories and are loaded via scheduler.tasks_dirs. */
 const R2_TASK_HANDLERS = [
-  'email-check',
-  'nightly-todo',
   'health-check',
   'memory-consolidation',
-  'morning-briefing',
   'peer-heartbeat',
-  'a2a-digest',
-  'memory-sync',
   'weekly-progress-report',
 ] as const;
 
