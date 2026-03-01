@@ -550,6 +550,48 @@ describe('Direct channel — immediate delivery for persistent agents', () => {
     assert.equal(result.delivered, true);
   });
 
+  it('direct=true returns delivered:false (not 500) when tmux injector throws', () => {
+    _setTmuxInjectorForTesting(() => {
+      throw new Error('tmux session crashed');
+    });
+
+    const result = sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'text',
+      body: 'This should not cause a 500',
+      direct: true,
+    });
+
+    // Message was stored — routing error is non-fatal
+    assert.equal(result.delivered, false);
+
+    // Message exists in DB
+    const messages = query<Message>('SELECT * FROM messages WHERE id = ?', result.messageId);
+    assert.equal(messages.length, 1);
+    assert.equal(messages[0].body, 'This should not cause a 500');
+  });
+
+  it('POST /api/messages returns 200 even when routing throws (issue #25)', async () => {
+    _setTmuxInjectorForTesting(() => {
+      throw new Error('relay forwarding failed');
+    });
+
+    const res = await request('POST', '/api/messages', {
+      from: 'comms',
+      to: 'orchestrator',
+      type: 'task',
+      body: 'Message that triggers routing error',
+      direct: true,
+    });
+
+    // Should NOT be a 500
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.ok(typeof body.messageId === 'number');
+    assert.equal(body.delivered, false);
+  });
+
   it('POST /api/messages with direct=true passes through to sendMessage', async () => {
     const injected: { session: string; text: string }[] = [];
     _setTmuxInjectorForTesting((session, text) => {
