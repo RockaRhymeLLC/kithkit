@@ -24,6 +24,8 @@ export interface DaemonConfig {
 
 export interface SchedulerConfig {
   tasks: TaskScheduleConfig[];
+  /** Additional directories to scan for external task handler files at boot. */
+  tasks_dirs?: string[];
 }
 
 export interface TaskScheduleConfig {

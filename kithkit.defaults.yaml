@@ -14,6 +14,7 @@ daemon:
     max_files: 5
 
 scheduler:
+  tasks_dirs: []          # Additional directories to scan for external task handler files
   tasks:
     - name: context-watchdog
       interval: "3m"

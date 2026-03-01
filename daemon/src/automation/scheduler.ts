@@ -9,7 +9,7 @@
 import { CronExpressionParser } from 'cron-parser';
 import { parseInterval, type TaskScheduleConfig } from '../core/config.js';
 import { runTask, type TaskResult } from './task-runner.js';
-import { registerCoreTasks } from './tasks/index.js';
+import { registerCoreTasks, loadExternalTasks, type LoadResult } from './tasks/index.js';
 import { createLogger } from '../core/logger.js';
 
 // ── Types ────────────────────────────────────────────────────
@@ -157,6 +157,19 @@ export class Scheduler {
    */
   hasHandler(taskName: string): boolean {
     return this._handlers.has(taskName);
+  }
+
+  /**
+   * Load external task handlers from the specified directories.
+   *
+   * Scans each directory for .js files that export a `register(scheduler)` function.
+   * Invalid files and missing directories are logged and skipped gracefully.
+   *
+   * @param dirs Array of directory paths to scan for task files.
+   * @returns Array of load results, one per directory.
+   */
+  async loadExternalTasks(dirs: string[]): Promise<LoadResult[]> {
+    return loadExternalTasks(dirs, this);
   }
 
   /**
