@@ -23,15 +23,19 @@ fi
 # Change to project directory
 cd "$BASE_DIR"
 
-# System prompt file location
-SYSTEM_PROMPT_FILE=".claude/state/system-prompt.txt"
+# Identity file: config > legacy fallback
+IDENTITY_FILE="$(read_config '.agent.identity_file' '')"
+if [ -z "$IDENTITY_FILE" ]; then
+    # Legacy fallback for older installations
+    IDENTITY_FILE=".claude/state/system-prompt.txt"
+fi
 
 # Build arguments array
 ARGS=()
 
-# Add system prompt if it exists
-if [ -f "$SYSTEM_PROMPT_FILE" ]; then
-    ARGS+=("--append-system-prompt" "$(cat "$SYSTEM_PROMPT_FILE")")
+# Add system prompt if identity file exists
+if [ -f "$IDENTITY_FILE" ]; then
+    ARGS+=("--append-system-prompt" "$(cat "$IDENTITY_FILE")")
 fi
 
 # Add any additional arguments passed to this script
