@@ -5,7 +5,7 @@
  */
 
 import type http from 'node:http';
-import { routeMessage } from '../comms/channel-router.js';
+import { routeMessage, listAdapters } from '../comms/channel-router.js';
 import { sendMessage } from '../agents/message-router.js';
 import { createLogger } from '../core/logger.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
@@ -30,9 +30,26 @@ export async function handleSendRoute(
         return true;
       }
 
-      const channels = Array.isArray(body.channels)
+      // Accept either channels (array) or channel (singular string) — both documented.
+      // Previously, a singular 'channel' field was silently ignored causing broadcast to all adapters.
+      const channels: string[] | undefined = Array.isArray(body.channels)
         ? body.channels.filter((c: unknown) => typeof c === 'string') as string[]
-        : undefined;
+        : typeof body.channel === 'string'
+          ? [body.channel]
+          : undefined;
+
+      // Validate requested channels exist — return 400 for unknown channels rather
+      // than silently falling through with empty results (addresses kithkit #60).
+      if (channels && channels.length > 0) {
+        const registered = new Set(listAdapters());
+        const unknown = channels.filter(c => !registered.has(c));
+        if (unknown.length > 0) {
+          json(res, 400, withTimestamp({
+            error: `Unknown channel(s): ${unknown.join(', ')}. Registered: ${[...registered].join(', ') || 'none'}`,
+          }));
+          return true;
+        }
+      }
 
       const results = await routeMessage(
         { text: body.message as string, metadata: body.metadata as Record<string, unknown> | undefined },
