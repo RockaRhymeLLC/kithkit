@@ -50,10 +50,9 @@ interface JmapCredentials {
 }
 
 async function getJmapCredentials(): Promise<JmapCredentials> {
-  const [token, email] = await Promise.all([
-    readKeychain('credential-fastmail-token'),
-    readKeychain('credential-fastmail-email'),
-  ]);
+  const token = await readKeychain('credential-fastmail-api');
+  // Email is optional in keychain — falls back to owner_email in config
+  const email = await readKeychain('credential-fastmail-email');
   return { token, email };
 }
 
@@ -81,6 +80,11 @@ export class BmoJmapAdapter implements ChannelAdapter {
 
   private _creds: JmapCredentials | null = null;
   private _inboundBuffer: InboundMessage[] = [];
+  private _fallbackEmail: string | null;
+
+  constructor(fallbackEmail?: string) {
+    this._fallbackEmail = fallbackEmail ?? null;
+  }
 
   /** Check if JMAP credentials are available in Keychain. */
   async isConfigured(): Promise<boolean> {
@@ -358,7 +362,14 @@ export class BmoJmapAdapter implements ChannelAdapter {
   // ── Internals ─────────────────────────────────────────────
 
   private async _getCreds(): Promise<JmapCredentials> {
-    if (!this._creds) this._creds = await getJmapCredentials();
+    if (!this._creds) {
+      const creds = await getJmapCredentials();
+      // Fall back to constructor-provided email if not in keychain
+      if (!creds.email && this._fallbackEmail) {
+        creds.email = this._fallbackEmail;
+      }
+      this._creds = creds;
+    }
     return this._creds;
   }
 
