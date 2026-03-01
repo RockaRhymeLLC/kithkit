@@ -66,6 +66,7 @@ export async function handleAgentsRoute(
         cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
         timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
         maxBudgetUsd: typeof body.maxBudgetUsd === 'number' ? body.maxBudgetUsd : undefined,
+        spawned_by: typeof body.spawned_by === 'string' ? body.spawned_by : 'comms',
       });
 
       json(res, 202, withTimestamp({ jobId: result.jobId, status: result.status }));

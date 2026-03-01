@@ -5,6 +5,7 @@
  */
 
 import http from 'node:http';
+import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, type KithkitConfig } from './core/config.js';
 import { openDatabase, closeDatabase } from './core/db.js';
@@ -135,12 +136,27 @@ const server = http.createServer((req, res) => {
 
   addTimestamp(res);
 
+  // CORS preflight for /health (needed by network status dashboard)
+  if (req.method === 'OPTIONS' && url.pathname === '/health') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return;
+  }
+
   // Health endpoint
   if (req.method === 'GET' && url.pathname === '/health') {
     const health = getHealth(VERSION);
     const extRoutes = getRegisteredRoutes();
     const ext = getExtension();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
     res.end(JSON.stringify({
       ...health,
       degraded: isDegraded(),
@@ -219,6 +235,36 @@ const server = http.createServer((req, res) => {
     if (ext?.onRoute && !isDegraded()) {
       const handled = await ext.onRoute(req, res, url.pathname, url.searchParams);
       if (handled) return;
+    }
+
+    // Static file serving from daemon/public/
+    if (req.method === 'GET') {
+      const safePath = path.normalize(url.pathname).replace(/^(\.\.[/\\])+/, '');
+      const filePath = path.join(projectDir, 'daemon', 'public', safePath === '/' ? 'index.html' : safePath);
+      if (filePath.startsWith(path.join(projectDir, 'daemon', 'public'))) {
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.isFile()) {
+            const extname = path.extname(filePath).toLowerCase();
+            const mimeTypes: Record<string, string> = {
+              '.html': 'text/html',
+              '.css': 'text/css',
+              '.js': 'application/javascript',
+              '.json': 'application/json',
+              '.png': 'image/png',
+              '.svg': 'image/svg+xml',
+              '.ico': 'image/x-icon',
+            };
+            const contentType = mimeTypes[extname] ?? 'application/octet-stream';
+            const content = fs.readFileSync(filePath);
+            res.writeHead(200, { 'Content-Type': contentType });
+            res.end(content);
+            return;
+          }
+        } catch {
+          // File not found — fall through to 404
+        }
+      }
     }
 
     // 404 fallback
