@@ -105,7 +105,7 @@ initTimers();
 
 // Wire up config hot-reload watcher
 const configPath = path.resolve(projectDir, 'kithkit.config.yaml');
-const configWatcher = createConfigWatcher(configPath);
+const configWatcher = createConfigWatcher(configPath, config);
 setConfigWatcher(configWatcher);
 configWatcher.start();
 log.info('Config watcher started', { path: configPath });
