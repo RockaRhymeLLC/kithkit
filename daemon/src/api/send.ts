@@ -39,8 +39,32 @@ export async function handleSendRoute(
         channels,
       );
 
-      // Notify comms about successful external deliveries so it has context when Dave replies
-      notifyCommsOfExternalSend(results, body.message as string);
+      // Success = silent (comms already knows it sent). Failure = notify comms.
+      const failed = Object.entries(results).filter(([, ok]) => !ok).map(([ch]) => ch);
+      const delivered = Object.entries(results).filter(([, ok]) => ok).map(([ch]) => ch);
+
+      if (delivered.length > 0) {
+        log.debug('Delivered to channels', { channels: delivered });
+      }
+
+      if (failed.length > 0) {
+        const channelList = failed.join(', ');
+        const preview = (body.message as string).length > 120
+          ? (body.message as string).slice(0, 120) + '…'
+          : body.message as string;
+        try {
+          sendMessage({
+            from: 'daemon',
+            to: 'comms',
+            type: 'error',
+            body: `[delivery failed: ${channelList}] ${preview}`,
+          });
+        } catch (notifyErr) {
+          log.warn('Failed to notify comms of delivery failure', {
+            error: notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
+          });
+        }
+      }
 
       json(res, 200, withTimestamp({ results }));
       return true;
@@ -62,38 +86,3 @@ export async function handleSendRoute(
   }
 }
 
-// ── Comms notification ──────────────────────────────────────
-
-const MAX_PREVIEW_LENGTH = 120;
-
-/**
- * After a successful external channel delivery, post a brief status message
- * to comms so it has context when Dave replies about the content.
- */
-function notifyCommsOfExternalSend(results: Record<string, boolean>, message: string): void {
-  const delivered = Object.entries(results)
-    .filter(([, ok]) => ok)
-    .map(([ch]) => ch);
-
-  if (delivered.length === 0) return;
-
-  const preview = message.length > MAX_PREVIEW_LENGTH
-    ? message.slice(0, MAX_PREVIEW_LENGTH) + '…'
-    : message;
-
-  const channelList = delivered.join(', ');
-  const body = `[daemon sent to ${channelList}] ${preview}`;
-
-  try {
-    sendMessage({
-      from: 'daemon',
-      to: 'comms',
-      type: 'status',
-      body,
-    });
-  } catch (err) {
-    log.warn('Failed to notify comms of external send', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}

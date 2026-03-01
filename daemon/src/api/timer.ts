@@ -245,7 +245,7 @@ export async function handleTimerRoute(
 
     insert('timers', { id, session, message, fires_at, created_at, status: 'pending' });
 
-    log.info('Timer scheduled', { id, session, delay, fires_at });
+    log.info('Timer scheduled', { id, agentId: session, delay, fires_at });
     json(res, 201, withTimestamp({ id, fires_at, message, status: 'pending' }));
     return true;
   }
