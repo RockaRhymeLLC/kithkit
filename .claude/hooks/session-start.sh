@@ -105,8 +105,8 @@ echo "---"
 if [ "${CC4ME_QUIET_START:-0}" != "1" ]; then
   TMUX_BIN="/opt/homebrew/bin/tmux"
   TMUX_SOCKET="/private/tmp/tmux-$(id -u)/default"
-  SESSION_NAME=$(grep -A1 '^tmux:' "$PROJECT_DIR/cc4me.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
-  SESSION_NAME="${SESSION_NAME:-cc4me}"
+  SESSION_NAME=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
+  SESSION_NAME="${SESSION_NAME:-comms1}"
 
   if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
     PROMPT="Session cleared and restored. Pick up where you left off."
