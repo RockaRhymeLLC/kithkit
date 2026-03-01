@@ -17,6 +17,26 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(pwd)}"
 STATE_DIR="$PROJECT_DIR/.claude/state"
 TMUX_BIN="/opt/homebrew/bin/tmux"
 
+# ── Validate settings.json ────────────────────────────────
+# If .claude/settings.json exists but contains invalid JSON (e.g. merge
+# conflict markers from a stash pop), fail fast with a clear message.
+SETTINGS_FILE="$PROJECT_DIR/.claude/settings.json"
+if [ -f "$SETTINGS_FILE" ]; then
+  if ! python3 -c "import json, sys; json.load(open(sys.argv[1]))" "$SETTINGS_FILE" 2>/dev/null; then
+    echo "ERROR: .claude/settings.json contains invalid JSON." >&2
+    echo "" >&2
+    echo "  File: $SETTINGS_FILE" >&2
+    echo "" >&2
+    echo "  Common causes:" >&2
+    echo "    - Merge conflict markers (<<<<<<<, =======, >>>>>>>) left by git stash/merge" >&2
+    echo "    - Trailing commas or missing brackets" >&2
+    echo "    - Manual edits that broke syntax" >&2
+    echo "" >&2
+    echo "  Fix the file and restart Claude." >&2
+    exit 1
+  fi
+fi
+
 # Read hook input from stdin (consume stdin so it doesn't block)
 HOOK_INPUT=$(cat)
 SOURCE=$(echo "$HOOK_INPUT" | grep -o '"source"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*:.*"\([^"]*\)".*/\1/')

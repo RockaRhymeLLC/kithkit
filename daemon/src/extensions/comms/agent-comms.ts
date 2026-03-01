@@ -23,7 +23,7 @@ const log = createLogger('agent-comms');
 
 export interface AgentMessage {
   from: string;
-  type: 'text' | 'status' | 'coordination' | 'pr-review';
+  type: string;
   text?: string;
   timestamp: string;
   messageId: string;
@@ -56,8 +56,6 @@ export interface CommsLogEntry {
   latencyMs?: number;
   error?: string;
 }
-
-const VALID_TYPES = ['text', 'status', 'coordination', 'pr-review'] as const;
 
 // ── State ─────────────────────────────────────────────────────
 
@@ -163,9 +161,6 @@ function validateMessage(body: unknown): { valid: boolean; error?: string } {
   }
   if (!msg.type || typeof msg.type !== 'string') {
     return { valid: false, error: "'type' is required and must be a string" };
-  }
-  if (!VALID_TYPES.includes(msg.type as typeof VALID_TYPES[number])) {
-    return { valid: false, error: `Invalid message type '${msg.type}'. Valid: ${VALID_TYPES.join(', ')}` };
   }
   if (!msg.messageId || typeof msg.messageId !== 'string') {
     return { valid: false, error: "'messageId' is required and must be a string" };
@@ -393,7 +388,7 @@ function resolveP2PName(
 
 export async function sendAgentMessage(
   peerName: string,
-  type: AgentMessage['type'],
+  type: string,
   text?: string,
   extra?: Partial<Pick<AgentMessage, 'status' | 'action' | 'task' | 'context' | 'callbackUrl' | 'repo' | 'branch' | 'pr'>>,
 ): Promise<AgentMessageResponse> {
