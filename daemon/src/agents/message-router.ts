@@ -76,8 +76,12 @@ function defaultTmuxInjector(agentId: string, text: string): boolean {
 
 /**
  * Send a message between agents. Logs to DB and routes to target.
+ *
+ * Always returns a result if the message was stored locally.
+ * Relay/forwarding failures are non-fatal: the message is stored and a
+ * `warning` field is included in the result instead of throwing.
  */
-export function sendMessage(req: SendMessageRequest): { messageId: number; delivered: boolean } {
+export function sendMessage(req: SendMessageRequest): { messageId: number; delivered: boolean; warning?: string } {
   // Validate type
   if (!VALID_MESSAGE_TYPES.includes(req.type)) {
     throw new MessageValidationError(`Invalid message type: ${req.type}`);
@@ -133,31 +137,42 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
     }
   }
 
-  // Route to target
-  if (isPersistentAgent(req.to)) {
-    // Direct channel: bypass scheduler and inject immediately
-    if (req.direct) {
-      const formatted = formatForTmux(req);
-      const injected = tmuxInjector(req.to, formatted);
-      if (injected) {
-        // Mark as processed — deliver-once, no re-notification
-        exec(
-          'UPDATE messages SET processed_at = ? WHERE id = ?',
-          new Date().toISOString(), message.id,
-        );
-        return { messageId: message.id, delivered: true };
+  // Route to target — non-fatal: message is already stored locally.
+  // Relay/P2P forwarding errors are caught and returned as a warning.
+  try {
+    if (isPersistentAgent(req.to)) {
+      // Direct channel: bypass scheduler and inject immediately
+      if (req.direct) {
+        const formatted = formatForTmux(req);
+        const injected = tmuxInjector(req.to, formatted);
+        if (injected) {
+          // Mark as processed — deliver-once, no re-notification
+          exec(
+            'UPDATE messages SET processed_at = ? WHERE id = ?',
+            new Date().toISOString(), message.id,
+          );
+          return { messageId: message.id, delivered: true };
+        }
+        // Injection failed (session not alive) — fall through to normal delivery
       }
-      // Injection failed (session not alive) — fall through to normal delivery
+
+      // Queue for delivery — the message-delivery scheduler task handles tmux injection.
+      // Trigger the task immediately so delivery doesn't wait for the next interval tick.
+      notifyNewMessage();
+      return { messageId: message.id, delivered: false };
     }
-
-    // Queue for delivery — the message-delivery scheduler task handles tmux injection.
-    // Trigger the task immediately so delivery doesn't wait for the next interval tick.
-    notifyNewMessage();
-    return { messageId: message.id, delivered: false };
+    // Workers pull their own messages — no active delivery needed
+    return { messageId: message.id, delivered: true };
+  } catch (err) {
+    // Forwarding/routing failed after local storage — non-fatal.
+    // Log and return success with a warning so callers don't receive a 500.
+    const warning = err instanceof Error ? err.message : String(err);
+    log.warn('Message relay/forwarding failed (message stored locally)', {
+      messageId: message.id,
+      error: warning,
+    });
+    return { messageId: message.id, delivered: false, warning };
   }
-  // Workers pull their own messages — no active delivery needed
-
-  return { messageId: message.id, delivered: true };
 }
 
 /**
