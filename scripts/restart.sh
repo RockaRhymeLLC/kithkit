@@ -25,7 +25,7 @@ rm -f "$RESTART_FLAG"
 # Kill existing session if running
 if session_exists; then
     kithkit_log "Killing existing session '$SESSION_NAME'..."
-    $TMUX_CMD kill-session -t "$SESSION_NAME"
+    $TMUX_CMD kill-session -t "=$SESSION_NAME"
     sleep 2
 fi
 
