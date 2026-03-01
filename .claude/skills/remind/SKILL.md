@@ -4,6 +4,9 @@ description: Set timed reminders delivered via Telegram. Creates self-cleaning l
 argument-hint: ["message" at <time> on <date>] | [list] | [cancel <id>]
 ---
 
+> **Human reminders only.** This skill delivers reminders to the human via Telegram.
+> For agent self-reminders (async follow-ups, worker checks), use `/timer` instead.
+
 # Timed Reminders
 
 Set reminders that fire at a specific date/time via Telegram, even when you're not in an active session. Uses launchd one-shot jobs that self-clean after delivery.
@@ -163,6 +166,10 @@ Reminder canceled: 20260131-1030
 | Reminder scripts | `scripts/reminders/remind-<id>.sh` |
 | launchd plists | `~/Library/LaunchAgents/com.assistant.reminder.<id>.plist` |
 | Logs | `logs/reminder-<id>.log` |
+
+## See Also
+
+- `/timer` — Agent self-reminder timers (daemon API, tmux injection, nag cycle). Use for async follow-ups instead of `bash sleep`.
 
 ## Notes
 
