@@ -4,6 +4,9 @@
  * Call registerCoreTasks(scheduler) after creating the Scheduler instance.
  * Each task must also have a corresponding entry in kithkit.config.yaml
  * (or kithkit.defaults.yaml) for the scheduler to schedule it.
+ *
+ * External tasks can be loaded from configurable directories via
+ * loadExternalTasks() — see scheduler.tasks_dirs in config.
  */
 
 import type { Scheduler } from '../scheduler.js';
@@ -14,6 +17,7 @@ import { register as registerBackup } from './backup.js';
 import { register as registerOrchestratorIdle } from './orchestrator-idle.js';
 import { register as registerMessageDelivery } from './message-delivery.js';
 import { register as registerCommsHeartbeat } from './comms-heartbeat.js';
+export { loadExternalTasks, type LoadResult } from './external-loader.js';
 
 /**
  * Register all core task handlers with the scheduler.
