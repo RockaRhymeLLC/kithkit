@@ -25,19 +25,37 @@ export function setNetworkApiConfig(config: BmoConfig): void {
 /**
  * Detect if a "to" value targets a group rather than a contact.
  * Supported formats:
- *   - "group:<uuid>"  (explicit prefix)
+ *   - "group:<uuid>"  (explicit prefix with UUID)
+ *   - "group:<name>"  (explicit prefix with group name)
  *   - bare UUID that matches a known group
+ *   - bare group name that matches a known group
  */
 async function resolveGroupId(to: string): Promise<string | null> {
+  const network = getNetworkClient();
+
   // Explicit group: prefix
   if (to.startsWith('group:')) {
-    return to.slice('group:'.length);
+    const value = to.slice('group:'.length);
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (uuidPattern.test(value)) {
+      return value; // group:<uuid>
+    }
+    // group:<name> — resolve name to UUID
+    if (network) {
+      try {
+        const groups = await network.getGroups();
+        const match = groups.find(g => g.name.toLowerCase() === value.toLowerCase());
+        if (match) return match.groupId;
+      } catch {
+        // Fall through
+      }
+    }
+    return null;
   }
 
   // Bare UUID pattern — check if it matches a known group
   const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (uuidPattern.test(to)) {
-    const network = getNetworkClient();
     if (network) {
       try {
         const groups = await network.getGroups();
@@ -47,6 +65,18 @@ async function resolveGroupId(to: string): Promise<string | null> {
       } catch {
         // Fall through — treat as contact
       }
+    }
+    return null;
+  }
+
+  // Bare group name — check if it matches a known group
+  if (network) {
+    try {
+      const groups = await network.getGroups();
+      const match = groups.find(g => g.name.toLowerCase() === to.toLowerCase());
+      if (match) return match.groupId;
+    } catch {
+      // Fall through — treat as contact
     }
   }
 
@@ -130,7 +160,7 @@ export async function handleNetworkRoute(
     if (subpath === 'send' && method === 'POST') {
       const body = await parseBody(req);
       if (!body.to || typeof body.to !== 'string') {
-        json(res, 400, withTimestamp({ error: 'to (recipient username or group:<groupId>) is required' }));
+        json(res, 400, withTimestamp({ error: 'to (recipient username, group name, or group:<id>) is required' }));
         return true;
       }
       if (!body.payload || typeof body.payload !== 'object') {
@@ -138,8 +168,9 @@ export async function handleNetworkRoute(
         return true;
       }
 
-      // Check if this targets a group
-      const groupId = await resolveGroupId(body.to);
+      // Check if this targets a group (via to field or explicit groupId)
+      const groupId = (typeof body.groupId === 'string' ? body.groupId : null)
+        ?? await resolveGroupId(body.to);
       if (groupId) {
         const result = await network.sendToGroup(groupId, body.payload as Record<string, unknown>);
 
@@ -185,7 +216,7 @@ export async function handleNetworkRoute(
     if (subpath === 'message' && method === 'POST') {
       const body = await parseBody(req);
       if (!body.to || typeof body.to !== 'string') {
-        json(res, 400, withTimestamp({ error: 'to (recipient username or group:<groupId>) is required' }));
+        json(res, 400, withTimestamp({ error: 'to (recipient username, group name, or group:<id>) is required' }));
         return true;
       }
 
@@ -200,8 +231,9 @@ export async function handleNetworkRoute(
         return true;
       }
 
-      // Check if this targets a group
-      const groupId = await resolveGroupId(body.to);
+      // Check if this targets a group (via to field or explicit groupId)
+      const groupId = (typeof body.groupId === 'string' ? body.groupId : null)
+        ?? await resolveGroupId(body.to);
       if (groupId) {
         const result = await network.sendToGroup(groupId, payload);
 
