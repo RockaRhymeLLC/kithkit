@@ -18,7 +18,7 @@ Set up a macOS menu bar voice client for your Kithkit agent. The client handles 
 ### 1. Install Python dependencies
 
 ```bash
-pip install sounddevice numpy requests pyyaml rumps
+pip install sounddevice numpy requests pyyaml rumps pynput
 ```
 
 - `sounddevice` — cross-platform audio I/O (preferred over pyaudio on macOS)
