@@ -61,6 +61,13 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `POST /api/orchestrator/escalate` | Escalate a task to the orchestrator (spawns if needed) |
 | `GET /api/orchestrator/status` | Check orchestrator status (alive, active jobs) |
 | `POST /api/orchestrator/shutdown` | Gracefully shut down orchestrator |
+| `POST /api/orchestrator/tasks` | Create an orchestrator task in the queue |
+| `GET /api/orchestrator/tasks` | List tasks (filter: `?status=pending\|assigned\|in_progress\|completed\|failed`) |
+| `GET /api/orchestrator/tasks/:id` | Get task detail (includes workers + activity log) |
+| `PUT /api/orchestrator/tasks/:id` | Update task (status, assignee, result) |
+| `POST /api/orchestrator/tasks/:id/activity` | Post an activity entry to a task |
+| `GET /api/orchestrator/tasks/:id/activity` | Get task activity log (paginated) |
+| `POST /api/orchestrator/tasks/:id/workers` | Assign a worker job to a task |
 | `POST /api/config/reload` | Hot-reload config from disk |
 
 See `docs/api-reference.md` for full request/response details.
@@ -166,11 +173,17 @@ After escalating, tell the human what you sent and that you're waiting for resul
 ### Task Execution (Orchestrator)
 
 When you are the orchestrator:
-- Decompose the task into subtasks
+- Check your task queue first: `GET /api/orchestrator/tasks?status=pending` — work through pending tasks before accepting new ones ad-hoc
+- Decompose each task into subtasks
 - Spawn workers via `POST /api/agents/spawn` with appropriate profiles
+- Track worker assignments: `POST /api/orchestrator/tasks/:id/workers`
+- Log progress: `POST /api/orchestrator/tasks/:id/activity`
 - Monitor worker status via `GET /api/agents/:id/status`
+- When complete, update task: `PUT /api/orchestrator/tasks/:id` with `status: 'completed'` and `result`
 - Synthesize results and send summary to comms via `POST /api/messages {to: 'comms', type: 'result'}`
 - Exit when all work is complete — the daemon will clean up your session
+
+**Task queue**: The `orchestrator_tasks` table is the authoritative record of work. The daemon's idle monitor wakes the orchestrator when pending tasks arrive. Always check and update task status rather than relying on in-session memory alone.
 
 ### Memory-First Context (Comms + Orchestrator)
 
