@@ -11,11 +11,15 @@
  */
 
 import { query, exec } from '../../core/db.js';
-import { injectMessage, listSessions, _getCommsSession } from '../../agents/tmux.js';
+import { injectMessage, listSessions, _getCommsSession, getOrchestratorState } from '../../agents/tmux.js';
+import { getLastNotificationTime } from './message-delivery.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('comms-heartbeat');
+
+/** Skip heartbeat unread-message nudge if message-delivery notified within this window. */
+const DEDUP_WINDOW_MS = 60_000;
 
 interface AgentRow {
   id: string;
@@ -28,7 +32,9 @@ interface MessageCount {
 }
 
 /**
- * Check whether the comms session is alive.
+ * Check whether the comms session (comms1) is alive.
+ * Checks specifically for the comms session name — not just any tmux session —
+ * so a running orchestrator (orch1) doesn't produce a false positive.
  */
 function isCommsAlive(): boolean {
   return listSessions().includes(_getCommsSession());
@@ -53,7 +59,8 @@ function getUnreadMessageCount(): number {
   const result = query<MessageCount>(
     `SELECT COUNT(*) as count FROM messages
      WHERE to_agent = 'comms'
-       AND read_at IS NULL`,
+       AND read_at IS NULL
+       AND processed_at IS NOT NULL`,
   );
   return result[0]?.count ?? 0;
 }
@@ -97,7 +104,13 @@ async function run(): Promise<void> {
   }
 
   const pendingWorkers = getPendingWorkers();
-  const unreadCount = getUnreadMessageCount();
+
+  // Skip unread-message nudge if message-delivery already notified comms recently.
+  // This prevents the agent from receiving both a real-time notification and a
+  // heartbeat nudge for the same unread messages (kithkit #30).
+  const lastMessageNotification = getLastNotificationTime('comms');
+  const recentlyNotified = (Date.now() - lastMessageNotification) < DEDUP_WINDOW_MS;
+  const unreadCount = recentlyNotified ? 0 : getUnreadMessageCount();
 
   if (pendingWorkers.length === 0 && unreadCount === 0) {
     log.debug('Nothing pending — heartbeat silent');

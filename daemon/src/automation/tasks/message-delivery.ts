@@ -15,7 +15,7 @@
  */
 
 import { query, exec, update } from '../../core/db.js';
-import { injectMessage, isOrchestratorAlive, listSessions, _getCommsSession } from '../../agents/tmux.js';
+import { injectMessage, listSessions, _getCommsSession, _getOrchestratorSession, getOrchestratorState } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 import type { Message } from '../../agents/message-router.js';
@@ -49,7 +49,24 @@ const _retryCounts = new Map<number, number>();
  */
 const _lastPingTime = new Map<number, number>();
 
+/**
+ * Tracks the last time we successfully injected a notification ping into
+ * each persistent agent's tmux session. Used by comms-heartbeat to avoid
+ * duplicate nudges — if message-delivery already notified comms recently,
+ * the heartbeat skips the unread-message portion of its nudge.
+ */
+const _lastAgentNotificationTime = new Map<string, number>();
+
 // ── Public API ───────────────────────────────────────────────
+
+/**
+ * Returns the last time a notification ping was successfully injected into
+ * the given agent's tmux session (epoch ms), or 0 if never.
+ * Used by comms-heartbeat to suppress duplicate unread-message nudges.
+ */
+export function getLastNotificationTime(agentId: string): number {
+  return _lastAgentNotificationTime.get(agentId) ?? 0;
+}
 
 /**
  * Notify the delivery task that a new message was queued.
@@ -78,7 +95,7 @@ function getLiveSessions(): Set<string> {
   if (sessions.includes(_getCommsSession())) {
     live.add('comms');
   }
-  if (isOrchestratorAlive()) {
+  if (sessions.includes(_getOrchestratorSession())) {
     live.add('orchestrator');
   }
   return live;
@@ -185,6 +202,13 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
 
     if (deliverable.length === 0) continue;
 
+    // Gate orchestrator injection: never inject when Claude is actively running.
+    // The wrapper's poll loop will pick up queued messages between runs.
+    if (agentId === 'orchestrator' && getOrchestratorState() === 'active') {
+      log.debug('Skipping orchestrator injection — Claude is active, wrapper will poll');
+      continue;
+    }
+
     // Inject a single notification ping for the batch
     const pingText = formatNotificationPing(deliverable[0]!);
     const success = injectMessage(agentId, pingText);
@@ -208,6 +232,7 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
           updated_at: now,
         });
       }
+      _lastAgentNotificationTime.set(agentId, nowMs);
       log.debug('Notification ping sent', { to: agentId, count: deliverable.length });
     } else {
       for (const msg of deliverable) {
@@ -270,6 +295,12 @@ async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> 
     if (!liveSessions.has(agentId)) continue;
     if (messages.length === 0) continue;
 
+    // Gate orchestrator re-ping: skip when Claude is actively running
+    if (agentId === 'orchestrator' && getOrchestratorState() === 'active') {
+      log.debug('Skipping orchestrator re-ping — Claude is active');
+      continue;
+    }
+
     const pingText = formatNotificationPing(messages[0]!);
     const success = injectMessage(agentId, pingText);
 
@@ -281,6 +312,7 @@ async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> 
         const updatedMeta = JSON.stringify({ ...existingMeta, last_notified_at: nowIso });
         exec('UPDATE messages SET metadata = ? WHERE id = ?', updatedMeta, msg.id);
       }
+      _lastAgentNotificationTime.set(agentId, now);
       repinged += messages.length;
       log.debug('Re-ping sent for unread messages', { to: agentId, count: messages.length });
     }
@@ -333,7 +365,12 @@ async function notifyWorkerCompletions(liveSessions: Set<string>): Promise<numbe
     }
 
     if (liveSessions.has(spawner)) {
-      injectMessage(spawner, pingText);
+      // Gate orchestrator injection: skip when Claude is actively running
+      if (spawner === 'orchestrator' && getOrchestratorState() === 'active') {
+        log.debug('Skipping worker completion injection to orchestrator — Claude is active');
+      } else {
+        injectMessage(spawner, pingText);
+      }
     }
 
     exec('UPDATE worker_jobs SET spawner_notified_at = ? WHERE id = ?', now, job.id);
@@ -384,6 +421,7 @@ export function register(scheduler: Scheduler): void {
 export function _resetRetriesForTesting(): void {
   _retryCounts.clear();
   _lastPingTime.clear();
+  _lastAgentNotificationTime.clear();
 }
 
 /** @internal Get current retry count for testing */

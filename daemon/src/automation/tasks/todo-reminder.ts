@@ -20,6 +20,7 @@ interface TodoRow {
 }
 
 async function run(): Promise<void> {
+  // Check if comms session is alive
   if (!sessionExists()) {
     log.debug('Skipping reminder: no tmux session');
     return;
@@ -64,7 +65,6 @@ async function run(): Promise<void> {
 
 /**
  * Register the todo-reminder task with the scheduler.
- * Handles its own session check (set requires_session: false in config).
  */
 export function register(scheduler: Scheduler): void {
   scheduler.registerHandler('todo-reminder', async () => {
