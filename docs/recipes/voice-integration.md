@@ -48,8 +48,8 @@ Complete each recipe's verification steps before moving to the next.
 
 ```bash
 # 1. TTS — Python venv + models
-python3 -m venv daemon/src/extensions/voice/.venv
-daemon/src/extensions/voice/.venv/bin/pip install kokoro-onnx numpy
+python3 -m venv daemon/src/voice/.venv
+daemon/src/voice/.venv/bin/pip install kokoro-onnx numpy
 
 mkdir -p models
 curl -L -o models/kokoro-v1.0.onnx \
@@ -101,7 +101,7 @@ import path from 'path';
 
 export async function onInit(projectDir: string): Promise<void> {
   // 1. Check Python venv exists
-  const pythonPath = path.join(projectDir, 'daemon/src/extensions/voice/.venv/bin/python3');
+  const pythonPath = path.join(projectDir, 'daemon/src/voice/.venv/bin/python3');
   if (!existsSync(pythonPath)) {
     log.warn('Voice: Python venv not found at %s — disabling voice', pythonPath);
     log.warn('Voice: Run the setup steps in docs/recipes/voice-tts.md');
@@ -197,7 +197,7 @@ For component-specific troubleshooting, see the individual recipe docs.
 |-----------|----------|-------|
 | Degraded mode on extension failure | Framework (`main.ts`) | kithkit (PR #7) |
 | Integration recipes (this doc + component docs) | Framework (`docs/recipes/`) | kithkit |
-| Voice extension code | Agent repo (`daemon/src/extensions/voice/`) | Your agent |
+| Voice extension code | Agent repo (`daemon/src/voice/`) | Your agent |
 | TTS worker (`tts-worker.py`) | Agent repo | Your agent |
 | Voice client app | Agent repo (`voice-client/`) | Your agent |
 | Python venv | Agent repo (`.venv/`) | Your agent |

@@ -139,6 +139,7 @@ Worker lifecycle management.
 | `identity.ts` | Load and apply agent identity from `identity.md` |
 | `recovery.ts` | Detect and recover from worker crashes and hangs |
 | `message-router.ts` | Route inter-agent messages between comms agent and workers |
+| `tmux.ts` | tmux session management — spawn orchestrator, inject text, check session state |
 
 Workers are ephemeral — they spawn for a task and terminate. The daemon tracks active workers in `kithkit.db` (the `agents` table) with their status, profile, PID, and activity timestamps.
 
@@ -187,6 +188,8 @@ Background task scheduling.
 | `todo-reminder` | Every 30m | Prompt agent to work on open todos |
 | `approval-audit` | 1st of month, 9am | Review and prune 3rd-party sender approvals |
 | `backup` | Sunday 3am | Zip and verify backup of state and database |
+| `orchestrator-idle` | Every 2m | Monitor orchestrator session — spawn/wake on pending tasks, teardown on idle |
+| `message-delivery` | Every 10s | Deliver queued inter-agent messages to tmux sessions |
 
 Extensions add more tasks by registering handlers — see [Extensions](extensions.md).
 
@@ -314,6 +317,7 @@ The `scripts/` directory provides session management and operational utilities.
 | `start-tmux.sh` | Start or attach to the persistent tmux session; `--detach` for background |
 | `start.sh` | Start Claude Code directly (called by tmux session) |
 | `restart.sh` | Graceful restart — save state, signal restart-watcher |
+| `restart-watcher.sh` | Watch for restart signal and relaunch Claude session |
 | `watchdog.sh` | Auto-restart Claude on unexpected exit (used in detached mode) |
 | `attach.sh` | Attach to existing tmux session |
 
@@ -355,8 +359,11 @@ See [Extensions](extensions.md) for a complete authoring guide.
 **Registration APIs** (imported from `kithkit/daemon`):
 
 ```typescript
-import { registerExtension } from 'kithkit/daemon';
-import { registerRoute } from 'kithkit/daemon/core/route-registry';
-import { registerCheck } from 'kithkit/daemon/core/extended-status';
+// In your agent repo's extension file (relative to daemon/src/)
+import { registerExtension } from './core/extensions.js';
+import { registerRoute } from './core/route-registry.js';
+import { registerCheck } from './core/extended-status.js';
 // Scheduler.registerHandler() is called on the scheduler instance passed via config
 ```
+
+Import paths are relative to `daemon/src/`. Agent repos that use a `bootstrap.ts` entry point import from within the daemon source tree.

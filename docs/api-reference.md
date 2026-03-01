@@ -14,6 +14,8 @@ The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It bin
 - [Config & State](#config--state)
 - [Scheduler / Tasks](#scheduler--tasks)
 - [Usage & Metrics](#usage--metrics)
+- [Orchestrator](#orchestrator)
+- [Timers](#timers)
 
 ---
 
@@ -944,6 +946,253 @@ curl http://localhost:3847/api/usage
   "timestamp": "..."
 }
 ```
+
+---
+
+## Orchestrator
+
+### POST /api/orchestrator/escalate
+
+Escalate a task to the orchestrator. If the orchestrator session is not running, the daemon spawns one.
+
+```bash
+curl -X POST http://localhost:3847/api/orchestrator/escalate \
+  -H 'Content-Type: application/json' \
+  -d '{"task": "Refactor the authentication module", "context": "See issue #42"}'
+```
+
+```json
+// Request body
+{
+  "task": "Refactor the authentication module",   // required — task description
+  "context": "See issue #42"                       // optional — background context
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ "taskId": "...", "status": "pending", "orchestrator": "running", "timestamp": "..." }` |
+| 400 | Missing task |
+
+---
+
+### GET /api/orchestrator/status
+
+Check orchestrator session status.
+
+```bash
+curl http://localhost:3847/api/orchestrator/status
+```
+
+```json
+// Response 200
+{
+  "alive": true,
+  "session": "orch1",
+  "activeJobs": 2,
+  "timestamp": "..."
+}
+```
+
+---
+
+### POST /api/orchestrator/shutdown
+
+Gracefully shut down the orchestrator session.
+
+```bash
+curl -X POST http://localhost:3847/api/orchestrator/shutdown
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ "status": "shutdown", "timestamp": "..." }` |
+| 404 | Orchestrator not running |
+
+---
+
+### POST /api/orchestrator/tasks
+
+Create a task in the orchestrator queue.
+
+```bash
+curl -X POST http://localhost:3847/api/orchestrator/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"title": "Audit documentation", "description": "Check all docs for accuracy", "priority": 1}'
+```
+
+```json
+// Request body
+{
+  "title": "Audit documentation",       // required
+  "description": "Check all docs",     // optional
+  "priority": 1                         // optional — higher = more urgent
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 201 | `{ "id": "...", "status": "pending", "timestamp": "..." }` |
+| 400 | Missing title |
+
+---
+
+### GET /api/orchestrator/tasks
+
+List orchestrator tasks. Filter by status.
+
+```bash
+curl "http://localhost:3847/api/orchestrator/tasks?status=pending"
+```
+
+| Query Param | Type | Description |
+|-------------|------|-------------|
+| `status` | string | Filter: `pending`, `assigned`, `in_progress`, `completed`, `failed` |
+
+---
+
+### GET /api/orchestrator/tasks/:id
+
+Get a single task with its workers and activity log.
+
+| Status | Response |
+|--------|----------|
+| 200 | Task object with `workers` and `activity` arrays |
+| 404 | Not found |
+
+---
+
+### PUT /api/orchestrator/tasks/:id
+
+Update a task (status, assignee, result).
+
+```json
+// Request body (all optional)
+{
+  "status": "completed",
+  "assignee": "orchestrator",
+  "result": "All docs updated successfully"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | Updated task object |
+| 404 | Not found |
+
+---
+
+### POST /api/orchestrator/tasks/:id/activity
+
+Post an activity entry to a task's log.
+
+```json
+// Request body
+{
+  "event_type": "progress",
+  "details": "Completed 3 of 5 subtasks"
+}
+```
+
+---
+
+### GET /api/orchestrator/tasks/:id/activity
+
+Get the activity log for a task (paginated).
+
+```bash
+curl "http://localhost:3847/api/orchestrator/tasks/abc-123/activity?limit=20"
+```
+
+---
+
+### POST /api/orchestrator/tasks/:id/workers
+
+Assign a worker to a task.
+
+```json
+// Request body
+{
+  "jobId": "worker-job-uuid",
+  "profile": "coding",
+  "prompt": "Fix the auth module"
+}
+```
+
+---
+
+## Timers
+
+### POST /api/timer
+
+Create a self-reminder timer. Fires once, then nags every 30 seconds until acknowledged. Auto-expires after 10 minutes.
+
+```bash
+curl -X POST http://localhost:3847/api/timer \
+  -H 'Content-Type: application/json' \
+  -d '{"delay": "90s", "message": "Check worker results"}'
+```
+
+```json
+// Request body
+{
+  "delay": "90s",                    // required — seconds (number) or string with unit ("90s", "2m")
+  "message": "Check worker results" // required — reminder text
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 201 | `{ "id": "...", "delay": 90, "message": "...", "fires_at": "...", "timestamp": "..." }` |
+| 400 | Missing delay or message |
+
+---
+
+### GET /api/timers
+
+List all active timers.
+
+```bash
+curl http://localhost:3847/api/timers
+```
+
+---
+
+### POST /api/timer/:id/ack
+
+Acknowledge a timer (stops nagging).
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ "status": "acknowledged", "timestamp": "..." }` |
+| 404 | Not found |
+
+---
+
+### POST /api/timer/:id/snooze
+
+Snooze a timer. Default snooze is 5 minutes.
+
+```json
+// Request body (optional)
+{ "delay": 300 }  // snooze duration in seconds
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ "status": "snoozed", "fires_at": "...", "timestamp": "..." }` |
+| 404 | Not found |
+
+---
+
+### DELETE /api/timer/:id
+
+Cancel a timer.
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ "status": "cancelled", "timestamp": "..." }` |
+| 404 | Not found |
 
 ---
 
