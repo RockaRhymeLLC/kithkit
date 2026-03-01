@@ -263,9 +263,9 @@ Title: $TASK_TITLE
 $TASK_DESC
 
 When you finish this task, update its status:
-  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"completed\",\"result\":\"<summary of what you did>\"}'
+  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"completed\",\"result\":\"{summary of what you did}\"}'
 If the task fails:
-  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"failed\",\"result\":\"<what went wrong>\"}'"
+  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"failed\",\"result\":\"{what went wrong}\"}'"
 
         printf '%s' "$TASK_PROMPT" > "$PROMPT_FILE"
         run_claude "$PROMPT_FILE"
