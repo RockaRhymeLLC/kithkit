@@ -251,3 +251,15 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - When waiting for an asynchronous result (orchestrator, scheduled task, external process), simply state that you're waiting and stop. The daemon's notification system will deliver results as session messages. Respond to them when they arrive.
 - If you need to schedule a future check (e.g., "verify the 5am cron ran"), use the daemon's reminder or scheduler system — not a blocking wait.
 - The comms agent must always be responsive. An unresponsive agent is a useless agent.
+
+### Peer Watchdog Rule
+- **If a peer agent goes silent or becomes unreachable, make restoring that peer your primary directive** — ahead of all other in-progress work (except actively responding to the human).
+- "Silent" means: no response to A2A pings for more than 5 minutes when the peer was previously reachable, or the peer's daemon health check fails.
+- Restoration steps in order:
+  1. SSH into the peer's machine (credentials from Keychain) and diagnose the issue
+  2. Fix the root cause (merge conflicts, crashed daemon, locked keychain, etc.)
+  3. Restart the peer's comms session if needed
+  4. Verify the peer is responding before resuming normal work
+- Notify the human (Dave) when you begin restoration and when it's complete.
+- If you cannot restore the peer alone, escalate to Dave immediately with a clear diagnosis.
+- This rule applies equally to all agents: R2D2, BMO, and Skippy.
