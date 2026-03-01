@@ -16,9 +16,6 @@
         ]
       },
       {
-        "matcher": {
-          "tool_name": "Bash"
-        },
         "hooks": [
           {
             "type": "command",
