@@ -6,7 +6,7 @@ argument-hint: [start | identity | autonomy | integrations | all]
 
 # Setup Wizard
 
-Interactive wizard to configure the assistant after cloning the CC4Me template.
+Interactive wizard to configure the assistant after cloning the kithkit template.
 
 ## Pre-Setup Installation
 
@@ -30,7 +30,7 @@ Before running the setup wizard, the user needs to complete these steps (guide t
 
 ```bash
 # 1. Clone the template
-git clone https://github.com/RockaRhyme/CC4Me.git my-assistant
+git clone https://github.com/RockaRhymeLLC/kithkit.git my-assistant
 cd my-assistant
 
 # 2. Run initialization (checks prerequisites, makes scripts executable)
@@ -40,8 +40,8 @@ cd my-assistant
 cd daemon && npm install && npm run build && cd ..
 
 # 4. Copy and customize config
-cp cc4me.config.yaml.template cc4me.config.yaml
-# Edit cc4me.config.yaml: set agent.name, tmux.session, enable channels as needed
+cp kithkit.config.yaml.template kithkit.config.yaml
+# Edit kithkit.config.yaml: set agent.name, tmux.session, enable channels as needed
 
 # 5. Set up daemon as background service
 cp launchd/com.assistant.daemon.plist.template ~/Library/LaunchAgents/com.assistant.daemon.plist
@@ -160,24 +160,24 @@ Ask user's preferred notification channel:
 
 Write choice to `.claude/state/channel.txt`
 
-### 5. CC4Me Network (Optional)
+### 5. Agent Network (Optional)
 
-Enable internet-scale agent-to-agent communication via the CC4Me Relay:
+Enable internet-scale agent-to-agent communication via a relay server:
 
-1. Add to `cc4me.config.yaml`:
+1. Add to `kithkit.config.yaml`:
    ```yaml
    network:
      enabled: true
-     relay_url: "https://relay.bmobot.ai"
+     relay_url: "https://your-relay.example.com"
      owner_email: "agent@example.com"
    ```
 2. Restart daemon — it will auto-generate an Ed25519 keypair and register with the relay
-3. Identity key stored as `credential-cc4me-agent-key` in Keychain (auto-generated, never manual)
+3. Identity key stored as `credential-kithkit-agent-key` in Keychain (auto-generated, never manual)
 4. Registration starts as "pending" — relay admin must approve via `POST /registry/agents/:name/approve`
 5. Once approved, agent can send/receive messages over the internet
 6. Add `relay-inbox-poll` task to scheduler (interval: 30s) to poll for incoming messages
 
-Creates: `credential-cc4me-agent-key` in Keychain (auto)
+Creates: `credential-kithkit-agent-key` in Keychain (auto)
 
 ### 6. Memory Initialization
 - Copy memory template
@@ -196,7 +196,7 @@ Creates: `.claude/state/calendar.md`
 ### Full Setup (`/setup` or `/setup start`)
 
 1. **Welcome**
-   - Explain what CC4Me is
+   - Explain what Kithkit is
    - Overview of setup process
 
 2. **Identity Configuration**
@@ -249,7 +249,7 @@ Creates: `.claude/state/calendar.md`
 
 ### Welcome
 ```
-# Welcome to CC4Me Setup
+# Welcome to Kithkit Setup
 
 I'll help you configure your personal assistant.
 
@@ -357,11 +357,11 @@ curl http://localhost:3847/health
 > /mode                # Should show current autonomy mode
 ```
 
-## Updating CC4Me
+## Updating Kithkit
 
 ```bash
 # Add upstream remote (one time)
-git remote add upstream https://github.com/RockaRhyme/CC4Me.git
+git remote add upstream https://github.com/RockaRhymeLLC/kithkit.git
 
 # Fetch and merge updates
 git fetch upstream

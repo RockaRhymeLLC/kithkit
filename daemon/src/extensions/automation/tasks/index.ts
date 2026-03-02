@@ -20,7 +20,7 @@ import { register as registerMemoryConsolidation } from './memory-consolidation.
  * Only registers handlers for tasks that exist in the scheduler config —
  * this prevents errors in test configs that don't include all tasks.
  */
-export function registerR2Tasks(scheduler: Scheduler): void {
+export function registerAgentTasks(scheduler: Scheduler): void {
   const registrations: Array<[string, (s: Scheduler) => void]> = [
     ['memory-consolidation', registerMemoryConsolidation],
   ];

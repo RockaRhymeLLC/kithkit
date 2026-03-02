@@ -45,7 +45,7 @@ Add to `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/bmo/.config/kithkit/hooks/github-rate-check.py"
+            "command": "python3 ~/.config/kithkit/hooks/github-rate-check.py"
           }
         ]
       }
@@ -56,7 +56,7 @@ Add to `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 /Users/bmo/.config/kithkit/hooks/github-rate-log.py"
+            "command": "python3 ~/.config/kithkit/hooks/github-rate-log.py"
           }
         ]
       }
@@ -75,7 +75,7 @@ Note: the matcher is `"Bash"` with a capital B — it matches the tool name, not
     {
       "timestamp": "2026-02-25T14:32:00Z",
       "action": "gh pr create",
-      "repo": "RockaRhymeLLC/KKit-BMO",
+      "repo": "your-org/your-repo",
       "agent": "worker-abc123"
     }
   ]

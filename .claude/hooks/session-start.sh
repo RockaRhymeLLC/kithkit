@@ -110,10 +110,10 @@ fi
 # Daemon status
 if [ "$DAEMON_RUNNING" = "true" ]; then
   echo "### Daemon"
-  echo "CC4Me daemon is running (port 3847). Transcript watching, Telegram, email, and scheduled tasks are managed by the daemon."
+  echo "Kithkit daemon is running (port 3847). Transcript watching, Telegram, email, and scheduled tasks are managed by the daemon."
 else
   echo "### Daemon"
-  echo "CC4Me daemon is NOT running. Using fallback v1 transcript watcher. Start daemon: \`launchctl load ~/Library/LaunchAgents/com.assistant.daemon.plist\`"
+  echo "Kithkit daemon is NOT running. Using fallback v1 transcript watcher. Start daemon: \`launchctl load ~/Library/LaunchAgents/com.assistant.daemon.plist\`"
 fi
 echo ""
 

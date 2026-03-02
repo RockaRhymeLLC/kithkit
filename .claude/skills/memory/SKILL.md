@@ -155,9 +155,9 @@ Filename: 20260203-0445-prefers-dark-mode.md
 ```
 ## Memory Conflicts Report
 
-### Group: Dave Hurley
-- 20260201-1200-dave-identity.md (user, confidence 0.9) — "Prefers Dave, works at Acme"
-- 20260205-0900-dave-work.md (auto-extraction, confidence 0.7) — "Dave works at Initech"
+### Group: Jane Smith
+- 20260201-1200-user-identity.md (user, confidence 0.9) — "Prefers Jane, works at Acme"
+- 20260205-0900-user-work.md (auto-extraction, confidence 0.7) — "Jane works at Initech"
 ⚠️  Possible conflict: workplace
 
 ### No other conflicts found.

@@ -11,7 +11,7 @@ daemon:
   log_dir: logs
   lan:
     enabled: false
-    bind_host: "0.0.0.0"
+    bind_host: "127.0.0.1"
     port: 3848
   log_rotation:
     max_size_mb: 10
