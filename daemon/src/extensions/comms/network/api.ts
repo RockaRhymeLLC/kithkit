@@ -12,13 +12,13 @@ import { sendMessage } from '../../../agents/message-router.js';
 import { query } from '../../../core/db.js';
 import { getNetworkClient, getCommunityStatus } from './sdk-bridge.js';
 import { checkRegistrationStatus } from './registration.js';
-import type { R2Config } from '../../config.js';
+import type { AgentConfig } from '../../config.js';
 
 const log = createLogger('api:network');
 
-let _config: R2Config | null = null;
+let _config: AgentConfig | null = null;
 
-export function setNetworkApiConfig(config: R2Config): void {
+export function setNetworkApiConfig(config: AgentConfig): void {
   _config = config;
 }
 

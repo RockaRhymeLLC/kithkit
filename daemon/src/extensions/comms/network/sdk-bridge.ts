@@ -13,7 +13,7 @@ import type {
   Message, ContactRequest, Broadcast, WireEnvelope,
   GroupMessage, GroupInvitationEvent,
 } from './sdk-types.js';
-import type { R2Config, NetworkCommunity } from '../../config.js';
+import type { AgentConfig, NetworkCommunity } from '../../config.js';
 import { createLogger } from '../../../core/logger.js';
 import { commsSessionExists } from '../../../core/session-bridge.js';
 import { sendMessage } from '../../../agents/message-router.js';
@@ -24,7 +24,7 @@ import { logCommsEntry, getDisplayName } from '../agent-comms.js';
 const log = createLogger('network:sdk');
 
 let _network: CC4MeNetwork | null = null;
-let _config: R2Config | null = null;
+let _config: AgentConfig | null = null;
 
 export function getNetworkClient(): CC4MeNetwork | null {
   return _network;
@@ -34,7 +34,7 @@ export function getNetworkClient(): CC4MeNetwork | null {
  * Initialize the KithKit A2A Network SDK.
  * Returns true if initialization succeeded, false if degraded to LAN-only.
  */
-export async function initNetworkSDK(config: R2Config): Promise<boolean> {
+export async function initNetworkSDK(config: AgentConfig): Promise<boolean> {
   _config = config;
   const networkConfig = config.network;
 

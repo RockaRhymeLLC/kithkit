@@ -6,7 +6,7 @@
 # Ensure claude binary is on PATH (hooks inherit a minimal shell environment)
 export PATH="$HOME/.local/bin:$PATH"
 
-LOCK_FILE="/tmp/cc4me-memory-extraction.lock"
+LOCK_FILE="/tmp/kithkit-memory-extraction.lock"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 MEMORY_DIR="$PROJECT_DIR/.claude/state/memory/memories"
 
@@ -42,9 +42,9 @@ if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
 fi
 
 # Build the prompt and write to a temp file (avoids shell quoting issues with multi-line args)
-PROMPT_FILE=$(mktemp /tmp/r2d2-extract-prompt.XXXXXX)
+PROMPT_FILE=$(mktemp /tmp/kithkit-extract-prompt.XXXXXX)
 cat > "$PROMPT_FILE" <<PROMPT_EOF
-You are a memory extraction agent for a personal assistant named R2D2.
+You are a memory extraction agent for a kithkit personal assistant.
 
 Read the transcript file at: $TRANSCRIPT_PATH
 Read only the LAST 200 lines to stay fast.
