@@ -144,38 +144,14 @@ const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${config.daemon.port}`);
   const requestStartMs = Date.now();
 
-  // Capture status code and body field names for metrics logging
+  // Capture status code for metrics logging
   let capturedStatusCode = 200;
-  let capturedBodyFields: string[] | null = null;
   const origWriteHead = res.writeHead.bind(res);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   res.writeHead = function metricsWriteHead(statusCode: number, ...args: any[]) {
     capturedStatusCode = statusCode;
     return origWriteHead(statusCode, ...args);
   } as typeof res.writeHead;
-
-  // Capture request body field names for 4xx error logging
-  const chunks: Buffer[] = [];
-  req.on('data', (chunk: Buffer) => chunks.push(chunk));
-
-  res.on('finish', () => {
-    const latencyMs = Date.now() - requestStartMs;
-    // Extract body field names only on 4xx for diagnostics
-    if (capturedStatusCode >= 400 && capturedStatusCode < 500 && chunks.length > 0) {
-      try {
-        const body = JSON.parse(Buffer.concat(chunks).toString());
-        if (body && typeof body === 'object') {
-          capturedBodyFields = Object.keys(body);
-        }
-      } catch {
-        // Not JSON — ignore
-      }
-    }
-    // Skip logging /api/metrics itself to avoid feedback loops
-    if (url.pathname !== '/api/metrics') {
-      logRequest(req, capturedStatusCode, latencyMs, capturedBodyFields);
-    }
-  });
 
   addTimestamp(res);
 
@@ -316,8 +292,45 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
   };
 
-  handleRoutes().catch((err) => {
-    log.error('Request error', { path: url.pathname, error: String(err) });
+  // Buffer the full request body before dispatching routes.
+  // This ensures parseBody() can read it even for handlers that are checked
+  // later in the loop (after awaits have given the event loop time to flush
+  // the stream through the metrics listener).
+  const bodyChunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => bodyChunks.push(chunk));
+  req.on('end', () => {
+    const rawBody = Buffer.concat(bodyChunks);
+    (req as unknown as Record<string, unknown>)._rawBody = rawBody;
+
+    // Wire up metrics finish logger now that we have the buffered body
+    res.on('finish', () => {
+      const latencyMs = Date.now() - requestStartMs;
+      let capturedBodyFields: string[] | null = null;
+      if (capturedStatusCode >= 400 && capturedStatusCode < 500 && rawBody.length > 0) {
+        try {
+          const body = JSON.parse(rawBody.toString());
+          if (body && typeof body === 'object') {
+            capturedBodyFields = Object.keys(body as object);
+          }
+        } catch {
+          // Not JSON — ignore
+        }
+      }
+      if (url.pathname !== '/api/metrics') {
+        logRequest(req, capturedStatusCode, latencyMs, capturedBodyFields);
+      }
+    });
+
+    handleRoutes().catch((err) => {
+      log.error('Request error', { path: url.pathname, error: String(err) });
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error', timestamp: new Date().toISOString() }));
+      }
+    });
+  });
+  req.on('error', (err) => {
+    log.error('Request stream error', { path: url.pathname, error: String(err) });
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error', timestamp: new Date().toISOString() }));
