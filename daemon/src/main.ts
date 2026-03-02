@@ -25,6 +25,7 @@ import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleSelftestRoute } from './api/selftest.js';
 import { handleTaskQueueRoute } from './api/task-queue.js';
 import { handleContactsRoute } from './api/contacts.js';
+import { handleMetricsRoute, logRequest } from './api/metrics.js';
 import {
   getExtension,
   isDegraded,
@@ -141,6 +142,40 @@ function addTimestamp(res: http.ServerResponse): void {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${config.daemon.port}`);
+  const requestStartMs = Date.now();
+
+  // Capture status code and body field names for metrics logging
+  let capturedStatusCode = 200;
+  let capturedBodyFields: string[] | null = null;
+  const origWriteHead = res.writeHead.bind(res);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  res.writeHead = function metricsWriteHead(statusCode: number, ...args: any[]) {
+    capturedStatusCode = statusCode;
+    return origWriteHead(statusCode, ...args);
+  } as typeof res.writeHead;
+
+  // Capture request body field names for 4xx error logging
+  const chunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => chunks.push(chunk));
+
+  res.on('finish', () => {
+    const latencyMs = Date.now() - requestStartMs;
+    // Extract body field names only on 4xx for diagnostics
+    if (capturedStatusCode >= 400 && capturedStatusCode < 500 && chunks.length > 0) {
+      try {
+        const body = JSON.parse(Buffer.concat(chunks).toString());
+        if (body && typeof body === 'object') {
+          capturedBodyFields = Object.keys(body);
+        }
+      } catch {
+        // Not JSON — ignore
+      }
+    }
+    // Skip logging /api/metrics itself to avoid feedback loops
+    if (url.pathname !== '/api/metrics') {
+      logRequest(req, capturedStatusCode, latencyMs, capturedBodyFields);
+    }
+  });
 
   addTimestamp(res);
 
@@ -225,6 +260,7 @@ const server = http.createServer((req, res) => {
         () => handleTasksRoute(req, res, url.pathname),
         () => handleConfigRoute(req, res, url.pathname),
         () => handleSelftestRoute(req, res, url.pathname),
+        () => handleMetricsRoute(req, res, url.pathname, url.searchParams),
       ];
       for (const handler of handlers) {
         const handled = await handler();

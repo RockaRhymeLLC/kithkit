@@ -18,6 +18,7 @@ import { register as registerOrchestratorIdle } from './orchestrator-idle.js';
 import { register as registerMessageDelivery } from './message-delivery.js';
 import { register as registerCommsHeartbeat } from './comms-heartbeat.js';
 import { register as registerPeerHeartbeat } from './peer-heartbeat.js';
+import { register as registerMetricsAggregation } from './api-metrics-aggregation.js';
 export { loadExternalTasks, type LoadResult } from './external-loader.js';
 
 /**
@@ -35,6 +36,7 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'message-delivery', register: registerMessageDelivery },
     { name: 'comms-heartbeat', register: registerCommsHeartbeat },
     { name: 'peer-heartbeat', register: registerPeerHeartbeat },
+    { name: 'api-metrics-aggregation', register: registerMetricsAggregation },
   ];
 
   for (const { name, register } of registrations) {
