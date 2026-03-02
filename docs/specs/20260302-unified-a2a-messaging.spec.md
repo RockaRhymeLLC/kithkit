@@ -3,7 +3,7 @@
 **Created**: 2026-03-02
 **Status**: Draft
 **Related**: Todo #95 (Dave directive), Issue #118 (P2P field name standardization)
-**Repo**: KKit-Skippy (daemon), kithkit (core — if promoted later)
+**Repo**: kithkit (public core)
 **Reviews**: BMO (required), R2 (recommended — shared daemon capability)
 
 ## Goal
@@ -70,10 +70,11 @@ POST /api/a2a/send   ◄── single entry point
 - [ ] **FB-02: Failure detail**: When a route fails, include the error from that route in the response `attempts` array so callers can debug.
 - [ ] **FB-03: No silent swallowing**: Never return `200 OK` if all delivery attempts failed. Return `502` with full attempt details.
 
-#### Message Format (3 items)
+#### Message Format (4 items)
 - [ ] **MF-01: Payload passthrough**: The `payload` object is delivered to the recipient as-is. The daemon does not modify, validate, or impose structure on payload contents beyond requiring it to be a JSON object.
 - [ ] **MF-02: Standard envelope fields**: The daemon adds `from`, `messageId`, and `timestamp` to outbound LAN messages automatically. Callers do not need to set these.
-- [ ] **MF-03: Peer name resolution**: The `to` field accepts a bare peer name (e.g., `"bmo"`) for peers in config, or a qualified name (`"bmo@relay.bmobot.ai"`) for relay-only peers not in local config.
+- [ ] **MF-02a: Reserved payload fields**: The field names `from`, `messageId`, `timestamp`, and `type` are reserved at the envelope level. If a caller includes `from`, `messageId`, or `timestamp` in `payload`, the envelope value wins — the caller's duplicate is silently dropped. The `type` field is sourced from `payload.type` (it IS the canonical type). Document this in the API reference with a warning box.
+- [ ] **MF-03: Peer name resolution**: The `to` field resolves in this order: (1) exact case-insensitive match against `agent-comms.peers` config names, (2) prefix match — e.g., `"r2"` resolves to `"r2d2"` if it's the only prefix match (ambiguous prefixes → `400 INVALID_TARGET`), (3) if no config match, treat as a qualified relay name (`"name@host"` format required, else `404 PEER_NOT_FOUND`).
 
 #### Migration (3 items)
 - [ ] **MG-01: Old endpoints remain**: Existing endpoints (`/agent/send`, `/api/network/send`, `/api/network/message`, `/api/network/groups/:id/send`) continue to function unchanged during the migration period.
@@ -85,7 +86,8 @@ POST /api/a2a/send   ◄── single entry point
 - [ ] **SH-01: Delivery receipt tracking**: Return a `messageId` that can be used to query delivery status later via `GET /api/a2a/status/:messageId` (future endpoint, not part of this spec).
 - [ ] **SH-02: Retry on queue**: When relay returns `status: "queued"`, the response indicates this clearly. The relay SDK handles retries internally — no new retry logic in the daemon.
 - [ ] **SH-03: Batch send**: Accept an array of recipients in `to` for multi-DM fan-out (same payload to multiple peers). Response includes per-recipient results.
-- [ ] **SH-04: Peer liveness hint**: When `route=auto`, if the peer-heartbeat system knows a peer is unreachable via LAN (stale heartbeat > 5 min), skip LAN attempt and go straight to relay. Reduces latency for known-offline LAN peers.
+- [ ] **SH-04: Peer liveness hint**: When `route=auto`, if the peer-heartbeat system knows a peer is unreachable via LAN (stale heartbeat exceeds the configured threshold), skip LAN attempt and go straight to relay. Stale threshold defaults to `2 * heartbeat_interval` and is configurable via `agent-comms.stale_threshold` in `kithkit.config.yaml`. Reduces latency for known-offline LAN peers.
+  _Dependency: SH-04 relies on the existing `peer-heartbeat` scheduled task (configured in `kithkit.config.yaml` scheduler). The task currently pings peers every 60s and records liveness in the daemon DB. If `peer-heartbeat` is disabled, SH-04 is a no-op (auto route always attempts LAN first)._
 
 ### Won't Have (This Phase)
 
@@ -112,7 +114,7 @@ Localhost only. No authentication required.
 interface A2ASendRequest {
   // Exactly one of `to` or `group` must be present
   to?: string;       // Peer name (e.g., "bmo") or qualified name ("bmo@relay.bmobot.ai")
-  group?: string;    // Group UUID
+  group?: string;    // Group UUID or group name (e.g., "home-agents")
 
   // Message content — required, must be a JSON object
   payload: {
@@ -132,6 +134,8 @@ interface A2ASendRequest {
 - `payload.type` must be a non-empty string.
 - `route` is optional. Invalid values → `400`.
 - `group` + `route: "lan"` → `400` (groups are relay-only).
+- `group` accepts a UUID or a configured group name. Names are resolved to UUIDs via `agent-comms.groups` config first, then via relay lookup. Unresolvable names → `404 GROUP_NOT_FOUND`.
+- `to` with a qualified name (`name@host`) + `route: "lan"` → `400 INVALID_ROUTE` (qualified names are relay-only).
 - Unknown top-level fields are ignored (forward-compatible).
 
 ### Response Schema
@@ -166,6 +170,8 @@ interface DeliveryAttempt {
 }
 ```
 
+> **Implementation note**: The `delivered`, `queued`, and `failed` arrays in `A2AGroupSendResponse` are aspirational. Today the relay SDK's `sendToGroup()` returns only a boolean success/failure for the entire group send — it does not report per-member delivery status. Phase 1 will return `delivered` and `failed` as empty arrays, with the overall result indicated by `status`. Per-member tracking depends on relay SDK enhancements (tracked separately).
+
 #### Failure (HTTP 4xx / 5xx)
 
 ```typescript
@@ -183,10 +189,10 @@ interface A2ASendError {
 | HTTP | Code | Condition |
 |------|------|-----------|
 | 400 | `INVALID_REQUEST` | Missing/invalid fields, JSON parse error |
-| 400 | `INVALID_TARGET` | Both `to` and `group` present, or neither |
-| 400 | `INVALID_ROUTE` | `route: "lan"` with group target |
+| 400 | `INVALID_TARGET` | Both `to` and `group` present, or neither; ambiguous peer prefix match |
+| 400 | `INVALID_ROUTE` | `route: "lan"` with group target, or `route: "lan"` with a qualified relay name (`name@host`) |
 | 404 | `PEER_NOT_FOUND` | `to` peer not in config and not a qualified relay name |
-| 404 | `GROUP_NOT_FOUND` | `group` UUID not recognized by relay |
+| 404 | `GROUP_NOT_FOUND` | `group` UUID/name not recognized by config or relay |
 | 502 | `DELIVERY_FAILED` | All delivery attempts failed (includes `attempts` array) |
 | 503 | `RELAY_UNAVAILABLE` | `route: "relay"` but SDK not initialized |
 | 503 | `LAN_UNAVAILABLE` | `route: "lan"` but agent-comms disabled or no secret |
@@ -244,6 +250,7 @@ Input: to/group, route preference
 
 2. **`route: "lan"`**
    - **Group**: Reject with `400 INVALID_ROUTE`.
+   - **Qualified name** (e.g., `bmo@relay.bmobot.ai`): Reject with `400 INVALID_ROUTE` — qualified names are relay-only by definition.
    - **DM**: Attempt LAN only. Fail with `503 LAN_UNAVAILABLE` if agent-comms disabled, or `502 DELIVERY_FAILED` if LAN send fails.
 
 3. **`route: "relay"`**
@@ -253,7 +260,7 @@ Input: to/group, route preference
 
 When the unified router chooses LAN:
 
-1. Resolve peer from `agent-comms.peers` config (case-insensitive name match).
+1. Resolve peer from `agent-comms.peers` config: exact case-insensitive match first, then unique prefix match.
 2. Build `AgentMessage`:
    ```json
    {
@@ -266,17 +273,20 @@ When the unified router chooses LAN:
    }
    ```
 3. Try hosts in order: `peer.ip` → `peer.host` (`.lan`→`.local`) → `peer.host` as-is.
-4. `curl -s --connect-timeout 3 -X POST http://<host>:<port>/agent/message -H 'Authorization: Bearer <secret>'`
+4. `curl -s --connect-timeout <configured_timeout> -X POST http://<host>:<port>/agent/message -H 'Authorization: Bearer <secret>'`
+   LAN connect timeout defaults to 3 seconds and is configurable via `agent-comms.lan_timeout` in `kithkit.config.yaml`.
 5. Parse response. HTTP 200 with `{ ok: true }` = success.
 
 **Note:** LAN messages flatten `payload` fields to the top level of `AgentMessage` (adding `from`, `messageId`, `timestamp`). This preserves backward compatibility with the existing `/agent/message` receiver. The receiver does not need changes.
+
+**Reserved field precedence**: When flattening payload for LAN delivery, envelope fields (`from`, `messageId`, `timestamp`) always overwrite any same-named fields in `payload`. The `type` field is sourced from `payload.type` (it IS the canonical type). Callers should avoid setting `from`, `messageId`, or `timestamp` in payload — they will be overwritten without warning at send time, though a debug-level log is emitted.
 
 ### Relay Send Details
 
 When the unified router chooses relay:
 
 1. For DMs: resolve peer name. If bare name and peer has `community` config, qualify as `name@relayHost`. Call `network.send(recipient, payload)`.
-2. For groups: call `network.sendToGroup(groupId, payload)`.
+2. For groups: resolve group target — if a name was provided, look up UUID from `agent-comms.groups` config or relay. Call `network.sendToGroup(groupId, payload)`.
 3. The SDK handles encryption, signing, retry queuing, and community failover internally.
 4. Map SDK result to unified response format.
 
@@ -292,7 +302,7 @@ When the unified router chooses relay:
 
 ### Performance
 
-- LAN sends should complete in < 500ms (existing ~100-300ms typical with 3s connect timeout).
+- LAN sends should complete in < 500ms (existing ~100-300ms typical with configurable connect timeout, default 3s).
 - Relay sends depend on network conditions; timeout is SDK-managed.
 - Auto-route with fallback adds at most one extra round-trip (LAN timeout + relay attempt).
 - **SH-04** (peer liveness hint) eliminates the LAN timeout for known-offline peers.
@@ -302,14 +312,14 @@ When the unified router chooses relay:
 - **Runtime**: Node.js 22+, ESM only.
 - **Receiver unchanged**: The `/agent/message` and `/agent/p2p` inbound endpoints on peers are NOT modified. The unified endpoint only changes the outbound side.
 - **SDK optional**: If `kithkit-a2a-client` is not installed, relay routes are unavailable. LAN-only operation still works.
-- **Config unchanged**: No new config fields. Uses existing `agent-comms.peers` and network SDK configuration.
+- **Config**: Two new optional fields in `agent-comms`: `lan_timeout` (default 3s) and `stale_threshold` (default `2 * heartbeat_interval`). All other config unchanged. Uses existing `agent-comms.peers` and network SDK configuration.
 
 ## Migration Path
 
 ### Phase 1: Add Unified Endpoint (This Spec)
 
 1. Extract routing logic from `sendAgentMessage()` into a new `UnifiedA2ARouter` class/module.
-2. Register `POST /api/a2a/send` route in `extensions/index.ts`.
+2. Register `POST /api/a2a/send` route in the daemon's route setup.
 3. Route handler validates request, calls the unified router, returns unified response.
 4. `sendAgentMessage()` is refactored to delegate to the unified router internally.
 5. Old endpoints (`/agent/send`, `/api/network/send`, `/api/network/message`, `/api/network/groups/:id/send`) become thin wrappers:
@@ -324,6 +334,7 @@ When the unified router chooses relay:
 2. Update all internal callers (comms agent, orchestrator, workers) to use `/api/a2a/send`.
 3. Update `kithkit-a2a-client` SDK if it has any direct daemon call patterns.
 4. Update peer agents (BMO, R2) — their daemons need the same endpoint.
+5. Update or replace `agent-send.sh` convenience script — it becomes a thin wrapper around `curl POST /api/a2a/send`.
 
 ### Phase 3: Deprecate Old Endpoints (Separate Spec)
 
@@ -343,12 +354,13 @@ When the unified router chooses relay:
 1. `POST /api/a2a/send` with `to: "bmo"` delivers via LAN when BMO is reachable on the local network.
 2. `POST /api/a2a/send` with `to: "bmo"` falls back to relay when LAN is unreachable and SDK is initialized.
 3. `POST /api/a2a/send` with `group: "<uuid>"` delivers via relay to all group members.
-4. `POST /api/a2a/send` with `route: "lan"` skips relay entirely.
-5. `POST /api/a2a/send` with `route: "relay"` skips LAN entirely.
-6. Response `attempts` array accurately reports which routes were tried and their outcomes.
-7. Old endpoints (`/agent/send`, `/api/network/send`, `/api/network/groups/:id/send`) continue working with existing field names and return identical behavior.
-8. Old endpoints include `Deprecation: true` header after migration.
-9. No changes to receiving endpoints (`/agent/message`, `/agent/p2p`) — existing peers work without updates.
+4. `POST /api/a2a/send` with `group: "home-agents"` resolves the group name to UUID and delivers via relay.
+5. `POST /api/a2a/send` with `route: "lan"` skips relay entirely.
+6. `POST /api/a2a/send` with `route: "relay"` skips LAN entirely.
+7. Response `attempts` array accurately reports which routes were tried and their outcomes.
+8. Old endpoints (`/agent/send`, `/api/network/send`, `/api/network/message`, `/api/network/groups/:id/send`) continue working with existing field names and return identical behavior.
+9. Old endpoints include `Deprecation: true` header after migration.
+10. No changes to receiving endpoints (`/agent/message`, `/agent/p2p`) — existing peers work without updates.
 
 ## User Stories
 
@@ -362,10 +374,10 @@ When the unified router chooses relay:
 - **When**: Comms calls `POST /api/a2a/send {"to":"bmo","payload":{"type":"text","text":"Hello"}}`
 - **Then**: LAN attempt fails (3s timeout), relay attempt succeeds, response shows `route: "relay"`, `attempts: [{route:"lan", status:"failed", error:"connect timeout"}, {route:"relay", status:"success"}]`
 
-### Scenario 3: Group Message
+### Scenario 3: Group Message (by Name)
 - **Given**: Home-agents group exists on relay
-- **When**: Comms calls `POST /api/a2a/send {"group":"c006dfce-...","payload":{"type":"text","text":"Team update"}}`
-- **Then**: Relay delivers to group, response shows `route: "relay"`, `delivered: ["bmo","r2d2"]`
+- **When**: Comms calls `POST /api/a2a/send {"group":"home-agents","payload":{"type":"text","text":"Team update"}}`
+- **Then**: Group name resolved to UUID, relay delivers to group, response shows `route: "relay"`, `status: "delivered"`
 
 ### Scenario 4: Force LAN Route
 - **Given**: Caller explicitly wants LAN only
@@ -387,12 +399,23 @@ When the unified router chooses relay:
 - **When**: Caller sends `POST /agent/send {"peer":"bmo","type":"text","text":"Hello"}`
 - **Then**: Message delivers as before. Response includes `Deprecation: true` header.
 
+### Scenario 8: Qualified Name + Forced LAN (Invalid)
+- **Given**: Caller uses a qualified relay name but forces LAN route
+- **When**: Caller sends `POST /api/a2a/send {"to":"bmo@relay.bmobot.ai","payload":{"type":"text","text":"Hi"},"route":"lan"}`
+- **Then**: Returns `400 INVALID_ROUTE` — qualified names are relay-only
+
+### Scenario 9: Peer Name Prefix Match
+- **Given**: `r2d2` is configured as a LAN peer
+- **When**: Caller sends `POST /api/a2a/send {"to":"r2","payload":{"type":"text","text":"Ping"}}`
+- **Then**: `"r2"` resolves to `"r2d2"` (unique prefix match), message delivers normally
+
 ## Technical Considerations
 
-- **Shared router module**: The core routing logic should be a standalone module (e.g., `daemon/src/extensions/comms/a2a-router.ts`) that both the new endpoint and old endpoint wrappers call. This prevents behavioral drift.
+- **Shared router module**: The core routing logic should be a standalone module (e.g., `daemon/src/routes/a2a-router.ts`) that both the new endpoint and old endpoint wrappers call. This prevents behavioral drift.
 - **LAN message flattening**: LAN recipients expect `AgentMessage` format (flat fields: `from`, `type`, `text`, `messageId`, `timestamp`). The router must flatten `payload` fields when sending via LAN. This is the existing behavior in `sendViaLAN()`.
 - **Relay message wrapping**: Relay sends pass `payload` as-is to `network.send()`. The SDK handles encryption and envelope wrapping.
-- **Peer name resolution**: Bare names (e.g., `"bmo"`) are resolved against `agent-comms.peers` config for LAN, and optionally qualified with `@relayHost` for relay. Qualified names (e.g., `"bmo@relay.bmobot.ai"`) bypass LAN lookup and go straight to relay.
+- **Peer name resolution**: Bare names (e.g., `"bmo"`) are resolved against `agent-comms.peers` config: exact case-insensitive match first, then unique prefix match (e.g., `"r2"` → `"r2d2"`). Ambiguous prefix matches return `400 INVALID_TARGET`. Qualified names (e.g., `"bmo@relay.bmobot.ai"`) bypass LAN lookup and go straight to relay.
+- **Group name resolution**: Group targets accept either a UUID or a configured name. Names are resolved from `agent-comms.groups` config (exact case-insensitive match), then from relay lookup. Unresolvable names return `404 GROUP_NOT_FOUND`.
 - **messageId lifecycle**: The daemon generates a `messageId` (UUID v4) at the top of the handler. This ID is used in both LAN and relay sends, and returned in the response. For relay sends, the SDK may assign its own `messageId` — the response should include both if they differ.
 - **Latency tracking**: Each delivery attempt should be timed (start/end) and the duration included in the `attempts` array for observability.
 
@@ -401,11 +424,12 @@ When the unified router chooses relay:
 - [ ] Update `docs/api-reference.md` with the new `POST /api/a2a/send` endpoint
 - [ ] Add deprecation notices to the old endpoint sections in `docs/api-reference.md`
 - [ ] Update `.claude/skills/agent-comms/SKILL.md` to reference the unified endpoint
+- [ ] Update `.claude/skills/a2a-network/SKILL.md` to reference the unified endpoint and deprecation of direct relay calls
 - [ ] Update `CLAUDE.md` if any behavioral instructions reference old endpoint paths
 
 ## Open Questions
 
-- [ ] Should the unified endpoint live in the `kithkit` core (available to all agents) or start in `KKit-Skippy` and promote later? Recommendation: implement in `KKit-Skippy` first, promote to `kithkit` after validation.
+- [x] ~~Should the unified endpoint live in the `kithkit` core or start in `KKit-Skippy`?~~ **Resolved**: Build in `kithkit` public core from day one. All agents share this capability — no reason to start in a private repo.
 - [ ] What `Sunset` date should old endpoints get? Recommendation: defer until Phase 2 adoption is confirmed.
 - [ ] Should SH-03 (batch send) share a single `messageId` or generate one per recipient? Recommendation: one per recipient for independent tracking.
 - [ ] Should the `attempts` array include timing for the peer-liveness check (SH-04) or only actual send attempts? Recommendation: only actual sends — liveness check is an internal optimization.
