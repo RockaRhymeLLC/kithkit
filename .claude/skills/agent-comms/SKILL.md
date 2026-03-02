@@ -1,14 +1,12 @@
 ---
 name: agent-comms
-description: Sends and receives messages with peer agents on the local network. Use when messaging peers, checking peer availability, coordinating shared work, or reviewing agent-comms logs.
+description: Send messages to peer agents and check agent-comms status.
 argument-hint: [send <peer> "<message>" | status | log]
 ---
 
 # Agent-to-Agent Communication
 
 Send and receive messages with peer agents on the local network.
-
-> **Scope**: This skill covers A2A peer-to-peer messaging (LAN direct + P2P SDK). For A2A network features (groups, discovery, relay), see the `a2a-network` skill. For Telegram messaging to humans, see the `telegram` skill.
 
 ## Commands
 
@@ -28,72 +26,26 @@ Parse the arguments to determine action:
 - `log <n>` - Show last n log entries
 
 ### Examples
-- `/agent-comms send alice "Hey, are you free to review a PR?"`
-- `/agent-comms send alice "Claiming the auth refactor" coordination`
-- `/agent-comms send alice "idle" status`
+- `/agent-comms send r2d2 "Hey, are you free to review a PR?"`
+- `/agent-comms send r2d2 "Claiming the auth refactor" coordination`
+- `/agent-comms send r2d2 "idle" status`
 - `/agent-comms status`
 - `/agent-comms log 10`
 
 ## Implementation
 
 ### Sending
-Send via the daemon's `/agent/send` endpoint (2-tier routing: LAN direct → P2P SDK fallback).
-
-**IMPORTANT:** Always use python3 to generate JSON for curl to avoid shell quoting issues. Raw `--data-raw` with shell-interpolated strings causes "Bad escaped character" JSON parse errors.
-
+Use the CLI script for reliable delivery:
 ```bash
-python3 -c "
-import json, subprocess, sys
-data = json.dumps({'peer': '<name>', 'type': 'text', 'text': '<message>'})
-r = subprocess.run(['curl', '-s', '-X', 'POST', 'http://localhost:3847/agent/send',
-  '-H', 'Content-Type: application/json', '-d', data], capture_output=True, text=True)
-print(r.stdout)
-"
+scripts/agent-send.sh <peer> "<message>" [type]
 ```
 
-**Request fields:**
-| Field | Required | Description |
-|-------|----------|-------------|
-| `peer` | yes | Target peer name (e.g. `alice`) |
-| `type` | yes | `text`, `status`, `coordination`, or `pr-review` |
-| `text` | no | Message body |
-| `status` | no | For status messages (e.g. `idle`, `busy`) |
-| `action` | no | For coordination (e.g. `claim`, `release`) |
-| `task` | no | Task description |
-| `context` | no | Additional context |
-| `callbackUrl` | no | Callback endpoint for async replies |
-| `repo` | no | For PR reviews |
-| `branch` | no | For PR reviews |
-| `pr` | no | PR number string |
-
-**Success response (HTTP 200):**
-```json
-{"ok": true, "queued": false, "error": null}
+Or via the daemon endpoint (uses curl internally):
+```bash
+curl -s -X POST http://localhost:3847/agent/send \
+  -H 'Content-Type: application/json' \
+  --data-raw '{"peer":"<name>","type":"text","text":"<message>"}'
 ```
-
-**Failure response (HTTP 502):**
-```json
-{"ok": false, "queued": false, "error": "Failed to reach peer alice (peer-host.lan:3847): ..."}
-```
-
-If LAN delivery fails and the P2P SDK is active, the message is sent via P2P and `queued` is `true`.
-
-### Receiving (Inbound)
-Peers send to our `POST /agent/message` endpoint (handled by the daemon automatically). Inbound messages require Bearer auth and must include `messageId` and `timestamp`:
-
-```json
-{
-  "from": "alice",
-  "type": "text",
-  "text": "Hey, PR is ready for review",
-  "messageId": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "timestamp": "2026-02-27T15:30:00.000Z"
-}
-```
-
-**Response:** `{"ok": true, "queued": false}`
-
-The daemon validates the Bearer token, formats the message, and injects it into the comms tmux session.
 
 ### Checking Status
 ```bash
@@ -111,46 +63,26 @@ tail -20 logs/agent-comms.log
 
 ## Peers
 
-Peers are configured in `kithkit.config.yaml` under `agent-comms.peers`. Each peer has a name, host, port, and optional fallback IP.
-
-```yaml
-agent-comms:
-  enabled: true
-  secret: "credential-agent-comms-secret"  # Keychain credential name
-  peers:
-    - name: "alice"
-      host: "alice-machine.lan"
-      port: 3847
-      ip: "192.168.1.100"  # Fallback IP for LAN retry
-```
+Peers are configured in `cc4me.config.yaml` under `agent-comms.peers`. Each peer has a name, host, and port.
 
 ## Architecture
 
 ### LAN (Direct)
-- **Inbound**: Daemon receives on `POST /agent/message`, validates auth (bearer token from Keychain), injects directly into tmux session with `[Network] Name:` prefix
+- **Inbound**: Daemon receives on `POST /agent/message`, validates auth (bearer token from Keychain), injects directly into tmux session with `[Agent] Name:` prefix (same as Telegram — tmux buffers input natively)
 - **Outbound**: Daemon sends via `curl` subprocess (not Node.js `http.request`, which has macOS LAN networking issues)
 - **Auth**: Shared secret stored in macOS Keychain (`credential-agent-comms-secret`)
 
-### P2P SDK (Internet — Primary)
-- **Transport**: HTTPS directly to peer's public endpoint (E2E encrypted)
-- **Encryption**: X25519 ECDH key exchange + AES-256-GCM, Ed25519 signed envelopes
-- **Sending**: If LAN fails and Kithkit A2A Network SDK is active, sends directly to peer via P2P SDK
-- **Receiving**: SDK event handler routes incoming messages to session
-- **Identity**: Agent Ed25519 keypair in Keychain (`credential-kithkit-agent-key`), public key in relay directory
-- **Key point**: Messages go directly between agents — the relay is never in the message path
-
-### Legacy Relay (Deprecated Fallback)
-- **Transport**: HTTPS via Kithkit Relay (configured in `kithkit.config.yaml` under `network.relay_url`) — store-and-forward
+### Relay (Internet Fallback)
+- **Transport**: HTTPS via CC4Me Relay (https://relay.bmobot.ai)
 - **Auth**: Ed25519 per-request signatures (X-Agent + X-Signature headers)
-- **Sending**: Only used if both LAN and P2P SDK fail
-- **Note**: Being deprecated in favor of P2P SDK. Messages through legacy relay are signed but not E2E encrypted
+- **Sending**: If LAN fails and `network.enabled` is true, automatically falls back to relay
+- **Receiving**: `relay-inbox-poll` task polls every 30s, verifies signatures, injects messages
+- **Identity**: Agent keypair in Keychain (`credential-cc4me-agent-key`), public key registered with relay
+- **Policy**: No sensitive data over relay until E2E encryption is added (see `docs/relay-usage-policy.md`)
 
 ### Logging
 - All messages logged as JSONL to `logs/agent-comms.log`
 - Directions: `in` (LAN inbound), `out` (LAN outbound), `relay-in`, `relay-out`
-
-### Group Messaging
-For A2A group messaging (broadcast to multiple peers), use the `a2a-network` skill — specifically `POST /api/network/groups/:id/message`. This skill (`agent-comms`) handles only 1:1 peer messaging.
 
 ## Usage Protocol
 
