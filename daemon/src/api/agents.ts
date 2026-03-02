@@ -119,6 +119,25 @@ export async function handleAgentsRoute(
         return true;
       }
 
+      // PUT /api/agents/:id — update agent status (used by orchestrator wrapper cleanup)
+      if (suffix === '' && method === 'PUT') {
+        const body = await parseBody(req);
+        const agent = getAgentStatus(agentId);
+        if (!agent) {
+          json(res, 404, withTimestamp({ error: 'Not found' }));
+          return true;
+        }
+
+        const updates: Record<string, string> = { updated_at: new Date().toISOString() };
+        if (typeof body.status === 'string') {
+          updates.status = body.status as string;
+        }
+
+        update('agents', agentId, updates);
+        json(res, 200, withTimestamp({ status: 'updated', id: agentId }));
+        return true;
+      }
+
       // DELETE /api/agents/:id
       if (suffix === '' && method === 'DELETE') {
         const killed = killJob(agentId);
