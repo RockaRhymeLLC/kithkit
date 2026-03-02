@@ -9,6 +9,10 @@ daemon:
   port: 3847
   log_level: info
   log_dir: logs
+  lan:
+    enabled: false
+    bind_host: "0.0.0.0"
+    port: 3848
   log_rotation:
     max_size_mb: 10
     max_files: 5
