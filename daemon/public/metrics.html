@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>API Metrics Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --red: #f85149;
+      --orange: #d29922;
+      --purple: #bc8cff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+    h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text-muted); }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .controls select, .controls button {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .controls button:hover { border-color: var(--accent); }
+    .controls button.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .summary-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .card .label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+    .card .value.green { color: var(--green); }
+    .card .value.red { color: var(--red); }
+    .card .value.orange { color: var(--orange); }
+    .card .value.accent { color: var(--accent); }
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 900px) {
+      .chart-grid { grid-template-columns: 1fr; }
+    }
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .chart-card.full { grid-column: 1 / -1; }
+    .chart-card canvas { max-height: 300px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    tr:hover td { background: rgba(88, 166, 255, 0.04); }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge.error { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+    .badge.warn { background: rgba(210, 153, 34, 0.15); color: var(--orange); }
+    .badge.ok { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+    .loading {
+      text-align: center;
+      padding: 40px;
+      color: var(--text-muted);
+    }
+    .error-msg {
+      background: rgba(248, 81, 73, 0.1);
+      border: 1px solid var(--red);
+      border-radius: 8px;
+      padding: 16px;
+      color: var(--red);
+      margin-bottom: 24px;
+    }
+    .timestamp {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>API Metrics</h1>
+      <span class="timestamp" id="lastUpdated"></span>
+    </div>
+    <div class="controls">
+      <select id="hoursSelect">
+        <option value="6">Last 6 hours</option>
+        <option value="12">Last 12 hours</option>
+        <option value="24" selected>Last 24 hours</option>
+        <option value="48">Last 48 hours</option>
+        <option value="168">Last 7 days</option>
+      </select>
+      <button id="refreshBtn" onclick="loadData()">Refresh</button>
+    </div>
+  </div>
+
+  <div id="errorContainer"></div>
+
+  <div class="summary-cards" id="summaryCards">
+    <div class="card"><div class="label">Total Requests</div><div class="value accent" id="totalReqs">-</div></div>
+    <div class="card"><div class="label">Success Rate</div><div class="value green" id="successRate">-</div></div>
+    <div class="card"><div class="label">4xx Errors</div><div class="value orange" id="errors4xx">-</div></div>
+    <div class="card"><div class="label">5xx Errors</div><div class="value red" id="errors5xx">-</div></div>
+    <div class="card"><div class="label">Avg Latency</div><div class="value accent" id="avgLatency">-</div></div>
+  </div>
+
+  <div class="chart-grid">
+    <div class="chart-card full">
+      <h2>Request Volume & Errors Over Time</h2>
+      <canvas id="volumeChart"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>Latency Over Time</h2>
+      <canvas id="latencyChart"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>Requests by Agent</h2>
+      <canvas id="agentChart"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-grid">
+    <div class="chart-card">
+      <h2>Top Endpoints</h2>
+      <div id="endpointTable"></div>
+    </div>
+    <div class="chart-card">
+      <h2>Top Errors</h2>
+      <div id="errorsTable"></div>
+    </div>
+  </div>
+
+  <div class="chart-grid" id="repeatSection" style="display:none;">
+    <div class="chart-card full">
+      <h2>Repeat Offenders</h2>
+      <div id="repeatTable"></div>
+    </div>
+  </div>
+
+  <script>
+    let volumeChart = null;
+    let latencyChart = null;
+    let agentChart = null;
+
+    const chartDefaults = {
+      color: '#8b949e',
+      borderColor: '#30363d',
+    };
+
+    Chart.defaults.color = chartDefaults.color;
+    Chart.defaults.borderColor = chartDefaults.borderColor;
+
+    function formatNum(n) {
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+      return n.toString();
+    }
+
+    function formatMs(ms) {
+      if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
+      return Math.round(ms) + 'ms';
+    }
+
+    function formatHour(h) {
+      try {
+        const d = new Date(h.replace(' ', 'T') + ':00Z');
+        return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      } catch {
+        return h;
+      }
+    }
+
+    function buildTable(headers, rows) {
+      if (rows.length === 0) return '<p style="color:var(--text-muted);padding:12px;">No data</p>';
+      let html = '<table><thead><tr>';
+      for (const h of headers) html += `<th>${h.label}</th>`;
+      html += '</tr></thead><tbody>';
+      for (const row of rows) {
+        html += '<tr>';
+        for (const h of headers) html += `<td>${h.render(row)}</td>`;
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      return html;
+    }
+
+    async function loadData() {
+      const hours = document.getElementById('hoursSelect').value;
+      const errorContainer = document.getElementById('errorContainer');
+      errorContainer.innerHTML = '';
+
+      try {
+        const resp = await fetch(`/api/metrics?hours=${hours}`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+        const data = await resp.json();
+
+        document.getElementById('lastUpdated').textContent = `Updated: ${new Date(data.timestamp).toLocaleString()}`;
+
+        // Summary cards
+        const s = data.summary;
+        document.getElementById('totalReqs').textContent = formatNum(s.total_requests);
+        const rate = s.total_requests > 0 ? ((s.success_count / s.total_requests) * 100).toFixed(1) : '0.0';
+        document.getElementById('successRate').textContent = rate + '%';
+        document.getElementById('errors4xx').textContent = formatNum(s.error_4xx);
+        document.getElementById('errors5xx').textContent = formatNum(s.error_5xx);
+        document.getElementById('avgLatency').textContent = formatMs(s.avg_latency_ms);
+
+        // Volume chart
+        const hourly = data.hourly || [];
+        const labels = hourly.map(h => formatHour(h.hour));
+        const reqData = hourly.map(h => h.total_requests);
+        const err4Data = hourly.map(h => h.error_4xx);
+        const err5Data = hourly.map(h => h.error_5xx);
+
+        if (volumeChart) volumeChart.destroy();
+        volumeChart = new Chart(document.getElementById('volumeChart'), {
+          type: 'bar',
+          data: {
+            labels,
+            datasets: [
+              {
+                label: 'Successful',
+                data: hourly.map(h => h.success_count),
+                backgroundColor: 'rgba(63, 185, 80, 0.6)',
+                borderRadius: 2,
+              },
+              {
+                label: '4xx Errors',
+                data: err4Data,
+                backgroundColor: 'rgba(210, 153, 34, 0.6)',
+                borderRadius: 2,
+              },
+              {
+                label: '5xx Errors',
+                data: err5Data,
+                backgroundColor: 'rgba(248, 81, 73, 0.6)',
+                borderRadius: 2,
+              },
+            ],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { position: 'top' } },
+            scales: {
+              x: { stacked: true, ticks: { maxRotation: 45, font: { size: 10 } } },
+              y: { stacked: true, beginAtZero: true },
+            },
+          },
+        });
+
+        // Latency chart
+        const latData = hourly.map(h => h.avg_latency_ms);
+
+        if (latencyChart) latencyChart.destroy();
+        latencyChart = new Chart(document.getElementById('latencyChart'), {
+          type: 'line',
+          data: {
+            labels,
+            datasets: [{
+              label: 'Avg Latency (ms)',
+              data: latData,
+              borderColor: '#58a6ff',
+              backgroundColor: 'rgba(88, 166, 255, 0.1)',
+              fill: true,
+              tension: 0.3,
+              pointRadius: 2,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+              y: { beginAtZero: true, title: { display: true, text: 'ms' } },
+            },
+          },
+        });
+
+        // Agent chart
+        const agents = data.agents || [];
+        if (agentChart) agentChart.destroy();
+        if (agents.length > 0) {
+          const colors = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#f0883e', '#79c0ff'];
+          agentChart = new Chart(document.getElementById('agentChart'), {
+            type: 'doughnut',
+            data: {
+              labels: agents.map(a => a.agent_id),
+              datasets: [{
+                data: agents.map(a => a.total_requests),
+                backgroundColor: agents.map((_, i) => colors[i % colors.length]),
+                borderWidth: 0,
+              }],
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { position: 'right', labels: { font: { size: 11 } } },
+              },
+            },
+          });
+        }
+
+        // Endpoint table
+        const endpoints = (data.endpoints || []).slice(0, 15);
+        document.getElementById('endpointTable').innerHTML = buildTable(
+          [
+            { label: 'Endpoint', render: r => `<code>${r.method} ${r.endpoint}</code>` },
+            { label: 'Requests', render: r => formatNum(r.total_requests) },
+            { label: '4xx', render: r => r.error_4xx > 0 ? `<span class="badge warn">${r.error_4xx}</span>` : '-' },
+            { label: '5xx', render: r => r.error_5xx > 0 ? `<span class="badge error">${r.error_5xx}</span>` : '-' },
+            { label: 'Avg', render: r => formatMs(r.avg_latency_ms) },
+            { label: 'p95', render: r => formatMs(r.p95_latency_ms) },
+          ],
+          endpoints,
+        );
+
+        // Errors table
+        const topErrors = (data.top_errors || []).slice(0, 10);
+        document.getElementById('errorsTable').innerHTML = buildTable(
+          [
+            { label: 'Endpoint', render: r => `<code>${r.method} ${r.endpoint}</code>` },
+            { label: 'Errors', render: r => `<span class="badge error">${r.total_errors}</span>` },
+          ],
+          topErrors,
+        );
+
+        // Repeat offenders
+        const repeats = data.repeat_offenders || [];
+        if (repeats.length > 0) {
+          document.getElementById('repeatSection').style.display = '';
+          document.getElementById('repeatTable').innerHTML = buildTable(
+            [
+              { label: 'Agent', render: r => `<code>${r.agent_id}</code>` },
+              { label: 'Endpoint', render: r => `<code>${r.method} ${r.endpoint}</code>` },
+              { label: 'Errors', render: r => `<span class="badge error">${r.error_count}</span>` },
+              { label: 'Latest', render: r => formatHour(r.latest_hour) },
+            ],
+            repeats,
+          );
+        } else {
+          document.getElementById('repeatSection').style.display = 'none';
+        }
+
+      } catch (err) {
+        errorContainer.innerHTML = `<div class="error-msg">Failed to load metrics: ${err.message}</div>`;
+      }
+    }
+
+    // Auto-refresh every 60 seconds
+    loadData();
+    setInterval(loadData, 60000);
+  </script>
+</body>
+</html>
