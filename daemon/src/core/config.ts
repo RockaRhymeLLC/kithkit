@@ -14,12 +14,19 @@ export interface AgentConfig {
   identity_file?: string;
 }
 
+export interface LanConfig {
+  enabled: boolean;
+  bind_host: string;
+  port: number;
+}
+
 export interface DaemonConfig {
   port: number;
   bind_host?: string;
   log_level: 'debug' | 'info' | 'warn' | 'error';
   log_dir: string;
   log_rotation: { max_size_mb: number; max_files: number };
+  lan?: LanConfig;
 }
 
 export interface SchedulerConfig {

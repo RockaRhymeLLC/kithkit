@@ -4,6 +4,7 @@ The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It bin
 
 ## Table of Contents
 
+- [Common Pitfalls](#common-pitfalls)
 - [Health & Status](#health--status)
 - [Agents](#agents)
 - [Todos](#todos)
@@ -17,6 +18,208 @@ The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It bin
 - [Usage & Metrics](#usage--metrics)
 - [Orchestrator](#orchestrator)
 - [Timers](#timers)
+
+---
+
+## Common Pitfalls
+
+This section documents the most common errors agents hit when calling the daemon API, and how to fix them.
+
+### zsh glob expansion on URLs with `?`
+
+**Problem**: zsh treats `?` in unquoted URLs as a glob wildcard, expanding it before curl sees it.
+
+```bash
+# WRONG — zsh expands the ? and curl gets a mangled URL or "no matches found" error
+curl http://localhost:3847/api/messages?agent=comms
+curl http://localhost:3847/api/orchestrator/tasks?status=pending
+```
+
+**Fix**: Always quote URLs that contain query parameters.
+
+```bash
+# Correct — double-quoted URL passes through unmodified
+curl "http://localhost:3847/api/messages?agent=comms"
+curl "http://localhost:3847/api/orchestrator/tasks?status=pending"
+```
+
+---
+
+### JSON strings with special characters — use heredoc or Python
+
+**Problem**: Shell interpolation and escaping make it error-prone to embed special characters (quotes, newlines, backslashes) in `-d '...'` strings.
+
+```bash
+# WRONG — the apostrophe in "don't" breaks the single-quoted string
+curl -X POST http://localhost:3847/api/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"from":"comms","to":"orchestrator","body":"don't forget"}'
+```
+
+**Fix option 1 — heredoc**: The cleanest approach for multi-line or special-char JSON.
+
+```bash
+curl -X POST http://localhost:3847/api/messages \
+  -H 'Content-Type: application/json' \
+  -d "$(cat <<'EOF'
+{"from":"comms","to":"orchestrator","body":"don't forget","type":"task"}
+EOF
+)"
+```
+
+**Fix option 2 — Python json.dumps**: Use Python to build the JSON safely.
+
+```bash
+curl -X POST http://localhost:3847/api/messages \
+  -H 'Content-Type: application/json' \
+  -d "$(python3 -c "import json; print(json.dumps({'from':'comms','to':'orchestrator','body':\"don't forget\",'type':'task'}))")"
+```
+
+**Fix option 3 — write to a temp file**:
+
+```bash
+cat > /tmp/msg.json <<'EOF'
+{"from":"comms","to":"orchestrator","body":"don't forget","type":"task"}
+EOF
+curl -X POST http://localhost:3847/api/messages \
+  -H 'Content-Type: application/json' \
+  -d @/tmp/msg.json
+rm /tmp/msg.json
+```
+
+---
+
+### Field name mismatches — `body` not `text`, `agent` required
+
+**Problem**: The messages API uses `body` for the message content, not `message` or `text`. The `agent` query parameter is required on `GET /api/messages`.
+
+```bash
+# WRONG — 'text' is silently ignored; 'body' is required
+curl -X POST http://localhost:3847/api/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"from":"comms","to":"orchestrator","text":"hello"}'
+# → 400 {"error":"body is required"}
+
+# WRONG — missing required ?agent= parameter
+curl http://localhost:3847/api/messages
+# → 400 {"error":"agent query parameter is required"}
+```
+
+**Fix**:
+
+```bash
+# Correct POST — use 'body'
+curl -X POST http://localhost:3847/api/messages \
+  -H 'Content-Type: application/json' \
+  -d '{"from":"comms","to":"orchestrator","body":"hello","type":"task"}'
+
+# Correct GET — include ?agent=
+curl "http://localhost:3847/api/messages?agent=comms"
+```
+
+---
+
+### Task activity — `message` not `event_type`
+
+**Problem**: `POST /api/orchestrator/tasks/:id/activity` requires a `message` field. The `event_type` + `details` shape (from `POST /api/agents/:id/activity`) does not apply here.
+
+```bash
+# WRONG — uses agent activity field names; task activity requires 'message'
+curl -X POST "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/activity" \
+  -H 'Content-Type: application/json' \
+  -d '{"event_type":"progress","details":"Step 1 complete"}'
+# → 400 {"error":"message is required"}
+```
+
+**Fix**:
+
+```bash
+# Correct — use 'message' (and optionally 'type', 'agent', 'stage')
+curl -X POST "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/activity" \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Step 1 complete","type":"progress","agent":"orchestrator","stage":"research"}'
+```
+
+Worker-assignment also uses `worker_id`, not `jobId`:
+
+```bash
+# WRONG
+-d '{"jobId":"abc","profile":"coding","prompt":"Fix auth"}'
+
+# Correct
+-d '{"worker_id":"abc","role":"coding"}'
+```
+
+---
+
+### Orchestrator task status transitions are enforced
+
+**Problem**: The orchestrator task state machine only allows specific transitions. Attempting an invalid transition returns 409.
+
+| From | Allowed next statuses |
+|------|-----------------------|
+| `pending` | `assigned`, `failed` |
+| `assigned` | `in_progress`, `failed`, `pending` |
+| `in_progress` | `completed`, `failed` |
+| `completed` | (terminal — no updates allowed) |
+| `failed` | (terminal — no updates allowed) |
+
+```bash
+# Will fail if task is already 'completed' or 'failed'
+curl -X PUT "http://localhost:3847/api/orchestrator/tasks/$TASK_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"status":"in_progress"}'
+# → 409 {"error":"Cannot update completed task"}
+```
+
+Additional rule: `pending` tasks must have `null` assignee; `assigned` tasks must have a non-null assignee.
+
+---
+
+### Channel delivery — `channels` array, not `channel` string
+
+**Problem**: The `/api/send` endpoint accepts both `channels` (array) and `channel` (singular string), but requesting unknown channels returns 400 rather than silently broadcasting.
+
+```bash
+# WRONG — typo in channel name returns 400
+curl -X POST http://localhost:3847/api/send \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello","channels":["telegam"]}'
+# → 400 {"error":"Unknown channel(s): telegam. Registered: telegram"}
+
+# Correct — omit channels to broadcast to all configured adapters
+curl -X POST http://localhost:3847/api/send \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"hello"}'
+```
+
+---
+
+### Memory search — at least one filter required for keyword mode
+
+**Problem**: `POST /api/memory/search` with `mode: "keyword"` (the default) requires at least one of: `query`, `tags`, `category`, `type`, `date_from`, `date_to`. An empty body returns 400.
+
+```bash
+# WRONG — no filters
+curl -X POST http://localhost:3847/api/memory/search \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+# → 400 {"error":"query or at least one filter required"}
+```
+
+Vector and hybrid modes require a `query` string specifically.
+
+---
+
+### Request body too large (413)
+
+**Problem**: The daemon enforces a body size limit. Very large prompts or task descriptions can hit it.
+
+```bash
+# → 413 {"error":"Request body too large"}
+```
+
+**Fix**: Split the content across multiple requests, or use a session directory file reference instead of embedding large content directly in the request body.
 
 ---
 
@@ -172,7 +375,17 @@ curl -X POST http://localhost:3847/api/agents/spawn \
   "prompt": "Do this task",   // required — task prompt
   "cwd": "/path/to/dir",      // optional — working directory (default: project root)
   "timeoutMs": 60000,         // optional — job timeout in milliseconds
-  "maxBudgetUsd": 0.50        // optional — cost cap in USD
+  "maxBudgetUsd": 0.50,       // optional — cost cap in USD
+  "spawned_by": "comms"       // optional — defaults to "comms"
+}
+```
+
+```json
+// Response 202
+{
+  "jobId": "uuid-of-job",
+  "status": "spawning",
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
 
@@ -181,7 +394,7 @@ curl -X POST http://localhost:3847/api/agents/spawn \
 | 202 | `{ "jobId": "...", "status": "spawning", "timestamp": "..." }` |
 | 400 | `{ "error": "prompt is required" }` |
 | 400 | `{ "error": "profile is required" }` |
-| 400 | `{ "error": "Profile 'X' not found" }` |
+| 400 | `{ "error": "Profile research not found" }` |
 
 ---
 
@@ -211,7 +424,7 @@ curl http://localhost:3847/api/agents
       "updated_at": "2026-02-22T09:01:00.000Z"
     }
   ],
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:01:00.000Z"
 }
 ```
 
@@ -221,16 +434,42 @@ curl http://localhost:3847/api/agents
 
 Get a single agent by ID.
 
+```bash
+curl http://localhost:3847/api/agents/agent-uuid
+```
+
+```json
+// Response 200
+{
+  "id": "agent-uuid",
+  "type": "worker",
+  "profile": "research",
+  "status": "running",
+  "tmux_session": null,
+  "pid": 98765,
+  "started_at": "2026-02-22T09:00:00.000Z",
+  "last_activity": "2026-02-22T09:01:00.000Z",
+  "state": null,
+  "created_at": "2026-02-22T09:00:00.000Z",
+  "updated_at": "2026-02-22T09:01:00.000Z",
+  "timestamp": "2026-02-22T09:01:00.000Z"
+}
+```
+
 | Status | Response |
 |--------|----------|
-| 200 | `{ /* agent object */, "timestamp": "..." }` |
+| 200 | Agent object (same shape as items in `GET /api/agents` `data` array) |
 | 404 | `{ "error": "Not found" }` |
 
 ---
 
 ### GET /api/agents/:id/status
 
-Get detailed status for an agent or job. Includes token usage and cost for completed jobs.
+Get detailed status for an agent or worker job. Includes token usage and cost for completed jobs.
+
+```bash
+curl http://localhost:3847/api/agents/agent-uuid/status
+```
 
 ```json
 // Response 200
@@ -240,7 +479,7 @@ Get detailed status for an agent or job. Includes token usage and cost for compl
   "tokens_in": 4200,
   "tokens_out": 890,
   "cost_usd": 0.0031,
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:05:00.000Z"
 }
 ```
 
@@ -251,14 +490,126 @@ Get detailed status for an agent or job. Includes token usage and cost for compl
 
 ---
 
+### PUT /api/agents/:id
+
+Update an agent's status field (used by the orchestrator wrapper during cleanup).
+
+```json
+// Request body
+{ "status": "stopped" }
+```
+
+```json
+// Response 200
+{
+  "status": "updated",
+  "id": "agent-uuid",
+  "timestamp": "2026-02-22T09:05:00.000Z"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ "status": "updated", "id": "...", "timestamp": "..." }` |
+| 404 | `{ "error": "Not found" }` |
+
+---
+
 ### DELETE /api/agents/:id
 
 Kill a running worker.
+
+```bash
+curl -X DELETE http://localhost:3847/api/agents/agent-uuid
+```
+
+```json
+// Response 200
+{
+  "status": "killed",
+  "timestamp": "2026-02-22T09:05:00.000Z"
+}
+```
 
 | Status | Response |
 |--------|----------|
 | 200 | `{ "status": "killed", "timestamp": "..." }` |
 | 404 | `{ "error": "Not found or not running" }` |
+
+---
+
+### POST /api/agents/:id/activity
+
+Log an activity event for an agent. Also updates `agents.last_activity`.
+
+```bash
+curl -X POST http://localhost:3847/api/agents/orchestrator/activity \
+  -H 'Content-Type: application/json' \
+  -d '{"event_type": "task_received", "details": "Starting research task"}'
+```
+
+```json
+// Request body
+{
+  "event_type": "task_received",         // required
+  "session_id": "orch1",                 // optional
+  "details": "Starting research task"   // optional
+}
+```
+
+```json
+// Response 201
+{
+  "data": {
+    "id": 42,
+    "agent_id": "orchestrator",
+    "session_id": "orch1",
+    "event_type": "task_received",
+    "details": "Starting research task",
+    "created_at": "2026-02-22T09:00:00.000Z"
+  },
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 201 | `{ "data": { /* activity entry */ }, "timestamp": "..." }` |
+| 400 | `{ "error": "event_type is required" }` |
+
+---
+
+### GET /api/agents/:id/activity
+
+List activity events for an agent.
+
+```bash
+curl "http://localhost:3847/api/agents/orchestrator/activity?limit=50"
+curl "http://localhost:3847/api/agents/orchestrator/activity?event_type=task_received"
+```
+
+| Query Param | Type | Description |
+|-------------|------|-------------|
+| `session_id` | string | Filter by session |
+| `event_type` | string | Filter by event type |
+| `limit` | number | Max results (default 100, max 100) |
+
+```json
+// Response 200
+{
+  "data": [
+    {
+      "id": 42,
+      "agent_id": "orchestrator",
+      "session_id": "orch1",
+      "event_type": "task_received",
+      "details": "Starting research task",
+      "created_at": "2026-02-22T09:00:00.000Z"
+    }
+  ],
+  "timestamp": "2026-02-22T09:01:00.000Z"
+}
+```
 
 ---
 
@@ -288,11 +639,13 @@ curl http://localhost:3847/api/todos
       "updated_at": "2026-02-22T00:00:00.000Z"
     }
   ],
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
 
-**Note**: `tags` is stored as a JSON string.
+**Note**: `tags` is stored and returned as a JSON string (e.g. `"[\"docs\",\"v1\"]"`). Parse it with `JSON.parse()` if needed.
+
+Valid `status` values: `pending`, `in_progress`, `blocked`, `completed`, `cancelled`.
 
 ---
 
@@ -312,16 +665,34 @@ curl -X POST http://localhost:3847/api/todos \
   "title": "Review pull request",     // required
   "description": "PR #42",           // optional
   "priority": "high",                 // optional — low | medium | high | critical (default: medium)
-  "status": "pending",               // optional — pending | in_progress | completed | cancelled
+  "status": "pending",               // optional — pending | in_progress | blocked | completed | cancelled
   "due_date": "2026-03-01",          // optional — ISO date string
-  "tags": ["review", "urgent"]       // optional — JSON-serialized on storage
+  "tags": ["review", "urgent"]       // optional — stored as JSON string
+}
+```
+
+```json
+// Response 201
+{
+  "id": 2,
+  "title": "Review pull request",
+  "description": "PR #42",
+  "priority": "high",
+  "status": "pending",
+  "due_date": "2026-03-01",
+  "tags": "[\"review\",\"urgent\"]",
+  "created_at": "2026-02-22T09:00:00.000Z",
+  "updated_at": "2026-02-22T09:00:00.000Z",
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
 
 | Status | Response |
 |--------|----------|
-| 201 | `{ /* todo object */, "timestamp": "..." }` |
-| 400 | Missing title, invalid priority, or invalid status |
+| 201 | Full todo object |
+| 400 | `{ "error": "title is required" }` |
+| 400 | `{ "error": "invalid priority (must be low/medium/high/critical)" }` |
+| 400 | `{ "error": "invalid status (must be pending/in_progress/blocked/completed/cancelled)" }` |
 
 ---
 
@@ -354,7 +725,7 @@ Get the audit trail for a todo — all status and priority changes in chronologi
       "created_at": "2026-02-22T10:00:00.000Z"
     }
   ],
-  "timestamp": "..."
+  "timestamp": "2026-02-22T10:00:00.000Z"
 }
 ```
 
@@ -376,11 +747,27 @@ Update a todo. All fields are optional. Status and priority changes are automati
 }
 ```
 
+```json
+// Response 200
+{
+  "id": 2,
+  "title": "Updated title",
+  "description": "Updated description",
+  "priority": "critical",
+  "status": "in_progress",
+  "due_date": "2026-03-15",
+  "tags": "[\"urgent\"]",
+  "created_at": "2026-02-22T09:00:00.000Z",
+  "updated_at": "2026-02-22T10:00:00.000Z",
+  "timestamp": "2026-02-22T10:00:00.000Z"
+}
+```
+
 | Status | Response |
 |--------|----------|
-| 200 | `{ /* updated todo */, "timestamp": "..." }` |
+| 200 | Full updated todo object |
 | 400 | Invalid priority or status |
-| 404 | Not found |
+| 404 | `{ "error": "Not found" }` |
 
 ---
 
@@ -426,9 +813,11 @@ curl "http://localhost:3847/api/calendar?date=2026-02-22"
       "created_at": "2026-02-22T00:00:00.000Z"
     }
   ],
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
+
+**Note**: `all_day` is stored as an integer (`0` = false, `1` = true).
 
 ---
 
@@ -455,10 +844,27 @@ curl -X POST http://localhost:3847/api/calendar \
 }
 ```
 
+```json
+// Response 201
+{
+  "id": 3,
+  "title": "Project review",
+  "description": "Q1 project review meeting",
+  "start_time": "2026-02-25T14:00:00.000Z",
+  "end_time": "2026-02-25T15:00:00.000Z",
+  "all_day": 0,
+  "source": "manual",
+  "todo_ref": 7,
+  "created_at": "2026-02-22T09:00:00.000Z",
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
 | Status | Response |
 |--------|----------|
-| 201 | `{ /* calendar event */, "timestamp": "..." }` |
-| 400 | Missing title or start_time |
+| 201 | Full calendar event object |
+| 400 | `{ "error": "title is required" }` |
+| 400 | `{ "error": "start_time is required" }` |
 
 ---
 
@@ -480,7 +886,7 @@ Update a calendar event. All fields optional.
 | Status | Response |
 |--------|----------|
 | 200 | `{ /* updated event */, "timestamp": "..." }` |
-| 404 | Not found |
+| 404 | `{ "error": "Not found" }` |
 
 ---
 
@@ -504,25 +910,40 @@ Send an inter-agent message (logged and auditable).
 ```bash
 curl -X POST http://localhost:3847/api/messages \
   -H 'Content-Type: application/json' \
-  -d '{"from": "comms-001", "to": "worker-007", "body": "Task completed"}'
+  -d '{"from": "comms-001", "to": "orchestrator", "body": "Task completed", "type": "result"}'
 ```
 
 ```json
 // Request body
 {
   "from": "comms-001",            // required — sender agent ID
-  "to": "worker-007",             // required — recipient agent ID
-  "body": "Task complete",        // required — message content
-  "type": "text",                 // optional — defaults to "text"
-  "metadata": { "priority": 1 }  // optional — arbitrary key/value pairs
+  "to": "orchestrator",           // required — recipient agent ID
+  "body": "Task complete",        // required — message content (NOT "text" or "message")
+  "type": "text",                 // optional — text | task | result | error | status (default: "text")
+  "metadata": { "priority": 1 }, // optional — arbitrary key/value pairs
+  "direct": false                 // optional — true = inject into tmux directly; false = queue for poll loop
 }
 ```
 
+```json
+// Response 200
+{
+  "messageId": "msg-uuid",
+  "delivered": true,
+  "warning": "optional warning string if applicable",
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+**Note**: `warning` is omitted when there is nothing to warn about.
+
 | Status | Response |
 |--------|----------|
-| 200 | `{ "messageId": "...", "delivered": true, "timestamp": "..." }` |
-| 400 | Missing from, to, or body |
-| 403 | Worker attempted a restricted send |
+| 200 | `{ "messageId": "...", "delivered": true/false, "timestamp": "..." }` |
+| 400 | `{ "error": "from is required" }` |
+| 400 | `{ "error": "to is required" }` |
+| 400 | `{ "error": "body is required" }` |
+| 403 | `{ "error": "..." }` (worker attempted a restricted send) |
 
 ---
 
@@ -532,31 +953,87 @@ Get message history for an agent.
 
 ```bash
 curl "http://localhost:3847/api/messages?agent=comms-001&limit=20"
+curl "http://localhost:3847/api/messages?agent=comms-001&unread=true"
+curl "http://localhost:3847/api/messages?agent=comms-001&since_id=42"
 ```
 
 | Query Param | Type | Required | Description |
 |-------------|------|----------|-------------|
-| `agent` | string | yes | Agent ID to fetch messages for |
-| `type` | string | no | Filter by message type |
+| `agent` | string | **yes** | Agent ID to fetch messages for |
+| `type` | string | no | Filter by type: `text`, `task`, `result`, `error`, `status` |
 | `limit` | number | no | Maximum number of results |
+| `unread` | boolean | no | `true` = return unread messages and mark them as read |
+| `since_id` | number | no | Return messages with id > N addressed to this agent |
 
 ```json
 // Response 200
 {
   "data": [
     {
-      "id": "msg-uuid",
-      "from": "comms-001",
-      "to": "worker-007",
+      "id": 7,
+      "from_agent": "comms",
+      "to_agent": "orchestrator",
       "body": "Task complete",
-      "type": "text",
+      "type": "result",
       "metadata": null,
+      "read_at": null,
       "created_at": "2026-02-22T10:00:00.000Z"
     }
   ],
-  "timestamp": "..."
+  "timestamp": "2026-02-22T10:01:00.000Z"
 }
 ```
+
+**Note**: The DB columns are `from_agent` and `to_agent`, not `from` and `to`.
+
+---
+
+### PUT /api/messages/:id/read
+
+Mark a single message as read.
+
+```bash
+curl -X PUT http://localhost:3847/api/messages/7/read
+```
+
+```json
+// Response 200
+{
+  "marked": 1,
+  "id": 7,
+  "timestamp": "2026-02-22T10:01:00.000Z"
+}
+```
+
+---
+
+### PUT /api/messages/read-all
+
+Mark all messages for an agent as read.
+
+```bash
+curl -X PUT http://localhost:3847/api/messages/read-all \
+  -H 'Content-Type: application/json' \
+  -d '{"agent": "comms"}'
+```
+
+```json
+// Request body
+{ "agent": "comms" }   // required
+```
+
+```json
+// Response 200
+{
+  "marked": 3,
+  "timestamp": "2026-02-22T10:01:00.000Z"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ "marked": <count>, "timestamp": "..." }` |
+| 400 | `{ "error": "agent is required" }` |
 
 ---
 
@@ -576,17 +1053,29 @@ curl -X POST http://localhost:3847/api/send \
 // Request body
 {
   "message": "Task complete",      // required
-  "channels": ["telegram"],        // optional — specific channels; omit for all active
+  "channels": ["telegram"],        // optional — array of channel names; omit to broadcast to all active
+  "channel": "telegram",           // alternative singular form (equivalent to ["telegram"])
   "metadata": {}                   // optional
 }
 ```
 
+```json
+// Response 200
+{
+  "results": {
+    "telegram": true
+  },
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+The `results` object maps channel name to `true` (delivered) or `false` (failed). On delivery failure, the daemon also sends an error message to the comms agent.
+
 | Status | Response |
 |--------|----------|
-| 200 | `{ "results": /* channel router result */, "timestamp": "..." }` |
-| 400 | Missing message |
-
-The channel router reads the active channel from `kithkit.config.yaml` and forwards to the matching adapter. See `docs/recipes/` for channel-specific setup (Telegram, email, etc.).
+| 200 | `{ "results": { "<channel>": true/false }, "timestamp": "..." }` |
+| 400 | `{ "error": "message is required" }` |
+| 400 | `{ "error": "Unknown channel(s): X. Registered: Y" }` |
 
 ---
 
@@ -608,15 +1097,63 @@ curl -X POST http://localhost:3847/api/memory/store \
   "content": "User prefers concise responses",  // required
   "type": "fact",                                // optional — fact | episodic | procedural
   "category": "preferences",                    // optional — grouping label
-  "tags": ["user", "style"],                    // optional — for OR-match filtering
-  "source": "conversation"                      // optional — origin label
+  "tags": ["user", "style"],                    // optional — for filtering
+  "source": "conversation",                     // optional — origin label
+  "dedup": true                                  // optional — check for vector duplicates before storing
 }
 ```
 
+```json
+// Response 201 (stored)
+{
+  "id": 10,
+  "content": "User prefers concise responses",
+  "type": "fact",
+  "category": "preferences",
+  "tags": ["user", "style"],
+  "source": "conversation",
+  "created_at": "2026-02-22T09:00:00.000Z",
+  "updated_at": "2026-02-22T09:00:00.000Z",
+  "last_accessed": null,
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+**Note**: `tags` is returned as a parsed array (unlike todos, where it is a raw JSON string).
+
+**Dedup response (200)** — returned when `dedup: true` and similar memories are found:
+
+```json
+// Response 200 (dedup candidates found — NOT stored yet)
+{
+  "action": "review_duplicates",
+  "message": "Potential duplicates found — caller decides whether to store",
+  "duplicates": [
+    {
+      "id": 8,
+      "content": "User prefers brief output",
+      "similarity": 0.87,
+      "category": "preferences"
+    }
+  ],
+  "proposed": {
+    "content": "User prefers concise responses",
+    "type": "fact",
+    "category": "preferences",
+    "tags": ["user", "style"]
+  },
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+When `action: "review_duplicates"` is returned, the memory was **not** stored. Call `/api/memory/store` again without `dedup: true` to force-store it.
+
 | Status | Response |
 |--------|----------|
-| 201 | `{ "id": 1, "content": "...", "type": "fact", "category": "preferences", "tags": "[\"user\",\"style\"]", "source": "conversation", "created_at": "...", "updated_at": "...", "timestamp": "..." }` |
-| 400 | Missing content or invalid type |
+| 201 | Full memory object (stored) |
+| 200 | Dedup candidates object (not stored — review required) |
+| 400 | `{ "error": "content is required" }` |
+| 400 | `{ "error": "type must be fact, episodic, procedural" }` |
 
 ---
 
@@ -665,11 +1202,33 @@ curl -X POST http://localhost:3847/api/memory/search \
 }
 ```
 
+```json
+// Response 200
+{
+  "data": [
+    {
+      "id": 10,
+      "content": "User prefers concise responses",
+      "type": "fact",
+      "category": "preferences",
+      "tags": ["user", "style"],
+      "source": "conversation",
+      "created_at": "2026-02-22T09:00:00.000Z",
+      "updated_at": "2026-02-22T09:00:00.000Z",
+      "last_accessed": "2026-02-22T10:00:00.000Z"
+    }
+  ],
+  "mode": "keyword",
+  "timestamp": "2026-02-22T10:00:00.000Z"
+}
+```
+
 | Status | Response |
 |--------|----------|
 | 200 | `{ "data": [/* memory objects */], "mode": "keyword", "timestamp": "..." }` |
-| 400 | Missing query or filters |
-| 503 | Vector search not initialized (sqlite-vec not loaded) |
+| 400 | `{ "error": "query or at least one filter required" }` (keyword mode, no filters) |
+| 400 | `{ "error": "query is required for vector/hybrid search" }` |
+| 503 | `{ "error": "Vector search not initialized" }` (sqlite-vec not loaded) |
 
 ---
 
@@ -695,6 +1254,29 @@ Hard delete a memory.
 
 ---
 
+### POST /api/memory/backfill
+
+Generate embeddings for all memories that are missing them. Requires vector search to be enabled.
+
+```bash
+curl -X POST http://localhost:3847/api/memory/backfill
+```
+
+```json
+// Response 200
+{
+  "backfilled": 12,
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ "backfilled": <count>, "timestamp": "..." }` |
+| 503 | `{ "error": "Vector search not initialized" }` |
+
+---
+
 ## Config & State
 
 ### GET /api/config/:key
@@ -711,14 +1293,14 @@ curl http://localhost:3847/api/config/theme
   "key": "theme",
   "value": "dark",
   "updated_at": "2026-02-22T00:00:00.000Z",
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
 
 | Status | Response |
 |--------|----------|
 | 200 | Config entry with parsed value |
-| 404 | Not found |
+| 404 | `{ "error": "Not found" }` |
 
 ---
 
@@ -734,10 +1316,23 @@ curl -X PUT http://localhost:3847/api/config/theme \
 
 ```json
 // Request body
-{ "value": "anything JSON-serializable" }
+{ "value": "anything JSON-serializable" }  // required
 ```
 
-Returns 200 with the stored entry.
+```json
+// Response 200
+{
+  "key": "theme",
+  "value": "dark",
+  "updated_at": "2026-02-22T09:00:00.000Z",
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | Stored config entry |
+| 400 | `{ "error": "value is required" }` |
 
 ---
 
@@ -755,14 +1350,14 @@ curl http://localhost:3847/api/feature-state/voice
   "feature": "voice",
   "state": { "enabled": true, "engine": "kokoro" },
   "updated_at": "2026-02-22T00:00:00.000Z",
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
 
 | Status | Response |
 |--------|----------|
 | 200 | Feature state with parsed state object |
-| 404 | Not found |
+| 404 | `{ "error": "Not found" }` |
 
 ---
 
@@ -778,10 +1373,23 @@ curl -X PUT http://localhost:3847/api/feature-state/voice \
 
 ```json
 // Request body
-{ "state": { "enabled": true, "config": {} } }
+{ "state": { "enabled": true, "config": {} } }   // required
 ```
 
-Returns 200 with the stored feature state.
+```json
+// Response 200
+{
+  "feature": "voice",
+  "state": { "enabled": true, "engine": "kokoro" },
+  "updated_at": "2026-02-22T09:00:00.000Z",
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | Stored feature state |
+| 400 | `{ "error": "state is required" }` |
 
 ---
 
@@ -818,7 +1426,7 @@ curl "http://localhost:3847/api/context?budget=4000"
   ],
   "token_budget_used": 2341,
   "token_budget_total": 8000,
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
 
@@ -832,6 +1440,14 @@ Hot-reload `kithkit.config.yaml` from disk without restarting the daemon. The sc
 
 ```bash
 curl -X POST http://localhost:3847/api/config/reload
+```
+
+```json
+// Response 200
+{
+  "message": "Config reloaded successfully",
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
 ```
 
 | Status | Response |
@@ -873,7 +1489,7 @@ curl http://localhost:3847/api/tasks
       "lastRunAt": null
     }
   ],
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:01:00.000Z"
 }
 ```
 
@@ -885,7 +1501,21 @@ Manually trigger a task immediately, bypassing its schedule and idle/session che
 
 ```bash
 curl -X POST http://localhost:3847/api/tasks/context-watchdog/run
-curl -X POST http://localhost:3847/api/tasks/backup/run
+```
+
+```json
+// Response 200
+{
+  "data": {
+    "task_name": "context-watchdog",
+    "status": "success",
+    "output": "Context at 42%",
+    "duration_ms": 48,
+    "started_at": "2026-02-22T09:00:00.000Z",
+    "finished_at": "2026-02-22T09:00:00.048Z"
+  },
+  "timestamp": "2026-02-22T09:00:00.048Z"
+}
 ```
 
 | Status | Response |
@@ -894,8 +1524,6 @@ curl -X POST http://localhost:3847/api/tasks/backup/run
 | 404 | `{ "error": "Task not found: name" }` |
 | 500 | `{ "error": "Task execution error", "detail": "..." }` |
 | 503 | `{ "error": "Scheduler not initialized" }` |
-
-The task result includes `task_name`, `status` (`success` | `failure`), `output`, `duration_ms`, `started_at`, and `finished_at`.
 
 ---
 
@@ -921,7 +1549,7 @@ curl http://localhost:3847/api/tasks/context-watchdog/history
       "finished_at": "2026-02-22T09:00:00.048Z"
     }
   ],
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:01:00.000Z"
 }
 ```
 
@@ -1038,9 +1666,100 @@ curl http://localhost:3847/api/usage
   "tokens_out": 6789,
   "cost_usd": 0.0412,
   "jobs": 7,
-  "timestamp": "..."
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
+
+---
+
+### GET /api/metrics
+
+Aggregated API request metrics. Useful for diagnosing repeat errors and identifying slow endpoints.
+
+```bash
+curl http://localhost:3847/api/metrics
+curl "http://localhost:3847/api/metrics?hours=48&endpoint=/api/messages"
+curl "http://localhost:3847/api/metrics?agent=comms"
+```
+
+| Query Param | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `hours` | number | 24 | Look-back window in hours |
+| `endpoint` | string | — | Filter to a specific endpoint path |
+| `agent` | string | — | Filter to a specific agent ID |
+| `from` | string | — | Start time (ISO 8601 or `YYYY-MM-DD HH`) |
+| `to` | string | — | End time (ISO 8601 or `YYYY-MM-DD HH`) |
+
+```json
+// Response 200
+{
+  "summary": {
+    "total_requests": 840,
+    "success_count": 820,
+    "error_4xx": 18,
+    "error_5xx": 2,
+    "error_rate_4xx": 0.0214,
+    "error_rate_5xx": 0.0024,
+    "avg_latency_ms": 12.4
+  },
+  "hourly": [
+    {
+      "hour": "2026-02-22 08",
+      "total_requests": 120,
+      "success_count": 118,
+      "error_4xx": 2,
+      "error_5xx": 0,
+      "avg_latency_ms": 11.2
+    }
+  ],
+  "endpoints": [
+    {
+      "endpoint": "/api/messages",
+      "method": "POST",
+      "total_requests": 340,
+      "error_4xx": 5,
+      "error_5xx": 0,
+      "avg_latency_ms": 8.1,
+      "p95_latency_ms": 22.0
+    }
+  ],
+  "agents": [
+    {
+      "agent_id": "comms",
+      "total_requests": 600,
+      "error_4xx": 10,
+      "error_5xx": 1,
+      "avg_latency_ms": 11.0
+    }
+  ],
+  "top_errors": [
+    {
+      "endpoint": "/api/messages",
+      "method": "POST",
+      "total_errors": 5
+    }
+  ],
+  "repeat_offenders": [
+    {
+      "agent_id": "orchestrator",
+      "endpoint": "/api/messages",
+      "method": "POST",
+      "error_count": 4,
+      "latest_hour": "2026-02-22 09"
+    }
+  ],
+  "filters": {
+    "endpoint": null,
+    "agent": null,
+    "from": null,
+    "to": null,
+    "hours": 24
+  },
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+`repeat_offenders` lists agent+endpoint combinations that have produced 3 or more errors across multiple hours — useful for spotting systematic bugs.
 
 ---
 
@@ -1048,7 +1767,7 @@ curl http://localhost:3847/api/usage
 
 ### POST /api/orchestrator/escalate
 
-Escalate a task to the orchestrator. If the orchestrator session is not running, the daemon spawns one.
+Escalate a task to the orchestrator. The response shape varies based on the orchestrator's current state.
 
 ```bash
 curl -X POST http://localhost:3847/api/orchestrator/escalate \
@@ -1060,14 +1779,52 @@ curl -X POST http://localhost:3847/api/orchestrator/escalate \
 // Request body
 {
   "task": "Refactor the authentication module",   // required — task description
-  "context": "See issue #42"                       // optional — background context
+  "context": "See issue #42",                      // optional — background context
+  "priority": 0                                    // optional — integer, higher = more urgent
 }
 ```
 
+**Three possible success responses** depending on orchestrator state:
+
+```json
+// Response 202 — orchestrator was dead, now spawned
+{
+  "status": "spawned",
+  "session": "orch1",
+  "task_id": "uuid",
+  "message": "Orchestrator session created with task",
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+```json
+// Response 200 — orchestrator is running and idle (waiting)
+{
+  "status": "escalated",
+  "task_id": "uuid",
+  "message": "Task sent to waiting orchestrator",
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+```json
+// Response 200 — orchestrator is busy (Claude actively running)
+{
+  "status": "queued",
+  "task_id": "uuid",
+  "message": "Task queued — orchestrator is busy, wrapper will pick it up between runs",
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+In all three cases, a row is created in `orchestrator_tasks` with the returned `task_id`. Track task progress with `GET /api/orchestrator/tasks/:id`.
+
 | Status | Response |
 |--------|----------|
-| 200 | `{ "taskId": "...", "status": "pending", "orchestrator": "running", "timestamp": "..." }` |
-| 400 | Missing task |
+| 202 | Orchestrator spawned (was dead) |
+| 200 | Task escalated or queued (orchestrator already running) |
+| 400 | `{ "error": "task is required" }` |
+| 500 | `{ "error": "Failed to spawn orchestrator session" }` |
 
 ---
 
@@ -1083,11 +1840,23 @@ curl http://localhost:3847/api/orchestrator/status
 // Response 200
 {
   "alive": true,
-  "session": "orch1",
-  "activeJobs": 2,
-  "timestamp": "..."
+  "state": "active",
+  "status": "running",
+  "started_at": "2026-02-22T08:00:00.000Z",
+  "last_activity": "2026-02-22T09:00:00.000Z",
+  "active_jobs": 2,
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `alive` | boolean | Whether the tmux session exists |
+| `state` | string | Fine-grained: `"active"` (Claude running), `"waiting"` (idle loop), `"dead"` |
+| `status` | string | DB status: `"running"`, `"stopped"`, `"not_registered"` |
+| `started_at` | string \| null | When the session was started |
+| `last_activity` | string \| null | When activity was last recorded |
+| `active_jobs` | number | Count of queued/running worker jobs |
 
 ---
 
@@ -1097,12 +1866,38 @@ Gracefully shut down the orchestrator session.
 
 ```bash
 curl -X POST http://localhost:3847/api/orchestrator/shutdown
+curl -X POST http://localhost:3847/api/orchestrator/shutdown \
+  -H 'Content-Type: application/json' \
+  -d '{"force": true, "reason": "manual shutdown"}'
 ```
 
-| Status | Response |
-|--------|----------|
-| 200 | `{ "status": "shutdown", "timestamp": "..." }` |
-| 404 | Orchestrator not running |
+```json
+// Request body (all optional)
+{
+  "force": false,             // optional — skip waiting for active task to complete
+  "reason": "manual"         // optional — reason for logging
+}
+```
+
+```json
+// Response 200 — shutdown requested
+{
+  "status": "shutdown_requested",
+  "timeout_ms": 60000,
+  "was_active": false,
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+```json
+// Response 200 — already stopped
+{
+  "status": "already_stopped",
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+**Note**: The shutdown is asynchronous. If the orchestrator does not exit within `timeout_ms`, the daemon force-kills it. If `was_active` is `true`, the timeout is extended to 3 minutes to allow the current task to complete.
 
 ---
 
@@ -1121,73 +1916,232 @@ curl -X POST http://localhost:3847/api/orchestrator/tasks \
 {
   "title": "Audit documentation",       // required
   "description": "Check all docs",     // optional
-  "priority": 1                         // optional — higher = more urgent
+  "priority": 1,                        // optional — 0 (normal), 1 (high), 2 (urgent); default 0
+  "timeout_seconds": 300                // optional — task-level timeout
+}
+```
+
+```json
+// Response 201
+{
+  "id": "uuid",
+  "title": "Audit documentation",
+  "description": "Check all docs",
+  "status": "pending",
+  "assignee": null,
+  "priority": 1,
+  "result": null,
+  "error": null,
+  "timeout_seconds": null,
+  "created_at": "2026-02-22T09:00:00.000Z",
+  "assigned_at": null,
+  "started_at": null,
+  "completed_at": null,
+  "updated_at": "2026-02-22T09:00:00.000Z",
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
 
 | Status | Response |
 |--------|----------|
-| 201 | `{ "id": "...", "status": "pending", "timestamp": "..." }` |
-| 400 | Missing title |
+| 201 | Full task object |
+| 400 | `{ "error": "title is required" }` |
+| 400 | `{ "error": "priority must be 0 (normal), 1 (high), or 2 (urgent)" }` |
 
 ---
 
 ### GET /api/orchestrator/tasks
 
-List orchestrator tasks. Filter by status.
+List orchestrator tasks. Filter by status (comma-separated for multiple).
 
 ```bash
 curl "http://localhost:3847/api/orchestrator/tasks?status=pending"
+curl "http://localhost:3847/api/orchestrator/tasks?status=pending,in_progress"
+curl http://localhost:3847/api/orchestrator/tasks
 ```
 
 | Query Param | Type | Description |
 |-------------|------|-------------|
-| `status` | string | Filter: `pending`, `assigned`, `in_progress`, `completed`, `failed` |
+| `status` | string | Filter: `pending`, `assigned`, `in_progress`, `completed`, `failed` — comma-separated for multiple |
+
+```json
+// Response 200
+{
+  "data": [
+    {
+      "id": "uuid",
+      "title": "Audit documentation",
+      "description": "Check all docs",
+      "status": "pending",
+      "assignee": null,
+      "priority": 1,
+      "result": null,
+      "error": null,
+      "timeout_seconds": null,
+      "created_at": "2026-02-22T09:00:00.000Z",
+      "assigned_at": null,
+      "started_at": null,
+      "completed_at": null,
+      "updated_at": "2026-02-22T09:00:00.000Z",
+      "worker_count": 0,
+      "latest_activity": null
+    }
+  ],
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+**Note**: List items include `worker_count` and `latest_activity` (the most recent activity entry or `null`), which are not present on the base task object from `POST /api/orchestrator/tasks`.
 
 ---
 
 ### GET /api/orchestrator/tasks/:id
 
-Get a single task with its workers and activity log.
+Get a single task with its workers and full activity log.
+
+```bash
+curl http://localhost:3847/api/orchestrator/tasks/uuid
+```
+
+```json
+// Response 200
+{
+  "id": "uuid",
+  "title": "Audit documentation",
+  "description": "Check all docs",
+  "status": "in_progress",
+  "assignee": "orchestrator",
+  "priority": 1,
+  "result": null,
+  "error": null,
+  "timeout_seconds": null,
+  "created_at": "2026-02-22T09:00:00.000Z",
+  "assigned_at": "2026-02-22T09:01:00.000Z",
+  "started_at": "2026-02-22T09:01:30.000Z",
+  "completed_at": null,
+  "updated_at": "2026-02-22T09:01:30.000Z",
+  "workers": [
+    {
+      "task_id": "uuid",
+      "worker_id": "worker-abc",
+      "role": "research",
+      "assigned_at": "2026-02-22T09:01:00.000Z"
+    }
+  ],
+  "activity": [
+    {
+      "id": 1,
+      "task_id": "uuid",
+      "agent": "daemon",
+      "type": "note",
+      "stage": "status_change",
+      "message": "Status -> in_progress",
+      "created_at": "2026-02-22T09:01:30.000Z"
+    }
+  ],
+  "activity_total": 1,
+  "timestamp": "2026-02-22T09:02:00.000Z"
+}
+```
 
 | Status | Response |
 |--------|----------|
-| 200 | Task object with `workers` and `activity` arrays |
-| 404 | Not found |
+| 200 | Task object with `workers` array, `activity` array, and `activity_total` count |
+| 404 | `{ "error": "Task not found" }` |
 
 ---
 
 ### PUT /api/orchestrator/tasks/:id
 
-Update a task (status, assignee, result).
+Update a task (status, assignee, result). Status transitions are enforced — see the [Common Pitfalls](#orchestrator-task-status-transitions-are-enforced) section.
+
+```bash
+curl -X PUT "http://localhost:3847/api/orchestrator/tasks/$TASK_ID" \
+  -H 'Content-Type: application/json' \
+  -d '{"status": "completed", "result": "All docs updated successfully"}'
+```
 
 ```json
 // Request body (all optional)
 {
-  "status": "completed",
-  "assignee": "orchestrator",
-  "result": "All docs updated successfully"
+  "status": "completed",                          // pending | assigned | in_progress | completed | failed
+  "assignee": "orchestrator",                     // null clears assignee; required when status = "assigned"
+  "result": "All docs updated successfully",     // store task result (typically set on completion)
+  "error": "Reason for failure"                   // store error detail (typically set on failure)
 }
 ```
+
+```json
+// Response 200 — updated task object (base fields only, no workers/activity)
+{
+  "id": "uuid",
+  "title": "Audit documentation",
+  "status": "completed",
+  "assignee": "orchestrator",
+  "result": "All docs updated successfully",
+  "error": null,
+  "completed_at": "2026-02-22T10:00:00.000Z",
+  "updated_at": "2026-02-22T10:00:00.000Z",
+  "timestamp": "2026-02-22T10:00:00.000Z"
+}
+```
+
+On status change to `completed` or `failed`, the daemon automatically:
+- Sends a `result` message to the `comms` agent
+- Injects a notification into the comms tmux session
 
 | Status | Response |
 |--------|----------|
 | 200 | Updated task object |
-| 404 | Not found |
+| 400 | `{ "error": "invalid status: X" }` |
+| 400 | `{ "error": "pending tasks must have null assignee" }` |
+| 400 | `{ "error": "assigned tasks require a non-null assignee" }` |
+| 404 | `{ "error": "Task not found" }` |
+| 409 | `{ "error": "Cannot update completed task" }` (terminal state) |
+| 409 | `{ "error": "cannot transition from X to Y", "allowed_transitions": [...] }` |
 
 ---
 
 ### POST /api/orchestrator/tasks/:id/activity
 
-Post an activity entry to a task's log.
+Post an activity entry to a task's log. `progress` entries are forwarded immediately to the comms tmux session.
+
+```bash
+curl -X POST "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/activity" \
+  -H 'Content-Type: application/json' \
+  -d '{"message": "Completed 3 of 5 subtasks", "type": "progress", "agent": "orchestrator", "stage": "execution"}'
+```
 
 ```json
 // Request body
 {
-  "event_type": "progress",
-  "details": "Completed 3 of 5 subtasks"
+  "message": "Completed 3 of 5 subtasks",  // required — NOT "event_type" or "details"
+  "type": "progress",                        // optional — progress | note (default: "note")
+  "agent": "orchestrator",                  // optional — who posted this (default: "unknown")
+  "stage": "execution"                      // optional — label for the current phase
 }
 ```
+
+```json
+// Response 201
+{
+  "id": 5,
+  "task_id": "uuid",
+  "agent": "orchestrator",
+  "type": "progress",
+  "stage": "execution",
+  "message": "Completed 3 of 5 subtasks",
+  "created_at": "2026-02-22T09:05:00.000Z",
+  "timestamp": "2026-02-22T09:05:00.000Z"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 201 | Activity entry object |
+| 400 | `{ "error": "message is required" }` |
+| 400 | `{ "error": "type must be one of: progress, note" }` |
+| 404 | `{ "error": "Task not found" }` |
 
 ---
 
@@ -1196,23 +2150,71 @@ Post an activity entry to a task's log.
 Get the activity log for a task (paginated).
 
 ```bash
-curl "http://localhost:3847/api/orchestrator/tasks/abc-123/activity?limit=20"
+curl "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/activity?limit=20&offset=0"
+```
+
+| Query Param | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `limit` | number | 50 | Max entries (capped at 200) |
+| `offset` | number | 0 | Pagination offset |
+
+```json
+// Response 200
+{
+  "data": [
+    {
+      "id": 1,
+      "task_id": "uuid",
+      "agent": "daemon",
+      "type": "note",
+      "stage": "status_change",
+      "message": "Status -> in_progress",
+      "created_at": "2026-02-22T09:01:30.000Z"
+    }
+  ],
+  "total": 1,
+  "timestamp": "2026-02-22T09:02:00.000Z"
+}
 ```
 
 ---
 
 ### POST /api/orchestrator/tasks/:id/workers
 
-Assign a worker to a task.
+Assign a worker job to a task.
+
+```bash
+curl -X POST "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/workers" \
+  -H 'Content-Type: application/json' \
+  -d '{"worker_id": "worker-job-uuid", "role": "research"}'
+```
 
 ```json
 // Request body
 {
-  "jobId": "worker-job-uuid",
-  "profile": "coding",
-  "prompt": "Fix the auth module"
+  "worker_id": "worker-job-uuid",   // required — NOT "jobId"
+  "role": "research"                // optional — descriptive label for this worker's role
 }
 ```
+
+```json
+// Response 201
+{
+  "task_id": "uuid",
+  "worker_id": "worker-job-uuid",
+  "role": "research",
+  "assigned_at": "2026-02-22T09:01:00.000Z",
+  "timestamp": "2026-02-22T09:01:00.000Z"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 201 | Worker assignment object |
+| 400 | `{ "error": "worker_id is required" }` |
+| 404 | `{ "error": "Task not found" }` |
+| 409 | `{ "error": "Cannot assign workers to completed task" }` |
+| 409 | `{ "error": "Worker already assigned to this task" }` |
 
 ---
 
@@ -1225,31 +2227,68 @@ Create a self-reminder timer. Fires once, then nags every 30 seconds until ackno
 ```bash
 curl -X POST http://localhost:3847/api/timer \
   -H 'Content-Type: application/json' \
-  -d '{"delay": "90s", "message": "Check worker results"}'
+  -d '{"delay": "90s", "message": "Check worker results", "agent": "comms"}'
 ```
 
 ```json
 // Request body
 {
-  "delay": "90s",                    // required — seconds (number) or string with unit ("90s", "2m")
-  "message": "Check worker results" // required — reminder text
+  "delay": "90s",                    // required — seconds (number) or string with unit: "90s", "2m"
+  "message": "Check worker results", // required — reminder text
+  "agent": "comms"                   // optional — "comms" or "orchestrator" (default: "comms")
+}
+```
+
+```json
+// Response 201
+{
+  "id": "timer-uuid",
+  "fires_at": "2026-02-22T09:01:30.000Z",
+  "message": "Check worker results",
+  "status": "pending",
+  "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
 
 | Status | Response |
 |--------|----------|
-| 201 | `{ "id": "...", "delay": 90, "message": "...", "fires_at": "...", "timestamp": "..." }` |
-| 400 | Missing delay or message |
+| 201 | `{ "id": "...", "fires_at": "...", "message": "...", "status": "pending", "timestamp": "..." }` |
+| 400 | `{ "error": "delay is required — number (seconds) or string with unit (e.g. \"2m\", \"90s\")" }` |
+| 400 | `{ "error": "message is required" }` |
 
 ---
 
 ### GET /api/timers
 
-List all active timers.
+List all timers (active and recently completed).
 
 ```bash
 curl http://localhost:3847/api/timers
 ```
+
+```json
+// Response 200
+{
+  "timers": [
+    {
+      "id": "timer-uuid",
+      "session": "comms",
+      "message": "Check worker results",
+      "fires_at": "2026-02-22T09:01:30.000Z",
+      "created_at": "2026-02-22T09:00:00.000Z",
+      "status": "pending",
+      "fired_at": null,
+      "completed_at": null
+    }
+  ],
+  "count": 1,
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+**Note**: The response key is `timers` (not `data`), and `count` is included alongside it.
+
+Timer status values: `pending`, `fired`, `acknowledged`, `snoozed`, `expired`, `cancelled`.
 
 ---
 
@@ -1257,10 +2296,24 @@ curl http://localhost:3847/api/timers
 
 Acknowledge a timer (stops nagging).
 
+```bash
+curl -X POST "http://localhost:3847/api/timer/$TIMER_ID/ack"
+```
+
+```json
+// Response 200
+{
+  "id": "timer-uuid",
+  "acknowledged": true,
+  "timestamp": "2026-02-22T09:01:35.000Z"
+}
+```
+
 | Status | Response |
 |--------|----------|
-| 200 | `{ "status": "acknowledged", "timestamp": "..." }` |
-| 404 | Not found |
+| 200 | `{ "id": "...", "acknowledged": true, "timestamp": "..." }` |
+| 404 | `{ "error": "Timer not found" }` |
+| 409 | `{ "error": "Timer is pending, not fired" }` (must be in `fired` state) |
 
 ---
 
@@ -1268,15 +2321,32 @@ Acknowledge a timer (stops nagging).
 
 Snooze a timer. Default snooze is 5 minutes.
 
+```bash
+curl -X POST "http://localhost:3847/api/timer/$TIMER_ID/snooze" \
+  -H 'Content-Type: application/json' \
+  -d '{"delay": 120}'
+```
+
 ```json
 // Request body (optional)
-{ "delay": 300 }  // snooze duration in seconds
+{ "delay": 300 }  // snooze duration in seconds (default: 300)
+```
+
+```json
+// Response 200
+{
+  "id": "timer-uuid",
+  "snoozed": true,
+  "fires_at": "2026-02-22T09:06:35.000Z",
+  "timestamp": "2026-02-22T09:01:35.000Z"
+}
 ```
 
 | Status | Response |
 |--------|----------|
-| 200 | `{ "status": "snoozed", "fires_at": "...", "timestamp": "..." }` |
-| 404 | Not found |
+| 200 | `{ "id": "...", "snoozed": true, "fires_at": "...", "timestamp": "..." }` |
+| 404 | `{ "error": "Timer not found" }` |
+| 409 | `{ "error": "Timer is pending, not fired" }` (must be in `fired` state) |
 
 ---
 
@@ -1284,10 +2354,23 @@ Snooze a timer. Default snooze is 5 minutes.
 
 Cancel a timer.
 
+```bash
+curl -X DELETE "http://localhost:3847/api/timer/$TIMER_ID"
+```
+
+```json
+// Response 200
+{
+  "id": "timer-uuid",
+  "cancelled": true,
+  "timestamp": "2026-02-22T09:01:00.000Z"
+}
+```
+
 | Status | Response |
 |--------|----------|
-| 200 | `{ "status": "cancelled", "timestamp": "..." }` |
-| 404 | Not found |
+| 200 | `{ "id": "...", "cancelled": true, "timestamp": "..." }` |
+| 404 | `{ "error": "Timer not found" }` |
 
 ---
 
@@ -1308,6 +2391,8 @@ All error responses follow a consistent shape:
 | 400 | Bad request — missing required fields or invalid values |
 | 403 | Forbidden — access control violation |
 | 404 | Not found — resource or endpoint does not exist |
+| 409 | Conflict — state machine violation or duplicate |
+| 413 | Payload too large — request body exceeds size limit |
 | 500 | Internal server error — unhandled exception |
 | 503 | Service unavailable — required subsystem not initialized |
 
