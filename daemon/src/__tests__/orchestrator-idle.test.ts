@@ -329,11 +329,12 @@ describe('Orchestrator idle: liveness check', () => {
     cleanupTestEnv(tmpDir);
   });
 
-  it('does nothing when orchestrator is not alive and no nudge pending', async () => {
+  it('does nothing when orchestrator is not alive, no nudge pending, and no pending tasks', async () => {
     _setDepsForTesting({
       isOrchestratorAlive: () => false,
       killOrchestratorSession: () => { throw new Error('should not kill'); },
       injectMessage: () => { throw new Error('should not inject'); },
+      spawnOrchestratorSession: () => { throw new Error('should not spawn — no pending tasks'); },
       cleanupSessionDirs: () => 0,
     });
 
@@ -420,5 +421,125 @@ describe('Orchestrator idle: liveness check', () => {
     assert.ok(injectedText.includes('pending task'), 'should inject task notification not shutdown');
     assert.ok(injectedText.includes('Fix the login bug'), 'should include task title');
     assert.ok(!injectedText.includes('Shutdown requested'), 'should NOT inject shutdown prompt');
+  });
+});
+
+describe('Orchestrator idle: respawn for pending tasks when dead (#121)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = setupTestEnv();
+  });
+
+  afterEach(() => {
+    cleanupTestEnv(tmpDir);
+  });
+
+  it('spawns fresh orchestrator when dead and pending tasks exist', async () => {
+    let spawnedWithPrompt = '';
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      spawnOrchestratorSession: (prompt: string) => { spawnedWithPrompt = prompt; return 'orch1'; },
+      cleanupSessionDirs: () => 0,
+    });
+
+    // Insert a pending orchestrator task
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('respawn-task-1', 'Deploy the widget', 'Deploy widget to prod', 'pending', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    await _runForTesting({});
+
+    assert.ok(spawnedWithPrompt.length > 0, 'should have spawned a fresh orchestrator');
+    assert.ok(spawnedWithPrompt.includes('pending task'), 'prompt should mention pending tasks');
+    assert.ok(spawnedWithPrompt.includes('Deploy the widget'), 'prompt should include task title');
+
+    // Agent DB should be updated to running
+    const agents = query<{ status: string }>(
+      "SELECT status FROM agents WHERE id = 'orchestrator'",
+    );
+    assert.equal(agents[0]!.status, 'running', 'agent status should be running after respawn');
+  });
+
+  it('does not spawn when dead and no pending tasks', async () => {
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => { throw new Error('should not spawn — no pending tasks'); },
+      cleanupSessionDirs: () => 0,
+    });
+
+    // No pending tasks — should not spawn
+    await _runForTesting({});
+  });
+
+  it('corrects stale DB status when orchestrator session is gone', async () => {
+    // Set DB status to 'running' even though orch is dead (simulates failed cleanup)
+    update('agents', 'orchestrator', { status: 'running' });
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => { throw new Error('should not spawn — no pending tasks'); },
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    // DB status should now be corrected to 'stopped'
+    const agents = query<{ status: string }>(
+      "SELECT status FROM agents WHERE id = 'orchestrator'",
+    );
+    assert.equal(agents[0]!.status, 'stopped', 'stale running status should be corrected to stopped');
+  });
+
+  it('logs session_end activity when correcting stale DB status', async () => {
+    update('agents', 'orchestrator', { status: 'running' });
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => { throw new Error('should not spawn'); },
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const logs = query<{ event_type: string; details: string }>(
+      "SELECT event_type, details FROM agent_activity_log WHERE agent_id = 'orchestrator' AND event_type = 'session_end'",
+    );
+    assert.ok(logs.length > 0, 'should have logged session_end for stale status correction');
+    assert.ok(logs[0]!.details.includes('stale'), `details should mention stale: ${logs[0]!.details}`);
+  });
+
+  it('logs session_start activity after respawn', async () => {
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => 'orch1',
+      cleanupSessionDirs: () => 0,
+    });
+
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('respawn-task-2', 'Another task', 'Do something', 'pending', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    await _runForTesting({});
+
+    const logs = query<{ event_type: string; details: string }>(
+      "SELECT event_type, details FROM agent_activity_log WHERE agent_id = 'orchestrator' AND event_type = 'session_start'",
+    );
+    assert.ok(logs.length > 0, 'should have logged session_start after respawn');
+    assert.ok(logs[0]!.details.includes('Respawned by idle monitor'), `details: ${logs[0]!.details}`);
   });
 });

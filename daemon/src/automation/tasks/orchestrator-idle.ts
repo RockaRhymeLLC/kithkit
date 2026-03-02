@@ -19,11 +19,13 @@ import {
   isOrchestratorAlive as _isOrchestratorAlive,
   killOrchestratorSession as _killOrchestratorSession,
   injectMessage as _injectMessage,
+  spawnOrchestratorSession as _spawnOrchestratorSession,
   _getOrchestratorSession,
   TMUX_BIN,
   TMUX_SOCKET,
 } from '../../agents/tmux.js';
-import { cleanupSessionDirs as _cleanupSessionDirs } from '../../agents/lifecycle.js';
+import { cleanupSessionDirs as _cleanupSessionDirs, createSessionDir } from '../../agents/lifecycle.js';
+import { sendMessage } from '../../agents/message-router.js';
 import { createLogger } from '../../core/logger.js';
 import { logActivity, getActivity } from '../../api/activity.js';
 import type { Scheduler } from '../scheduler.js';
@@ -35,6 +37,7 @@ const log = createLogger('orchestrator-idle');
 let isOrchestratorAlive = _isOrchestratorAlive;
 let killOrchestratorSession = _killOrchestratorSession;
 let injectMessage = _injectMessage;
+let spawnOrchestratorSession = _spawnOrchestratorSession;
 let cleanupSessionDirs = _cleanupSessionDirs;
 
 /**
@@ -207,6 +210,87 @@ function cleanupOrphanedTasks(): number {
   return orphans.length;
 }
 
+/**
+ * Spawn a fresh orchestrator session to process pending tasks.
+ * Called by the idle monitor when the orchestrator is dead but pending tasks exist.
+ */
+function respawnForPendingTasks(taskId: string, taskTitle: string, taskDesc: string, pendingCount: number): void {
+  try {
+    const sessionDir = createSessionDir('orchestrator');
+    const claudeBin = `${process.env.HOME}/.local/bin/claude`;
+
+    // Build a prompt that tells the new orchestrator to check its task queue
+    const prompt = [
+      'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality.',
+      '',
+      'Your role: decompose complex tasks, spawn workers, coordinate their output, and report structured results back to the comms agent.',
+      '',
+      `You have ${pendingCount} pending task(s) in the queue. Start by checking the task queue:`,
+      `  curl -s http://localhost:3847/api/orchestrator/tasks?status=pending`,
+      '',
+      `First pending task:`,
+      `  Task ID: ${taskId}`,
+      `  Title: ${taskTitle}`,
+      `  Description: ${taskDesc.slice(0, 500)}`,
+      '',
+      'Work through all pending tasks. For each task:',
+      '1. Assign it: PUT /api/orchestrator/tasks/:id with {"status":"assigned","assignee":"orchestrator"}',
+      '2. Start it: PUT /api/orchestrator/tasks/:id with {"status":"in_progress"}',
+      '3. Do the work (spawn workers as needed)',
+      '4. Complete it: PUT /api/orchestrator/tasks/:id with {"status":"completed","result":"<summary>"}',
+      '5. Report to comms: POST /api/messages with {"from":"orchestrator","to":"comms","type":"result","body":"<result>"}',
+      '',
+      `Session directory: ${sessionDir}`,
+    ].join('\n');
+
+    // Import here to avoid circular at module level — spawnOrchestratorSession is already injectable
+    const session = spawnOrchestratorSession(prompt);
+    if (!session) {
+      log.error('Failed to respawn orchestrator for pending tasks');
+      return;
+    }
+
+    // Register/update in agents table
+    const ts = new Date().toISOString();
+    try {
+      exec(
+        `INSERT INTO agents (id, type, profile, status, tmux_session, started_at, created_at, updated_at)
+         VALUES ('orchestrator', 'orchestrator', 'orchestrator', 'running', ?, ?, ?, ?)`,
+        session, ts, ts, ts,
+      );
+    } catch {
+      // Already exists — update
+      update('agents', 'orchestrator', {
+        status: 'running',
+        tmux_session: session,
+        started_at: ts,
+        updated_at: ts,
+      });
+    }
+
+    logActivity({
+      agent_id: 'orchestrator',
+      session_id: session,
+      event_type: 'session_start',
+      details: `Respawned by idle monitor for ${pendingCount} pending task(s): ${taskTitle.slice(0, 100)}`,
+    });
+
+    // Send the task as a message so the wrapper's poll loop can also find it
+    sendMessage({
+      from: 'daemon',
+      to: 'orchestrator',
+      type: 'task',
+      body: JSON.stringify({ task: taskTitle, context: taskDesc, task_id: taskId }),
+    });
+
+    log.info('Orchestrator respawned for pending tasks', { session, pendingCount, taskId });
+  } catch (err) {
+    log.error('Failed to respawn orchestrator', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 const PENDING_TIMEOUT_MS = 5 * 60 * 1000;   // 5 minutes
 const STALE_WORK_NOTES_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -234,9 +318,9 @@ function checkTaskTimeouts(): void {
     }
   }
 
-  // Check in_progress tasks with no recent work_notes updates
-  const activeTaskRows = query<{ id: string; title: string; updated_at: string; work_notes: string | null }>(
-    `SELECT id, title, updated_at, work_notes FROM orchestrator_tasks WHERE status = 'in_progress'`,
+  // Check in_progress tasks with no recent updates
+  const activeTaskRows = query<{ id: string; title: string; updated_at: string }>(
+    `SELECT id, title, updated_at FROM orchestrator_tasks WHERE status = 'in_progress'`,
   );
   for (const task of activeTaskRows) {
     const lastUpdate = new Date(task.updated_at).getTime();
@@ -245,7 +329,6 @@ function checkTaskTimeouts(): void {
         taskId: task.id,
         title: task.title.slice(0, 80),
         lastUpdateMinutes: Math.round((now - lastUpdate) / 60000),
-        hasWorkNotes: !!task.work_notes,
       });
     }
   }
@@ -335,9 +418,46 @@ async function run(config: Record<string, unknown>): Promise<void> {
     return;
   }
 
-  // Not alive and no pending nudge — check for zombie tasks left behind
+  // Not alive and no pending nudge — check for zombie tasks, then respawn if pending work exists
   if (!isOrchestratorAlive()) {
     cleanupZombieTasks();
+
+    // Ensure DB status reflects reality — the wrapper cleanup may have failed to update
+    // (e.g. PUT /api/agents/orchestrator returned 404 before the fix).
+    try {
+      const agentRows = query<{ status: string }>(
+        "SELECT status FROM agents WHERE id = 'orchestrator'",
+      );
+      if (agentRows[0] && agentRows[0].status !== 'stopped' && agentRows[0].status !== 'crashed') {
+        log.warn('Orchestrator tmux session gone but DB status was stale — correcting', {
+          oldStatus: agentRows[0].status,
+        });
+        update('agents', 'orchestrator', {
+          status: 'stopped',
+          updated_at: new Date().toISOString(),
+        });
+        logActivity({
+          agent_id: 'orchestrator',
+          event_type: 'session_end',
+          details: 'Session gone — DB status corrected from stale state by idle monitor',
+        });
+      }
+    } catch {
+      // Non-fatal — the respawn below will handle registration
+    }
+
+    // Check for pending tasks that need a fresh orchestrator
+    const pendingForRespawn = query<{ count: number; id: string; title: string; description: string }>(
+      `SELECT COUNT(*) as count, MIN(id) as id, MIN(title) as title, MIN(description) as description
+       FROM orchestrator_tasks WHERE status = 'pending'`,
+    );
+    const pendingCount = pendingForRespawn[0]?.count ?? 0;
+    if (pendingCount > 0) {
+      log.info('Orchestrator dead but pending tasks exist — spawning fresh orchestrator', { pendingCount });
+      const firstTask = pendingForRespawn[0]!;
+      respawnForPendingTasks(firstTask.id, firstTask.title, firstTask.description ?? firstTask.title, pendingCount);
+    }
+
     return;
   }
 
@@ -529,17 +649,20 @@ export function _setDepsForTesting(deps: {
   isOrchestratorAlive?: () => boolean;
   killOrchestratorSession?: () => boolean;
   injectMessage?: (target: string, text: string) => boolean;
+  spawnOrchestratorSession?: (prompt: string) => string | null;
   cleanupSessionDirs?: (maxAgeDays?: number) => number;
 } | null): void {
   if (deps === null) {
     isOrchestratorAlive = _isOrchestratorAlive;
     killOrchestratorSession = _killOrchestratorSession;
     injectMessage = _injectMessage;
+    spawnOrchestratorSession = _spawnOrchestratorSession;
     cleanupSessionDirs = _cleanupSessionDirs;
     return;
   }
   if (deps.isOrchestratorAlive) isOrchestratorAlive = deps.isOrchestratorAlive;
   if (deps.killOrchestratorSession) killOrchestratorSession = deps.killOrchestratorSession;
   if (deps.injectMessage) injectMessage = deps.injectMessage;
+  if (deps.spawnOrchestratorSession) spawnOrchestratorSession = deps.spawnOrchestratorSession;
   if (deps.cleanupSessionDirs) cleanupSessionDirs = deps.cleanupSessionDirs;
 }
