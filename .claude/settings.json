@@ -1,9 +1,4 @@
 {
-  "permissions": {
-    "allow": [".*"],
-    "deny": [],
-    "defaultMode": "bypassPermissions"
-  },
   "hooks": {
     "PreToolUse": [
       {
