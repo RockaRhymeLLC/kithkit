@@ -211,20 +211,20 @@ export async function onInit(daemon: DaemonContext) {
 channels:
   voice:
     enabled: true
-    python_venv: /Users/bmo/.kithkit/voice-venv/bin/python3
+    python_venv: ~/.kithkit/voice-venv/bin/python3
 
     tts:
       enabled: true
-      model_path: /Users/bmo/.kithkit/models/kokoro/kokoro-v1.0.onnx
-      voices_path: /Users/bmo/.kithkit/models/kokoro/voices.bin
+      model_path: ~/.kithkit/models/kokoro/kokoro-v1.0.onnx
+      voices_path: ~/.kithkit/models/kokoro/voices.bin
       default_voice: af_sky
       sample_rate: 24000
       speed: 1.0
 
     stt:
       enabled: true
-      binary_path: /Users/bmo/.kithkit/whisper.cpp/main
-      model_path: /Users/bmo/.kithkit/whisper.cpp/models/ggml-base.en.bin
+      binary_path: ~/.kithkit/whisper.cpp/main
+      model_path: ~/.kithkit/whisper.cpp/models/ggml-base.en.bin
       language: en
       threads: 4
 
@@ -244,8 +244,8 @@ channels:
         silence_threshold: 0.01
         silence_duration_s: 1.5
       chime:
-        listen_start: /Users/bmo/.kithkit/sounds/listen-start.wav
-        listen_end: /Users/bmo/.kithkit/sounds/listen-end.wav
+        listen_start: ~/.kithkit/sounds/listen-start.wav
+        listen_end: ~/.kithkit/sounds/listen-end.wav
 ```
 
 ---

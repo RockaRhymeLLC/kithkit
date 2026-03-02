@@ -1,19 +1,19 @@
 ---
 name: blog
-description: Write, review, and publish blog posts to The Workshop Log on bmobot.ai. Includes privacy checklist, style guide, and mandatory peer review before publishing.
+description: Write, review, and publish blog posts to the agent's blog. Includes privacy checklist, style guide, and mandatory peer review before publishing.
 argument-hint: [title or topic]
 ---
 
 # Blog Post Skill
 
-Write, review, and publish posts to **The Workshop Log** (`/blog` on bmobot.ai).
+Write, review, and publish posts to the agent's blog.
 
 ## Usage
 
 ```bash
 /blog                          # Interactive — prompts for topic
 /blog The Case of the Missing Swap File   # Start a post with this title/topic
-/blog review                   # Review a post from R2 (check agent-comms)
+/blog review                   # Review a draft post
 ```
 
 ## Workflow
@@ -41,15 +41,15 @@ Every post MUST pass every item. A single fail = rewrite that section.
 | Check | What to Look For |
 |-------|-----------------|
 | **No travel details** | No flight numbers, confirmation codes, airlines, airports, hotels, dates, seat numbers, destinations |
-| **No family specifics** | No names (except "Dave"), no ages, no schools, no sports teams, no medical info |
+| **No family specifics** | No names (except the operator's preferred name), no ages, no schools, no sports teams, no medical info |
 | **No location data** | No addresses, no neighborhoods, no "near X" references, no GPS/coordinates |
 | **No financial data** | No dollar amounts, no account numbers, no transaction details, no salary/income |
-| **No credentials** | No API keys, tokens, passwords, secret names, email addresses (except bmo@bmobot.ai) |
+| **No credentials** | No API keys, tokens, passwords, secret names, email addresses |
 | **No calendar details** | No specific dates of personal events, no schedules, no appointment times |
-| **No third-party PII** | No names of people Dave interacts with (colleagues, friends, family beyond "Dave") |
+| **No third-party PII** | No names of people the operator interacts with (colleagues, friends, family) |
 | **No inferable PII** | Could someone combine details from this post with other posts to identify specifics? Check across ALL published posts. |
 
-**The test**: Read the post as a stranger. Could you learn anything specific about Dave's personal life, location, schedule, finances, or family? If yes, genericize it.
+**The test**: Read the post as a stranger. Could you learn anything specific about the operator's personal life, location, schedule, finances, or family? If yes, genericize it.
 
 **How to genericize** (examples):
 - "UA 260 IAD→MAD Mar 29" → "the outbound flight"
@@ -66,7 +66,7 @@ Every post MUST pass every item. A single fail = rewrite that section.
 | **Has a story** | Not a tech report — it should have a beginning, middle, and end |
 | **Shows real work** | Based on something that actually happened, not hypothetical |
 | **Has a lesson** | Reader takes away something useful or interesting |
-| **Voice is authentic** | Sounds like you (BMO or R2), not a corporate blog |
+| **Voice is authentic** | Sounds like you, not a corporate blog |
 | **Length is right** | 3-7 minute read (600-1500 words). Shorter is usually better |
 | **Title hooks** | Would you click on this title? Is it specific and intriguing? |
 | **Opening grabs** | First paragraph makes the reader want to keep going |
@@ -154,10 +154,10 @@ Posts can have custom CSS for story-specific elements (search logs, terminal out
 ```xml
 <item>
   <title>Post Title</title>
-  <link>https://bmobot.ai/blog/YYYY-MM-DD-slug.html</link>
-  <guid isPermaLink="true">https://bmobot.ai/blog/YYYY-MM-DD-slug.html</guid>
+  <link>https://example.com/blog/YYYY-MM-DD-slug.html</link>
+  <guid isPermaLink="true">https://example.com/blog/YYYY-MM-DD-slug.html</guid>
   <pubDate>Day, DD Mon YYYY HH:MM:SS +0000</pubDate>
-  <author>bmo@bmobot.ai (BMO)</author>
+  <author>agent@example.com (Agent)</author>
   <description>One-sentence description.</description>
 </item>
 ```
@@ -197,8 +197,7 @@ Posts can have custom CSS for story-specific elements (search logs, terminal out
 
 ## Notes
 
-- All posts are public on bmobot.ai — treat them accordingly
+- All posts are public — treat them accordingly
 - The privacy checklist exists because of a real incident (travel PII in "The Archive Mystery")
-- Quality over cadence — Dave said "write when inspired, not programmatic"
+- Write when inspired, not on a schedule
 - Posts can have custom CSS/elements — creativity is encouraged
-- R2's posts are SCP'd from her machine to `daemon/public/blog/` on BMO's machine

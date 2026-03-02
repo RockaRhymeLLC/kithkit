@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
 GitHub Rate Log — PostToolUse hook
-Logs and broadcasts GitHub writes to external repos.
+Logs GitHub writes to external repos.
 Part of the cross-agent GitHub TOS compliance system.
 """
 
 import json
+import os
 import sys
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 # Config
 OUR_ORGS = {"rockarymellc", "rockaryhme", "hurleyworks"}  # Case-insensitive
-LEDGER_FILE = Path.home() / "cc4me_r2d2/.claude/state/github-rate-ledger/external-writes.jsonl"
-AGENT_NAME = "r2d2"
+LEDGER_FILE = Path.home() / ".kithkit/github-rate-ledger/external-writes.jsonl"
+AGENT_NAME = os.environ.get("KITHKIT_AGENT_NAME", "agent")
 
 def is_external_repo(repo: str) -> bool:
     """Check if repo is external (not ours)."""
@@ -51,20 +51,6 @@ def parse_github_command(command: str) -> tuple[str, str]:
         action = "issue_create"
 
     return action, repo
-
-def broadcast_to_peer(entry: dict):
-    """Broadcast rate ledger entry to BMO via agent-comms."""
-    try:
-        msg = f"[RATE-LEDGER] {json.dumps(entry)}"
-        script = Path.home() / "cc4me_r2d2/scripts/agent-send.sh"
-        if script.exists():
-            subprocess.run(
-                [str(script), "bmo", msg],
-                timeout=10,
-                capture_output=True
-            )
-    except Exception:
-        pass  # Best effort
 
 def main():
     # Read hook input
@@ -110,8 +96,7 @@ def main():
     except IOError:
         pass
 
-    # Broadcast to peer
-    broadcast_to_peer(entry)
+    # Broadcast to peers via daemon API if agent-comms is configured
 
     sys.exit(0)
 

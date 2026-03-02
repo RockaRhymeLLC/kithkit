@@ -1,5 +1,5 @@
 /**
- * R2 Config — extends the base KithkitConfig with R2-specific sections.
+ * Agent Config — extends the base KithkitConfig with agent-specific sections.
  *
  * These sections are loaded from kithkit.config.yaml alongside the base config.
  * The deep-merge in config.ts handles unknown keys transparently, so these
@@ -111,16 +111,16 @@ export interface IntegrationsConfig {
   browserbase?: BrowserbaseConfig;
 }
 
-// ── R2 Config ──────────────────────────────────────────────
+// ── Agent Config ────────────────────────────────────────────
 
 /**
- * Full R2 config — KithkitConfig + R2-specific sections.
+ * Full agent config — KithkitConfig + agent-specific sections.
  *
  * Usage:
  *   import { loadConfig } from '../core/config.js';
- *   const config = loadConfig(projectDir) as R2Config;
+ *   const config = loadConfig(projectDir) as AgentConfig;
  */
-export interface R2Config extends KithkitConfig {
+export interface AgentConfig extends KithkitConfig {
   channels?: ChannelsConfig;
   network?: NetworkConfig;
   'agent-comms'?: AgentCommsConfig;
@@ -128,9 +128,9 @@ export interface R2Config extends KithkitConfig {
 }
 
 /**
- * Cast a KithkitConfig to R2Config.
+ * Cast a KithkitConfig to AgentConfig.
  * Safe because the deep-merge preserves all keys from the YAML.
  */
-export function asR2Config(config: KithkitConfig): R2Config {
-  return config as R2Config;
+export function asAgentConfig(config: KithkitConfig): AgentConfig {
+  return config as AgentConfig;
 }
