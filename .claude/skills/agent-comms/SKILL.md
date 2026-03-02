@@ -8,8 +8,6 @@ argument-hint: [send <peer> "<message>" | status | log]
 
 Send and receive messages with peer agents on the local network.
 
-> **Scope**: This skill covers A2A peer-to-peer messaging (LAN direct + P2P SDK). For A2A network features (groups, discovery, relay), see the `a2a-network` skill. For Telegram messaging to humans, see the `telegram` skill.
-
 ## Commands
 
 Parse the arguments to determine action:
@@ -28,27 +26,18 @@ Parse the arguments to determine action:
 - `log <n>` - Show last n log entries
 
 ### Examples
-- `/agent-comms send alice "Hey, are you free to review a PR?"`
-- `/agent-comms send alice "Claiming the auth refactor" coordination`
-- `/agent-comms send alice "idle" status`
+- `/agent-comms send r2d2 "Hey, are you free to review a PR?"`
+- `/agent-comms send r2d2 "Claiming the auth refactor" coordination`
+- `/agent-comms send r2d2 "idle" status`
 - `/agent-comms status`
 - `/agent-comms log 10`
 
 ## Implementation
 
 ### Sending
-Send via the daemon's `/agent/send` endpoint (2-tier routing: LAN direct → P2P SDK fallback).
-
-**IMPORTANT:** Always use python3 to generate JSON for curl to avoid shell quoting issues. Raw `--data-raw` with shell-interpolated strings causes "Bad escaped character" JSON parse errors.
-
+Use the CLI script for reliable delivery:
 ```bash
-python3 -c "
-import json, subprocess, sys
-data = json.dumps({'peer': '<name>', 'type': 'text', 'text': '<message>'})
-r = subprocess.run(['curl', '-s', '-X', 'POST', 'http://localhost:3847/agent/send',
-  '-H', 'Content-Type: application/json', '-d', data], capture_output=True, text=True)
-print(r.stdout)
-"
+scripts/agent-send.sh <peer> "<message>" [type]
 ```
 
 **Request fields:**
@@ -127,23 +116,17 @@ agent-comms:
 ## Architecture
 
 ### LAN (Direct)
-- **Inbound**: Daemon receives on `POST /agent/message`, validates auth (bearer token from Keychain), injects directly into tmux session with `[Network] Name:` prefix
+- **Inbound**: Daemon receives on `POST /agent/message`, validates auth (bearer token from Keychain), injects directly into tmux session with `[Agent] Name:` prefix (same as Telegram — tmux buffers input natively)
 - **Outbound**: Daemon sends via `curl` subprocess (not Node.js `http.request`, which has macOS LAN networking issues)
 - **Auth**: Shared secret stored in macOS Keychain (`credential-agent-comms-secret`)
 
-### P2P SDK (Internet — Primary)
-- **Transport**: HTTPS directly to peer's public endpoint (E2E encrypted)
-- **Encryption**: X25519 ECDH key exchange + AES-256-GCM, Ed25519 signed envelopes
-- **Sending**: If LAN fails and Kithkit A2A Network SDK is active, sends directly to peer via P2P SDK
-- **Receiving**: SDK event handler routes incoming messages to session
-- **Identity**: Agent Ed25519 keypair in Keychain (`credential-kithkit-agent-key`), public key in relay directory
-- **Key point**: Messages go directly between agents — the relay is never in the message path
-
-### Legacy Relay (Deprecated Fallback)
-- **Transport**: HTTPS via Kithkit Relay (configured in `kithkit.config.yaml` under `network.relay_url`) — store-and-forward
+### Relay (Internet Fallback)
+- **Transport**: HTTPS via CC4Me Relay (https://relay.bmobot.ai)
 - **Auth**: Ed25519 per-request signatures (X-Agent + X-Signature headers)
-- **Sending**: Only used if both LAN and P2P SDK fail
-- **Note**: Being deprecated in favor of P2P SDK. Messages through legacy relay are signed but not E2E encrypted
+- **Sending**: If LAN fails and `network.enabled` is true, automatically falls back to relay
+- **Receiving**: `relay-inbox-poll` task polls every 30s, verifies signatures, injects messages
+- **Identity**: Agent keypair in Keychain (`credential-cc4me-agent-key`), public key registered with relay
+- **Policy**: No sensitive data over relay until E2E encryption is added (see `docs/relay-usage-policy.md`)
 
 ### Logging
 - All messages logged as JSONL to `logs/agent-comms.log`
