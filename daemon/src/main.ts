@@ -383,6 +383,108 @@ server.on('error', (err: NodeJS.ErrnoException) => {
 
 tryListen();
 
+// ── Optional LAN listener (A2A only) ─────────────────────────
+let lanServer: http.Server | null = null;
+
+if (config.daemon.lan?.enabled) {
+  const lanConfig = config.daemon.lan;
+  const lanLog = createLogger('lan');
+
+  lanServer = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', `http://localhost:${lanConfig.port}`);
+    const requestStartMs = Date.now();
+
+    let capturedStatusCode = 200;
+    const origWriteHead = res.writeHead.bind(res);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    res.writeHead = function metricsWriteHead(statusCode: number, ...args: any[]) {
+      capturedStatusCode = statusCode;
+      return origWriteHead(statusCode, ...args);
+    } as typeof res.writeHead;
+
+    res.on('finish', () => {
+      const latencyMs = Date.now() - requestStartMs;
+      logRequest(req, capturedStatusCode, latencyMs, null);
+    });
+
+    addTimestamp(res);
+
+    // CORS preflight for /health
+    if (req.method === 'OPTIONS' && url.pathname === '/health') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+      });
+      res.end();
+      return;
+    }
+
+    // Health endpoint
+    if (req.method === 'GET' && url.pathname === '/health') {
+      const health = getHealth(VERSION);
+      const ext = getExtension();
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify({
+        ...health,
+        degraded: isDegraded(),
+        extension: ext ? ext.name : null,
+        listener: 'lan',
+      }));
+      return;
+    }
+
+    // A2A routes only — delegate to extension route registry
+    if (url.pathname.startsWith('/agent/')) {
+      const handleLanRoute = async (): Promise<void> => {
+        if (!isDegraded()) {
+          const routeHandled = await matchRoute(req, res, url.pathname, url.searchParams);
+          if (routeHandled) return;
+        }
+
+        // Extension direct onRoute fallback
+        const ext = getExtension();
+        if (ext?.onRoute && !isDegraded()) {
+          const handled = await ext.onRoute(req, res, url.pathname, url.searchParams);
+          if (handled) return;
+        }
+
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
+      };
+
+      handleLanRoute().catch((err) => {
+        lanLog.error('LAN request error', { path: url.pathname, error: String(err) });
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal server error', timestamp: new Date().toISOString() }));
+        }
+      });
+      return;
+    }
+
+    // Block everything else
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'LAN listener only serves A2A endpoints',
+      timestamp: new Date().toISOString(),
+    }));
+  });
+
+  lanServer.on('error', (err: NodeJS.ErrnoException) => {
+    lanLog.error(`LAN server error: ${err.message}`);
+    // Don't exit the process — LAN listener is optional
+  });
+
+  lanServer.listen(lanConfig.port, lanConfig.bind_host, () => {
+    lanLog.info(`LAN server listening on ${lanConfig.bind_host}:${lanConfig.port} (A2A routes only)`);
+  });
+}
+
 // ── Graceful shutdown ────────────────────────────────────────
 
 async function shutdown(signal: string): Promise<void> {
@@ -399,6 +501,11 @@ async function shutdown(signal: string): Promise<void> {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  if (lanServer) {
+    lanServer.close();
+    log.info('LAN server stopped');
   }
 
   configWatcher.stop();
