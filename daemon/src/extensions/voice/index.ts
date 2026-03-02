@@ -54,6 +54,11 @@ let _enabled = false;
 // ── Body parsers ─────────────────────────────────────────────
 
 function parseBody(req: http.IncomingMessage): Promise<string> {
+  // Check for pre-buffered body from main.ts metrics middleware
+  const rawBody = (req as unknown as Record<string, unknown>)._rawBody;
+  if (rawBody instanceof Buffer) {
+    return Promise.resolve(rawBody.toString());
+  }
   return new Promise((resolve) => {
     let body = '';
     req.on('data', (c: Buffer) => { body += c.toString(); });
@@ -62,6 +67,14 @@ function parseBody(req: http.IncomingMessage): Promise<string> {
 }
 
 function parseRawBody(req: http.IncomingMessage, maxBytes: number): Promise<Buffer> {
+  // Check for pre-buffered body from main.ts metrics middleware
+  const rawBody = (req as unknown as Record<string, unknown>)._rawBody;
+  if (rawBody instanceof Buffer) {
+    if (rawBody.length > maxBytes) {
+      return Promise.reject(new Error('PAYLOAD_TOO_LARGE'));
+    }
+    return Promise.resolve(rawBody);
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalBytes = 0;
