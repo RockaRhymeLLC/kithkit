@@ -234,6 +234,7 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - Follow project conventions (TypeScript, ESM, Node.js 22+)
 - Write tests for new functionality
 - Keep changes focused on the assigned task
+- Always quote URLs in `curl` commands (single or double quotes). In zsh, unquoted `?` and `&` characters trigger glob expansion and break the command. Example: `curl 'http://localhost:3847/api/messages?agent=X&limit=20'`
 
 ### Communication
 
