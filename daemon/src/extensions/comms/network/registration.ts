@@ -21,7 +21,7 @@ import {
   loadKeyFromKeychain,
   derivePublicKey,
 } from './crypto.js';
-import type { R2Config, NetworkCommunity } from '../../config.js';
+import type { AgentConfig, NetworkCommunity } from '../../config.js';
 
 const log = createLogger('network:registration');
 
@@ -143,7 +143,7 @@ async function registerOnRelay(
  * Register with relay service(s).
  * Single-relay or multi-community. Returns ok if at least one succeeded.
  */
-export async function registerWithRelay(config: R2Config): Promise<RegistrationResult> {
+export async function registerWithRelay(config: AgentConfig): Promise<RegistrationResult> {
   const network = config.network;
 
   if (!network?.enabled) {
@@ -223,7 +223,7 @@ async function registerMultiCommunity(
   };
 }
 
-export async function checkRegistrationStatus(config: R2Config): Promise<RegistrationResult> {
+export async function checkRegistrationStatus(config: AgentConfig): Promise<RegistrationResult> {
   const network = config.network;
 
   if (!network?.enabled) {

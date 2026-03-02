@@ -8,7 +8,7 @@
 import http from 'node:http';
 import { createLogger } from '../../core/logger.js';
 import { registerRoute, type RouteHandler } from '../../core/route-registry.js';
-import type { R2Config } from '../config.js';
+import type { AgentConfig } from '../config.js';
 import { BmoTelegramAdapter, createBmoTelegramAdapter } from './adapters/telegram.js';
 import { BmoGraphAdapter } from './adapters/email/graph-provider.js';
 import { BmoHimalayaAdapter } from './adapters/email/himalaya-provider.js';
@@ -36,7 +36,7 @@ let _himalayaAdapters: BmoHimalayaAdapter[] = [];
  * Initialize all BMO communication adapters.
  * Called during BMO extension onInit().
  */
-export async function initComms(config: R2Config): Promise<void> {
+export async function initComms(config: AgentConfig): Promise<void> {
   // Initialize BMO channel router
   initBmoChannelRouter();
 

@@ -276,6 +276,6 @@ This applies to both comms (before asking the human directly) and orchestrator (
   2. Fix the root cause (merge conflicts, crashed daemon, locked keychain, etc.)
   3. Restart the peer's comms session if needed
   4. Verify the peer is responding before resuming normal work
-- Notify the human (Dave) when you begin restoration and when it's complete.
-- If you cannot restore the peer alone, escalate to Dave immediately with a clear diagnosis.
+- Notify the human when you begin restoration and when it's complete.
+- If you cannot restore the peer alone, escalate to the operator immediately with a clear diagnosis.
 - This rule applies equally to all configured peer agents.

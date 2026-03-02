@@ -1,5 +1,5 @@
 /**
- * R2 Extension — entry point for all R2-specific daemon capabilities.
+ * Agent Extension — entry point for all agent-specific daemon capabilities.
  *
  * Implements the kithkit Extension interface to add:
  * - Communication channels (Telegram, email, voice)
@@ -7,7 +7,7 @@
  * - Scheduler task handlers
  * - Infrastructure services (backup, health checks)
  *
- * This is the single entry point — all R2 modules register through here.
+ * This is the single entry point — all extension modules register through here.
  * Zero modifications to upstream kithkit framework files.
  */
 
@@ -19,16 +19,16 @@ import { registerCheck } from '../core/extended-status.js';
 import { setScheduler, _getSchedulerForTesting } from '../api/tasks.js';
 import { Scheduler } from '../automation/scheduler.js';
 import type { Extension } from '../core/extensions.js';
-import { asR2Config, type R2Config } from './config.js';
+import { asAgentConfig, type AgentConfig } from './config.js';
 import {
   initComms,
   shutdownComms,
   createTelegramRouteHandler,
   createShortcutRouteHandler,
 } from './comms/index.js';
-import { initR2AccessControl } from './access-control.js';
-import { registerR2HealthChecks as registerR2HealthChecksExtended } from './health-extended.js';
-import { getR2ExtendedStatus } from './extended-status.js';
+import { initAgentAccessControl } from './access-control.js';
+import { registerAgentHealthChecks as registerAgentHealthChecksExtended } from './health-extended.js';
+import { getAgentExtendedStatus } from './extended-status.js';
 import {
   initAgentComms,
   stopAgentComms,
@@ -42,12 +42,12 @@ import { registerWithRelay } from './comms/network/registration.js';
 import { handleNetworkRoute, setNetworkApiConfig } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { initVoice, stopVoice } from './voice/index.js';
-import { registerR2Tasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
+import { registerAgentTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
 import { enableVectorSearch } from '../api/memory.js';
 import { readKeychain } from '../core/keychain.js';
 
-const log = createLogger('r2-extension');
+const log = createLogger('agent-extension');
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 
 // ── State ────────────────────────────────────────────────────
 
-let _config: R2Config | null = null;
+let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
 let _initialized = false;
 
@@ -229,14 +229,14 @@ async function handleExtendedStatus(
   if (req.method !== 'GET') return false;
   try {
     const status = _config
-      ? await getR2ExtendedStatus(_config)
-      : { agent: 'R2D2', session: 'stopped', channel: 'unknown', todos: { open: 0, inProgress: 0, blocked: 0 }, services: [] };
+      ? await getAgentExtendedStatus(_config)
+      : { agent: 'Agent', session: 'stopped', channel: 'unknown', todos: { open: 0, inProgress: 0, blocked: 0 }, services: [] };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(status));
   } catch (err) {
     log.error('Failed to gather extended status', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ agent: _config?.agent?.name ?? 'R2D2', error: 'Status collection failed' }));
+    res.end(JSON.stringify({ agent: _config?.agent?.name ?? 'Agent', error: 'Status collection failed' }));
   }
   return true;
 }
@@ -258,7 +258,7 @@ async function handleContextApi(
 
 // These are placeholder handlers registered so the scheduler knows
 // to run them in-process rather than as subprocesses.
-// Real implementations come in s-m29 (BMO scheduler tasks).
+// Real implementations come in s-m29 (agent extension).
 
 function stubHandler(name: string) {
   return async () => {
@@ -268,10 +268,10 @@ function stubHandler(name: string) {
 
 // ── Health Checks ───────────────────────────────────────────
 
-function registerR2HealthChecks(): void {
-  registerCheck('r2-extension', () => ({
+function registerAgentHealthChecks(): void {
+  registerCheck('agent-extension', () => ({
     ok: _initialized,
-    message: _initialized ? 'R2 extension loaded' : 'R2 extension not initialized',
+    message: _initialized ? 'Agent extension loaded' : 'Agent extension not initialized',
   }));
 }
 
@@ -285,7 +285,7 @@ function registerR2HealthChecks(): void {
  * Instance-specific tasks (morning-briefing, blog-reminder, nightly-todo,
  * a2a-digest, email-check, memory-sync, supabase-keep-alive) have been moved
  * to per-agent directories and are loaded via scheduler.tasks_dirs. */
-const R2_TASK_HANDLERS = [
+const AGENT_TASK_HANDLERS = [
   'health-check',
   'memory-consolidation',
 
@@ -293,9 +293,9 @@ const R2_TASK_HANDLERS = [
 ] as const;
 
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
-  _config = asR2Config(config);
+  _config = asAgentConfig(config);
 
-  // Initialize R2 comms (Telegram, email adapters)
+  // Initialize agent comms (Telegram, email adapters)
   await initComms(_config);
   _telegramRouteHandler = createTelegramRouteHandler();
   _shortcutRouteHandler = createShortcutRouteHandler();
@@ -323,7 +323,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     await initVoice(_config.channels.voice);
   }
 
-  // Register R2-specific routes
+  // Register agent-specific routes
   registerRoute('/telegram', handleTelegramWebhook);
   registerRoute('/shortcut', handleShortcut);
   registerRoute('/agent/p2p', handleAgentP2P);
@@ -344,12 +344,12 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Register core task handlers (context-watchdog, todo-reminder, etc.)
   registerCoreTasks(_scheduler);
 
-  // Register real R2 task handlers (s-m29)
-  registerR2Tasks(_scheduler);
+  // Register real agent task handlers (s-m29)
+  registerAgentTasks(_scheduler);
 
-  // Register stub handlers for remaining R2 tasks (not yet implemented)
-  for (const taskName of R2_TASK_HANDLERS) {
-    if (REAL_TASK_NAMES.has(taskName)) continue; // Already registered by registerR2Tasks
+  // Register stub handlers for remaining agent tasks (not yet implemented)
+  for (const taskName of AGENT_TASK_HANDLERS) {
+    if (REAL_TASK_NAMES.has(taskName)) continue; // Already registered by registerAgentTasks
     if (_scheduler.getTask(taskName)) {
       _scheduler.registerHandler(taskName, stubHandler(taskName));
     }
@@ -362,15 +362,15 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   setScheduler(_scheduler);
   _scheduler.start();
 
-  // Initialize R2 access control (5-tier, channel-aware)
-  initR2AccessControl();
+  // Initialize agent access control (5-tier, channel-aware)
+  initAgentAccessControl();
 
   // Register health checks (extension + comprehensive system checks)
-  registerR2HealthChecks();
-  registerR2HealthChecksExtended(_config);
+  registerAgentHealthChecks();
+  registerAgentHealthChecksExtended(_config);
 
   _initialized = true;
-  log.info('R2 extension initialized', {
+  log.info('Agent extension initialized', {
     channels: {
       telegram: _config.channels?.telegram?.enabled ?? false,
       email: _config.channels?.email?.enabled ?? false,
@@ -394,21 +394,21 @@ async function onShutdown(): Promise<void> {
   _telegramRouteHandler = null;
   _shortcutRouteHandler = null;
   _initialized = false;
-  log.info('R2 extension shut down');
+  log.info('Agent extension shut down');
 }
 
 // ── Export ───────────────────────────────────────────────────
 
 /**
- * The R2 extension — register this with the kithkit daemon.
+ * The agent extension — register this with the kithkit daemon.
  *
  * Usage in a bootstrap file:
  *   import { registerExtension } from './core/extensions.js';
- *   import { r2Extension } from './extensions/index.js';
- *   registerExtension(r2Extension);
+ *   import { agentExtension } from './extensions/index.js';
+ *   registerExtension(agentExtension);
  */
-export const r2Extension: Extension = {
-  name: 'r2',
+export const agentExtension: Extension = {
+  name: 'agent',
   onInit,
   onShutdown,
 };

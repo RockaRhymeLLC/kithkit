@@ -1,7 +1,7 @@
 /**
- * BMO Health Checks — comprehensive system health via registerCheck().
+ * Agent Health Checks — comprehensive system health via registerCheck().
  *
- * Registers BMO-specific health checks with the kithkit framework's
+ * Registers agent-specific health checks with the kithkit framework's
  * extended-status system. These checks cover:
  * - System resources (disk, memory)
  * - Processes (tmux, cloudflare tunnel)
@@ -19,9 +19,9 @@ import { registerCheck, type CheckResult } from '../core/extended-status.js';
 import { getProjectDir } from '../core/config.js';
 import { sessionExists } from '../core/session-bridge.js';
 import { createLogger } from '../core/logger.js';
-import type { R2Config } from './config.js';
+import type { AgentConfig } from './config.js';
 
-const log = createLogger('r2-health');
+const log = createLogger('agent-health');
 
 function exec(cmd: string): string {
   try {
@@ -80,7 +80,7 @@ function checkProcesses(): CheckResult {
   };
 }
 
-function checkLogs(config: R2Config): CheckResult {
+function checkLogs(config: AgentConfig): CheckResult {
   const logDir = path.resolve(getProjectDir(), config.daemon?.log_dir ?? 'logs');
   if (!fs.existsSync(logDir)) {
     return { ok: true, message: 'Log directory not found (OK if new install)' };
@@ -125,7 +125,7 @@ function checkNetwork(): Promise<CheckResult> {
   });
 }
 
-function checkPeers(config: R2Config): Promise<CheckResult> {
+function checkPeers(config: AgentConfig): Promise<CheckResult> {
   const agentComms = config['agent-comms'];
   if (!agentComms?.enabled || !agentComms.peers?.length) {
     return Promise.resolve({ ok: true, message: 'No peers configured' });
@@ -187,16 +187,16 @@ function checkStateFiles(): CheckResult {
 // ── Registration ────────────────────────────────────────────
 
 /**
- * Register all BMO health checks with the kithkit framework.
+ * Register all agent health checks with the kithkit framework.
  * Each check is registered separately for granular reporting.
  */
-export function registerR2HealthChecks(config: R2Config): void {
-  registerCheck('r2-system', () => checkSystem());
-  registerCheck('r2-processes', () => checkProcesses());
-  registerCheck('r2-logs', () => checkLogs(config));
-  registerCheck('r2-network', () => checkNetwork());
-  registerCheck('r2-peers', () => checkPeers(config));
-  registerCheck('r2-state', () => checkStateFiles());
+export function registerAgentHealthChecks(config: AgentConfig): void {
+  registerCheck('agent-system', () => checkSystem());
+  registerCheck('agent-processes', () => checkProcesses());
+  registerCheck('agent-logs', () => checkLogs(config));
+  registerCheck('agent-network', () => checkNetwork());
+  registerCheck('agent-peers', () => checkPeers(config));
+  registerCheck('agent-state', () => checkStateFiles());
 
-  log.info('Registered 6 BMO health checks');
+  log.info('Registered 6 agent health checks');
 }

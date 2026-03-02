@@ -15,7 +15,7 @@ import { sendMessage } from '../../agents/message-router.js';
 import { getProjectDir } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
 import { getNetworkClient } from './network/sdk-bridge.js';
-import type { R2Config, PeerConfig } from '../config.js';
+import type { AgentConfig, PeerConfig } from '../config.js';
 
 const log = createLogger('agent-comms');
 
@@ -59,11 +59,11 @@ export interface CommsLogEntry {
 
 // ── State ─────────────────────────────────────────────────────
 
-let _config: R2Config | null = null;
+let _config: AgentConfig | null = null;
 
 // ── Display Name ──────────────────────────────────────────────
 
-export function getDisplayName(agentId: string, config?: R2Config | null): string {
+export function getDisplayName(agentId: string, config?: AgentConfig | null): string {
   const cfg = config ?? _config;
   const peers = cfg?.['agent-comms']?.peers ?? [];
   for (const peer of peers) {
@@ -524,7 +524,7 @@ export function getAgentStatus(): AgentStatusResponse {
 
 // ── Init / Shutdown ───────────────────────────────────────────
 
-export function initAgentComms(config: R2Config): void {
+export function initAgentComms(config: AgentConfig): void {
   _config = config;
   const agentComms = config['agent-comms'];
 
