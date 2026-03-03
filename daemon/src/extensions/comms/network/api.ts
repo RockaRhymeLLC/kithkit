@@ -139,13 +139,14 @@ export async function handleNetworkRoute(
         return true;
       }
       if (action === 'send' && method === 'POST') {
+        res.setHeader('Deprecation', 'true');
+        res.setHeader('Link', '</api/a2a/send>; rel="successor-version"');
         const body = await parseBody(req);
         if (!body.payload || typeof body.payload !== 'object') {
           json(res, 400, withTimestamp({ error: 'payload is required' }));
           return true;
         }
         const result = await network.sendToGroup(groupId, body.payload as Record<string, unknown>);
-        res.setHeader('Deprecation', 'true');
         json(res, 200, withTimestamp(result));
         return true;
       }
