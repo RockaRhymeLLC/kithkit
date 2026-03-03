@@ -12,6 +12,7 @@
 import http from 'node:http';
 import type { Extension } from '../../core/extensions.js';
 import type { KithkitConfig } from '../../core/config.js';
+import type { AgentConfig } from '../config.js';
 import { createLogger } from '../../core/logger.js';
 import { registerAdapter, unregisterAdapter } from '../../comms/channel-router.js';
 import { registerRoute, type RouteHandler } from '../../core/route-registry.js';
@@ -161,7 +162,7 @@ export const commsExtension: Extension = {
 
     // ── A2A Network SDK ─────────────────────────────────────
     try {
-      const networkOk = await initNetworkSDK(config as unknown as Record<string, unknown>);
+      const networkOk = await initNetworkSDK(config as AgentConfig);
       if (networkOk) {
         registerRoute('/api/network/*', handleNetworkRoute as RouteHandler);
         registerRoute('/agent/p2p', (async (req, res) => {

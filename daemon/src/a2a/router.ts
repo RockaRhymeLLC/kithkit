@@ -48,7 +48,7 @@ interface A2ANetworkClient {
     queued: string[];
     failed: string[];
   }>;
-  getGroups?(): Promise<Array<{ id: string; name: string; [key: string]: unknown }>>;
+  getGroups?(): Promise<Array<{ id?: string; groupId?: string; name: string; [key: string]: unknown }>>;
 }
 
 export interface RouterDeps {
@@ -77,7 +77,13 @@ export class UnifiedA2ARouter {
     this.peers = agentComms?.peers ?? [];
 
     const networkConfig = deps.config.network as { communities?: Array<{ name: string; primary: string }> } | undefined;
-    this.primaryCommunity = networkConfig?.communities?.[0]?.name ?? null;
+    // Extract relay hostname for qualified names — SDK expects name@relayHostname, not name@communityName
+    const primaryUrl = networkConfig?.communities?.[0]?.primary;
+    try {
+      this.primaryCommunity = primaryUrl ? new URL(primaryUrl).hostname : null;
+    } catch {
+      this.primaryCommunity = null;
+    }
   }
 
   // ── Validate ────────────────────────────────────────────────
@@ -189,13 +195,13 @@ export class UnifiedA2ARouter {
     }
 
     try {
-      const groups = await (network as { getGroups?(): Promise<Array<{ id: string; name: string; [key: string]: unknown }>> }).getGroups?.();
+      const groups = await (network as { getGroups?(): Promise<Array<{ id?: string; groupId?: string; name: string; [key: string]: unknown }>> }).getGroups?.();
       if (Array.isArray(groups)) {
         const match = groups.find((g: { name: string }) =>
           typeof g.name === 'string' && g.name.toLowerCase() === nameOrId.toLowerCase()
         );
-        if (match?.id) {
-          return { groupId: match.id };
+        const matchId = match?.groupId ?? match?.id; if (matchId) {
+          return { groupId: matchId };
         }
       }
     } catch {
