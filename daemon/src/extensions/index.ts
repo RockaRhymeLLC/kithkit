@@ -20,50 +20,16 @@ import { setScheduler, _getSchedulerForTesting } from '../api/tasks.js';
 import { Scheduler } from '../automation/scheduler.js';
 import type { Extension } from '../core/extensions.js';
 import { asAgentConfig, type AgentConfig } from './config.js';
-import {
-  initComms,
-  shutdownComms,
-  createTelegramRouteHandler,
-  createShortcutRouteHandler,
-} from './comms/index.js';
+import { commsExtension } from './comms/index.js';
 import { initAgentAccessControl } from './access-control.js';
 import { registerAgentHealthChecks as registerAgentHealthChecksExtended } from './health-extended.js';
 import { getAgentExtendedStatus } from './extended-status.js';
-import {
-  initAgentComms,
-  stopAgentComms,
-  handleAgentMessage,
-  sendAgentMessage,
-  getAgentStatus,
-  updatePeerState,
-} from './comms/agent-comms.js';
-import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P } from './comms/network/sdk-bridge.js';
-import { registerWithRelay } from './comms/network/registration.js';
-import { handleNetworkRoute, setNetworkApiConfig } from './comms/network/api.js';
-import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { initVoice, stopVoice } from './voice/index.js';
 import { registerAgentTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
 import { enableVectorSearch } from '../api/memory.js';
-import { readKeychain } from '../core/keychain.js';
 
 const log = createLogger('agent-extension');
-
-// ── Helpers ──────────────────────────────────────────────────
-
-function readBody(req: http.IncomingMessage): Promise<string> {
-  // Check for pre-buffered body from main.ts metrics middleware
-  const rawBody = (req as unknown as Record<string, unknown>)._rawBody;
-  if (rawBody instanceof Buffer) {
-    return Promise.resolve(rawBody.toString());
-  }
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
-    req.on('error', reject);
-  });
-}
 
 // ── State ────────────────────────────────────────────────────
 
@@ -72,153 +38,6 @@ let _scheduler: Scheduler | null = null;
 let _initialized = false;
 
 // ── Route Handlers ──────────────────────────────────────────
-
-// Telegram webhook — real handler from comms extensions (s-m24)
-// Created lazily in onInit() after comms are initialized.
-let _telegramRouteHandler: ReturnType<typeof createTelegramRouteHandler> | null = null;
-let _shortcutRouteHandler: ReturnType<typeof createShortcutRouteHandler> | null = null;
-
-async function handleTelegramWebhook(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  pathname: string,
-  searchParams: URLSearchParams,
-): Promise<boolean> {
-  if (_telegramRouteHandler) {
-    return _telegramRouteHandler(req, res, pathname, searchParams);
-  }
-  // Fallback if comms not initialized
-  if (req.method !== 'POST') return false;
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ ok: true, stub: true }));
-  return true;
-}
-
-async function handleShortcut(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  pathname: string,
-  searchParams: URLSearchParams,
-): Promise<boolean> {
-  if (_shortcutRouteHandler) {
-    return _shortcutRouteHandler(req, res, pathname, searchParams);
-  }
-  if (req.method !== 'POST') return false;
-  res.writeHead(503, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Not initialized' }));
-  return true;
-}
-
-async function handleAgentP2P(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  _pathname: string,
-  _searchParams: URLSearchParams,
-): Promise<boolean> {
-  if (req.method !== 'POST') return false;
-
-  try {
-    const body = await readBody(req);
-    const envelope = JSON.parse(body) as WireEnvelope;
-    const handled = await handleIncomingP2P(envelope);
-    res.writeHead(handled ? 200 : 503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: handled }));
-  } catch (err) {
-    log.error('P2P endpoint error', { error: err instanceof Error ? err.message : String(err) });
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
-  }
-  return true;
-}
-
-async function handleAgentMessageRoute(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  _pathname: string,
-  _searchParams: URLSearchParams,
-): Promise<boolean> {
-  if (req.method !== 'POST') return false;
-
-  try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-    const body = await readBody(req);
-    const parsed = JSON.parse(body);
-    const result = await handleAgentMessage(token, parsed);
-    res.writeHead(result.status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(result.body));
-  } catch (err) {
-    log.error('Agent message endpoint error', { error: err instanceof Error ? err.message : String(err) });
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Invalid request' }));
-  }
-  return true;
-}
-
-async function handleAgentSend(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  _pathname: string,
-  _searchParams: URLSearchParams,
-): Promise<boolean> {
-  if (req.method !== 'POST') return false;
-
-  try {
-    const body = await readBody(req);
-    const { peer, type, text, ...extra } = JSON.parse(body);
-    if (!peer || !type) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'peer and type are required' }));
-      return true;
-    }
-    const result = await sendAgentMessage(peer, type, text, extra);
-    res.writeHead(result.ok ? 200 : 502, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(result));
-  } catch (err) {
-    log.error('Agent send endpoint error', { error: err instanceof Error ? err.message : String(err) });
-    res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Invalid request' }));
-  }
-  return true;
-}
-
-async function handleAgentStatusEndpoint(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  _pathname: string,
-  _searchParams: URLSearchParams,
-): Promise<boolean> {
-  if (req.method === 'GET') {
-    // Simple status check (lightweight, for peer heartbeats)
-    const status = getAgentStatus();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(status));
-    return true;
-  }
-  if (req.method === 'POST') {
-    // Heartbeat exchange: peer POSTs their state, gets ours back
-    try {
-      const body = await readBody(req);
-      const peerState = JSON.parse(body);
-      if (peerState.agent) {
-        updatePeerState(peerState.agent, {
-          status: peerState.status ?? 'unknown',
-          updatedAt: Date.now(),
-          latencyMs: peerState.latencyMs,
-        });
-      }
-      const ourStatus = getAgentStatus();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(ourStatus));
-    } catch (err) {
-      log.error('Agent status POST error', { error: err instanceof Error ? err.message : String(err) });
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid request' }));
-    }
-    return true;
-  }
-  return false;
-}
 
 async function handleExtendedStatus(
   req: http.IncomingMessage,
@@ -295,28 +114,14 @@ const AGENT_TASK_HANDLERS = [
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
   _config = asAgentConfig(config);
 
-  // Initialize agent comms (Telegram, email adapters)
-  await initComms(_config);
-  _telegramRouteHandler = createTelegramRouteHandler();
-  _shortcutRouteHandler = createShortcutRouteHandler();
+  // Delegate all comms initialization and route registration to commsExtension.
+  // This handles: agent comms, unified A2A router, network SDK, Telegram adapter,
+  // and registers: /agent/message, /agent/send, /agent/status, /api/a2a/*,
+  //   /api/network/*, /agent/p2p, /telegram/status
+  await commsExtension.onInit!(config, _server);
 
   // Enable vector search (sqlite-vec + ONNX embeddings)
   enableVectorSearch();
-
-
-  // Initialize agent-to-agent comms (LAN + P2P SDK)
-  initAgentComms(_config);
-  setNetworkApiConfig(_config);
-
-  // Network SDK (P2P messaging) — non-blocking
-  if (_config.network?.enabled) {
-    registerWithRelay(_config)
-      .then(() => initNetworkSDK(_config!))
-      .then(ok => { if (ok) log.info('Network SDK ready'); })
-      .catch(err => log.warn('Network init failed (LAN-only mode)', {
-        error: err instanceof Error ? err.message : String(err),
-      }));
-  }
 
   // Initialize voice extension (registers its own routes)
   if (_config.channels?.voice) {
@@ -324,15 +129,8 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   }
 
   // Register agent-specific routes
-  registerRoute('/telegram', handleTelegramWebhook);
-  registerRoute('/shortcut', handleShortcut);
-  registerRoute('/agent/p2p', handleAgentP2P);
-  registerRoute('/agent/message', handleAgentMessageRoute);
-  registerRoute('/agent/send', handleAgentSend);
-  registerRoute('/agent/status', handleAgentStatusEndpoint);
   registerRoute('/agent/extended-status', handleExtendedStatus);
   registerRoute('/api/context', handleContextApi);
-  registerRoute('/api/network/*', handleNetworkRoute);
 
   // Set up scheduler with in-process handlers
   const schedulerConfig = config.scheduler?.tasks ?? [];
@@ -384,15 +182,11 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 
 async function onShutdown(): Promise<void> {
   stopVoice();
-  await stopNetworkSDK();
-  stopAgentComms();
-  shutdownComms();
+  await commsExtension.onShutdown!();
   if (_scheduler) {
     _scheduler.stop();
     _scheduler = null;
   }
-  _telegramRouteHandler = null;
-  _shortcutRouteHandler = null;
   _initialized = false;
   log.info('Agent extension shut down');
 }
