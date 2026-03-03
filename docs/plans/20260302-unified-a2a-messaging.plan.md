@@ -27,13 +27,13 @@ POST /api/network/groups    │    ┌───┴───┐
 ### Key design decisions (from spec review + codebase analysis)
 
 1. **Build in kithkit core** — the router, types, and route handler go in `daemon/src/core/` or a new `daemon/src/a2a/` directory. Extension routes in private repos become thin wrappers.
-2. **No new config fields** — uses existing `agent-comms.peers` for LAN resolution and `network.communities` for relay name qualification.
+2. **Two optional config fields** — adds `agent-comms.lan_timeout` (default 3s) and `agent-comms.stale_threshold` (default `2 * heartbeat_interval`) per spec § Constraints. All other config unchanged — uses existing `agent-comms.peers` for LAN resolution and `network.communities` for relay name qualification.
 3. **Reserved payload fields** — `from`, `messageId`, `timestamp`, `type` are injected by the daemon into LAN messages. Callers set them in `payload` only to override (not recommended).
-4. **Group name resolution** — `group` field accepts UUID only (no name→UUID lookup in Phase 1). Name resolution is a Phase 2 enhancement.
-5. **Peer name resolution** — bare names resolve case-insensitively against `agent-comms.peers`. Prefix matching deferred to Phase 2.
+4. **Group name resolution** — `group` field accepts a UUID or a configured group name. Names are resolved case-insensitively against `agent-comms.groups` config (per spec § Validation rules and § Relay Send Details). Unresolvable names → `404 GROUP_NOT_FOUND`.
+5. **Peer name resolution** — bare names resolve case-insensitively against `agent-comms.peers`. Unique prefix matching included (spec MF-03): e.g., `"r2"` resolves to `"r2d2"` if it's the only prefix match. Ambiguous prefix matches → `400 INVALID_TARGET`.
 6. **`route: "lan"` + group → 400** — enforced at validation layer.
-7. **LAN timeout** — uses existing 3s connect-timeout in `sendViaLAN()`. No new config needed.
-8. **Heartbeat threshold (SH-04)** — uses existing `PeerState` cache (`getPeerState()`). Threshold: 5 min since last heartbeat = stale = skip LAN.
+7. **LAN timeout** — configurable via `agent-comms.lan_timeout` (default 3s), passed to `sendViaLAN()` connect-timeout. Per spec § LAN Send Details.
+8. **Heartbeat threshold (SH-04)** — uses existing `PeerState` cache (`getPeerState()`). Stale threshold configurable via `agent-comms.stale_threshold` (default `2 * heartbeat_interval`). Per spec § SH-04.
 
 ---
 
@@ -64,7 +64,7 @@ POST /api/network/groups    │    ┌───┴───┐
 2. **`router.ts`** — `UnifiedA2ARouter` class:
    ```typescript
    class UnifiedA2ARouter {
-     constructor(config: R2Config) // stores config reference
+     constructor(deps: RouterDeps) // stores injected dependencies
 
      async send(req: A2ASendRequest): Promise<A2ASendResponse | A2ASendError>
 
@@ -73,13 +73,15 @@ POST /api/network/groups    │    ┌───┴───┐
      private resolvePeer(name: string): { peer?: PeerConfig; qualified: string }
      private async sendLAN(peer: PeerConfig, messageId: string, payload: Record<string, unknown>): Promise<DeliveryAttempt>
      private async sendRelay(target: string, payload: Record<string, unknown>, isGroup: boolean, groupId?: string): Promise<DeliveryAttempt>
+     private resolveGroup(nameOrId: string): { groupId?: string; error?: A2ASendError }
    }
    ```
 
-   - `validate()` — checks exactly-one-of `to`/`group`, payload is object with `type` string, route is valid enum, group+lan → 400.
-   - `resolvePeer()` — case-insensitive lookup in `agent-comms.peers`. If not found and name contains `@`, treat as qualified relay name. If not found and no `@`, return PEER_NOT_FOUND.
+   - `validate()` — checks exactly-one-of `to`/`group`, payload is object with `type` string, route is valid enum, group+lan → 400, qualified name+lan → 400 INVALID_ROUTE.
+   - `resolvePeer()` — resolution order per spec MF-03: (1) exact case-insensitive match against `agent-comms.peers`, (2) unique prefix match — if exactly one peer name starts with the input, resolve to that peer (ambiguous prefix → `INVALID_TARGET`), (3) if name contains `@`, treat as qualified relay name, (4) otherwise return `PEER_NOT_FOUND`.
    - `sendLAN()` — delegates to the exported `sendViaLAN()` from `agent-comms.ts`. Flattens `payload` fields + adds `from`, `messageId`, `timestamp` (per spec § LAN Send Details). Wraps result in `DeliveryAttempt`.
    - `sendRelay()` — calls `getNetworkClient()`, then `network.send()` or `network.sendToGroup()`. Wraps result in `DeliveryAttempt`.
+   - `resolveGroup()` — if input matches UUID format, use as-is. Otherwise, case-insensitive lookup against `agent-comms.groups` config. If not found, return `GROUP_NOT_FOUND`.
    - `send()` — orchestrates route selection (auto/lan/relay), invokes transports, handles fallback, builds response. Generates `messageId` (UUID v4) at top.
 
 3. **Latency tracking** — wrap each transport call with `Date.now()` before/after, put `latencyMs` in `DeliveryAttempt`.
@@ -101,10 +103,16 @@ POST /api/network/groups    │    ┌───┴───┐
 | 7 | `payload.type` not a string → INVALID_REQUEST | Unit |
 | 8 | Invalid `route` value → INVALID_REQUEST | Unit |
 | 9 | `group` + `route: "lan"` → INVALID_ROUTE | Unit |
+| 9a | Qualified name (`bmo@relay.bmobot.ai`) + `route: "lan"` → INVALID_ROUTE | Unit |
 | 10 | Peer resolution: bare name found in config → returns peer + qualified name | Unit |
 | 11 | Peer resolution: case-insensitive match (`BMO` → `bmo`) | Unit |
 | 12 | Peer resolution: qualified name (`bmo@relay.bmobot.ai`) → skips config lookup | Unit |
 | 13 | Peer resolution: unknown bare name → PEER_NOT_FOUND | Unit |
+| 13a | Peer resolution: prefix match — `"r2"` resolves to `"r2d2"` when it's the only match | Unit |
+| 13b | Peer resolution: ambiguous prefix — `"b"` matches both `"bmo"` and `"bender"` → INVALID_TARGET | Unit |
+| 13c | Group resolution: UUID passthrough | Unit |
+| 13d | Group resolution: configured name → UUID (case-insensitive) | Unit |
+| 13e | Group resolution: unknown name → GROUP_NOT_FOUND | Unit |
 | 14 | Auto route DM: LAN succeeds → returns `route: "lan"`, one attempt | Integration (mock) |
 | 15 | Auto route DM: LAN fails, relay succeeds → returns `route: "relay"`, two attempts | Integration (mock) |
 | 16 | Auto route DM: both fail → 502 DELIVERY_FAILED, two attempts in array | Integration (mock) |
@@ -339,19 +347,17 @@ Story 1: Core Router Module
     │
     ├──► Story 2: HTTP Route Handler (can start after Story 1 types are defined)
     │
-    └──► Story 4: JSONL Logging (can start after Story 1 is functional)
+    └──► Story 3: Old Endpoint Wrappers + Deprecation (depends on Story 1 + 2)
               │
-              ▼
-         Story 3: Old Endpoint Wrappers + Deprecation
+              ├──► Story 4: JSONL Logging (depends on Story 3 — dedup requires old callers refactored)
               │
-              ▼
-         Story 5: DB Audit Trail
+              └──► Story 5: DB Audit Trail (depends on Story 3)
 ```
 
-**Parallelizable**: Stories 2 and 4 can be built in parallel after Story 1.
-**Sequential**: Story 3 depends on Stories 1+2. Story 5 depends on Story 3.
+**Parallelizable**: Stories 4 and 5 can be built in parallel after Story 3.
+**Sequential**: Story 2 depends on Story 1 types. Story 3 depends on Stories 1+2. Stories 4 and 5 depend on Story 3 (dedup requires old callers refactored first).
 
-**Recommended build sequence**: 1 → 2+4 (parallel) → 3 → 5.
+**Recommended build sequence**: 1 → 2 → 3 → 4+5 (parallel).
 
 ---
 
@@ -366,11 +372,15 @@ Since the spec calls for building in kithkit core, the new files (`daemon/src/a2
    ```typescript
    const router = new UnifiedA2ARouter({
      config,
-     sendViaLAN: sendViaLAN,        // from agent-comms.ts
-     getNetworkClient: getNetworkClient, // from sdk-bridge.ts
-     getPeerState: getPeerState,     // from agent-comms.ts
-     logCommsEntry: logCommsEntry,   // from agent-comms.ts
+     sendViaLAN: sendViaLAN.bind(null, config),  // bind config to avoid stale closure
+     getNetworkClient: getNetworkClient,          // from sdk-bridge.ts
+     getPeerState: getPeerState,                  // from agent-comms.ts
+     logCommsEntry: logCommsEntry,                // from agent-comms.ts
    });
+   // Note: if sendViaLAN's signature changes, update the RouterDeps interface.
+   // The bind pattern ensures the closure captures the current config reference,
+   // not a stale copy. If config is mutated at runtime (hot-reload), consider
+   // passing a config-getter function instead.
    ```
    This keeps the router in core with no imports from the extension layer.
 
