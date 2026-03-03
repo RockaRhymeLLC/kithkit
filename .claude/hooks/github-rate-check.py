@@ -15,7 +15,7 @@ from pathlib import Path
 RATE_LIMIT = 3  # Max writes per hour to external repos
 RATE_WINDOW_HOURS = 1
 OUR_ORGS = {"rockarymellc", "rockaryhme", "hurleyworks"}  # Case-insensitive
-LEDGER_FILE = Path.home() / "cc4me_r2d2/.claude/state/github-rate-ledger/external-writes.jsonl"
+LEDGER_FILE = Path.home() / ".kithkit/github-rate-ledger/external-writes.jsonl"
 
 def is_external_repo(repo: str) -> bool:
     """Check if repo is external (not ours)."""

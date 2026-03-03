@@ -1,7 +1,7 @@
 /**
- * BMO Extended Status — rich operational data for the /agent/status endpoint.
+ * Agent Extended Status — rich operational data for the /agent/status endpoint.
  *
- * Gathers BMO-specific status beyond what the kithkit framework provides:
+ * Gathers agent-specific status beyond what the kithkit framework provides:
  * - Todo counts from filesystem
  * - Git status (branch, dirty, ahead of origin)
  * - Context usage from context-usage.json
@@ -17,10 +17,10 @@ import path from 'node:path';
 import { getProjectDir } from '../core/config.js';
 import { sessionExists } from '../core/session-bridge.js';
 import { createLogger } from '../core/logger.js';
-import type { BmoConfig } from './config.js';
+import type { AgentConfig } from './config.js';
 
 const execFileAsync = promisify(execFile);
-const log = createLogger('bmo-extended-status');
+const log = createLogger('agent-extended-status');
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ export interface CommitInfo {
   time: string;
 }
 
-export interface BmoExtendedStatus {
+export interface AgentExtendedStatus {
   agent: string;
   session: 'active' | 'stopped';
   channel: string;
@@ -159,7 +159,7 @@ export function getMemoryStats(): MemoryStats | undefined {
   }
 }
 
-export function getServiceStatuses(config: BmoConfig): ServiceStatus[] {
+export function getServiceStatuses(config: AgentConfig): ServiceStatus[] {
   const services: ServiceStatus[] = [];
 
   services.push({
@@ -196,9 +196,9 @@ export function getServiceStatuses(config: BmoConfig): ServiceStatus[] {
 // ── Public API ──────────────────────────────────────────────
 
 /**
- * Gather BMO extended status for the /agent/status endpoint.
+ * Gather agent extended status for the /agent/status endpoint.
  */
-export async function getBmoExtendedStatus(config: BmoConfig): Promise<BmoExtendedStatus> {
+export async function getAgentExtendedStatus(config: AgentConfig): Promise<AgentExtendedStatus> {
   // Read current channel
   let channel = 'unknown';
   try {
@@ -211,7 +211,7 @@ export async function getBmoExtendedStatus(config: BmoConfig): Promise<BmoExtend
   ]);
 
   return {
-    agent: config.agent?.name ?? 'BMO',
+    agent: config.agent?.name ?? 'Agent',
     session: sessionExists() ? 'active' : 'stopped',
     channel,
     todos: getTodoCounts(),

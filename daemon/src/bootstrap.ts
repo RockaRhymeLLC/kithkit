@@ -1,18 +1,18 @@
 /**
- * BMO Daemon Bootstrap — registers the BMO extension, then starts the daemon.
+ * Daemon Bootstrap — registers the agent extension, then starts the daemon.
  *
- * This is the entry point for the BMO daemon (instead of main.ts directly).
- * It registers the BMO extension before the daemon's top-level code runs,
+ * This is the entry point for the daemon (instead of main.ts directly).
+ * It registers the agent extension before the daemon's top-level code runs,
  * ensuring the extension is available when the server starts listening.
  *
  * Usage: node dist/bootstrap.js [projectDir]
  */
 
 import { registerExtension } from './core/extensions.js';
-import { bmoExtension } from './extensions/index.js';
+import { agentExtension } from './extensions/index.js';
 
-// Register BMO extension before daemon starts
-registerExtension(bmoExtension);
+// Register agent extension before daemon starts
+registerExtension(agentExtension);
 
 // Import main.ts — this triggers the daemon bootstrap
 // (config load, DB open, server start, extension init hook)

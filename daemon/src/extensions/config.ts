@@ -1,5 +1,5 @@
 /**
- * BMO Config — extends the base KithkitConfig with BMO-specific sections.
+ * Agent Config — extends the base KithkitConfig with agent-specific sections.
  *
  * These sections are loaded from kithkit.config.yaml alongside the base config.
  * The deep-merge in config.ts handles unknown keys transparently, so these
@@ -111,16 +111,16 @@ export interface IntegrationsConfig {
   browserbase?: BrowserbaseConfig;
 }
 
-// ── BMO Config ──────────────────────────────────────────────
+// ── Agent Config ────────────────────────────────────────────
 
 /**
- * Full BMO config — KithkitConfig + BMO-specific sections.
+ * Full agent config — KithkitConfig + agent-specific sections.
  *
  * Usage:
  *   import { loadConfig } from '../core/config.js';
- *   const config = loadConfig(projectDir) as BmoConfig;
+ *   const config = loadConfig(projectDir) as AgentConfig;
  */
-export interface BmoConfig extends KithkitConfig {
+export interface AgentConfig extends KithkitConfig {
   channels?: ChannelsConfig;
   network?: NetworkConfig;
   'agent-comms'?: AgentCommsConfig;
@@ -128,9 +128,9 @@ export interface BmoConfig extends KithkitConfig {
 }
 
 /**
- * Cast a KithkitConfig to BmoConfig.
+ * Cast a KithkitConfig to AgentConfig.
  * Safe because the deep-merge preserves all keys from the YAML.
  */
-export function asBmoConfig(config: KithkitConfig): BmoConfig {
-  return config as BmoConfig;
+export function asAgentConfig(config: KithkitConfig): AgentConfig {
+  return config as AgentConfig;
 }

@@ -1,6 +1,6 @@
 # The Peer Review Playbook
 
-*Lessons learned from BMO and R2's collaboration on CC4Me.*
+*Lessons learned from peer agent collaboration on kithkit.*
 
 ---
 
@@ -104,7 +104,7 @@ When stuck between A and B, look for C:
 If you can't align:
 1. Document both positions clearly
 2. Identify the core disagreement (technical? philosophical? preference?)
-3. Bring to Dave with options, not just the conflict
+3. Bring to the operator with options, not just the conflict
 
 ### Disagree and Commit
 Once a decision is made, support it fully. Save "I told you so" for your private logs.

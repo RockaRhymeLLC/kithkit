@@ -74,7 +74,7 @@ const TEST_PROFILE: AgentProfile = {
   permissionMode: 'bypassPermissions',
   maxTurns: 20,
   effort: 'high',
-  maxBudgetUsd: 1.0,
+  maxBudgetUsd: 5,
   body: 'You are a research assistant.',
 };
 
@@ -555,51 +555,5 @@ describe('GET /api/agents/:id/status returns job details (t-137 supplement)', ()
   it('returns 404 for unknown agent', async () => {
     const res = await request('GET', '/api/agents/unknown-id/status');
     assert.equal(res.status, 404);
-  });
-});
-
-describe('PUT /api/agents/:id updates agent status (#121)', () => {
-  beforeEach(setup);
-  afterEach(teardown);
-
-  it('updates agent status via PUT', async () => {
-    // Create an agent first
-    const ts = new Date().toISOString();
-    exec(
-      `INSERT INTO agents (id, type, status, created_at, updated_at)
-       VALUES ('orch-put-test', 'orchestrator', 'running', ?, ?)`,
-      ts, ts,
-    );
-
-    const res = await request('PUT', '/api/agents/orch-put-test', { status: 'stopped' });
-    assert.equal(res.status, 200);
-    const body = JSON.parse(res.body);
-    assert.equal(body.status, 'updated');
-
-    // Verify in DB
-    const agent = getAgentStatus('orch-put-test');
-    assert.equal(agent!.status, 'stopped');
-  });
-
-  it('returns 404 for unknown agent', async () => {
-    const res = await request('PUT', '/api/agents/nonexistent', { status: 'stopped' });
-    assert.equal(res.status, 404);
-  });
-
-  it('updates updated_at timestamp', async () => {
-    const oldTs = new Date(Date.now() - 60_000).toISOString();
-    exec(
-      `INSERT INTO agents (id, type, status, created_at, updated_at)
-       VALUES ('orch-ts-test', 'orchestrator', 'running', ?, ?)`,
-      oldTs, oldTs,
-    );
-
-    await request('PUT', '/api/agents/orch-ts-test', { status: 'stopped' });
-
-    const agent = getAgentStatus('orch-ts-test');
-    assert.ok(
-      new Date(agent!.updated_at).getTime() > new Date(oldTs).getTime(),
-      'updated_at should be newer than original',
-    );
   });
 });

@@ -1,8 +1,8 @@
 /**
- * BMO Access Control — 5-tier file-backed sender classification.
+ * Agent Access Control — 5-tier file-backed sender classification.
  *
  * Extends the framework's 3-tier access control (safe/unknown/blocked)
- * with BMO's 'approved' and 'denied' tiers, plus channel-aware classification,
+ * with agent 'approved' and 'denied' tiers, plus channel-aware classification,
  * expiry-aware approval checks, and file-backed persistent state.
  *
  * Classification tiers (checked in order):
@@ -19,11 +19,11 @@ import { registerTier } from '../core/access-control.js';
 import { getProjectDir } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
 
-const log = createLogger('bmo-access-control');
+const log = createLogger('agent-access-control');
 
 // ── Types ───────────────────────────────────────────────────
 
-export type BmoSenderTier = 'blocked' | 'safe' | 'approved' | 'denied' | 'unknown';
+export type AgentSenderTier = 'blocked' | 'safe' | 'approved' | 'denied' | 'unknown';
 
 export interface ApprovedSender {
   id: string;
@@ -123,7 +123,7 @@ function isSafeSender(id: string, channel: string): boolean {
  * This is the full channel-aware classifier — used internally and
  * also registered with the framework via registerTier().
  */
-export function classifyBmoSender(id: string, channel: string): BmoSenderTier {
+export function classifyAgentSender(id: string, channel: string): AgentSenderTier {
   const state = readState();
 
   // 1. Blocked — check first (highest priority)
@@ -269,28 +269,28 @@ export function checkOutgoingRate(recipientId: string, channel: string, maxPerMi
 // ── Framework Integration ───────────────────────────────────
 
 /**
- * Register BMO's 5-tier classifier with the kithkit framework.
+ * Register the agent's 5-tier classifier with the kithkit framework.
  * The framework calls registered classifiers before its own defaults.
- * We use a single classifier that handles all BMO tiers.
+ * We use a single classifier that handles all agent tiers.
  *
  * Note: The framework classifier takes a single senderId string.
  * For channel-aware classification, the Telegram adapter calls
- * classifyBmoSender() directly. This framework hook catches
+ * classifyAgentSender() directly. This framework hook catches
  * any sender checks that go through the framework's classifySender().
  */
-export function initBmoAccessControl(): void {
-  registerTier('bmo-extended', (senderId: string) => {
+export function initAgentAccessControl(): void {
+  registerTier('agent-extended', (senderId: string) => {
     // Parse channel from senderId if encoded (e.g., "telegram:12345")
     const colonIdx = senderId.indexOf(':');
     if (colonIdx > 0) {
       const channel = senderId.slice(0, colonIdx);
       const id = senderId.slice(colonIdx + 1);
-      return classifyBmoSender(id, channel);
+      return classifyAgentSender(id, channel);
     }
     // No channel prefix — return null to let the framework handle it
     return null;
   });
-  log.info('BMO access control initialized (5-tier, channel-aware)');
+  log.info('Agent access control initialized (5-tier, channel-aware)');
 }
 
 // ── Testing ─────────────────────────────────────────────────

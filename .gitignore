@@ -167,3 +167,19 @@ models/
 .venv/
 */.venv/
 **/.venv/
+
+# Session data
+.claude/sessions/
+
+# Python cache
+__pycache__/
+
+# IDE
+.vscode/
+.idea/
+
+# Editor swap/temp
+*.swp
+*.swo
+*~
+Thumbs.db

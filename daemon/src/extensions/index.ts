@@ -1,5 +1,5 @@
 /**
- * BMO Extension — entry point for all BMO-specific daemon capabilities.
+ * Agent Extension — entry point for all agent-specific daemon capabilities.
  *
  * Implements the kithkit Extension interface to add:
  * - Communication channels (Telegram, email, voice)
@@ -7,7 +7,7 @@
  * - Scheduler task handlers
  * - Infrastructure services (backup, health checks)
  *
- * This is the single entry point — all BMO modules register through here.
+ * This is the single entry point — all extension modules register through here.
  * Zero modifications to upstream kithkit framework files.
  */
 
@@ -19,16 +19,16 @@ import { registerCheck } from '../core/extended-status.js';
 import { setScheduler, _getSchedulerForTesting } from '../api/tasks.js';
 import { Scheduler } from '../automation/scheduler.js';
 import type { Extension } from '../core/extensions.js';
-import { asBmoConfig, type BmoConfig } from './config.js';
+import { asAgentConfig, type AgentConfig } from './config.js';
 import {
   initComms,
   shutdownComms,
   createTelegramRouteHandler,
   createShortcutRouteHandler,
 } from './comms/index.js';
-import { initBmoAccessControl } from './access-control.js';
-import { registerBmoHealthChecks as registerBmoHealthChecksExtended } from './health-extended.js';
-import { getBmoExtendedStatus } from './extended-status.js';
+import { initAgentAccessControl } from './access-control.js';
+import { registerAgentHealthChecks as registerAgentHealthChecksExtended } from './health-extended.js';
+import { getAgentExtendedStatus } from './extended-status.js';
 import {
   initAgentComms,
   stopAgentComms,
@@ -42,19 +42,12 @@ import { registerWithRelay } from './comms/network/registration.js';
 import { handleNetworkRoute, setNetworkApiConfig } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { initVoice, stopVoice } from './voice/index.js';
-import { registerBmoTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
+import { registerAgentTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
 import { enableVectorSearch } from '../api/memory.js';
-import {
-  initCoworkBridge,
-  shutdownCoworkBridge,
-  handleCoworkRoute,
-  setAuthToken,
-  setPsk,
-} from './cowork-bridge.js';
 import { readKeychain } from '../core/keychain.js';
 
-const log = createLogger('bmo-extension');
+const log = createLogger('agent-extension');
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -74,7 +67,7 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 
 // ── State ────────────────────────────────────────────────────
 
-let _config: BmoConfig | null = null;
+let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
 let _initialized = false;
 
@@ -131,10 +124,9 @@ async function handleAgentP2P(
     res.writeHead(handled ? 200 : 503, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: handled }));
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    log.error('P2P endpoint error', { error: detail });
+    log.error('P2P endpoint error', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: false, error: `Invalid request: ${detail}` }));
+    res.end(JSON.stringify({ ok: false, error: 'Invalid request' }));
   }
   return true;
 }
@@ -156,10 +148,9 @@ async function handleAgentMessageRoute(
     res.writeHead(result.status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result.body));
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    log.error('Agent message endpoint error', { error: detail });
+    log.error('Agent message endpoint error', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Invalid request: ${detail}` }));
+    res.end(JSON.stringify({ error: 'Invalid request' }));
   }
   return true;
 }
@@ -184,10 +175,9 @@ async function handleAgentSend(
     res.writeHead(result.ok ? 200 : 502, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
   } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    log.error('Agent send endpoint error', { error: detail });
+    log.error('Agent send endpoint error', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(400, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: `Invalid request: ${detail}` }));
+    res.end(JSON.stringify({ error: 'Invalid request' }));
   }
   return true;
 }
@@ -221,10 +211,9 @@ async function handleAgentStatusEndpoint(
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(ourStatus));
     } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      log.error('Agent status POST error', { error: detail });
+      log.error('Agent status POST error', { error: err instanceof Error ? err.message : String(err) });
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: `Invalid request: ${detail}` }));
+      res.end(JSON.stringify({ error: 'Invalid request' }));
     }
     return true;
   }
@@ -240,14 +229,14 @@ async function handleExtendedStatus(
   if (req.method !== 'GET') return false;
   try {
     const status = _config
-      ? await getBmoExtendedStatus(_config)
-      : { agent: 'BMO', session: 'stopped', channel: 'unknown', todos: { open: 0, inProgress: 0, blocked: 0 }, services: [] };
+      ? await getAgentExtendedStatus(_config)
+      : { agent: 'Agent', session: 'stopped', channel: 'unknown', todos: { open: 0, inProgress: 0, blocked: 0 }, services: [] };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(status));
   } catch (err) {
     log.error('Failed to gather extended status', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ agent: _config?.agent?.name ?? 'BMO', error: 'Status collection failed' }));
+    res.end(JSON.stringify({ agent: _config?.agent?.name ?? 'Agent', error: 'Status collection failed' }));
   }
   return true;
 }
@@ -269,7 +258,7 @@ async function handleContextApi(
 
 // These are placeholder handlers registered so the scheduler knows
 // to run them in-process rather than as subprocesses.
-// Real implementations come in s-m29 (BMO scheduler tasks).
+// Real implementations come in s-m29 (agent extension).
 
 function stubHandler(name: string) {
   return async () => {
@@ -279,37 +268,34 @@ function stubHandler(name: string) {
 
 // ── Health Checks ───────────────────────────────────────────
 
-function registerBmoHealthChecks(): void {
-  registerCheck('bmo-extension', () => ({
+function registerAgentHealthChecks(): void {
+  registerCheck('agent-extension', () => ({
     ok: _initialized,
-    message: _initialized ? 'BMO extension loaded' : 'BMO extension not initialized',
+    message: _initialized ? 'Agent extension loaded' : 'Agent extension not initialized',
   }));
 }
 
 // ── Extension Implementation ────────────────────────────────
 
-/** BMO task names that get in-process handlers.
+/** Extension task names that get in-process handlers.
  * NOTE: Do NOT include core tasks here (context-watchdog, todo-reminder,
  * approval-audit, backup, orchestrator-idle, message-delivery) — those are
- * registered by registerCoreTasks() and would be overwritten by stubs. */
-const BMO_TASK_HANDLERS = [
-  'email-check',
-  'nightly-todo',
+ * registered by registerCoreTasks() and would be overwritten by stubs.
+ *
+ * Instance-specific tasks (morning-briefing, blog-reminder, nightly-todo,
+ * a2a-digest, email-check, memory-sync, supabase-keep-alive) have been moved
+ * to per-agent directories and are loaded via scheduler.tasks_dirs. */
+const AGENT_TASK_HANDLERS = [
   'health-check',
   'memory-consolidation',
-  'a2a-digest',
-  'memory-sync',
-  'lindee-inbox-watch',
-  'supabase-keep-alive',
-  'blog-reminder',
+
   'weekly-progress-report',
-  'bounty-scanner',
 ] as const;
 
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
-  _config = asBmoConfig(config);
+  _config = asAgentConfig(config);
 
-  // Initialize BMO comms (Telegram, email adapters)
+  // Initialize agent comms (Telegram, email adapters)
   await initComms(_config);
   _telegramRouteHandler = createTelegramRouteHandler();
   _shortcutRouteHandler = createShortcutRouteHandler();
@@ -317,22 +303,6 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Enable vector search (sqlite-vec + ONNX embeddings)
   enableVectorSearch();
 
-  // Load cowork credentials from Keychain before initializing bridge
-  const [coworkToken, coworkPsk] = await Promise.all([
-    readKeychain('credential-cowork-token').catch(() => null),
-    readKeychain('credential-cowork-psk').catch(() => null),
-  ]);
-  if (coworkToken) {
-    setAuthToken(coworkToken);
-    log.info('Cowork auth token loaded from Keychain');
-  }
-  if (coworkPsk) {
-    setPsk(coworkPsk);
-    log.info('Cowork PSK loaded from Keychain');
-  }
-
-  // Initialize cowork WebSocket bridge (Chrome extension relay)
-  initCoworkBridge(_server);
 
   // Initialize agent-to-agent comms (LAN + P2P SDK)
   initAgentComms(_config);
@@ -353,7 +323,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     await initVoice(_config.channels.voice);
   }
 
-  // Register BMO-specific routes
+  // Register agent-specific routes
   registerRoute('/telegram', handleTelegramWebhook);
   registerRoute('/shortcut', handleShortcut);
   registerRoute('/agent/p2p', handleAgentP2P);
@@ -362,7 +332,6 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   registerRoute('/agent/status', handleAgentStatusEndpoint);
   registerRoute('/agent/extended-status', handleExtendedStatus);
   registerRoute('/api/context', handleContextApi);
-  registerRoute('/api/cowork/*', handleCoworkRoute);
   registerRoute('/api/network/*', handleNetworkRoute);
 
   // Set up scheduler with in-process handlers
@@ -375,12 +344,12 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Register core task handlers (context-watchdog, todo-reminder, etc.)
   registerCoreTasks(_scheduler);
 
-  // Register real BMO task handlers (s-m29)
-  registerBmoTasks(_scheduler);
+  // Register real agent task handlers (s-m29)
+  registerAgentTasks(_scheduler);
 
-  // Register stub handlers for remaining BMO tasks (not yet implemented)
-  for (const taskName of BMO_TASK_HANDLERS) {
-    if (REAL_TASK_NAMES.has(taskName)) continue; // Already registered by registerBmoTasks
+  // Register stub handlers for remaining agent tasks (not yet implemented)
+  for (const taskName of AGENT_TASK_HANDLERS) {
+    if (REAL_TASK_NAMES.has(taskName)) continue; // Already registered by registerAgentTasks
     if (_scheduler.getTask(taskName)) {
       _scheduler.registerHandler(taskName, stubHandler(taskName));
     }
@@ -393,15 +362,15 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   setScheduler(_scheduler);
   _scheduler.start();
 
-  // Initialize BMO access control (5-tier, channel-aware)
-  initBmoAccessControl();
+  // Initialize agent access control (5-tier, channel-aware)
+  initAgentAccessControl();
 
   // Register health checks (extension + comprehensive system checks)
-  registerBmoHealthChecks();
-  registerBmoHealthChecksExtended(_config);
+  registerAgentHealthChecks();
+  registerAgentHealthChecksExtended(_config);
 
   _initialized = true;
-  log.info('BMO extension initialized', {
+  log.info('Agent extension initialized', {
     channels: {
       telegram: _config.channels?.telegram?.enabled ?? false,
       email: _config.channels?.email?.enabled ?? false,
@@ -414,7 +383,6 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 }
 
 async function onShutdown(): Promise<void> {
-  shutdownCoworkBridge();
   stopVoice();
   await stopNetworkSDK();
   stopAgentComms();
@@ -426,21 +394,21 @@ async function onShutdown(): Promise<void> {
   _telegramRouteHandler = null;
   _shortcutRouteHandler = null;
   _initialized = false;
-  log.info('BMO extension shut down');
+  log.info('Agent extension shut down');
 }
 
 // ── Export ───────────────────────────────────────────────────
 
 /**
- * The BMO extension — register this with the kithkit daemon.
+ * The agent extension — register this with the kithkit daemon.
  *
  * Usage in a bootstrap file:
  *   import { registerExtension } from './core/extensions.js';
- *   import { bmoExtension } from './extensions/index.js';
- *   registerExtension(bmoExtension);
+ *   import { agentExtension } from './extensions/index.js';
+ *   registerExtension(agentExtension);
  */
-export const bmoExtension: Extension = {
-  name: 'bmo',
+export const agentExtension: Extension = {
+  name: 'agent',
   onInit,
   onShutdown,
 };
