@@ -1,0 +1,47 @@
+# CC4Me Voice Client Configuration
+# Copy to config.yaml and customize for your setup.
+
+# Daemon connection — set this to the IP/hostname of your CC4Me machine
+daemon:
+  host: "localhost"           # Your daemon's LAN IP or hostname
+  port: 3847
+  tunnel_url: ""              # Internet fallback URL (optional)
+
+# Client identity
+client:
+  id: "laptop-01"
+  callback_port: 3849        # Port for daemon-initiated requests (chime)
+
+# Wake word
+wake_word:
+  # Path to custom model file, or a pre-trained model name (e.g., "hey_jarvis")
+  model: "hey_bee_mo.onnx"   # Custom trained wake word model
+  threshold: 0.5              # Detection confidence threshold (0.0-1.0)
+  inference_framework: "onnx"
+
+# Audio
+audio:
+  sample_rate: 16000          # Must be 16kHz for openWakeWord and whisper
+  channels: 1                 # Mono
+  frame_size: 1280            # 80ms at 16kHz — openWakeWord native frame size
+  silence_threshold: 500      # Energy threshold for silence detection
+  silence_duration: 1.0       # Seconds of silence before stopping recording
+  max_recording: 30.0         # Maximum recording duration in seconds
+
+# Playback
+playback:
+  volume: 1.0                 # Output volume multiplier (0.0-1.0)
+
+# Conversation mode
+conversation:
+  follow_up_duration: 10.0    # Seconds to listen for follow-up
+  enable_stop_interrupt: false # Disabled — mic picks up speaker audio and false-triggers
+
+# Push-to-talk (hold key to speak without wake word)
+push_to_talk:
+  enabled: true
+  key: "right_cmd"            # Options: right_cmd, right_alt, right_ctrl, f18, etc.
+
+# Heartbeat
+heartbeat:
+  interval: 30                # Seconds between heartbeats to daemon

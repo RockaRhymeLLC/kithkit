@@ -1,0 +1,51 @@
+# Kithkit Voice Client Configuration — Skippy
+# Deploy this as config.yaml on Dave's laptop for the Skippy instance
+
+# Agent profile
+profile:
+  agent_name: "Skippy"
+  app_name: "Skippy Voice"
+  icon_dir: ""                       # Use default icons for now (TODO: create Skippy icons)
+
+# Daemon connection — Skippy's machine
+daemon:
+  host: "192.168.12.142"            # Skippy's machine LAN IP
+  port: 3847
+
+# Client identity
+client:
+  id: "laptop-skippy"
+  callback_port: 3851               # Different port from BMO (3849) and R2 (3849 on Chrissy's)
+
+# Wake word — disabled for now (push-to-talk only)
+wake_word:
+  model: ""                          # No wake word model — push-to-talk only
+  threshold: 0.5
+  inference_framework: "onnx"
+
+# Audio
+audio:
+  sample_rate: 16000
+  channels: 1
+  frame_size: 1280
+  silence_threshold: 500
+  silence_duration: 1.0
+  max_recording: 30.0
+
+# Playback
+playback:
+  volume: 1.0
+
+# Conversation mode
+conversation:
+  follow_up_duration: 10.0
+  enable_stop_interrupt: false
+
+# Push-to-talk (hold key to speak without wake word)
+push_to_talk:
+  enabled: true
+  key: "right_alt"                   # Right Alt key (BMO=right_cmd, R2=right_ctrl)
+
+# Heartbeat
+heartbeat:
+  interval: 30

@@ -1,0 +1,52 @@
+# CC4Me Voice Client Configuration — R2-D2
+# Deploy this as config.yaml on Chrissy's MacBook Air
+
+# Agent profile
+profile:
+  agent_name: "R2"
+  app_name: "R2 Voice"
+  icon_dir: "r2-icons"           # R2-D2 icons (relative to voice-client dir)
+
+# Daemon connection — R2's Mac Mini (voice client runs on Chrissy's laptop)
+daemon:
+  host: "192.168.12.212"         # R2's Mac Mini LAN IP
+  port: 3847
+  tunnel_url: "https://r2.bmobot.ai"  # Internet fallback via Cloudflare tunnel
+
+# Client identity
+client:
+  id: "chrissys-laptop"
+  callback_port: 3849
+
+# Wake word
+wake_word:
+  model: "hey_r2.onnx"            # Custom trained model (accuracy 79.8%, recall 59.6%)
+  threshold: 0.5
+  inference_framework: "onnx"
+
+# Audio
+audio:
+  sample_rate: 16000
+  channels: 1
+  frame_size: 1280
+  silence_threshold: 500
+  silence_duration: 1.0
+  max_recording: 30.0
+
+# Playback
+playback:
+  volume: 1.0
+
+# Conversation mode
+conversation:
+  follow_up_duration: 10.0
+  enable_stop_interrupt: false
+
+# Push-to-talk (hold key to speak without wake word)
+push_to_talk:
+  enabled: true
+  key: "right_ctrl"              # Right Control key (Dave's preference for Chrissy too)
+
+# Heartbeat
+heartbeat:
+  interval: 30

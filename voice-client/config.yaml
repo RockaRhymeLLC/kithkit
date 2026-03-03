@@ -1,0 +1,52 @@
+# CC4Me Voice Client Configuration
+
+# Agent profile — identifies which agent this voice client connects to
+profile:
+  agent_name: "BMO"              # Agent name (display in menu bar and logs)
+  app_name: "CC4Me Voice"        # macOS app display name
+  icon_dir: ""                   # Path to icon PNGs (idle/active/processing/speaking). Empty = use defaults in script dir
+
+# Daemon connection — set this to the IP/hostname of your CC4Me machine
+daemon:
+  host: "localhost"        # IP/hostname of your CC4Me machine (change for remote setup)
+  port: 3847
+  # tunnel_url: "https://your-tunnel.example.com"   # Internet fallback — used when LAN is unreachable
+
+# Client identity
+client:
+  id: "laptop-01"
+  callback_port: 3849      # Port for daemon-initiated requests (chime)
+
+# Wake word
+wake_word:
+  # Path to custom model file, or a pre-trained model name (e.g., "hey_jarvis")
+  model: "hey_jarvis"        # Pre-trained model name, or path to custom .onnx file
+  threshold: 0.5            # Detection confidence threshold (0.0-1.0)
+  inference_framework: "onnx"
+
+# Audio
+audio:
+  sample_rate: 16000        # Must be 16kHz for openWakeWord and whisper
+  channels: 1               # Mono
+  frame_size: 1280          # 80ms at 16kHz — openWakeWord native frame size
+  silence_threshold: 500    # Energy threshold for silence detection
+  silence_duration: 1.0     # Seconds of silence before stopping recording
+  max_recording: 30.0       # Maximum recording duration in seconds
+
+# Playback
+playback:
+  volume: 1.0               # Output volume multiplier (0.0-1.0)
+
+# Conversation mode
+conversation:
+  follow_up_duration: 10.0   # Seconds to listen for follow-up (longer for Telegram latency)
+  enable_stop_interrupt: false # Disabled — mic picks up speaker audio and false-triggers
+
+# Push-to-talk (hold key to speak without wake word)
+push_to_talk:
+  enabled: true
+  key: "right_cmd"           # Options: right_cmd, right_alt, right_ctrl, f18, etc.
+
+# Heartbeat
+heartbeat:
+  interval: 30              # Seconds between heartbeats to daemon

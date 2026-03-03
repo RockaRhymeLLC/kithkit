@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cc4me.voice-client</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Update these paths to match your voice-client install location -->
+        <string>/path/to/voice-client/.venv/bin/python3</string>
+        <string>/path/to/voice-client/voice_client.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/voice-client</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/cc4me-voice-client.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/cc4me-voice-client.log</string>
+</dict>
+</plist>

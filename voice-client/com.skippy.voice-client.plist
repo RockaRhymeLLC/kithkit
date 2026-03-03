@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.skippy.voice-client</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- UPDATE THESE PATHS for your installation -->
+        <string>/path/to/voice-client/.venv/bin/python3</string>
+        <string>/path/to/voice-client/bmo_voice.py</string>
+        <string>/path/to/voice-client/config-skippy.yaml</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/path/to/voice-client</string>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/skippy-voice-client.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/skippy-voice-client.log</string>
+
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>
