@@ -197,6 +197,42 @@ export async function handleNetworkRoute(
       return true;
     }
 
+    // Deprecated: /api/network/send — use /api/a2a/send instead
+    if (subpath === 'send' && method === 'POST') {
+      res.setHeader('Deprecation', 'true');
+      res.setHeader('Link', '</api/a2a/send>; rel="successor-version"');
+      const body = await parseBody(req);
+      if (!body.to || typeof body.to !== 'string') {
+        json(res, 400, withTimestamp({ error: 'to is required' }));
+        return true;
+      }
+      if (!body.payload || typeof body.payload !== 'object') {
+        json(res, 400, withTimestamp({ error: 'payload is required' }));
+        return true;
+      }
+      const result = await network.send(body.to, body.payload as Record<string, unknown>);
+      json(res, 200, withTimestamp(result as Record<string, unknown>));
+      return true;
+    }
+
+    // Deprecated: /api/network/message — use /api/a2a/send instead
+    if (subpath === 'message' && method === 'POST') {
+      res.setHeader('Deprecation', 'true');
+      res.setHeader('Link', '</api/a2a/send>; rel="successor-version"');
+      const body = await parseBody(req);
+      if (!body.to || typeof body.to !== 'string') {
+        json(res, 400, withTimestamp({ error: 'to is required' }));
+        return true;
+      }
+      if (!body.text || typeof body.text !== 'string') {
+        json(res, 400, withTimestamp({ error: 'text is required' }));
+        return true;
+      }
+      const result = await network.send(body.to, { type: 'message', text: body.text });
+      json(res, 200, withTimestamp(result as Record<string, unknown>));
+      return true;
+    }
+
     return false;
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
