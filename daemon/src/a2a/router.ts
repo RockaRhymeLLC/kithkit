@@ -32,6 +32,7 @@ export interface RouterDeps {
   getPeerState: (name: string) => PeerState | undefined;
   logCommsEntry: (entry: CommsLogEntry) => void;
   readKeychain: (name: string) => Promise<string | null>;
+  sendDbMessage?: (msg: { from: string; to: string; type: string; body: string; metadata?: Record<string, unknown> }) => void;
 }
 
 // ── Constants ────────────────────────────────────────────────
@@ -148,6 +149,7 @@ export class UnifiedA2ARouter {
       attempts.push(relayAttempt);
 
       if (relayAttempt.status === 'success') {
+        this.auditGroup(target, request.payload, 'relay', messageId);
         return this.success(messageId, target, 'group', 'relay', 'delivered', attempts);
       }
 
@@ -168,6 +170,7 @@ export class UnifiedA2ARouter {
       attempts.push(lanAttempt);
 
       if (lanAttempt.status === 'success') {
+        this.auditDM(target, request.payload, 'lan', messageId, attempts);
         return this.success(messageId, target, 'dm', 'lan', 'delivered', attempts);
       }
       return this.errorWithAttempts('DELIVERY_FAILED', `LAN delivery failed: ${lanAttempt.error}`, attempts);
@@ -185,6 +188,7 @@ export class UnifiedA2ARouter {
 
       if (relayAttempt.status === 'success') {
         const relayStatus = (relayAttempt as any)._sdkStatus === 'queued' ? 'queued' as const : 'delivered' as const;
+        this.auditDM(target, request.payload, 'relay', messageId, attempts);
         return this.success(messageId, target, 'dm', 'relay', relayStatus, attempts);
       }
       return this.errorWithAttempts('DELIVERY_FAILED', `Relay delivery failed: ${relayAttempt.error}`, attempts);
@@ -223,6 +227,7 @@ export class UnifiedA2ARouter {
       attempts.push(lanAttempt);
 
       if (lanAttempt.status === 'success') {
+        this.auditDM(target, payload, 'lan', messageId, attempts);
         return this.success(messageId, target, 'dm', 'lan', 'delivered', attempts);
       }
     }
@@ -235,6 +240,7 @@ export class UnifiedA2ARouter {
 
       if (relayAttempt.status === 'success') {
         const relayStatus = (relayAttempt as any)._sdkStatus === 'queued' ? 'queued' as const : 'delivered' as const;
+        this.auditDM(target, payload, 'relay', messageId, attempts);
         return this.success(messageId, target, 'dm', 'relay', relayStatus, attempts);
       }
     }
@@ -417,6 +423,47 @@ export class UnifiedA2ARouter {
       return `${name}@${hostname}`;
     } catch {
       return name;
+    }
+  }
+
+  // ── DB Audit ───────────────────────────────────────────────
+
+  private auditDM(
+    target: string,
+    payload: A2ASendRequest['payload'],
+    finalRoute: 'lan' | 'relay',
+    messageId: string,
+    attempts: DeliveryAttempt[],
+  ): void {
+    if (this.deps.sendDbMessage) {
+      try {
+        this.deps.sendDbMessage({
+          from: 'comms',
+          to: `a2a:${target}`,
+          type: 'text',
+          body: JSON.stringify(payload),
+          metadata: { channel: 'a2a', route: finalRoute, messageId, attempts: attempts.length },
+        });
+      } catch { /* don't fail send on audit error */ }
+    }
+  }
+
+  private auditGroup(
+    groupId: string,
+    payload: A2ASendRequest['payload'],
+    finalRoute: 'lan' | 'relay',
+    messageId: string,
+  ): void {
+    if (this.deps.sendDbMessage) {
+      try {
+        this.deps.sendDbMessage({
+          from: 'comms',
+          to: `a2a:group:${groupId}`,
+          type: 'text',
+          body: JSON.stringify(payload),
+          metadata: { channel: 'a2a', group_id: groupId, route: finalRoute, messageId },
+        });
+      } catch { /* don't fail send on audit error */ }
     }
   }
 
