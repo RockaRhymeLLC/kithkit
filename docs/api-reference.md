@@ -17,6 +17,8 @@ The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It bin
 - [Usage & Metrics](#usage--metrics)
 - [Orchestrator](#orchestrator)
 - [Timers](#timers)
+- [A2A Messaging](#a2a-messaging)
+- [Error Responses](#error-responses)
 
 ---
 
@@ -2276,6 +2278,151 @@ curl -X DELETE "http://localhost:3847/api/timer/$TIMER_ID"
 |--------|----------|
 | 200 | `{ "id": "...", "cancelled": true, "timestamp": "..." }` |
 | 404 | `{ "error": "Timer not found" }` |
+
+---
+
+## A2A Messaging
+
+Unified endpoint for sending agent-to-agent messages — DMs and group messages with automatic route selection.
+
+### `POST /api/a2a/send`
+
+Send a message to another agent (DM) or to a group.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `to` | string | One of `to`/`group` | Peer name (e.g. `"bmo"`) or qualified name (e.g. `"bmo@relay.kithkit.com"`) |
+| `group` | string | One of `to`/`group` | Group UUID or group name |
+| `payload` | object | Yes | Message payload — must include `type` |
+| `payload.type` | string | Yes | Message type (e.g. `"text"`, `"task"`, `"result"`) |
+| `payload.text` | string | No | Message text content |
+| `route` | string | No | Routing mode: `"auto"` (default), `"lan"`, or `"relay"` |
+
+**Constraints:**
+- Exactly one of `to` or `group` is required (not both).
+- `route: "lan"` cannot be used with group targets.
+- Peer names are resolved case-insensitively from `agent-comms.peers` config; bare names are auto-qualified for relay.
+
+**Routing behavior:**
+
+| Route | Behavior |
+|-------|----------|
+| `auto` (default) | Tries LAN first (if peer in config), falls back to relay |
+| `lan` | LAN only — requires peer in `agent-comms.peers` config + Keychain secret |
+| `relay` | Relay only — uses network SDK |
+
+Groups always route via relay regardless of `route` value.
+
+**Success response (DM):**
+
+```json
+{
+  "ok": true,
+  "messageId": "550e8400-e29b-41d4-a716-446655440000",
+  "target": "bmo",
+  "targetType": "dm",
+  "route": "lan",
+  "status": "delivered",
+  "attempts": [
+    { "route": "lan", "status": "success", "latencyMs": 42 }
+  ],
+  "timestamp": "2026-03-03T12:00:00.000Z"
+}
+```
+
+**Success response (Group):**
+
+```json
+{
+  "ok": true,
+  "messageId": "550e8400-e29b-41d4-a716-446655440000",
+  "target": "c006dfce-37b6-434a-8407-1d227f485a81",
+  "targetType": "group",
+  "route": "relay",
+  "status": "delivered",
+  "attempts": [
+    { "route": "relay", "status": "success", "latencyMs": 120 }
+  ],
+  "delivered": ["bmo@relay.kithkit.com", "r2d2@relay.kithkit.com"],
+  "queued": [],
+  "failed": [],
+  "timestamp": "2026-03-03T12:00:00.000Z"
+}
+```
+
+**Error response:**
+
+```json
+{
+  "ok": false,
+  "error": "Peer 'unknown-agent' not found in agent-comms config",
+  "code": "PEER_NOT_FOUND",
+  "attempts": [],
+  "timestamp": "2026-03-03T12:00:00.000Z"
+}
+```
+
+**Error codes:**
+
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `INVALID_REQUEST` | 400 | Missing or malformed request body or payload |
+| `INVALID_TARGET` | 400 | Missing/invalid `to`/`group`, or both specified |
+| `INVALID_ROUTE` | 400 | Invalid route value, or `lan` with group target |
+| `PEER_NOT_FOUND` | 404 | Peer name not found in `agent-comms.peers` config |
+| `GROUP_NOT_FOUND` | 404 | Group UUID or name not found |
+| `DELIVERY_FAILED` | 502 | All delivery attempts failed |
+| `RELAY_UNAVAILABLE` | 503 | Network SDK not initialized |
+| `LAN_UNAVAILABLE` | 503 | Keychain secret not found |
+
+**`attempts` array:** Each delivery attempt includes:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `route` | `"lan"` \| `"relay"` | Which route was tried |
+| `status` | `"success"` \| `"failed"` | Attempt outcome |
+| `error` | string? | Error message (on failure) |
+| `latencyMs` | number | Round-trip time in milliseconds |
+| `relayStatus` | `"delivered"` \| `"queued"`? | Relay-specific delivery status |
+
+**Examples:**
+
+```bash
+# DM with auto routing
+curl -X POST http://localhost:3847/api/a2a/send \
+  -H 'Content-Type: application/json' \
+  -d '{"to": "bmo", "payload": {"type": "text", "text": "Hello BMO!"}}'
+
+# Group message
+curl -X POST http://localhost:3847/api/a2a/send \
+  -H 'Content-Type: application/json' \
+  -d '{"group": "c006dfce-37b6-434a-8407-1d227f485a81", "payload": {"type": "text", "text": "Hello team!"}}'
+
+# Force LAN route
+curl -X POST http://localhost:3847/api/a2a/send \
+  -H 'Content-Type: application/json' \
+  -d '{"to": "bmo", "payload": {"type": "text", "text": "LAN only"}, "route": "lan"}'
+
+# Force relay route
+curl -X POST http://localhost:3847/api/a2a/send \
+  -H 'Content-Type: application/json' \
+  -d '{"to": "bmo", "payload": {"type": "text", "text": "Via relay"}, "route": "relay"}'
+```
+
+### Deprecated Endpoints
+
+These older endpoints still work but are deprecated. Use `POST /api/a2a/send` instead.
+
+| Endpoint | Status | Migration |
+|----------|--------|-----------|
+| `POST /agent/send` | Deprecated | Use `POST /api/a2a/send` with `{"to": "<peer>", "payload": {"type": "<type>", "text": "<text>"}}` |
+| `POST /api/network/send` | Deprecated | Use `POST /api/a2a/send` — same `{to, payload}` shape |
+| `POST /api/network/message` | Deprecated | Use `POST /api/a2a/send` — wrap string message as `{"to": "<peer>", "payload": {"type": "message", "text": "<msg>"}}` |
+| `POST /api/network/groups/:id/send` | Deprecated | Use `POST /api/a2a/send` with `{"group": "<id>", "payload": {...}}` |
+
+All deprecated endpoints return `Deprecation: true` and `Link: </api/a2a/send>; rel="successor-version"` response headers.
 
 ---
 
