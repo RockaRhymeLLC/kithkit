@@ -36,8 +36,13 @@ import {
   sendAgentMessage,
   getAgentStatus,
   updatePeerState,
+  sendViaLAN,
+  getPeerState,
+  logCommsEntry,
 } from './comms/agent-comms.js';
-import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P } from './comms/network/sdk-bridge.js';
+import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P, getNetworkClient } from './comms/network/sdk-bridge.js';
+import { UnifiedA2ARouter } from '../a2a/router.js';
+import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { registerWithRelay } from './comms/network/registration.js';
 import { handleNetworkRoute, setNetworkApiConfig } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
@@ -308,6 +313,17 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   initAgentComms(_config);
   setNetworkApiConfig(_config);
 
+  // Initialize unified A2A router
+  const a2aRouter = new UnifiedA2ARouter({
+    config: _config,
+    sendViaLAN,
+    getNetworkClient,
+    getPeerState,
+    logCommsEntry,
+    readKeychain,
+  });
+  setA2ARouter(a2aRouter);
+
   // Network SDK (P2P messaging) — non-blocking
   if (_config.network?.enabled) {
     registerWithRelay(_config)
@@ -333,6 +349,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   registerRoute('/agent/extended-status', handleExtendedStatus);
   registerRoute('/api/context', handleContextApi);
   registerRoute('/api/network/*', handleNetworkRoute);
+  registerRoute('/api/a2a/*', handleA2ARoute);
 
   // Set up scheduler with in-process handlers
   const schedulerConfig = config.scheduler?.tasks ?? [];

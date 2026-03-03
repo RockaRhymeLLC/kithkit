@@ -247,7 +247,7 @@ export async function handleAgentMessage(
 
 // ── LAN Send (curl) ──────────────────────────────────────────
 
-function sendViaLAN(
+export function sendViaLAN(
   peer: PeerConfig,
   msg: AgentMessage,
   secret: string,
@@ -360,7 +360,7 @@ function sendViaLAN(
 
 // ── P2P Name Resolution ───────────────────────────────────────
 
-function resolveP2PName(
+export function resolveP2PName(
   peerName: string,
   peer: PeerConfig | undefined,
 ): string {
