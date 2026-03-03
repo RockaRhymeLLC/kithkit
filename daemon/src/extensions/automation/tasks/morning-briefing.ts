@@ -18,7 +18,13 @@ import { createLogger } from '../../../core/logger.js';
 import { getProjectDir, loadConfig } from '../../../core/config.js';
 import { query } from '../../../core/db.js';
 import type { Scheduler } from '../../../automation/scheduler.js';
-import { getTelegramAdapter, getGraphAdapter, getJmapAdapter, getOutlookAdapter, getHimalayaAdapters } from '../../comms/index.js';
+// TODO: Adapter getters removed in upstream PR #136 refactor. Stubbed for now.
+// Morning briefing needs refactoring to use channel router instead.
+function getTelegramAdapter(): any { return null; }
+function getGraphAdapter(): any { return null; }
+function getJmapAdapter(): any { return null; }
+function getOutlookAdapter(): any { return null; }
+function getHimalayaAdapters(): any[] { return []; }
 
 const log = createLogger('morning-briefing');
 

@@ -21,7 +21,7 @@ import { createLogger } from '../../../core/logger.js';
 import { askClaude } from '../../../core/claude-api.js';
 import { getProjectDir } from '../../../core/config.js';
 import type { Scheduler } from '../../../automation/scheduler.js';
-import { getTelegramAdapter } from '../../comms/index.js';
+import { sendMessage } from '../../../agents/message-router.js';
 
 const log = createLogger('lindee-inbox-watch');
 const execFileAsync = promisify(execFile);
@@ -396,10 +396,10 @@ async function run(): Promise<void> {
   // Send urgent alerts to Telegram
   if (urgentAlerts.length > 0) {
     const message = `[Lindee's Email]\n${urgentAlerts.join('\n')}`;
-    const tgAdapter = getTelegramAdapter();
-    if (tgAdapter) {
-      await tgAdapter.sendDirect(message);
-    } else {
+    // Use message router instead of direct Telegram adapter
+    try {
+      sendMessage({ from: 'system', to: 'comms', type: 'text', body: message });
+    } catch {
       log.warn('No Telegram adapter for Lindee alerts');
     }
   }

@@ -16,10 +16,9 @@ import { execFile } from 'node:child_process';
 import { loadConfig, resolveProjectPath } from '../../../core/config.js';
 import { createLogger } from '../../../core/logger.js';
 import { readKeychain } from '../../../core/keychain.js';
-import { getPeerState } from '../../comms/agent-comms.js';
 import { injectText } from '../../../core/session-bridge.js';
 import type { Scheduler } from '../../../automation/scheduler.js';
-import { asBmoConfig, type PeerConfig } from '../../config.js';
+import { asAgentConfig, type PeerConfig } from '../../config.js';
 
 const log = createLogger('memory-sync');
 
@@ -632,7 +631,7 @@ async function sendToPeer(
 // ── Scheduler Task ───────────────────────────────────────────
 
 async function run(): Promise<void> {
-  const config = asBmoConfig(loadConfig());
+  const config = asAgentConfig(loadConfig());
   const agentComms = config['agent-comms'];
 
   if (!agentComms?.enabled) {
@@ -650,8 +649,8 @@ async function run(): Promise<void> {
 
   for (const peer of peers) {
     // Only sync with reachable peers
-    const peerState = getPeerState(peer.name);
-    if (peerState && peerState.status === 'unknown') {
+    const peerState = null; // getPeerState removed in upstream refactor
+    if (false) { // peer state tracking removed in upstream refactor
       log.debug(`Skipping memory sync with ${peer.name} — unreachable`);
       continue;
     }

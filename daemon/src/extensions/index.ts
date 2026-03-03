@@ -3,7 +3,7 @@
  *
  * Implements the kithkit Extension interface to add:
  * - Communication channels (Telegram, email, voice)
- * - Agent-to-agent messaging (LAN + P2P)
+ * - Agent-to-agent messaging (LAN + P2P + unified A2A router)
  * - Scheduler task handlers
  * - Infrastructure services (backup, health checks)
  *
@@ -20,12 +20,6 @@ import { setScheduler, _getSchedulerForTesting } from '../api/tasks.js';
 import { Scheduler } from '../automation/scheduler.js';
 import type { Extension } from '../core/extensions.js';
 import { asAgentConfig, type AgentConfig } from './config.js';
-import {
-  initComms,
-  shutdownComms,
-  createTelegramRouteHandler,
-  createShortcutRouteHandler,
-} from './comms/index.js';
 import { initAgentAccessControl } from './access-control.js';
 import { registerAgentHealthChecks as registerAgentHealthChecksExtended } from './health-extended.js';
 import { getAgentExtendedStatus } from './extended-status.js';
@@ -35,17 +29,33 @@ import {
   handleAgentMessage,
   sendAgentMessage,
   getAgentStatus,
-  updatePeerState,
+  sendViaLAN,
+  logCommsEntry,
+  setRouter,
 } from './comms/agent-comms.js';
-import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P } from './comms/network/sdk-bridge.js';
+import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P, getNetworkClient } from './comms/network/sdk-bridge.js';
 import { registerWithRelay } from './comms/network/registration.js';
-import { handleNetworkRoute, setNetworkApiConfig } from './comms/network/api.js';
+import { handleNetworkRoute } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { initVoice, stopVoice } from './voice/index.js';
 import { registerAgentTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
 import { enableVectorSearch } from '../api/memory.js';
 import { readKeychain } from '../core/keychain.js';
+import { parseBody } from '../api/helpers.js';
+import { handleMemorySync } from './automation/tasks/memory-sync.js';
+import { UnifiedA2ARouter } from '../a2a/router.js';
+import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
+import { sendMessage } from '../agents/message-router.js';
+import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
+import { createCommsTelegramAdapter, type CommsTelegramAdapter } from './comms/telegram.js';
+import {
+  initCoworkBridge,
+  shutdownCoworkBridge,
+  handleCoworkRoute,
+  setAuthToken,
+  setPsk,
+} from './cowork-bridge.js';
 
 const log = createLogger('agent-extension');
 
@@ -70,42 +80,20 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
 let _initialized = false;
+let _telegramAdapter: CommsTelegramAdapter | null = null;
 
 // ── Route Handlers ──────────────────────────────────────────
-
-// Telegram webhook — real handler from comms extensions (s-m24)
-// Created lazily in onInit() after comms are initialized.
-let _telegramRouteHandler: ReturnType<typeof createTelegramRouteHandler> | null = null;
-let _shortcutRouteHandler: ReturnType<typeof createShortcutRouteHandler> | null = null;
 
 async function handleTelegramWebhook(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  pathname: string,
-  searchParams: URLSearchParams,
+  _pathname: string,
+  _searchParams: URLSearchParams,
 ): Promise<boolean> {
-  if (_telegramRouteHandler) {
-    return _telegramRouteHandler(req, res, pathname, searchParams);
-  }
-  // Fallback if comms not initialized
+  // Stub — Telegram uses polling adapter, not webhook in this setup
   if (req.method !== 'POST') return false;
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ ok: true, stub: true }));
-  return true;
-}
-
-async function handleShortcut(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  pathname: string,
-  searchParams: URLSearchParams,
-): Promise<boolean> {
-  if (_shortcutRouteHandler) {
-    return _shortcutRouteHandler(req, res, pathname, searchParams);
-  }
-  if (req.method !== 'POST') return false;
-  res.writeHead(503, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ error: 'Not initialized' }));
   return true;
 }
 
@@ -120,9 +108,9 @@ async function handleAgentP2P(
   try {
     const body = await readBody(req);
     const envelope = JSON.parse(body) as WireEnvelope;
-    const handled = await handleIncomingP2P(envelope);
-    res.writeHead(handled ? 200 : 503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: handled }));
+    await handleIncomingP2P(envelope);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
   } catch (err) {
     log.error('P2P endpoint error', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -188,36 +176,11 @@ async function handleAgentStatusEndpoint(
   _pathname: string,
   _searchParams: URLSearchParams,
 ): Promise<boolean> {
-  if (req.method === 'GET') {
-    // Simple status check (lightweight, for peer heartbeats)
-    const status = getAgentStatus();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(status));
-    return true;
-  }
-  if (req.method === 'POST') {
-    // Heartbeat exchange: peer POSTs their state, gets ours back
-    try {
-      const body = await readBody(req);
-      const peerState = JSON.parse(body);
-      if (peerState.agent) {
-        updatePeerState(peerState.agent, {
-          status: peerState.status ?? 'unknown',
-          updatedAt: Date.now(),
-          latencyMs: peerState.latencyMs,
-        });
-      }
-      const ourStatus = getAgentStatus();
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(ourStatus));
-    } catch (err) {
-      log.error('Agent status POST error', { error: err instanceof Error ? err.message : String(err) });
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Invalid request' }));
-    }
-    return true;
-  }
-  return false;
+  if (req.method !== 'GET') return false;
+  const status = getAgentStatus();
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(status));
+  return true;
 }
 
 async function handleExtendedStatus(
@@ -248,17 +211,59 @@ async function handleContextApi(
   _searchParams: URLSearchParams,
 ): Promise<boolean> {
   if (req.method !== 'GET') return false;
-  // Context loader endpoint — real implementation uses context-loader.ts
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ todos: [], decisions: [], calendar: [], memories: [] }));
   return true;
 }
 
-// ── Task Handler Stubs (replaced by s-m29) ──────────────────
+async function handleHookResponse(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'POST') return false;
 
-// These are placeholder handlers registered so the scheduler knows
-// to run them in-process rather than as subprocesses.
-// Real implementations come in s-m29 (agent extension).
+  try {
+    const body = await parseBody(req);
+    const { hook_event } = body as { hook_event?: string };
+    log.debug('Hook response notification', { hook_event });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, timestamp: new Date().toISOString() }));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error('Hook response endpoint error', { error: detail });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Invalid request: ${detail}` }));
+  }
+  return true;
+}
+
+async function handleMemorySyncRoute(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'POST') return false;
+
+  try {
+    const authHeader = req.headers.authorization;
+    const authToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const body = await parseBody(req);
+    const result = await handleMemorySync(authToken, body);
+    res.writeHead(result.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result.body));
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error('Memory sync endpoint error', { error: detail });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `Invalid request: ${detail}` }));
+  }
+  return true;
+}
+
+// ── Task Handler Stubs (replaced by s-m29) ──────────────────
 
 function stubHandler(name: string) {
   return async () => {
@@ -277,41 +282,55 @@ function registerAgentHealthChecks(): void {
 
 // ── Extension Implementation ────────────────────────────────
 
-/** Extension task names that get in-process handlers.
- * NOTE: Do NOT include core tasks here (context-watchdog, todo-reminder,
- * approval-audit, backup, orchestrator-idle, message-delivery) — those are
- * registered by registerCoreTasks() and would be overwritten by stubs.
- *
- * Instance-specific tasks (morning-briefing, blog-reminder, nightly-todo,
- * a2a-digest, email-check, memory-sync, supabase-keep-alive) have been moved
- * to per-agent directories and are loaded via scheduler.tasks_dirs. */
+/** Extension task names that get in-process handlers. */
 const AGENT_TASK_HANDLERS = [
   'health-check',
   'memory-consolidation',
-
   'weekly-progress-report',
 ] as const;
 
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
   _config = asAgentConfig(config);
 
-  // Initialize agent comms (Telegram, email adapters)
-  await initComms(_config);
-  _telegramRouteHandler = createTelegramRouteHandler();
-  _shortcutRouteHandler = createShortcutRouteHandler();
-
   // Enable vector search (sqlite-vec + ONNX embeddings)
   enableVectorSearch();
 
+  // Load cowork credentials from Keychain before initializing bridge
+  const [coworkToken, coworkPsk] = await Promise.all([
+    readKeychain('credential-cowork-token').catch(() => null),
+    readKeychain('credential-cowork-psk').catch(() => null),
+  ]);
+  if (coworkToken) {
+    setAuthToken(coworkToken);
+    log.info('Cowork auth token loaded from Keychain');
+  }
+  if (coworkPsk) {
+    setPsk(coworkPsk);
+    log.info('Cowork PSK loaded from Keychain');
+  }
+
+  // Initialize cowork WebSocket bridge (Chrome extension relay)
+  initCoworkBridge(_server);
 
   // Initialize agent-to-agent comms (LAN + P2P SDK)
   initAgentComms(_config);
-  setNetworkApiConfig(_config);
+
+  // ── Unified A2A Router (PR #136) ─────────────────────────
+  const router = new UnifiedA2ARouter({
+    config: config as unknown as Record<string, unknown>,
+    sendViaLAN,
+    getNetworkClient,
+    getAgentCommsSecret: () => readKeychain('credential-agent-comms-secret'),
+    logCommsEntry,
+    sendMessage: sendMessage as (req: { from: string; to: string; type: string; body: string; metadata?: Record<string, unknown> }) => { messageId: number; delivered: boolean },
+  });
+  setA2ARouter(router);
+  setRouter(router);
 
   // Network SDK (P2P messaging) — non-blocking
   if (_config.network?.enabled) {
     registerWithRelay(_config)
-      .then(() => initNetworkSDK(_config!))
+      .then(() => initNetworkSDK(_config! as unknown as Record<string, unknown>))
       .then(ok => { if (ok) log.info('Network SDK ready'); })
       .catch(err => log.warn('Network init failed (LAN-only mode)', {
         error: err instanceof Error ? err.message : String(err),
@@ -323,9 +342,35 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     await initVoice(_config.channels.voice);
   }
 
+  // ── Telegram Adapter ─────────────────────────────────────
+  const tgConf = _config.channels?.telegram as Record<string, unknown> | undefined;
+  if (tgConf?.enabled && tgConf.bot_token) {
+    try {
+      let safeSenders = (tgConf.safe_senders ?? []) as Array<{ chat_id: number; name: string }>;
+      const allowedIds = tgConf.allowed_chat_ids as number[] | undefined;
+      if (safeSenders.length === 0 && allowedIds?.length) {
+        safeSenders = allowedIds.map((id: number, i: number) => ({
+          chat_id: id,
+          name: `User${i + 1}`,
+        }));
+      }
+      _telegramAdapter = await createCommsTelegramAdapter({
+        bot_token: tgConf.bot_token as string,
+        safe_senders: safeSenders,
+        poll_interval_ms: (tgConf.poll_interval_ms as number) ?? 3000,
+        max_message_length: (tgConf.max_message_length as number) ?? 4000,
+      });
+      registerAdapter(_telegramAdapter);
+      log.info('Telegram adapter registered with channel router');
+    } catch (err) {
+      log.error('Failed to initialize Telegram adapter', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   // Register agent-specific routes
   registerRoute('/telegram', handleTelegramWebhook);
-  registerRoute('/shortcut', handleShortcut);
   registerRoute('/agent/p2p', handleAgentP2P);
   registerRoute('/agent/message', handleAgentMessageRoute);
   registerRoute('/agent/send', handleAgentSend);
@@ -333,6 +378,10 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   registerRoute('/agent/extended-status', handleExtendedStatus);
   registerRoute('/api/context', handleContextApi);
   registerRoute('/api/network/*', handleNetworkRoute);
+  registerRoute('/api/a2a/*', handleA2ARoute);
+  registerRoute('/hook/response', handleHookResponse);
+  registerRoute('/agent/memory-sync', handleMemorySyncRoute);
+  registerRoute('/api/cowork/*', handleCoworkRoute);
 
   // Set up scheduler with in-process handlers
   const schedulerConfig = config.scheduler?.tasks ?? [];
@@ -349,7 +398,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 
   // Register stub handlers for remaining agent tasks (not yet implemented)
   for (const taskName of AGENT_TASK_HANDLERS) {
-    if (REAL_TASK_NAMES.has(taskName)) continue; // Already registered by registerAgentTasks
+    if (REAL_TASK_NAMES.has(taskName)) continue;
     if (_scheduler.getTask(taskName)) {
       _scheduler.registerHandler(taskName, stubHandler(taskName));
     }
@@ -379,34 +428,30 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     network: _config.network?.enabled ?? false,
     agentComms: _config['agent-comms']?.enabled ?? false,
     tasks: _scheduler.getTasks().length,
+    a2aRouter: true,
   });
 }
 
 async function onShutdown(): Promise<void> {
+  shutdownCoworkBridge();
   stopVoice();
   await stopNetworkSDK();
   stopAgentComms();
-  shutdownComms();
+  if (_telegramAdapter) {
+    await _telegramAdapter.shutdown();
+    unregisterAdapter('telegram');
+    _telegramAdapter = null;
+  }
   if (_scheduler) {
     _scheduler.stop();
     _scheduler = null;
   }
-  _telegramRouteHandler = null;
-  _shortcutRouteHandler = null;
   _initialized = false;
   log.info('Agent extension shut down');
 }
 
 // ── Export ───────────────────────────────────────────────────
 
-/**
- * The agent extension — register this with the kithkit daemon.
- *
- * Usage in a bootstrap file:
- *   import { registerExtension } from './core/extensions.js';
- *   import { agentExtension } from './extensions/index.js';
- *   registerExtension(agentExtension);
- */
 export const agentExtension: Extension = {
   name: 'agent',
   onInit,
