@@ -246,10 +246,12 @@ export async function handleMemoryRoute(
       const data: Record<string, unknown> = {
         content: body.content,
       };
-      if (body.type) data.type = body.type;
+      // Note: `type` field is accepted for API compatibility but not stored
+      // (the `type` column was removed in migration 010)
       if (body.category) data.category = body.category;
       if (body.tags) data.tags = JSON.stringify(body.tags);
       if (body.source) data.source = body.source;
+      if (body.importance != null) data.importance = body.importance;
 
       const memory = insert<Memory>('memories', data);
 

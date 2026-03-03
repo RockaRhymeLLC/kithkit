@@ -217,18 +217,17 @@ fi
 
 echo "---"
 
-# --- Auto-resume: inject a bootstrap prompt via tmux ---
-# Triggers the agent to self-load context (todos, calendar, memory) via its own skills,
-# instead of the hook parsing JSON in bash. Works for all session start types.
+# ── Auto-resume: inject a bootstrap prompt via tmux ───────
+# Triggers the agent to act on the saved state already in context,
+# instead of sitting idle waiting for input.
+# Set CC4ME_QUIET_START=1 to suppress (useful for debugging).
 if [ "${CC4ME_QUIET_START:-0}" != "1" ]; then
   TMUX_SOCKET="/private/tmp/tmux-$(id -u)/default"
-  SESSION_NAME=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
-  SESSION_NAME="${SESSION_NAME:-comms1}"
 
   if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
-    PROMPT="Session cleared and restored. Review the most recent saved state and follow the Next Steps in order."
+    PROMPT="Session cleared and restored. Review the saved state above and follow any Next Steps in order."
   else
-    PROMPT="Session auto-started. Review the most recent saved state. If there are Next Steps, follow them in order. If there are no Next Steps, check todos and work on pending tasks autonomously."
+    PROMPT="Session auto-started. Review the saved state above. If there are Next Steps or action items, follow them in order. If there are no Next Steps, check todos and work on pending tasks autonomously."
   fi
 
   # Spawn a detached background job that waits for the session to initialize,

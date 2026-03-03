@@ -256,11 +256,19 @@ scheduler:
       config:
         idle_timeout_minutes: 15
     - name: "comms-heartbeat"
-      enabled: true
+      enabled: false
       interval: "60s"
     - name: "a2a-message-cleanup"
       enabled: true
       cron: "0 6 * * 0"
+    - name: "daily-digest"
+      enabled: true
+      cron: "0 8 * * *"     # 8am EST = 7am CT
+      config:
+        repo_dir: "/Users/bmo/KKit-BMO"
+    - name: "api-metrics-aggregation"
+      enabled: true
+      interval: "1h"
 
 # ── Integrations ──────────────────────
 integrations:

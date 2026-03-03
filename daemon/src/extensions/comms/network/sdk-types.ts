@@ -101,10 +101,10 @@ export interface GroupSendResult {
 }
 
 export interface Contact {
-  agent: string;
+  username: string;
   publicKey: string;
   endpoint: string;
-  since: string;
+  addedAt: string;
   online: boolean;
   lastSeen: string | null;
   keyUpdatedAt: string | null;

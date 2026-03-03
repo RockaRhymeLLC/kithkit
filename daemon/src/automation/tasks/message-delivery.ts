@@ -12,7 +12,7 @@
  */
 
 import { query, exec, update } from '../../core/db.js';
-import { injectMessage, listSessions, _getCommsSession, _getOrchestratorSession, getOrchestratorState } from '../../agents/tmux.js';
+import { injectMessage, listSessions, _getCommsSession } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 import type { Message } from '../../agents/message-router.js';
@@ -101,9 +101,6 @@ function getLiveSessions(): Set<string> {
   if (sessions.includes(_getCommsSession())) {
     live.add('comms');
   }
-  if (sessions.includes(_getOrchestratorSession())) {
-    live.add('orchestrator');
-  }
   return live;
 }
 
@@ -147,12 +144,16 @@ function formatBatchContent(messages: Message[]): string {
 
 /**
  * Phase 1: Deliver undelivered messages (inject content, mark processed + read).
+ *
+ * Only targets comms — orchestrator sessions are excluded because the
+ * wrapper's poll loop handles message retrieval between Claude runs.
+ * Injecting into orch* sessions disrupts Claude's input stream (issue #135).
  */
 async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivered: number; failed: number; expired: number }> {
   const undelivered = query<Message>(
     `SELECT * FROM messages
      WHERE processed_at IS NULL
-       AND (to_agent = 'comms' OR to_agent = 'orchestrator')
+       AND to_agent = 'comms'
      ORDER BY created_at ASC`,
   );
 
@@ -198,13 +199,6 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
 
     if (deliverable.length === 0) continue;
 
-    // Gate orchestrator injection: never inject when Claude is actively running.
-    // The wrapper's poll loop will pick up queued messages between runs.
-    if (agentId === 'orchestrator' && getOrchestratorState() === 'active') {
-      log.debug('Skipping orchestrator injection — Claude is active, wrapper will poll');
-      continue;
-    }
-
     // Inject the full message content into the tmux session
     const contentText = formatBatchContent(deliverable);
     const success = injectMessage(agentId, contentText);
@@ -247,15 +241,14 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
 /**
  * Phase 2: Re-deliver unread messages (processed but read_at still NULL — e.g. injection
  * succeeded on a previous run but read_at wasn't set due to older code path).
- * Re-injects content and sets read_at. With the current code, this phase is rarely
- * needed since Phase 1 now sets read_at, but it handles legacy unread rows.
+ * Re-injects content and sets read_at. Only targets comms (see Phase 1 comment).
  */
 async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> {
   const unread = query<Message>(
     `SELECT * FROM messages
      WHERE processed_at IS NOT NULL
        AND read_at IS NULL
-       AND (to_agent = 'comms' OR to_agent = 'orchestrator')
+       AND to_agent = 'comms'
      ORDER BY created_at ASC`,
   );
 
@@ -294,12 +287,6 @@ async function repingUnreadMessages(liveSessions: Set<string>): Promise<number> 
     if (!liveSessions.has(agentId)) continue;
     if (messages.length === 0) continue;
 
-    // Gate orchestrator re-ping: skip when Claude is actively running
-    if (agentId === 'orchestrator' && getOrchestratorState() === 'active') {
-      log.debug('Skipping orchestrator re-ping — Claude is active');
-      continue;
-    }
-
     const contentText = formatBatchContent(messages);
     const success = injectMessage(agentId, contentText);
 
@@ -333,6 +320,7 @@ interface CompletedJobRow {
 /**
  * Phase 3: Notify spawning agents of worker completion/failure.
  * Injects a one-line notification into the spawner's tmux session.
+ * Only targets comms — orchestrator uses its own polling (see Phase 1 comment).
  * Marks spawner_notified_at whether or not the session is live to avoid retries.
  */
 async function notifyWorkerCompletions(liveSessions: Set<string>): Promise<number> {
@@ -342,7 +330,7 @@ async function notifyWorkerCompletions(liveSessions: Set<string>): Promise<numbe
      WHERE status IN ('completed', 'failed', 'timeout')
        AND spawned_by IS NOT NULL
        AND spawner_notified_at IS NULL
-       AND spawned_by IN ('comms', 'orchestrator')
+       AND spawned_by = 'comms'
      ORDER BY finished_at ASC
      LIMIT 50`,
   );
@@ -364,12 +352,7 @@ async function notifyWorkerCompletions(liveSessions: Set<string>): Promise<numbe
     }
 
     if (liveSessions.has(spawner)) {
-      // Gate orchestrator injection: skip when Claude is actively running
-      if (spawner === 'orchestrator' && getOrchestratorState() === 'active') {
-        log.debug('Skipping worker completion injection to orchestrator — Claude is active');
-      } else {
-        injectMessage(spawner, pingText);
-      }
+      injectMessage(spawner, pingText);
     }
 
     exec('UPDATE worker_jobs SET spawner_notified_at = ? WHERE id = ?', now, job.id);

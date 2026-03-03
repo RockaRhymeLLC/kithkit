@@ -553,6 +553,11 @@ export function initCoworkBridge(server: http.Server): void {
 // ── REST API Route Handler ────────────────────────────────────
 
 function readBody(req: http.IncomingMessage): Promise<string> {
+  // Check for pre-buffered body from main.ts metrics middleware
+  const rawBody = (req as unknown as Record<string, unknown>)._rawBody;
+  if (rawBody instanceof Buffer) {
+    return Promise.resolve(rawBody.toString());
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));

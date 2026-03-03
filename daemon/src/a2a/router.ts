@@ -77,7 +77,9 @@ export class UnifiedA2ARouter {
     this.peers = agentComms?.peers ?? [];
 
     const networkConfig = deps.config.network as { communities?: Array<{ name: string; primary: string }> } | undefined;
-    this.primaryCommunity = networkConfig?.communities?.[0]?.name ?? null;
+    // Use the relay hostname (not community name) for qualified names — SDK resolves by hostname
+    const primaryUrl = networkConfig?.communities?.[0]?.primary;
+    this.primaryCommunity = primaryUrl ? new URL(primaryUrl).hostname : null;
   }
 
   // ── Validate ────────────────────────────────────────────────
@@ -189,13 +191,14 @@ export class UnifiedA2ARouter {
     }
 
     try {
-      const groups = await (network as { getGroups?(): Promise<Array<{ id: string; name: string; [key: string]: unknown }>> }).getGroups?.();
+      const groups = await (network as { getGroups?(): Promise<Array<{ id?: string; groupId?: string; name: string; [key: string]: unknown }>> }).getGroups?.();
       if (Array.isArray(groups)) {
         const match = groups.find((g: { name: string }) =>
           typeof g.name === 'string' && g.name.toLowerCase() === nameOrId.toLowerCase()
         );
-        if (match?.id) {
-          return { groupId: match.id };
+        const matchId = match?.groupId ?? match?.id;
+        if (matchId) {
+          return { groupId: matchId };
         }
       }
     } catch {
@@ -203,6 +206,35 @@ export class UnifiedA2ARouter {
     }
 
     return { error: `Group '${nameOrId}' not found` };
+  }
+
+  // ── Normalize Payload ────────────────────────────────────────
+  //
+  // Guards against two common caller mistakes:
+  // 1. Using 'message' instead of 'text' (alias message → text)
+  // 2. Wrapping text in an object like {content: "actual text"}
+  //    (unwrap to plain string)
+
+  private normalizePayload(payload: A2ASendRequest['payload']): A2ASendRequest['payload'] {
+    const result = { ...payload };
+
+    // Alias: message → text (if text is absent)
+    if (result.text === undefined && result.message !== undefined) {
+      result.text = result.message as string;
+      delete result.message;
+    }
+
+    // Unwrap: {content: "text"} → "text" for the text field
+    if (result.text && typeof result.text === 'object' && (result.text as Record<string, unknown>).content !== undefined) {
+      result.text = String((result.text as Record<string, unknown>).content);
+    }
+
+    // Also unwrap message field if it's still present and is an object
+    if (result.message !== undefined && typeof result.message === 'object' && (result.message as Record<string, unknown>).content !== undefined) {
+      result.message = String((result.message as Record<string, unknown>).content);
+    }
+
+    return result;
   }
 
   // ── Send (main orchestration) ────────────────────────────────
@@ -219,6 +251,9 @@ export class UnifiedA2ARouter {
     }
 
     const request = validation.request;
+
+    // Normalize payload before routing (fix double-wrapping, alias message→text)
+    request.payload = this.normalizePayload(request.payload);
     const messageId = crypto.randomUUID();
     const attempts: DeliveryAttempt[] = [];
 

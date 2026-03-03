@@ -34,38 +34,79 @@ Parse the arguments to determine action:
 
 ## Implementation
 
-### Sending
-Use the CLI script for reliable delivery:
+### Sending (Unified A2A Endpoint — preferred)
+
+Use `POST /api/a2a/send` for all outbound A2A messaging (DM and group):
+
 ```bash
-scripts/agent-send.sh <peer> "<message>" [type]
+curl -s -X POST 'http://localhost:3847/api/a2a/send' \
+  -H 'Content-Type: application/json' \
+  -d '{"to": "r2", "payload": {"type": "text", "text": "Hey, are you free?"}}'
 ```
 
-**Request fields:**
+**Request format:**
+```json
+{
+  "to": "r2",
+  "payload": {
+    "type": "coordination",
+    "text": "Claiming the auth refactor task"
+  },
+  "route": "auto"
+}
+```
+
 | Field | Required | Description |
 |-------|----------|-------------|
-| `peer` | yes | Target peer name (e.g. `r2`) |
-| `type` | yes | `text`, `status`, `coordination`, or `pr-review` |
-| `text` | no | Message body |
-| `status` | no | For status messages (e.g. `idle`, `busy`) |
-| `action` | no | For coordination (e.g. `claim`, `release`) |
-| `task` | no | Task description |
-| `context` | no | Additional context |
-| `callbackUrl` | no | Callback endpoint for async replies |
-| `repo` | no | For PR reviews |
-| `branch` | no | For PR reviews |
-| `pr` | no | PR number string |
+| `to` | yes* | Peer name (e.g. `r2`) or qualified name (`r2@relay.bmobot.ai`) |
+| `group` | yes* | Group UUID (for group messages) — mutually exclusive with `to` |
+| `payload.type` | yes | `text`, `status`, `coordination`, or `pr-review` |
+| `payload.text` | no | Message body (**always use `text`, not `message` or `content`**) |
+| `route` | no | `auto` (default), `lan`, or `relay` |
+
+*One of `to` or `group` is required.
+
+**Coordination example:**
+```bash
+curl -s -X POST 'http://localhost:3847/api/a2a/send' \
+  -H 'Content-Type: application/json' \
+  -d '{"to": "r2", "payload": {"type": "coordination", "text": "Claiming the auth refactor", "action": "claim", "task": "auth-refactor"}}'
+```
+
+**PR review example:**
+```bash
+curl -s -X POST 'http://localhost:3847/api/a2a/send' \
+  -H 'Content-Type: application/json' \
+  -d '{"to": "r2", "payload": {"type": "pr-review", "text": "Ready for review", "repo": "RockaRhymeLLC/kithkit", "branch": "feat/auth", "pr": "142"}}'
+```
+
+**Group message example:**
+```bash
+curl -s -X POST 'http://localhost:3847/api/a2a/send' \
+  -H 'Content-Type: application/json' \
+  -d '{"group": "c006dfce-37b6-434a-8407-1d227f485a81", "payload": {"type": "text", "text": "Team standup: all clear"}}'
+```
 
 **Success response (HTTP 200):**
 ```json
-{"ok": true, "queued": false, "error": null}
+{"ok": true, "messageId": "uuid", "target": "r2", "targetType": "dm", "route": "lan", "status": "delivered", "attempts": [...]}
 ```
 
-**Failure response (HTTP 502):**
+**Failure response (HTTP 4xx/5xx):**
 ```json
-{"ok": false, "queued": false, "error": "Failed to reach peer r2 (chrissys-mini.lan:3847): ..."}
+{"ok": false, "error": "All delivery routes failed", "code": "DELIVERY_FAILED", "attempts": [...]}
 ```
 
-If LAN delivery fails and the P2P SDK is active, the message is sent via P2P and `queued` is `true`.
+The router tries LAN first (if peer is in config), falls back to relay automatically when `route` is `auto`.
+
+### Sending (Legacy endpoint)
+
+The old `/agent/send` endpoint still works but is not recommended:
+```bash
+curl -s -X POST 'http://localhost:3847/agent/send' \
+  -H 'Content-Type: application/json' \
+  -d '{"peer": "r2", "type": "text", "text": "Hey"}'
+```
 
 ### Receiving (Inbound)
 Peers send to our `POST /agent/message` endpoint (handled by the daemon automatically). Inbound messages require Bearer auth and must include `messageId` and `timestamp`:
@@ -133,7 +174,13 @@ agent-comms:
 - Directions: `in` (LAN inbound), `out` (LAN outbound), `relay-in`, `relay-out`
 
 ### Group Messaging
-For A2A group messaging (broadcast to multiple peers), use the `a2a-network` skill — specifically `POST /api/network/groups/:id/message`. This skill (`agent-comms`) handles only 1:1 peer messaging.
+Use the unified endpoint with `group` instead of `to`:
+```bash
+curl -s -X POST 'http://localhost:3847/api/a2a/send' \
+  -H 'Content-Type: application/json' \
+  -d '{"group": "<group-uuid>", "payload": {"type": "text", "text": "Message to all members"}}'
+```
+The old `POST /api/network/groups/:id/send` endpoint still works but is deprecated.
 
 ## Canonical P2P Message Schema
 

@@ -239,8 +239,19 @@ export async function checkRegistrationStatus(config: AgentConfig): Promise<Regi
     return { ok: false, error: 'No relay configured' };
   }
 
+  // Load private key for signed auth (relay requires Authorization header)
+  const privateKeyBase64 = await loadKeyFromKeychain();
+
   try {
-    const response = await fetch(`${relayUrl}/registry/agents/${agentName}`, {
+    const path = `/registry/agents/${agentName}`;
+    const headers: Record<string, string> = {};
+
+    if (privateKeyBase64) {
+      Object.assign(headers, buildAuthHeaders('GET', path, agentName, privateKeyBase64));
+    }
+
+    const response = await fetch(`${relayUrl}${path}`, {
+      headers,
       signal: AbortSignal.timeout(10_000),
     });
     if (response.status === 404) {

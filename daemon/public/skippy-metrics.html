@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Skippy API Metrics</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #8b949e;
+      --accent: #58a6ff;
+      --green: #3fb950;
+      --red: #f85149;
+      --orange: #d29922;
+      --purple: #bc8cff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 24px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 24px; font-weight: 600; margin-bottom: 8px; }
+    h2 { font-size: 16px; font-weight: 600; margin-bottom: 12px; color: var(--text-muted); }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .snapshot-notice {
+      display: inline-block;
+      background: rgba(88, 166, 255, 0.1);
+      border: 1px solid rgba(88, 166, 255, 0.3);
+      border-radius: 6px;
+      padding: 4px 10px;
+      font-size: 12px;
+      color: var(--accent);
+    }
+    .summary-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .card .label { font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .card .value { font-size: 28px; font-weight: 700; margin-top: 4px; }
+    .card .value.green { color: var(--green); }
+    .card .value.red { color: var(--red); }
+    .card .value.orange { color: var(--orange); }
+    .card .value.accent { color: var(--accent); }
+    .chart-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    @media (max-width: 900px) {
+      .chart-grid { grid-template-columns: 1fr; }
+    }
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .chart-card.full { grid-column: 1 / -1; }
+    .chart-card canvas { max-height: 300px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th {
+      text-align: left;
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    td {
+      padding: 8px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    tr:hover td { background: rgba(88, 166, 255, 0.04); }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 12px;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .badge.error { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+    .badge.warn { background: rgba(210, 153, 34, 0.15); color: var(--orange); }
+    .badge.ok { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+    .timestamp {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .error-msg {
+      background: rgba(248, 81, 73, 0.1);
+      border: 1px solid var(--red);
+      border-radius: 8px;
+      padding: 16px;
+      color: var(--red);
+      margin-bottom: 24px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div>
+      <h1>Skippy API Metrics</h1>
+      <span class="timestamp" id="lastUpdated"></span>
+    </div>
+    <div>
+      <span class="snapshot-notice">Static snapshot &mdash; refreshed periodically</span>
+    </div>
+  </div>
+
+  <div class="summary-cards" id="summaryCards">
+    <div class="card"><div class="label">Total Requests</div><div class="value accent" id="totalReqs">-</div></div>
+    <div class="card"><div class="label">Success Rate</div><div class="value green" id="successRate">-</div></div>
+    <div class="card"><div class="label">4xx Errors</div><div class="value orange" id="errors4xx">-</div></div>
+    <div class="card"><div class="label">5xx Errors</div><div class="value red" id="errors5xx">-</div></div>
+    <div class="card"><div class="label">Avg Latency</div><div class="value accent" id="avgLatency">-</div></div>
+  </div>
+
+  <div class="chart-grid">
+    <div class="chart-card full">
+      <h2>Request Volume & Errors Over Time</h2>
+      <canvas id="volumeChart"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>Latency Over Time</h2>
+      <canvas id="latencyChart"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>Requests by Agent</h2>
+      <canvas id="agentChart"></canvas>
+    </div>
+  </div>
+
+  <div class="chart-grid">
+    <div class="chart-card">
+      <h2>Top Endpoints</h2>
+      <div id="endpointTable"></div>
+    </div>
+    <div class="chart-card">
+      <h2>Top Errors</h2>
+      <div id="errorsTable"></div>
+    </div>
+  </div>
+
+  <div class="chart-grid" id="repeatSection" style="display:none;">
+    <div class="chart-card full">
+      <h2>Repeat Offenders</h2>
+      <div id="repeatTable"></div>
+    </div>
+  </div>
+
+  <script>
+    // Embedded metrics data (static snapshot)
+    window.__METRICS_DATA__ = {"summary":{"total_requests":3071,"success_count":2469,"error_4xx":600,"error_5xx":2,"error_rate_4xx":0.19537609899055683,"error_rate_5xx":0.0006512536633018561,"avg_latency_ms":94.33},"hourly":[{"hour":"2026-03-02 12:00","total_requests":148,"success_count":34,"error_4xx":113,"error_5xx":1,"avg_latency_ms":14.091148648648646},{"hour":"2026-03-02 13:00","total_requests":2,"success_count":0,"error_4xx":2,"error_5xx":0,"avg_latency_ms":37.5},{"hour":"2026-03-02 14:00","total_requests":2,"success_count":0,"error_4xx":2,"error_5xx":0,"avg_latency_ms":40},{"hour":"2026-03-02 15:00","total_requests":119,"success_count":28,"error_4xx":91,"error_5xx":0,"avg_latency_ms":75.26378151260504},{"hour":"2026-03-02 16:00","total_requests":2,"success_count":0,"error_4xx":2,"error_5xx":0,"avg_latency_ms":36},{"hour":"2026-03-02 17:00","total_requests":2,"success_count":0,"error_4xx":2,"error_5xx":0,"avg_latency_ms":50.5},{"hour":"2026-03-02 18:00","total_requests":167,"success_count":68,"error_4xx":99,"error_5xx":0,"avg_latency_ms":267.5194011976048},{"hour":"2026-03-02 19:00","total_requests":64,"success_count":14,"error_4xx":50,"error_5xx":0,"avg_latency_ms":311.4825},{"hour":"2026-03-02 20:00","total_requests":734,"success_count":537,"error_4xx":197,"error_5xx":0,"avg_latency_ms":67.64961852861035},{"hour":"2026-03-02 21:00","total_requests":103,"success_count":103,"error_4xx":0,"error_5xx":0,"avg_latency_ms":211.92543689320388},{"hour":"2026-03-02 22:00","total_requests":352,"success_count":344,"error_4xx":8,"error_5xx":0,"avg_latency_ms":93.60000000000001},{"hour":"2026-03-02 23:00","total_requests":98,"success_count":98,"error_4xx":0,"error_5xx":0,"avg_latency_ms":215.4457142857143},{"hour":"2026-03-03 00:00","total_requests":545,"success_count":521,"error_4xx":23,"error_5xx":1,"avg_latency_ms":92.90014678899082},{"hour":"2026-03-03 01:00","total_requests":733,"success_count":722,"error_4xx":11,"error_5xx":0,"avg_latency_ms":51.211241473396996}],"endpoints":[{"endpoint":"/hook/response","method":"POST","total_requests":2128,"error_4xx":460,"error_5xx":0,"avg_latency_ms":0.28898496240601507,"p95_latency_ms":1},{"endpoint":"/agent/message","method":"POST","total_requests":184,"error_4xx":3,"error_5xx":0,"avg_latency_ms":995.8431521739132,"p95_latency_ms":2458},{"endpoint":"/api/messages","method":"GET","total_requests":110,"error_4xx":2,"error_5xx":0,"avg_latency_ms":0.991090909090909,"p95_latency_ms":10},{"endpoint":"/api/orchestrator/tasks","method":"GET","total_requests":85,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0.8101176470588235,"p95_latency_ms":7},{"endpoint":"/api/send","method":"POST","total_requests":53,"error_4xx":8,"error_5xx":0,"avg_latency_ms":362.26433962264156,"p95_latency_ms":691},{"endpoint":"/api/network/groups/c006dfce-37b6-434a-8407-1d227f485a81/send","method":"POST","total_requests":36,"error_4xx":4,"error_5xx":0,"avg_latency_ms":1214.6119444444444,"p95_latency_ms":5228},{"endpoint":"/agent/p2p","method":"POST","total_requests":26,"error_4xx":6,"error_5xx":0,"avg_latency_ms":735.9623076923077,"p95_latency_ms":2448},{"endpoint":"/agent/memory-sync","method":"POST","total_requests":25,"error_4xx":12,"error_5xx":0,"avg_latency_ms":22,"p95_latency_ms":66},{"endpoint":"/api/orchestrator/escalate","method":"POST","total_requests":24,"error_4xx":0,"error_5xx":0,"avg_latency_ms":96.29041666666666,"p95_latency_ms":293},{"endpoint":"/api/orchestrator/status","method":"GET","total_requests":19,"error_4xx":0,"error_5xx":0,"avg_latency_ms":41.05263157894737,"p95_latency_ms":54},{"endpoint":"/api/network/message","method":"POST","total_requests":18,"error_4xx":3,"error_5xx":0,"avg_latency_ms":517.5555555555555,"p95_latency_ms":714},{"endpoint":"/api/timer","method":"POST","total_requests":17,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1.116470588235294,"p95_latency_ms":2},{"endpoint":"/api/agents/orchestrator","method":"PUT","total_requests":16,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":2},{"endpoint":"/api/agents/orchestrator/activity","method":"POST","total_requests":14,"error_4xx":0,"error_5xx":1,"avg_latency_ms":1.0714285714285714,"p95_latency_ms":2},{"endpoint":"/api/tasks","method":"GET","total_requests":14,"error_4xx":0,"error_5xx":0,"avg_latency_ms":2.355714285714286,"p95_latency_ms":6},{"endpoint":"/api/tasks/api-metrics-aggregation/run","method":"POST","total_requests":8,"error_4xx":1,"error_5xx":1,"avg_latency_ms":9.99875,"p95_latency_ms":21},{"endpoint":"/api/messages","method":"POST","total_requests":7,"error_4xx":0,"error_5xx":0,"avg_latency_ms":279.2857142857143,"p95_latency_ms":376},{"endpoint":"/api/orchestrator/tasks/3f4c2715-9947-4fe3-be0b-2ec012fe84e8","method":"PUT","total_requests":7,"error_4xx":6,"error_5xx":0,"avg_latency_ms":27,"p95_latency_ms":184},{"endpoint":"/api/orchestrator/tasks/7b1863e7-d196-4187-af27-3386e8458580","method":"PUT","total_requests":7,"error_4xx":6,"error_5xx":0,"avg_latency_ms":46.43,"p95_latency_ms":320},{"endpoint":"/api/orchestrator/tasks/90ef7612-578c-47cc-97c1-876a303d40d8","method":"PUT","total_requests":7,"error_4xx":6,"error_5xx":0,"avg_latency_ms":31.57,"p95_latency_ms":219},{"endpoint":"/api/orchestrator/tasks/9ea8b9dc-47c9-43dc-a29f-5bf18af36cc4","method":"PUT","total_requests":7,"error_4xx":6,"error_5xx":0,"avg_latency_ms":27.140000000000004,"p95_latency_ms":185},{"endpoint":"/api/orchestrator/tasks/d92187f0-a800-4b00-91b3-27b10deafec2","method":"PUT","total_requests":7,"error_4xx":4,"error_5xx":0,"avg_latency_ms":39.57,"p95_latency_ms":271},{"endpoint":"/api/tasks/metrics-push/run","method":"POST","total_requests":7,"error_4xx":0,"error_5xx":0,"avg_latency_ms":45.42857142857143,"p95_latency_ms":137},{"endpoint":"/api/orchestrator/shutdown","method":"POST","total_requests":6,"error_4xx":0,"error_5xx":0,"avg_latency_ms":58.833333333333336,"p95_latency_ms":76},{"endpoint":"/api/orchestrator/tasks/2157110c-edb7-4cbb-9a72-ea3b0ee7c199","method":"PUT","total_requests":6,"error_4xx":3,"error_5xx":0,"avg_latency_ms":33.17,"p95_latency_ms":194},{"endpoint":"/api/orchestrator/tasks/7e1a61a2-d387-4bdd-a221-b778417ed6c1","method":"PUT","total_requests":6,"error_4xx":3,"error_5xx":0,"avg_latency_ms":56,"p95_latency_ms":331},{"endpoint":"/api/orchestrator/tasks/e2a71b99-0096-4597-a0b5-dfde4b54e486","method":"PUT","total_requests":6,"error_4xx":3,"error_5xx":0,"avg_latency_ms":50.330000000000005,"p95_latency_ms":297},{"endpoint":"/api/orchestrator/tasks/e964681b-1ce6-4678-a2f3-5a3d3d332fce","method":"PUT","total_requests":6,"error_4xx":5,"error_5xx":0,"avg_latency_ms":1.5,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/ec93a7cf-d13e-4c54-b578-c70da3667da1","method":"PUT","total_requests":6,"error_4xx":3,"error_5xx":0,"avg_latency_ms":57.5,"p95_latency_ms":339},{"endpoint":"/api/agents","method":"GET","total_requests":5,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0.6020000000000001,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/4a9b6a9e-88f9-4be1-99c4-abaf4ba28c5e","method":"PUT","total_requests":5,"error_4xx":3,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/57fe1d91-5fa8-409c-bc7c-bf45bcd6024a","method":"PUT","total_requests":5,"error_4xx":3,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/97620da2-87bc-49da-9e16-eac0249bc8ac","method":"PUT","total_requests":5,"error_4xx":2,"error_5xx":0,"avg_latency_ms":46.4,"p95_latency_ms":227},{"endpoint":"/api/orchestrator/tasks/d960f893-f1fc-4c72-b2c6-9dc3996da156","method":"PUT","total_requests":5,"error_4xx":5,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/def3f106-562c-486c-95d1-a01a461824cc","method":"PUT","total_requests":5,"error_4xx":3,"error_5xx":0,"avg_latency_ms":0.8,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/e3f6894d-aca2-48ef-b30d-ad95739150d2","method":"PUT","total_requests":5,"error_4xx":3,"error_5xx":0,"avg_latency_ms":1.4,"p95_latency_ms":2},{"endpoint":"/api/config/reload","method":"POST","total_requests":4,"error_4xx":0,"error_5xx":0,"avg_latency_ms":2.5,"p95_latency_ms":5},{"endpoint":"/api/orchestrator/tasks/4a9b6a9e-88f9-4be1-99c4-abaf4ba28c5e","method":"GET","total_requests":4,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0.5,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/7eb91696-2bb7-4877-addc-f498113b3e4f","method":"PUT","total_requests":4,"error_4xx":4,"error_5xx":0,"avg_latency_ms":0.75,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/a7871898-8cc1-443f-8ed3-c04cda96dc42","method":"PUT","total_requests":4,"error_4xx":1,"error_5xx":0,"avg_latency_ms":86,"p95_latency_ms":339},{"endpoint":"/api/orchestrator/tasks/fc579636-79b1-4437-9a16-0fa48c605daf","method":"GET","total_requests":4,"error_4xx":0,"error_5xx":0,"avg_latency_ms":2.25,"p95_latency_ms":5},{"endpoint":"/api/agents/spawn","method":"POST","total_requests":3,"error_4xx":3,"error_5xx":0,"avg_latency_ms":1.6666666666666667,"p95_latency_ms":3},{"endpoint":"/api/calendar","method":"GET","total_requests":3,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/network/contacts","method":"GET","total_requests":3,"error_4xx":0,"error_5xx":0,"avg_latency_ms":91,"p95_latency_ms":115},{"endpoint":"/api/network/status","method":"GET","total_requests":3,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1.3333333333333333,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/7e1a61a2-d387-4bdd-a221-b778417ed6c1","method":"GET","total_requests":3,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0.67,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/fc579636-79b1-4437-9a16-0fa48c605daf","method":"PUT","total_requests":3,"error_4xx":1,"error_5xx":0,"avg_latency_ms":2.33,"p95_latency_ms":3},{"endpoint":"/api/tasks/metrics-sync/run","method":"POST","total_requests":3,"error_4xx":0,"error_5xx":0,"avg_latency_ms":990.6666666666666,"p95_latency_ms":1612},{"endpoint":"/api/todos","method":"GET","total_requests":3,"error_4xx":0,"error_5xx":0,"avg_latency_ms":2,"p95_latency_ms":2},{"endpoint":"/api/network/send","method":"POST","total_requests":2,"error_4xx":2,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/nonexistent","method":"POST","total_requests":2,"error_4xx":2,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks","method":"POST","total_requests":2,"error_4xx":0,"error_5xx":0,"avg_latency_ms":2,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/0fd8e52b-05f1-46b2-a9c0-fd0e198f62a0","method":"PUT","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":102.5,"p95_latency_ms":204},{"endpoint":"/api/orchestrator/tasks/2157110c-edb7-4cbb-9a72-ea3b0ee7c199","method":"GET","total_requests":2,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0.5,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/2abe051f-6d6e-49c0-a0d1-2863a26f6484","method":"PUT","total_requests":2,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/42f99a91-9c8d-42b7-80ed-fb2bf12fb52e","method":"PUT","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":148.5,"p95_latency_ms":297},{"endpoint":"/api/orchestrator/tasks/7e1a61a2-d387-4bdd-a221-b778417ed6c1/activity","method":"POST","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":136.5,"p95_latency_ms":272},{"endpoint":"/api/orchestrator/tasks/7eb91696-2bb7-4877-addc-f498113b3e4f","method":"GET","total_requests":2,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/97620da2-87bc-49da-9e16-eac0249bc8ac","method":"GET","total_requests":2,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/a2106b5a-3f71-455e-989c-734f90b13191","method":"PUT","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":103.5,"p95_latency_ms":206},{"endpoint":"/api/orchestrator/tasks/a700dade-80b2-474a-bcb5-de784c0386c7","method":"PUT","total_requests":2,"error_4xx":0,"error_5xx":0,"avg_latency_ms":2,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/a7871898-8cc1-443f-8ed3-c04cda96dc42","method":"GET","total_requests":2,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1.5,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/bb16640c-71a5-4316-ba81-9797c9668a30","method":"PUT","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1.5,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/bcf84e5f-6e54-4e66-aa3c-84bf6c6a3a74","method":"GET","total_requests":2,"error_4xx":2,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/e964681b-1ce6-4678-a2f3-5a3d3d332fce","method":"GET","total_requests":2,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0.5,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/fc59100a-2a59-4664-9f0a-8960aee8202b","method":"PUT","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":169.5,"p95_latency_ms":339},{"endpoint":"/api/timer/0bbc07c2-050d-4dea-8e14-de6dfa985f5a/ack","method":"POST","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":0.5,"p95_latency_ms":1},{"endpoint":"/api/timer/37ea6967-b03f-4ab2-8bf2-0e3d489973ea/ack","method":"POST","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":0.5,"p95_latency_ms":1},{"endpoint":"/api/timer/3ce22e31-37af-4f8c-9ac1-252e53c519da/ack","method":"POST","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":0.5,"p95_latency_ms":1},{"endpoint":"/api/timer/4be06b9b-5e37-41ae-9b15-4b94647f6d2f/ack","method":"POST","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/timer/a03944b4-791f-45a9-92c4-bdac1362be73/ack","method":"POST","total_requests":2,"error_4xx":1,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/agent/p2p","method":"GET","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/agent/status","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/103/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/106/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/108/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/109/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/111/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/113/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/115/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/117/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/120/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/122/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/124/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/128/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/132/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/133/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/135/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/175/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/176/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/178/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/180/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/181/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/185/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/186/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/188/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/189/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/191/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/192/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/194/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/32/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/35/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/36/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/43/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/44/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/46/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/47/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/51/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/52/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/56/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/57/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/58/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/61/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/63/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/64/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/65/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/69/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/70/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/72/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/75/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/83/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/87/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/messages/93/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/messages/96/read","method":"PUT","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/metrics/raw","method":"GET","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/network","method":"GET","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/network/delivery/559274ef-5016-4ea3-bbe2-9427bc97a1e9","method":"GET","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/network/groups","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":50,"p95_latency_ms":50},{"endpoint":"/api/network/heartbeat","method":"POST","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/network/me","method":"GET","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/network/peers","method":"GET","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/network/presence/bmo","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":105,"p95_latency_ms":105},{"endpoint":"/api/network/register","method":"GET","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/network/register","method":"POST","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/0fd8e52b-05f1-46b2-a9c0-fd0e198f62a0","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/42f99a91-9c8d-42b7-80ed-fb2bf12fb52e","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/57fe1d91-5fa8-409c-bc7c-bf45bcd6024a","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/orchestrator/tasks/a700dade-80b2-474a-bcb5-de784c0386c7","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/orchestrator/tasks/d92187f0-a800-4b00-91b3-27b10deafec2","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/d960f893-f1fc-4c72-b2c6-9dc3996da156","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":2,"p95_latency_ms":2},{"endpoint":"/api/orchestrator/tasks/e2a71b99-0096-4597-a0b5-dfde4b54e486","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/orchestrator/tasks/ec93a7cf-d13e-4c54-b578-c70da3667da1","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/orchestrator/tasks/fc579636-79b1-4437-9a16-0fa48c605daf/activity","method":"GET","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/tasks/message-delivery","method":"PUT","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/tasks/message-delivery/disable","method":"POST","total_requests":1,"error_4xx":1,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/tasks/peer-heartbeat/run","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":2,"p95_latency_ms":2},{"endpoint":"/api/timer/11099492-fd6e-46bc-9d4f-9f9df37ae3b6/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":2,"p95_latency_ms":2},{"endpoint":"/api/timer/3b710c19-1a1c-4073-8fe7-b53b6aa3a305/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/timer/3b86ca4e-d77b-490c-bb37-eb8e390169f2/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/timer/3e0aef9b-2986-4ed4-a2dc-ebf11973ec5d/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/timer/5770dd1b-0ed3-412a-8872-47ef719e2a0a/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/timer/6ec1cd7b-d599-477a-9bf6-8232bf451587/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/timer/a62872e2-6583-4e8b-a2c6-cf72a9526da2/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/timer/ba0e5b7d-2689-4523-a7b8-685f0d117f73/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":0,"p95_latency_ms":0},{"endpoint":"/api/timer/bae69a5f-37fd-4b07-869f-46c9b95f3c55/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/timer/f27d1308-2645-427d-a4a9-0e4938708bfc/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1},{"endpoint":"/api/timer/f8028e67-0b68-4288-9b2b-87f5683b3fe5/ack","method":"POST","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1,"p95_latency_ms":1}],"agents":[{"agent_id":"curl/8.7.1","total_requests":3047,"error_4xx":594,"error_5xx":2,"avg_latency_ms":88.7964949130292},{"agent_id":"node","total_requests":23,"error_4xx":6,"error_5xx":0,"avg_latency_ms":831.6965217391305},{"agent_id":"Python-urllib/3.9","total_requests":1,"error_4xx":0,"error_5xx":0,"avg_latency_ms":1}],"top_errors":[{"endpoint":"/hook/response","method":"POST","total_errors":460},{"endpoint":"/agent/memory-sync","method":"POST","total_errors":12},{"endpoint":"/api/send","method":"POST","total_errors":8},{"endpoint":"/agent/p2p","method":"POST","total_errors":6},{"endpoint":"/api/orchestrator/tasks/3f4c2715-9947-4fe3-be0b-2ec012fe84e8","method":"PUT","total_errors":6},{"endpoint":"/api/orchestrator/tasks/7b1863e7-d196-4187-af27-3386e8458580","method":"PUT","total_errors":6},{"endpoint":"/api/orchestrator/tasks/90ef7612-578c-47cc-97c1-876a303d40d8","method":"PUT","total_errors":6},{"endpoint":"/api/orchestrator/tasks/9ea8b9dc-47c9-43dc-a29f-5bf18af36cc4","method":"PUT","total_errors":6},{"endpoint":"/api/orchestrator/tasks/d960f893-f1fc-4c72-b2c6-9dc3996da156","method":"PUT","total_errors":5},{"endpoint":"/api/orchestrator/tasks/e964681b-1ce6-4678-a2f3-5a3d3d332fce","method":"PUT","total_errors":5}],"repeat_offenders":[{"agent_id":"curl/8.7.1","endpoint":"/hook/response","method":"POST","error_count":460,"latest_hour":"2026-03-03 01:00"},{"agent_id":"curl/8.7.1","endpoint":"/agent/memory-sync","method":"POST","error_count":12,"latest_hour":"2026-03-03 01:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/send","method":"POST","error_count":8,"latest_hour":"2026-03-03 01:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/3f4c2715-9947-4fe3-be0b-2ec012fe84e8","method":"PUT","error_count":6,"latest_hour":"2026-03-02 20:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/7b1863e7-d196-4187-af27-3386e8458580","method":"PUT","error_count":6,"latest_hour":"2026-03-02 20:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/90ef7612-578c-47cc-97c1-876a303d40d8","method":"PUT","error_count":6,"latest_hour":"2026-03-02 20:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/9ea8b9dc-47c9-43dc-a29f-5bf18af36cc4","method":"PUT","error_count":6,"latest_hour":"2026-03-02 20:00"},{"agent_id":"node","endpoint":"/agent/p2p","method":"POST","error_count":6,"latest_hour":"2026-03-03 01:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/d960f893-f1fc-4c72-b2c6-9dc3996da156","method":"PUT","error_count":5,"latest_hour":"2026-03-02 18:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/e964681b-1ce6-4678-a2f3-5a3d3d332fce","method":"PUT","error_count":5,"latest_hour":"2026-03-02 20:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/network/groups/c006dfce-37b6-434a-8407-1d227f485a81/send","method":"POST","error_count":4,"latest_hour":"2026-03-03 00:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/7eb91696-2bb7-4877-addc-f498113b3e4f","method":"PUT","error_count":4,"latest_hour":"2026-03-02 20:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/d92187f0-a800-4b00-91b3-27b10deafec2","method":"PUT","error_count":4,"latest_hour":"2026-03-02 22:00"},{"agent_id":"curl/8.7.1","endpoint":"/agent/message","method":"POST","error_count":3,"latest_hour":"2026-03-03 01:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/agents/spawn","method":"POST","error_count":3,"latest_hour":"2026-03-03 01:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/network/message","method":"POST","error_count":3,"latest_hour":"2026-03-03 01:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/2157110c-edb7-4cbb-9a72-ea3b0ee7c199","method":"PUT","error_count":3,"latest_hour":"2026-03-02 20:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/4a9b6a9e-88f9-4be1-99c4-abaf4ba28c5e","method":"PUT","error_count":3,"latest_hour":"2026-03-03 00:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/57fe1d91-5fa8-409c-bc7c-bf45bcd6024a","method":"PUT","error_count":3,"latest_hour":"2026-03-03 01:00"},{"agent_id":"curl/8.7.1","endpoint":"/api/orchestrator/tasks/7e1a61a2-d387-4bdd-a221-b778417ed6c1","method":"PUT","error_count":3,"latest_hour":"2026-03-03 01:00"}],"filters":{"endpoint":null,"agent":null,"from":null,"to":null,"hours":48},"timestamp":"2026-03-03T02:14:10.402Z"};
+    window.__SYNC_TIMESTAMP__ = "2026-03-03T02:14:10.432Z";
+
+    const chartDefaults = {
+      color: '#8b949e',
+      borderColor: '#30363d',
+    };
+
+    Chart.defaults.color = chartDefaults.color;
+    Chart.defaults.borderColor = chartDefaults.borderColor;
+
+    function formatNum(n) {
+      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
+      if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
+      return n.toString();
+    }
+
+    function formatMs(ms) {
+      if (ms >= 1000) return (ms / 1000).toFixed(1) + 's';
+      return Math.round(ms) + 'ms';
+    }
+
+    function formatHour(h) {
+      try {
+        const d = new Date(h.replace(' ', 'T') + ':00Z');
+        return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+      } catch {
+        return h;
+      }
+    }
+
+    function buildTable(headers, rows) {
+      if (rows.length === 0) return '<p style="color:var(--text-muted);padding:12px;">No data</p>';
+      let html = '<table><thead><tr>';
+      for (const h of headers) html += '<th>' + h.label + '</th>';
+      html += '</tr></thead><tbody>';
+      for (const row of rows) {
+        html += '<tr>';
+        for (const h of headers) html += '<td>' + h.render(row) + '</td>';
+        html += '</tr>';
+      }
+      html += '</tbody></table>';
+      return html;
+    }
+
+    function renderDashboard() {
+      const data = window.__METRICS_DATA__;
+      if (!data) return;
+
+      // Show sync timestamp
+      const syncTime = new Date(window.__SYNC_TIMESTAMP__);
+      const dataTime = data.timestamp ? new Date(data.timestamp) : syncTime;
+      document.getElementById('lastUpdated').textContent =
+        'Last synced: ' + syncTime.toLocaleString() + ' | Data as of: ' + dataTime.toLocaleString();
+
+      // Summary cards
+      const s = data.summary;
+      document.getElementById('totalReqs').textContent = formatNum(s.total_requests);
+      const rate = s.total_requests > 0 ? ((s.success_count / s.total_requests) * 100).toFixed(1) : '0.0';
+      document.getElementById('successRate').textContent = rate + '%';
+      document.getElementById('errors4xx').textContent = formatNum(s.error_4xx);
+      document.getElementById('errors5xx').textContent = formatNum(s.error_5xx);
+      document.getElementById('avgLatency').textContent = formatMs(s.avg_latency_ms);
+
+      // Volume chart
+      const hourly = data.hourly || [];
+      const labels = hourly.map(function(h) { return formatHour(h.hour); });
+      const err4Data = hourly.map(function(h) { return h.error_4xx; });
+      const err5Data = hourly.map(function(h) { return h.error_5xx; });
+
+      new Chart(document.getElementById('volumeChart'), {
+        type: 'bar',
+        data: {
+          labels: labels,
+          datasets: [
+            {
+              label: 'Successful',
+              data: hourly.map(function(h) { return h.success_count; }),
+              backgroundColor: 'rgba(63, 185, 80, 0.6)',
+              borderRadius: 2,
+            },
+            {
+              label: '4xx Errors',
+              data: err4Data,
+              backgroundColor: 'rgba(210, 153, 34, 0.6)',
+              borderRadius: 2,
+            },
+            {
+              label: '5xx Errors',
+              data: err5Data,
+              backgroundColor: 'rgba(248, 81, 73, 0.6)',
+              borderRadius: 2,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { position: 'top' } },
+          scales: {
+            x: { stacked: true, ticks: { maxRotation: 45, font: { size: 10 } } },
+            y: { stacked: true, beginAtZero: true },
+          },
+        },
+      });
+
+      // Latency chart
+      var latData = hourly.map(function(h) { return h.avg_latency_ms; });
+
+      new Chart(document.getElementById('latencyChart'), {
+        type: 'line',
+        data: {
+          labels: labels,
+          datasets: [{
+            label: 'Avg Latency (ms)',
+            data: latData,
+            borderColor: '#58a6ff',
+            backgroundColor: 'rgba(88, 166, 255, 0.1)',
+            fill: true,
+            tension: 0.3,
+            pointRadius: 2,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { maxRotation: 45, font: { size: 10 } } },
+            y: { beginAtZero: true, title: { display: true, text: 'ms' } },
+          },
+        },
+      });
+
+      // Agent chart
+      var agents = data.agents || [];
+      if (agents.length > 0) {
+        var colors = ['#58a6ff', '#3fb950', '#d29922', '#f85149', '#bc8cff', '#f0883e', '#79c0ff'];
+        new Chart(document.getElementById('agentChart'), {
+          type: 'doughnut',
+          data: {
+            labels: agents.map(function(a) { return a.agent_id; }),
+            datasets: [{
+              data: agents.map(function(a) { return a.total_requests; }),
+              backgroundColor: agents.map(function(_, i) { return colors[i % colors.length]; }),
+              borderWidth: 0,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            plugins: {
+              legend: { position: 'right', labels: { font: { size: 11 } } },
+            },
+          },
+        });
+      }
+
+      // Endpoint table
+      var endpoints = (data.endpoints || []).slice(0, 15);
+      document.getElementById('endpointTable').innerHTML = buildTable(
+        [
+          { label: 'Endpoint', render: function(r) { return '<code>' + r.method + ' ' + r.endpoint + '</code>'; } },
+          { label: 'Requests', render: function(r) { return formatNum(r.total_requests); } },
+          { label: '4xx', render: function(r) { return r.error_4xx > 0 ? '<span class="badge warn">' + r.error_4xx + '</span>' : '-'; } },
+          { label: '5xx', render: function(r) { return r.error_5xx > 0 ? '<span class="badge error">' + r.error_5xx + '</span>' : '-'; } },
+          { label: 'Avg', render: function(r) { return formatMs(r.avg_latency_ms); } },
+          { label: 'p95', render: function(r) { return formatMs(r.p95_latency_ms); } },
+        ],
+        endpoints,
+      );
+
+      // Errors table
+      var topErrors = (data.top_errors || []).slice(0, 10);
+      document.getElementById('errorsTable').innerHTML = buildTable(
+        [
+          { label: 'Endpoint', render: function(r) { return '<code>' + r.method + ' ' + r.endpoint + '</code>'; } },
+          { label: 'Errors', render: function(r) { return '<span class="badge error">' + r.total_errors + '</span>'; } },
+        ],
+        topErrors,
+      );
+
+      // Repeat offenders
+      var repeats = data.repeat_offenders || [];
+      if (repeats.length > 0) {
+        document.getElementById('repeatSection').style.display = '';
+        document.getElementById('repeatTable').innerHTML = buildTable(
+          [
+            { label: 'Agent', render: function(r) { return '<code>' + r.agent_id + '</code>'; } },
+            { label: 'Endpoint', render: function(r) { return '<code>' + r.method + ' ' + r.endpoint + '</code>'; } },
+            { label: 'Errors', render: function(r) { return '<span class="badge error">' + r.error_count + '</span>'; } },
+            { label: 'Latest', render: function(r) { return formatHour(r.latest_hour); } },
+          ],
+          repeats,
+        );
+      }
+    }
+
+    renderDashboard();
+  </script>
+</body>
+</html>

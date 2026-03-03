@@ -48,7 +48,7 @@ import { UnifiedA2ARouter } from '../a2a/router.js';
 import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { sendMessage } from '../agents/message-router.js';
 import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
-import { createCommsTelegramAdapter, type CommsTelegramAdapter } from './comms/telegram.js';
+import { createBmoTelegramAdapter, BmoTelegramAdapter } from './comms/adapters/telegram.js';
 import {
   initCoworkBridge,
   shutdownCoworkBridge,
@@ -80,7 +80,7 @@ function readBody(req: http.IncomingMessage): Promise<string> {
 let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
 let _initialized = false;
-let _telegramAdapter: CommsTelegramAdapter | null = null;
+let _telegramAdapter: BmoTelegramAdapter | null = null;
 
 // ── Route Handlers ──────────────────────────────────────────
 
@@ -90,10 +90,21 @@ async function handleTelegramWebhook(
   _pathname: string,
   _searchParams: URLSearchParams,
 ): Promise<boolean> {
-  // Stub — Telegram uses polling adapter, not webhook in this setup
   if (req.method !== 'POST') return false;
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ ok: true, stub: true }));
+
+  try {
+    const body = await readBody(req);
+    const update = JSON.parse(body);
+    if (_telegramAdapter) {
+      await _telegramAdapter.handleUpdate(update);
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  } catch (err) {
+    log.error('Telegram webhook error', { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'Invalid update' }));
+  }
   return true;
 }
 
@@ -343,23 +354,10 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   }
 
   // ── Telegram Adapter ─────────────────────────────────────
-  const tgConf = _config.channels?.telegram as Record<string, unknown> | undefined;
-  if (tgConf?.enabled && tgConf.bot_token) {
+  // BMO adapter reads bot token + chat ID from macOS Keychain — no config fields needed.
+  if (_config.channels?.telegram?.enabled) {
     try {
-      let safeSenders = (tgConf.safe_senders ?? []) as Array<{ chat_id: number; name: string }>;
-      const allowedIds = tgConf.allowed_chat_ids as number[] | undefined;
-      if (safeSenders.length === 0 && allowedIds?.length) {
-        safeSenders = allowedIds.map((id: number, i: number) => ({
-          chat_id: id,
-          name: `User${i + 1}`,
-        }));
-      }
-      _telegramAdapter = await createCommsTelegramAdapter({
-        bot_token: tgConf.bot_token as string,
-        safe_senders: safeSenders,
-        poll_interval_ms: (tgConf.poll_interval_ms as number) ?? 3000,
-        max_message_length: (tgConf.max_message_length as number) ?? 4000,
-      });
+      _telegramAdapter = await createBmoTelegramAdapter();
       registerAdapter(_telegramAdapter);
       log.info('Telegram adapter registered with channel router');
     } catch (err) {
@@ -438,7 +436,7 @@ async function onShutdown(): Promise<void> {
   await stopNetworkSDK();
   stopAgentComms();
   if (_telegramAdapter) {
-    await _telegramAdapter.shutdown();
+    _telegramAdapter.stopTyping();
     unregisterAdapter('telegram');
     _telegramAdapter = null;
   }

@@ -200,7 +200,16 @@ export async function handleAgentMessage(
   const msg = body as AgentMessage;
   const formatted = formatMessage(msg);
 
-  injectText(formatted);
+  // Skip tmux injection for status messages (idle heartbeats) — they burn
+  // comms tokens for no value. Still log them for observability.
+  if (msg.type === 'status') {
+    log.debug(`Suppressed status injection from ${msg.from}`, {
+      messageId: msg.messageId,
+      status: msg.status,
+    });
+  } else {
+    injectText(formatted);
+  }
 
   log.info(`Delivered message from ${msg.from}`, {
     messageId: msg.messageId,
