@@ -97,20 +97,19 @@ async function handleAgentSendRoute(
     const body = await readBody(req);
     const { to, type, text, ...extra } = JSON.parse(body);
     if (!to || !type) {
-      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.writeHead(400, { 'Content-Type': 'application/json', 'Deprecation': 'true', 'Link': '</api/a2a/send>; rel="successor-version"' });
       res.end(JSON.stringify({ error: "'to' and 'type' are required" }));
       return true;
     }
     const result = await sendAgentMessage(to, type, text ?? '', extra);
     const status = (result as { ok: boolean }).ok ? 200 : 502;
-    res.setHeader('Deprecation', 'true');
-    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Deprecation': 'true', 'Link': '</api/a2a/send>; rel="successor-version"' });
     res.end(JSON.stringify(result));
   } catch (err) {
     log.error('Agent send endpoint error', {
       error: err instanceof Error ? err.message : String(err),
     });
-    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.writeHead(400, { 'Content-Type': 'application/json', 'Deprecation': 'true', 'Link': '</api/a2a/send>; rel="successor-version"' });
     res.end(JSON.stringify({ error: 'Invalid request' }));
   }
   return true;
