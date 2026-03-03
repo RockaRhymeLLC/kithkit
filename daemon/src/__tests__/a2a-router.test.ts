@@ -492,3 +492,75 @@ describe('JSONL Logging', () => {
     assert.equal(state.logEntries[0].direction, 'relay-out');
   });
 });
+
+// ── DB Audit Trail Tests (Story 5) ──────────────────────────
+
+describe('DB Audit Trail', () => {
+  let router: UnifiedA2ARouter;
+  let state: MockState;
+  let dbMessages: any[];
+
+  beforeEach(() => {
+    dbMessages = [];
+    const mocks = createMocks();
+    // Add sendDbMessage to deps
+    (mocks.deps as any).sendDbMessage = (msg: any) => { dbMessages.push(msg); };
+    router = new UnifiedA2ARouter(mocks.deps);
+    state = mocks.state;
+    state.peerStates.set('bmo', { status: 'idle', updatedAt: Date.now() });
+  });
+
+  it('29. Successful DM -> sendDbMessage called with correct shape', async () => {
+    state.sendViaLANResult = { ok: true, queued: false };
+
+    await router.send({
+      to: 'bmo',
+      payload: { type: 'text', text: 'hello' },
+      route: 'lan',
+    });
+
+    assert.equal(dbMessages.length, 1);
+    const msg = dbMessages[0];
+    assert.equal(msg.from, 'comms');
+    assert.equal(msg.to, 'a2a:bmo');
+    assert.equal(msg.type, 'text');
+    assert.ok(msg.body.includes('"type":"text"'));
+    assert.ok(msg.metadata);
+    assert.equal(msg.metadata.channel, 'a2a');
+    assert.equal(msg.metadata.route, 'lan');
+    assert.ok(msg.metadata.messageId);
+    assert.equal(typeof msg.metadata.attempts, 'number');
+  });
+
+  it('30. Successful group -> sendDbMessage called with group format', async () => {
+    state.networkSendToGroupResult = { status: 'delivered' };
+
+    await router.send({
+      group: 'home-agents',
+      payload: { type: 'text', text: 'hello all' },
+    });
+
+    assert.equal(dbMessages.length, 1);
+    const msg = dbMessages[0];
+    assert.equal(msg.from, 'comms');
+    assert.equal(msg.to, 'a2a:group:home-agents');
+    assert.equal(msg.type, 'text');
+    assert.ok(msg.metadata);
+    assert.equal(msg.metadata.channel, 'a2a');
+    assert.equal(msg.metadata.group_id, 'home-agents');
+    assert.equal(msg.metadata.route, 'relay');
+    assert.ok(msg.metadata.messageId);
+  });
+
+  it('31. Failed delivery -> sendDbMessage NOT called', async () => {
+    state.sendViaLANResult = { ok: false, queued: false, error: 'Timeout' };
+    state.networkSendResult = { status: 'failed', error: 'Down' };
+
+    await router.send({
+      to: 'bmo',
+      payload: { type: 'text', text: 'hi' },
+    });
+
+    assert.equal(dbMessages.length, 0, 'sendDbMessage should not be called on failure');
+  });
+});

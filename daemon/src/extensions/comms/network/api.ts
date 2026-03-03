@@ -17,9 +17,14 @@ import type { AgentConfig } from '../../config.js';
 const log = createLogger('api:network');
 
 let _config: AgentConfig | null = null;
+let _a2aRouter: any = null;
 
 export function setNetworkApiConfig(config: AgentConfig): void {
   _config = config;
+}
+
+export function setNetworkApiRouter(router: any): void {
+  _a2aRouter = router;
 }
 
 export async function handleNetworkRoute(
@@ -97,6 +102,7 @@ export async function handleNetworkRoute(
     // ── Direct Messaging ──────────────────────────────────────
 
     if (subpath === 'send' && method === 'POST') {
+      res.setHeader('Deprecation', 'true');
       const body = await parseBody(req);
       if (!body.to || typeof body.to !== 'string') {
         json(res, 400, withTimestamp({ error: 'to (recipient username) is required' }));
@@ -106,6 +112,23 @@ export async function handleNetworkRoute(
         json(res, 400, withTimestamp({ error: 'payload is required' }));
         return true;
       }
+
+      if (_a2aRouter) {
+        const result = await _a2aRouter.send({
+          to: body.to,
+          payload: body.payload,
+          route: 'relay',
+        });
+        if (result.ok) {
+          json(res, 200, withTimestamp({ status: result.status }));
+        } else {
+          const httpStatus = result.code === 'RELAY_UNAVAILABLE' ? 503 : 502;
+          json(res, httpStatus, withTimestamp({ error: result.error }));
+        }
+        return true;
+      }
+
+      // Fallback: original SDK call
       const result = await network.send(body.to, body.payload as Record<string, unknown>);
 
       // Log outbound A2A message to the messages table for audit trail
@@ -130,6 +153,7 @@ export async function handleNetworkRoute(
     // Also supports {to, payload} for full compatibility with /send.
 
     if (subpath === 'message' && method === 'POST') {
+      res.setHeader('Deprecation', 'true');
       const body = await parseBody(req);
       if (!body.to || typeof body.to !== 'string') {
         json(res, 400, withTimestamp({ error: 'to (recipient username) is required' }));
@@ -147,6 +171,22 @@ export async function handleNetworkRoute(
         return true;
       }
 
+      if (_a2aRouter) {
+        const result = await _a2aRouter.send({
+          to: body.to,
+          payload,
+          route: 'relay',
+        });
+        if (result.ok) {
+          json(res, 200, withTimestamp({ status: result.status }));
+        } else {
+          const httpStatus = result.code === 'RELAY_UNAVAILABLE' ? 503 : 502;
+          json(res, httpStatus, withTimestamp({ error: result.error }));
+        }
+        return true;
+      }
+
+      // Fallback: original SDK call
       const result = await network.send(body.to, payload);
 
       // Log outbound A2A message for audit trail
@@ -308,11 +348,28 @@ export async function handleNetworkRoute(
 
       // POST /api/network/groups/:groupId/send (or /message — alias)
       if ((action === 'send' || action === 'message') && method === 'POST') {
+        res.setHeader('Deprecation', 'true');
         const body = await parseBody(req);
         if (!body.payload || typeof body.payload !== 'object') {
           json(res, 400, withTimestamp({ error: 'payload is required' }));
           return true;
         }
+
+        if (_a2aRouter) {
+          const result = await _a2aRouter.send({
+            group: groupId,
+            payload: body.payload,
+          });
+          if (result.ok) {
+            json(res, 200, withTimestamp({ status: result.status }));
+          } else {
+            const httpStatus = result.code === 'RELAY_UNAVAILABLE' ? 503 : 502;
+            json(res, httpStatus, withTimestamp({ error: result.error }));
+          }
+          return true;
+        }
+
+        // Fallback: original SDK call
         const result = await network.sendToGroup(groupId, body.payload as Record<string, unknown>);
 
         // Log outbound A2A group message to the messages table for audit trail

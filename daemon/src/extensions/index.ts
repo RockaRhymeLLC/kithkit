@@ -39,18 +39,20 @@ import {
   sendViaLAN,
   getPeerState,
   logCommsEntry,
+  setUnifiedRouter,
 } from './comms/agent-comms.js';
 import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P, getNetworkClient } from './comms/network/sdk-bridge.js';
 import { UnifiedA2ARouter } from '../a2a/router.js';
 import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { registerWithRelay } from './comms/network/registration.js';
-import { handleNetworkRoute, setNetworkApiConfig } from './comms/network/api.js';
+import { handleNetworkRoute, setNetworkApiConfig, setNetworkApiRouter } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { initVoice, stopVoice } from './voice/index.js';
 import { registerAgentTasks, REAL_TASK_NAMES } from './automation/tasks/index.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
 import { enableVectorSearch } from '../api/memory.js';
 import { readKeychain } from '../core/keychain.js';
+import { sendMessage as sendDbMessage } from '../agents/message-router.js';
 
 const log = createLogger('agent-extension');
 
@@ -167,6 +169,8 @@ async function handleAgentSend(
   _searchParams: URLSearchParams,
 ): Promise<boolean> {
   if (req.method !== 'POST') return false;
+
+  res.setHeader('Deprecation', 'true');
 
   try {
     const body = await readBody(req);
@@ -321,8 +325,11 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     getPeerState,
     logCommsEntry,
     readKeychain,
+    sendDbMessage: (msg) => sendDbMessage(msg as Parameters<typeof sendDbMessage>[0]),
   });
   setA2ARouter(a2aRouter);
+  setUnifiedRouter(a2aRouter);
+  setNetworkApiRouter(a2aRouter);
 
   // Network SDK (P2P messaging) — non-blocking
   if (_config.network?.enabled) {

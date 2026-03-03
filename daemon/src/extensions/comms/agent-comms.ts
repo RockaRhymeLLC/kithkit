@@ -60,6 +60,11 @@ export interface CommsLogEntry {
 // ── State ─────────────────────────────────────────────────────
 
 let _config: AgentConfig | null = null;
+let _a2aRouter: any = null;
+
+export function setUnifiedRouter(router: any): void {
+  _a2aRouter = router;
+}
 
 // ── Display Name ──────────────────────────────────────────────
 
@@ -392,6 +397,22 @@ export async function sendAgentMessage(
   text?: string,
   extra?: Partial<Pick<AgentMessage, 'status' | 'action' | 'task' | 'context' | 'callbackUrl' | 'repo' | 'branch' | 'pr'>>,
 ): Promise<AgentMessageResponse> {
+  // If unified router available, delegate to it
+  if (_a2aRouter) {
+    const request = {
+      to: peerName,
+      payload: { type, ...(text !== undefined ? { text } : {}), ...extra },
+      route: 'auto' as const,
+    };
+    const result = await _a2aRouter.send(request);
+    return {
+      ok: result.ok === true,
+      queued: result.ok === true && result.status === 'queued',
+      error: result.ok ? undefined : result.error,
+    };
+  }
+
+  // Fallback: original implementation for when router isn't initialized yet
   if (!_config) {
     return { ok: false, queued: false, error: 'Agent comms not initialized' };
   }
@@ -547,4 +568,5 @@ export function stopAgentComms(): void {
 export function _resetAgentCommsForTesting(): void {
   _peerStates.clear();
   _config = null;
+  _a2aRouter = null;
 }
