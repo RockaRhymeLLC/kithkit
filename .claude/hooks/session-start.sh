@@ -161,10 +161,14 @@ if [ "$DAEMON_RUNNING" = "true" ]; then
   fi
 
   # Query daemon memory API (hybrid search for best results)
-  MEMORY_CONTEXT=$(curl -s --connect-timeout 2 --max-time 5 \
+  MEMORY_CONTEXT=$(echo "$SEARCH_QUERY" | python3 -c "
+import sys, json
+q = sys.stdin.read().strip()
+print(json.dumps({'mode':'hybrid','query':q,'limit':10}))
+" 2>/dev/null | curl -s --connect-timeout 2 --max-time 5 \
     -X POST "http://localhost:${DAEMON_PORT}/api/memory/search" \
     -H 'Content-Type: application/json' \
-    -d "{\"mode\":\"hybrid\",\"query\":\"$SEARCH_QUERY\",\"limit\":10}" 2>/dev/null | python3 -c "
+    -d @- 2>/dev/null | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
