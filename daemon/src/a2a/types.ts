@@ -18,6 +18,7 @@ export interface DeliveryAttempt {
   status: 'success' | 'failed';
   error?: string;
   latencyMs: number;
+  relayStatus?: 'delivered' | 'queued';
 }
 
 export interface A2ASendResponse {

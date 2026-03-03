@@ -3,69 +3,72 @@
  *
  * Handles both inbound (from peers) and outbound (to peers) messaging.
  * Messages are injected into the tmux session with [Agent] prefix.
- * 2-tier routing: LAN direct → P2P SDK fallback.
+ * LAN-direct HTTP communication using a shared secret for auth.
  */
-
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import { readKeychain } from '../../core/keychain.js';
-import { sendMessage } from '../../agents/message-router.js';
+import { injectText } from '../../core/session-bridge.js';
 import { getProjectDir } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
-import { getNetworkClient } from './network/sdk-bridge.js';
-import type { AgentConfig, PeerConfig } from '../config.js';
+import type { KithkitConfig } from '../../core/config.js';
 
 const log = createLogger('agent-comms');
+const VALID_TYPES = ['text', 'status', 'coordination', 'pr-review'];
 
-// ── Types ─────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────
+
+export interface PeerConfig {
+  name: string;
+  host: string;
+  port: number;
+  ip?: string;
+}
+
+interface AgentCommsConfig {
+  enabled: boolean;
+  secret?: string;
+  peers?: PeerConfig[];
+}
+
+interface CommsConfig extends KithkitConfig {
+  'agent-comms'?: AgentCommsConfig;
+}
 
 export interface AgentMessage {
   from: string;
   type: string;
   text?: string;
-  timestamp: string;
-  messageId: string;
   status?: string;
   action?: string;
   task?: string;
-  context?: string;
-  callbackUrl?: string;
-  repo?: string;
-  branch?: string;
-  pr?: string;
-}
-
-export interface AgentMessageResponse {
-  ok: boolean;
-  queued: boolean;
-  error?: string;
-}
-
-export interface CommsLogEntry {
-  ts: string;
-  direction: 'in' | 'out' | 'relay-in' | 'relay-out';
-  from: string;
-  to?: string;
-  type: string;
-  text?: string;
+  context?: unknown;
   messageId: string;
-  groupId?: string;
-  httpStatus?: number;
-  latencyMs?: number;
-  error?: string;
+  timestamp: string;
+  [key: string]: unknown;
 }
 
 // ── State ─────────────────────────────────────────────────────
+let _config: CommsConfig | null = null;
 
-let _config: AgentConfig | null = null;
+// Router reference for delegating sends through the unified A2A router
+let _router: { send: (body: unknown) => Promise<{ ok: boolean; status?: string; error?: string }> } | null = null;
+
+export function setRouter(router: { send: (body: unknown) => Promise<{ ok: boolean; status?: string; error?: string }> }): void {
+  _router = router;
+}
+
+// ── Peer Lookup ──────────────────────────────────────────────
+export function getPeerByName(name: string): PeerConfig | undefined {
+  const peers = (_config as CommsConfig)?.['agent-comms']?.peers ?? [];
+  return peers.find((p) => p.name.toLowerCase() === name.toLowerCase());
+}
 
 // ── Display Name ──────────────────────────────────────────────
-
-export function getDisplayName(agentId: string, config?: AgentConfig | null): string {
-  const cfg = config ?? _config;
-  const peers = cfg?.['agent-comms']?.peers ?? [];
+export function getDisplayName(agentId: string): string {
+  const peers = (_config as CommsConfig)?.['agent-comms']?.peers ?? [];
   for (const peer of peers) {
     if (peer.name.toLowerCase() === agentId.toLowerCase()) {
       return peer.name;
@@ -75,10 +78,8 @@ export function getDisplayName(agentId: string, config?: AgentConfig | null): st
 }
 
 // ── Message Formatting ────────────────────────────────────────
-
 function formatMessage(msg: AgentMessage): string {
   const name = getDisplayName(msg.from);
-
   switch (msg.type) {
     case 'text':
       return `[Agent] ${name}: ${msg.text ?? ''}`;
@@ -90,7 +91,7 @@ function formatMessage(msg: AgentMessage): string {
       return `[Agent] ${name}: [Coordination: ${action} "${task}"]`;
     }
     case 'pr-review': {
-      const parts = ['PR review request'];
+      const parts: string[] = ['PR review request'];
       if (msg.repo) parts.push(`repo: ${msg.repo}`);
       if (msg.branch) parts.push(`branch: ${msg.branch}`);
       if (msg.pr) parts.push(`PR #${msg.pr}`);
@@ -103,7 +104,6 @@ function formatMessage(msg: AgentMessage): string {
 }
 
 // ── JSONL Logging ─────────────────────────────────────────────
-
 const COMMS_LOG_MAX_SIZE = 5 * 1024 * 1024;
 const COMMS_LOG_MAX_FILES = 3;
 
@@ -111,12 +111,11 @@ function getLogPath(): string {
   return path.join(getProjectDir(), 'logs', 'agent-comms.log');
 }
 
-function rotateCommsLogIfNeeded(logPath: string): void {
+function rotateLogIfNeeded(logPath: string): void {
   try {
     if (!fs.existsSync(logPath)) return;
     const stats = fs.statSync(logPath);
     if (stats.size < COMMS_LOG_MAX_SIZE) return;
-
     for (let i = COMMS_LOG_MAX_FILES - 1; i >= 1; i--) {
       const src = `${logPath}.${i}`;
       const dst = `${logPath}.${i + 1}`;
@@ -137,30 +136,30 @@ function rotateCommsLogIfNeeded(logPath: string): void {
   }
 }
 
-export function logCommsEntry(entry: CommsLogEntry): void {
+export function logCommsEntry(entry: Record<string, unknown>): void {
   const logPath = getLogPath();
   const logDir = path.dirname(logPath);
   if (!fs.existsSync(logDir)) {
     fs.mkdirSync(logDir, { recursive: true });
   }
-  rotateCommsLogIfNeeded(logPath);
+  rotateLogIfNeeded(logPath);
   fs.appendFileSync(logPath, JSON.stringify(entry) + '\n');
 }
 
 // ── Validation ────────────────────────────────────────────────
-
 function validateMessage(body: unknown): { valid: boolean; error?: string } {
   if (!body || typeof body !== 'object') {
     return { valid: false, error: 'Request body must be a JSON object' };
   }
-
   const msg = body as Record<string, unknown>;
-
   if (!msg.from || typeof msg.from !== 'string') {
     return { valid: false, error: "'from' is required and must be a string" };
   }
   if (!msg.type || typeof msg.type !== 'string') {
     return { valid: false, error: "'type' is required and must be a string" };
+  }
+  if (!VALID_TYPES.includes(msg.type as string)) {
+    return { valid: false, error: `Invalid message type '${msg.type}'. Valid: ${VALID_TYPES.join(', ')}` };
   }
   if (!msg.messageId || typeof msg.messageId !== 'string') {
     return { valid: false, error: "'messageId' is required and must be a string" };
@@ -168,19 +167,17 @@ function validateMessage(body: unknown): { valid: boolean; error?: string } {
   if (!msg.timestamp || typeof msg.timestamp !== 'string') {
     return { valid: false, error: "'timestamp' is required and must be a string" };
   }
-
   return { valid: true };
 }
 
 // ── Handle Incoming ───────────────────────────────────────────
-
 /**
  * Handle an incoming LAN agent message (Bearer auth).
  */
 export async function handleAgentMessage(
   authToken: string | null,
   body: unknown,
-): Promise<{ status: number; body: AgentMessageResponse | { error: string } }> {
+): Promise<{ status: number; body: Record<string, unknown> }> {
   // Auth check (async keychain)
   const secret = await readKeychain('credential-agent-comms-secret');
   if (!authToken || !secret || authToken !== secret) {
@@ -196,32 +193,14 @@ export async function handleAgentMessage(
     log.warn('Agent message rejected: invalid structure', { error: validation.error });
     return {
       status: 400,
-      body: { error: validation.error! },
+      body: { error: validation.error },
     };
   }
 
   const msg = body as AgentMessage;
-
-  // Status pings are liveness checks only — do not store or inject
-  if (msg.type === 'status') {
-    log.debug(`Status ping from ${msg.from} — acknowledged, not stored`);
-    return {
-      status: 200,
-      body: { ok: true, queued: false },
-    };
-  }
-
   const formatted = formatMessage(msg);
 
-  // Persist inbound LAN message to DB and inject to comms session
-  sendMessage({
-    from: `lan:${msg.from}`,
-    to: 'comms',
-    type: 'text',
-    body: formatted,
-    metadata: { source: 'lan-agent-comms', sender: msg.from, messageId: msg.messageId, originalType: msg.type },
-    direct: true,  // inject immediately into comms1 if alive
-  });
+  injectText(formatted);
 
   log.info(`Delivered message from ${msg.from}`, {
     messageId: msg.messageId,
@@ -246,32 +225,25 @@ export async function handleAgentMessage(
 }
 
 // ── LAN Send (curl) ──────────────────────────────────────────
-
-function sendViaLAN(
+export function sendViaLAN(
   peer: PeerConfig,
   msg: AgentMessage,
   secret: string,
   agentName: string,
-): Promise<AgentMessageResponse> {
+): Promise<Record<string, unknown>> {
   const payload = JSON.stringify(msg);
-
-  // Build ordered host list: try direct IP first (most reliable), then mDNS .local,
-  // then configured hostname last. On macOS home networks, .lan hostnames fail DNS
-  // (NXDOMAIN), causing 5s timeouts before falling back to the IP.
-  const hosts: string[] = [];
+  const hosts = [peer.host];
   if (peer.ip && peer.ip !== peer.host) hosts.push(peer.ip);
-  if (peer.host.endsWith('.lan')) hosts.push(peer.host.replace(/\.lan$/, '.local'));
-  if (!hosts.includes(peer.host)) hosts.push(peer.host);
 
   const startTime = Date.now();
 
-  return new Promise<AgentMessageResponse>((resolve) => {
-    const trySend = (hostIdx: number): void => {
+  return new Promise((resolve) => {
+    const trySend = (hostIdx: number) => {
       const host = hosts[hostIdx];
       const url = `http://${host}:${peer.port}/agent/message`;
 
       const args = [
-        '-s', '--connect-timeout', '3',
+        '-s', '--connect-timeout', '5',
         '-w', '\n%{http_code}',
         '-X', 'POST', url,
         '-H', 'Content-Type: application/json',
@@ -289,7 +261,7 @@ function sendViaLAN(
             return;
           }
           const detail = stderr?.trim() || err.message || 'unknown error';
-          const errorResponse: AgentMessageResponse = {
+          const errorResponse = {
             ok: false,
             queued: false,
             error: `Failed to reach peer ${peer.name} (${peer.host}:${peer.port}): ${detail}`,
@@ -315,8 +287,7 @@ function sendViaLAN(
         const responseBody = lines.join('\n');
 
         try {
-          const response = JSON.parse(responseBody) as AgentMessageResponse;
-          const via = hostIdx > 0 ? ` (via fallback IP ${host})` : '';
+          const response = JSON.parse(responseBody);
           logCommsEntry({
             ts: new Date().toISOString(),
             direction: 'out',
@@ -328,10 +299,15 @@ function sendViaLAN(
             httpStatus,
             latencyMs,
           });
-          log.info(`Sent to ${peer.name} via LAN${via}`, { messageId: msg.messageId, type: msg.type, httpStatus, latencyMs });
+          log.info(`Sent to ${peer.name} via LAN`, {
+            messageId: msg.messageId,
+            type: msg.type,
+            httpStatus,
+            latencyMs,
+          });
           resolve(response);
         } catch {
-          const errorResponse: AgentMessageResponse = {
+          const errorResponse = {
             ok: false,
             queued: false,
             error: `Invalid response from peer (HTTP ${httpStatus ?? '?'}): ${responseBody.slice(0, 200)}`,
@@ -353,61 +329,51 @@ function sendViaLAN(
         }
       });
     };
-
     trySend(0);
   });
 }
 
-// ── P2P Name Resolution ───────────────────────────────────────
-
-function resolveP2PName(
-  peerName: string,
-  peer: PeerConfig | undefined,
-): string {
-  const community = (peer as Record<string, unknown> | undefined)?.community as string | undefined;
-  if (!community || !_config?.network?.communities?.length) {
-    return peerName;
-  }
-
-  const communityConfig = _config.network.communities.find(c => c.name === community);
-  if (!communityConfig) {
-    log.warn(`Peer ${peerName} references unknown community '${community}' — using unqualified name`);
-    return peerName;
-  }
-
-  try {
-    const hostname = new URL(communityConfig.primary).hostname;
-    return `${peerName}@${hostname}`;
-  } catch {
-    log.warn(`Invalid primary URL for community '${community}' — using unqualified name`);
-    return peerName;
-  }
-}
-
 // ── Send Outgoing ─────────────────────────────────────────────
-
 export async function sendAgentMessage(
   peerName: string,
   type: string,
-  text?: string,
-  extra?: Partial<Pick<AgentMessage, 'status' | 'action' | 'task' | 'context' | 'callbackUrl' | 'repo' | 'branch' | 'pr'>>,
-): Promise<AgentMessageResponse> {
+  text: string,
+  extra?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  // If router available, delegate to it
+  if (_router) {
+    const request = {
+      to: peerName,
+      payload: { type, text, ...extra },
+      route: 'auto' as const,
+    };
+    const result = await _router.send(request);
+    return {
+      ok: result.ok,
+      queued: result.ok && result.status === 'queued',
+      error: result.ok ? undefined : (result as { error?: string }).error,
+    };
+  }
+
+  // Fallback to original implementation if router not set
   if (!_config) {
     return { ok: false, queued: false, error: 'Agent comms not initialized' };
   }
 
-  const agentComms = _config['agent-comms'];
-  const networkEnabled = _config.network?.enabled ?? false;
-
-  if (!agentComms?.enabled && !networkEnabled) {
-    return { ok: false, queued: false, error: 'Neither agent comms nor network enabled' };
+  const agentComms = (_config as CommsConfig)['agent-comms'];
+  if (!agentComms?.enabled) {
+    return { ok: false, queued: false, error: 'Agent comms not enabled' };
   }
 
-  const peer = agentComms?.enabled
-    ? agentComms.peers?.find(p => p.name.toLowerCase() === peerName.toLowerCase())
-    : undefined;
+  const peer = agentComms.peers?.find(
+    (p) => p.name.toLowerCase() === peerName.toLowerCase(),
+  );
+  if (!peer) {
+    return { ok: false, queued: false, error: `Unknown peer: ${peerName}` };
+  }
 
   const agentName = _config.agent.name.toLowerCase();
+
   const msg: AgentMessage = {
     from: agentName,
     type,
@@ -417,104 +383,16 @@ export async function sendAgentMessage(
     ...extra,
   };
 
-  // Strategy 1: LAN
-  let lanResult: AgentMessageResponse | null = null;
-  if (peer && agentComms?.enabled) {
-    const secret = await readKeychain('credential-agent-comms-secret');
-    if (secret) {
-      lanResult = await sendViaLAN(peer, msg, secret, agentName);
-      if (lanResult.ok) return lanResult;
-    } else {
-      lanResult = { ok: false, queued: false, error: 'Agent comms secret not found in Keychain' };
-    }
+  const secret = await readKeychain('credential-agent-comms-secret');
+  if (!secret) {
+    return { ok: false, queued: false, error: 'Agent comms secret not found in Keychain' };
   }
 
-  // Strategy 2: P2P SDK
-  const networkClient = getNetworkClient();
-  if (networkClient) {
-    try {
-      const sendTo = resolveP2PName(peerName, peer);
-      const sendResult = await networkClient.send(sendTo, {
-        type: msg.type,
-        text: msg.text,
-        from: msg.from,
-        timestamp: msg.timestamp,
-        messageId: msg.messageId,
-        ...(msg.status && { status: msg.status }),
-        ...(msg.action && { action: msg.action }),
-        ...(msg.task && { task: msg.task }),
-        ...(msg.context && { context: msg.context }),
-      });
-
-      if (sendResult.status === 'delivered' || sendResult.status === 'queued') {
-        const direction = sendResult.status === 'delivered' ? 'out' : 'relay-out';
-        logCommsEntry({
-          ts: new Date().toISOString(),
-          direction,
-          from: agentName,
-          to: peerName,
-          type: msg.type,
-          text: msg.text,
-          messageId: msg.messageId,
-        });
-        log.info(`Sent to ${peerName} via P2P SDK (${sendResult.status})`, {
-          messageId: msg.messageId,
-          type: msg.type,
-        });
-        return { ok: true, queued: sendResult.status === 'queued' };
-      }
-
-      log.warn(`P2P SDK send failed to ${peerName}`, { error: sendResult.error });
-    } catch (err) {
-      log.warn('P2P SDK send error', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // All failed
-  const errors: string[] = [];
-  if (lanResult) errors.push(`LAN: ${lanResult.error}`);
-  if (networkClient) errors.push('P2P: SDK send failed');
-  if (!lanResult && !networkClient) errors.push(`Unknown peer: ${peerName}`);
-  return { ok: false, queued: false, error: errors.join('; ') };
-}
-
-// ── Peer State Cache ─────────────────────────────────────────
-
-export interface PeerState {
-  status: 'idle' | 'busy' | 'unknown';
-  updatedAt: number;
-  latencyMs?: number;
-}
-
-const _peerStates = new Map<string, PeerState>();
-
-export function updatePeerState(peerName: string, state: PeerState): void {
-  _peerStates.set(peerName.toLowerCase(), state);
-}
-
-export function getPeerState(peerName: string): PeerState | undefined {
-  return _peerStates.get(peerName.toLowerCase());
-}
-
-export function getAllPeerStates(): Record<string, PeerState> {
-  const result: Record<string, PeerState> = {};
-  for (const [name, state] of _peerStates) {
-    result[name] = state;
-  }
-  return result;
+  return sendViaLAN(peer, msg, secret, agentName) as Promise<Record<string, unknown>>;
 }
 
 // ── Agent Status ──────────────────────────────────────────────
-
-export interface AgentStatusResponse {
-  agent: string;
-  status: 'idle' | 'busy';
-  uptime: number;
-}
-
-export function getAgentStatus(): AgentStatusResponse {
+export function getAgentStatus(): Record<string, unknown> {
   return {
     agent: _config?.agent?.name ?? 'unknown',
     status: 'idle',
@@ -523,28 +401,20 @@ export function getAgentStatus(): AgentStatusResponse {
 }
 
 // ── Init / Shutdown ───────────────────────────────────────────
-
-export function initAgentComms(config: AgentConfig): void {
-  _config = config;
-  const agentComms = config['agent-comms'];
-
+export function initAgentComms(config: KithkitConfig): void {
+  _config = config as CommsConfig;
+  const agentComms = (_config as CommsConfig)['agent-comms'];
   if (!agentComms?.enabled) {
     log.info('Agent comms disabled');
     return;
   }
-
   log.info('Agent comms initialized', {
     peers: agentComms.peers?.length ?? 0,
-    peerNames: agentComms.peers?.map(p => p.name) ?? [],
+    peerNames: agentComms.peers?.map((p) => p.name) ?? [],
   });
 }
 
 export function stopAgentComms(): void {
   _config = null;
   log.info('Agent comms stopped');
-}
-
-export function _resetAgentCommsForTesting(): void {
-  _peerStates.clear();
-  _config = null;
 }

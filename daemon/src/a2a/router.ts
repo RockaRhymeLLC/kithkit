@@ -48,6 +48,7 @@ interface A2ANetworkClient {
     queued: string[];
     failed: string[];
   }>;
+  getGroups?(): Promise<Array<{ id: string; name: string; [key: string]: unknown }>>;
 }
 
 export interface RouterDeps {
@@ -146,16 +147,62 @@ export class UnifiedA2ARouter {
       return { qualified: name };
     }
 
-    const peer = this.peers.find(
-      (p) => p.name.toLowerCase() === name.toLowerCase(),
+    const lowerName = name.toLowerCase();
+
+    // Exact match first
+    let peer = this.peers.find(
+      (p) => p.name.toLowerCase() === lowerName,
     );
+
+    // Prefix match fallback
+    if (!peer) {
+      const prefixMatches = this.peers.filter(
+        (p) => p.name.toLowerCase().startsWith(lowerName),
+      );
+      if (prefixMatches.length === 1) {
+        peer = prefixMatches[0];
+      }
+      // If multiple matches, don't resolve — let PEER_NOT_FOUND handle it
+    }
 
     // Qualify bare names for relay: append @community.primary
     const qualified = this.primaryCommunity
-      ? `${name.toLowerCase()}@${this.primaryCommunity}`
-      : name.toLowerCase();
+      ? `${(peer?.name ?? name).toLowerCase()}@${this.primaryCommunity}`
+      : (peer?.name ?? name).toLowerCase();
 
     return { peer, qualified };
+  }
+
+  // ── Resolve Group ID ──────────────────────────────────────────
+
+  private async resolveGroupId(nameOrId: string): Promise<{ groupId?: string; error?: string }> {
+    // UUID pattern check (simple heuristic)
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (uuidPattern.test(nameOrId)) {
+      return { groupId: nameOrId };
+    }
+
+    // Try to resolve name via network client
+    const network = this.deps.getNetworkClient();
+    if (!network) {
+      return { error: `Cannot resolve group name '${nameOrId}' — network SDK not available` };
+    }
+
+    try {
+      const groups = await (network as { getGroups?(): Promise<Array<{ id: string; name: string; [key: string]: unknown }>> }).getGroups?.();
+      if (Array.isArray(groups)) {
+        const match = groups.find((g: { name: string }) =>
+          typeof g.name === 'string' && g.name.toLowerCase() === nameOrId.toLowerCase()
+        );
+        if (match?.id) {
+          return { groupId: match.id };
+        }
+      }
+    } catch {
+      // Fall through to error
+    }
+
+    return { error: `Group '${nameOrId}' not found` };
   }
 
   // ── Send (main orchestration) ────────────────────────────────
@@ -175,9 +222,19 @@ export class UnifiedA2ARouter {
     const messageId = crypto.randomUUID();
     const attempts: DeliveryAttempt[] = [];
 
-    // Group send
+    // Group send — resolve name to UUID if needed
     if (request.group) {
-      return this.sendGroup(request, messageId, attempts);
+      const resolved = await this.resolveGroupId(request.group);
+      if (resolved.error) {
+        return {
+          ok: false,
+          error: resolved.error,
+          code: A2A_ERROR_CODES.GROUP_NOT_FOUND,
+          timestamp: new Date().toISOString(),
+        };
+      }
+      const resolvedRequest = { ...request, group: resolved.groupId! };
+      return this.sendGroup(resolvedRequest, messageId, attempts);
     }
 
     // DM send
@@ -197,6 +254,14 @@ export class UnifiedA2ARouter {
 
     // Forced LAN
     if (route === 'lan') {
+      if (target.includes('@')) {
+        return {
+          ok: false,
+          error: `Cannot use LAN route with qualified name '${target}' — use 'relay' or 'auto'`,
+          code: A2A_ERROR_CODES.INVALID_ROUTE,
+          timestamp: new Date().toISOString(),
+        };
+      }
       if (!peer) {
         return {
           ok: false,
@@ -222,10 +287,11 @@ export class UnifiedA2ARouter {
         };
       }
 
+      const isLANUnavailable = attempt.error === 'Agent comms secret not found in Keychain';
       return {
         ok: false,
         error: attempt.error ?? 'LAN delivery failed',
-        code: A2A_ERROR_CODES.LAN_UNAVAILABLE,
+        code: isLANUnavailable ? A2A_ERROR_CODES.LAN_UNAVAILABLE : A2A_ERROR_CODES.DELIVERY_FAILED,
         attempts,
         timestamp: new Date().toISOString(),
       };
@@ -237,6 +303,7 @@ export class UnifiedA2ARouter {
       attempts.push(attempt);
 
       if (attempt.status === 'success') {
+        const relayStatus = attempt.relayStatus ?? 'delivered';
         this.logDBSuccess(messageId, target, 'dm', 'relay', request.payload, attempts);
         return {
           ok: true,
@@ -244,16 +311,17 @@ export class UnifiedA2ARouter {
           target,
           targetType: 'dm',
           route: 'relay',
-          status: 'delivered',
+          status: relayStatus,
           attempts,
           timestamp: new Date().toISOString(),
         };
       }
 
+      const isSDKUnavailable = attempt.error === 'Network SDK not available';
       return {
         ok: false,
         error: attempt.error ?? 'Relay delivery failed',
-        code: A2A_ERROR_CODES.RELAY_UNAVAILABLE,
+        code: isSDKUnavailable ? A2A_ERROR_CODES.RELAY_UNAVAILABLE : A2A_ERROR_CODES.DELIVERY_FAILED,
         attempts,
         timestamp: new Date().toISOString(),
       };
@@ -286,6 +354,7 @@ export class UnifiedA2ARouter {
     attempts.push(relayAttempt);
 
     if (relayAttempt.status === 'success') {
+      const relayStatus = relayAttempt.relayStatus ?? 'delivered';
       this.logDBSuccess(messageId, target, 'dm', 'relay', request.payload, attempts);
       return {
         ok: true,
@@ -293,7 +362,7 @@ export class UnifiedA2ARouter {
         target,
         targetType: 'dm',
         route: 'relay',
-        status: 'delivered',
+        status: relayStatus,
         attempts,
         timestamp: new Date().toISOString(),
       };
@@ -422,12 +491,13 @@ export class UnifiedA2ARouter {
     }
 
     // Build the AgentMessage by flattening payload fields
-    const { type, text, ...remainingPayload } = payload;
+    // Strip reserved fields from remainingPayload to prevent spoofing
+    const { type, text, from: _from, messageId: _mid, timestamp: _ts, ...remainingPayload } = payload;
     const msg: AgentMessage = {
+      ...remainingPayload,
       from: this.agentName,
       type,
       text,
-      ...remainingPayload,
       messageId,
       timestamp: new Date().toISOString(),
     };
@@ -497,7 +567,12 @@ export class UnifiedA2ARouter {
       });
 
       if (success) {
-        return { route: 'relay', status: 'success', latencyMs };
+        return {
+          route: 'relay',
+          status: 'success',
+          latencyMs,
+          relayStatus: result.status as 'delivered' | 'queued',
+        };
       }
 
       return {
