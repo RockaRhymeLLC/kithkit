@@ -198,6 +198,34 @@ export async function handleAgentMessage(
   }
 
   const msg = body as AgentMessage;
+
+  // Status pings (peer heartbeats) — log only, don't inject into comms session.
+  // Injecting these burns LLM tokens every 5 minutes with no actionable value.
+  if (msg.type === 'status') {
+    log.debug(`Status ping from ${msg.from} — acknowledged, not injected`, {
+      messageId: msg.messageId,
+      status: msg.status,
+    });
+
+    const agentName = _config?.agent?.name?.toLowerCase() ?? 'unknown';
+    logCommsEntry({
+      ts: new Date().toISOString(),
+      direction: 'in',
+      from: msg.from,
+      to: agentName,
+      type: msg.type,
+      text: msg.text,
+      status: msg.status,
+      messageId: msg.messageId,
+      injected: false,
+    });
+
+    return {
+      status: 200,
+      body: { ok: true, queued: false },
+    };
+  }
+
   const formatted = formatMessage(msg);
 
   injectText(formatted);
