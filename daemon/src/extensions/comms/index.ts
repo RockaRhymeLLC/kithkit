@@ -1,221 +1,54 @@
 /**
- * BMO Comms Extensions — initializes all BMO communication adapters.
+ * Comms Extension — registers Telegram adapter, agent-comms, and core tasks.
  *
- * Called from the BMO extension entry point (extensions/index.ts) during onInit().
- * Registers Telegram and email adapters with the kithkit channel-router.
+ * This is the main extension entry point for kithkit agent-to-agent communication.
+ * It wires up:
+ * - Telegram polling adapter (inbound + outbound)
+ * - Agent-to-agent messaging (LAN direct)
+ * - Channel router registration
+ * - Core scheduler tasks
  */
 
 import http from 'node:http';
+import type { Extension } from '../../core/extensions.js';
+import type { KithkitConfig } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
+import { registerAdapter, unregisterAdapter } from '../../comms/channel-router.js';
 import { registerRoute, type RouteHandler } from '../../core/route-registry.js';
-import type { AgentConfig } from '../config.js';
-import { BmoTelegramAdapter, createBmoTelegramAdapter } from './adapters/telegram.js';
-import { BmoGraphAdapter } from './adapters/email/graph-provider.js';
-import { BmoHimalayaAdapter } from './adapters/email/himalaya-provider.js';
-import { BmoJmapAdapter } from './adapters/email/jmap-provider.js';
-import { BmoOutlookAdapter } from './adapters/email/outlook-provider.js';
+import { createCommsTelegramAdapter, type CommsTelegramAdapter } from './telegram.js';
 import {
-  initBmoChannelRouter,
-  registerTelegramAdapter,
-  registerEmailAdapter,
-} from './channel-router.js';
+  initAgentComms,
+  stopAgentComms,
+  handleAgentMessage,
+  sendAgentMessage,
+  getAgentStatus,
+  sendViaLAN,
+  logCommsEntry,
+  setRouter,
+} from './agent-comms.js';
+import {
+  initNetworkSDK,
+  stopNetworkSDK,
+  handleIncomingP2P,
+  getNetworkClient,
+} from './network/sdk-bridge.js';
+import { handleNetworkRoute } from './network/api.js';
+import { UnifiedA2ARouter } from '../../a2a/router.js';
+import { handleA2ARoute, setA2ARouter } from '../../a2a/handler.js';
+import { readKeychain } from '../../core/keychain.js';
+import { sendMessage } from '../../agents/message-router.js';
 
-const log = createLogger('r2-comms');
+
+const log = createLogger('comms-extension');
 
 // ── State ────────────────────────────────────────────────────
 
-let _telegramAdapter: BmoTelegramAdapter | null = null;
-let _graphAdapter: BmoGraphAdapter | null = null;
-let _jmapAdapter: BmoJmapAdapter | null = null;
-let _outlookAdapter: BmoOutlookAdapter | null = null;
-let _himalayaAdapters: BmoHimalayaAdapter[] = [];
-
-// ── Init ─────────────────────────────────────────────────────
-
-/**
- * Initialize all BMO communication adapters.
- * Called during BMO extension onInit().
- */
-export async function initComms(config: AgentConfig): Promise<void> {
-  // Initialize BMO channel router
-  initBmoChannelRouter();
-
-  // Telegram
-  if (config.channels?.telegram?.enabled) {
-    try {
-      _telegramAdapter = await createBmoTelegramAdapter();
-      registerTelegramAdapter(_telegramAdapter);
-      log.info('Telegram adapter enabled');
-    } catch (err) {
-      log.error('Failed to initialize Telegram adapter', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-
-  // Email providers
-  if (config.channels?.email?.enabled && config.channels.email.providers) {
-    for (const providerConfig of config.channels.email.providers) {
-      try {
-        switch (providerConfig.type) {
-          case 'graph': {
-            _graphAdapter = new BmoGraphAdapter();
-            if (await _graphAdapter.isConfigured()) {
-              registerEmailAdapter(_graphAdapter);
-              log.info('Graph email adapter enabled');
-            } else {
-              log.warn('Graph email adapter not configured (missing credentials)');
-              _graphAdapter = null;
-            }
-            break;
-          }
-          case 'jmap': {
-            const ownerEmail = config.network?.owner_email;
-            _jmapAdapter = new BmoJmapAdapter(ownerEmail);
-            if (await _jmapAdapter.isConfigured()) {
-              registerEmailAdapter(_jmapAdapter);
-              log.info('JMAP email adapter enabled');
-            } else {
-              log.warn('JMAP email adapter not configured (missing credentials)');
-              _jmapAdapter = null;
-            }
-            break;
-          }
-          case 'himalaya': {
-            const adapter = new BmoHimalayaAdapter(providerConfig.account ?? 'gmail');
-            if (adapter.isConfigured()) {
-              registerEmailAdapter(adapter);
-              _himalayaAdapters.push(adapter);
-              log.info(`Himalaya email adapter enabled: ${adapter.name}`);
-            } else {
-              log.warn(`Himalaya adapter ${providerConfig.account ?? 'gmail'} not configured`);
-            }
-            break;
-          }
-          case 'outlook': {
-            _outlookAdapter = new BmoOutlookAdapter();
-            if (_outlookAdapter.isConfigured()) {
-              registerEmailAdapter(_outlookAdapter);
-              log.info('Outlook email adapter enabled');
-            } else {
-              log.warn('Outlook email adapter not configured (missing credentials)');
-              _outlookAdapter = null;
-            }
-            break;
-          }
-          default:
-            log.warn(`Unknown email provider type: ${providerConfig.type}`);
-        }
-      } catch (err) {
-        log.error(`Failed to initialize email provider: ${providerConfig.type}`, {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    }
-  }
-
-  log.info('BMO comms initialized', {
-    telegram: !!_telegramAdapter,
-    emailAdapters: (_graphAdapter ? 1 : 0) + (_jmapAdapter ? 1 : 0) + (_outlookAdapter ? 1 : 0) + _himalayaAdapters.length,
-  });
-}
-
-// ── Route Handlers ───────────────────────────────────────────
-
-/**
- * Create the Telegram webhook route handler.
- * Replaces the stub from s-m23.
- */
-export function createTelegramRouteHandler(): RouteHandler {
-  return async (req, res, _pathname, _searchParams) => {
-    if (req.method !== 'POST') return false;
-
-    if (!_telegramAdapter) {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, message: 'Telegram not enabled' }));
-      return true;
-    }
-
-    try {
-      const body = await readBody(req);
-      const update = JSON.parse(body);
-      await _telegramAdapter.handleUpdate(update);
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
-    } catch (err) {
-      log.error('Telegram webhook error', { error: err instanceof Error ? err.message : String(err) });
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: true, error: 'Processing error' }));
-    }
-
-    return true;
-  };
-}
-
-/**
- * Create the Siri Shortcut route handler.
- */
-export function createShortcutRouteHandler(): RouteHandler {
-  return async (req, res, _pathname, _searchParams) => {
-    if (req.method !== 'POST') return false;
-
-    if (!_telegramAdapter) {
-      res.writeHead(503, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Telegram not enabled' }));
-      return true;
-    }
-
-    try {
-      const body = await readBody(req);
-      const data = JSON.parse(body);
-      const result = await _telegramAdapter.handleShortcut(data);
-      res.writeHead(result.status, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(result.body));
-    } catch (err) {
-      log.error('Shortcut handler error', { error: err instanceof Error ? err.message : String(err) });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'Internal error' }));
-    }
-
-    return true;
-  };
-}
-
-// ── Accessors ────────────────────────────────────────────────
-
-/** Get the Telegram adapter (for direct access from other BMO modules). */
-export function getTelegramAdapter(): BmoTelegramAdapter | null {
-  return _telegramAdapter;
-}
-
-/** Get the Graph email adapter. */
-export function getGraphAdapter(): BmoGraphAdapter | null {
-  return _graphAdapter;
-}
-
-/** Get the JMAP email adapter. */
-export function getJmapAdapter(): BmoJmapAdapter | null {
-  return _jmapAdapter;
-}
-
-/** Get the Outlook email adapter. */
-export function getOutlookAdapter(): BmoOutlookAdapter | null {
-  return _outlookAdapter;
-}
-
-/** Get all Himalaya adapters. */
-export function getHimalayaAdapters(): BmoHimalayaAdapter[] {
-  return [..._himalayaAdapters];
-}
+let _telegramAdapter: CommsTelegramAdapter | null = null;
+let _config: KithkitConfig | null = null;
 
 // ── Helpers ──────────────────────────────────────────────────
 
 function readBody(req: http.IncomingMessage): Promise<string> {
-  // Check for pre-buffered body from main.ts metrics middleware
-  const rawBody = (req as unknown as Record<string, unknown>)._rawBody;
-  if (rawBody instanceof Buffer) {
-    return Promise.resolve(rawBody.toString());
-  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -224,24 +57,218 @@ function readBody(req: http.IncomingMessage): Promise<string> {
   });
 }
 
-// ── Shutdown ─────────────────────────────────────────────────
+// ── Route Handlers ──────────────────────────────────────────
 
-/** Clean up comms resources. */
-export function shutdownComms(): void {
-  _telegramAdapter = null;
-  _graphAdapter = null;
-  _jmapAdapter = null;
-  _outlookAdapter = null;
-  _himalayaAdapters = [];
-  log.info('BMO comms shut down');
+async function handleAgentMessageRoute(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'POST') return false;
+
+  try {
+    const authHeader = req.headers.authorization;
+    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    const body = await readBody(req);
+    const parsed = JSON.parse(body);
+    const result = await handleAgentMessage(token, parsed);
+    res.writeHead(result.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result.body));
+  } catch (err) {
+    log.error('Agent message endpoint error', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid request' }));
+  }
+  return true;
 }
 
-// ── Testing ──────────────────────────────────────────────────
+async function handleAgentSendRoute(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'POST') return false;
 
-export function _resetForTesting(): void {
-  _telegramAdapter = null;
-  _graphAdapter = null;
-  _jmapAdapter = null;
-  _outlookAdapter = null;
-  _himalayaAdapters = [];
+  try {
+    const body = await readBody(req);
+    const { to, type, text, ...extra } = JSON.parse(body);
+    if (!to || !type) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: "'to' and 'type' are required" }));
+      return true;
+    }
+    const result = await sendAgentMessage(to, type, text ?? '', extra);
+    const status = (result as { ok: boolean }).ok ? 200 : 502;
+    res.setHeader('Deprecation', 'true');
+    res.writeHead(status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(result));
+  } catch (err) {
+    log.error('Agent send endpoint error', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid request' }));
+  }
+  return true;
 }
+
+async function handleAgentStatusRoute(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'GET') return false;
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify(getAgentStatus()));
+  return true;
+}
+
+// ── Extension ────────────────────────────────────────────────
+
+export const commsExtension: Extension = {
+  name: 'comms',
+
+  async onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
+    log.info('Comms extension initializing...');
+    _config = config;
+
+    // ── Agent-to-Agent Comms ────────────────────────────────
+    initAgentComms(config);
+    registerRoute('/agent/message', handleAgentMessageRoute as RouteHandler);
+    registerRoute('/agent/send', handleAgentSendRoute as RouteHandler);
+    registerRoute('/agent/status', handleAgentStatusRoute as RouteHandler);
+    log.info('Agent comms routes registered');
+
+    // ── Unified A2A Router ─────────────────────────────────
+    const router = new UnifiedA2ARouter({
+      config: config as unknown as Record<string, unknown>,
+      sendViaLAN,
+      getNetworkClient,
+      getAgentCommsSecret: () => readKeychain('credential-agent-comms-secret'),
+      logCommsEntry,
+      sendMessage: sendMessage as (req: { from: string; to: string; type: string; body: string; metadata?: Record<string, unknown> }) => { messageId: number; delivered: boolean },
+    });
+    setA2ARouter(router);
+    setRouter(router);
+    registerRoute('/api/a2a/*', handleA2ARoute as RouteHandler);
+    log.info('Unified A2A route registered');
+
+
+    // ── A2A Network SDK ─────────────────────────────────────
+    try {
+      const networkOk = await initNetworkSDK(config as unknown as Record<string, unknown>);
+      if (networkOk) {
+        registerRoute('/api/network/*', handleNetworkRoute as RouteHandler);
+        registerRoute('/agent/p2p', (async (req, res) => {
+          if (req.method !== 'POST') return false;
+          try {
+            const body = await readBody(req);
+            const envelope = JSON.parse(body);
+            await handleIncomingP2P(envelope);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid envelope' }));
+          }
+          return true;
+        }) as RouteHandler);
+        log.info('A2A Network SDK initialized and routes registered');
+      } else {
+        log.warn('A2A Network SDK not available — LAN-only mode');
+      }
+    } catch (err) {
+      log.error('A2A Network SDK init failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    // ── Telegram ────────────────────────────────────────────
+    const fullConfig = config as KithkitConfig & {
+      channels?: {
+        telegram?: {
+          enabled?: boolean;
+          bot_token?: string;
+          safe_senders?: Array<{ chat_id: number; name: string }>;
+          poll_interval_ms?: number;
+          max_message_length?: number;
+          allowed_chat_ids?: number[];
+        };
+      };
+    };
+
+    const telegramConfig = fullConfig.channels?.telegram;
+
+    if (!telegramConfig?.enabled) {
+      log.warn('Telegram not enabled in config (channels.telegram.enabled)');
+    } else if (!telegramConfig.bot_token) {
+      log.error('No bot_token in channels.telegram config');
+    } else {
+      let safeSenders = telegramConfig.safe_senders ?? [];
+      if (safeSenders.length === 0 && telegramConfig.allowed_chat_ids?.length) {
+        safeSenders = telegramConfig.allowed_chat_ids.map((id, i) => ({
+          chat_id: id,
+          name: `User${i + 1}`,
+        }));
+      }
+
+      try {
+        _telegramAdapter = await createCommsTelegramAdapter({
+          bot_token: telegramConfig.bot_token,
+          safe_senders: safeSenders,
+          poll_interval_ms: telegramConfig.poll_interval_ms ?? 3000,
+          max_message_length: telegramConfig.max_message_length ?? 4000,
+        });
+        registerAdapter(_telegramAdapter);
+        log.info('Telegram adapter registered with channel router');
+      } catch (err) {
+        log.error('Failed to initialize Telegram adapter', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    // Register a status route for telegram
+    registerRoute('/telegram/status', (async (_req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        adapter: 'comms-telegram',
+        mode: 'polling',
+      }));
+      return true;
+    }) as RouteHandler);
+
+    log.info('Comms extension initialized');
+  },
+
+  async onRoute(
+    _req: http.IncomingMessage,
+    _res: http.ServerResponse,
+    _pathname: string,
+    _searchParams: URLSearchParams,
+  ): Promise<boolean> {
+    return false;
+  },
+
+  async onShutdown(): Promise<void> {
+    log.info('Comms extension shutting down...');
+
+    await stopNetworkSDK();
+    stopAgentComms();
+
+    if (_telegramAdapter) {
+      await _telegramAdapter.shutdown();
+      unregisterAdapter('telegram');
+      _telegramAdapter = null;
+    }
+
+    log.info('Comms extension shut down');
+  },
+};
