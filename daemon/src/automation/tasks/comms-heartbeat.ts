@@ -1,25 +1,24 @@
 /**
- * Comms Heartbeat — nudges the comms agent when there is pending work.
+ * Comms Heartbeat — nudges the comms agent when workers finish.
  *
  * Every 60 seconds:
  * 1. Check for completed or failed worker agents not yet acknowledged.
- * 2. Check for unread messages addressed to comms.
- * 3. If EITHER has results, inject a brief nudge into the comms tmux session:
- *    "[heartbeat] 2 workers completed, 1 unread message — check in"
- * 4. Mark notified workers as acknowledged so they don't re-trigger.
- * 5. If nothing pending, do nothing (stays silent).
+ * 2. If any found, inject a brief nudge into the comms tmux session:
+ *    "[heartbeat] 2 workers finished — check in"
+ * 3. Mark notified workers as acknowledged so they don't re-trigger.
+ * 4. If nothing pending, do nothing (stays silent).
+ *
+ * Unread message nudging has been removed — message-delivery handles
+ * deliver-once notifications directly.
  */
 
 import { query, exec } from '../../core/db.js';
-import { injectMessage, listSessions, _getCommsSession, getOrchestratorState } from '../../agents/tmux.js';
-import { getLastNotificationTime } from './message-delivery.js';
+import { injectMessage, listSessions, _getCommsSession } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('comms-heartbeat');
 
-/** Skip heartbeat unread-message nudge if message-delivery notified within this window. */
-const DEDUP_WINDOW_MS = 60_000;
 
 interface AgentRow {
   id: string;
@@ -27,9 +26,6 @@ interface AgentRow {
   acknowledged_at: string | null;
 }
 
-interface MessageCount {
-  count: number;
-}
 
 /**
  * Check whether the comms session (comms1) is alive.
@@ -53,28 +49,6 @@ function getPendingWorkers(): AgentRow[] {
 }
 
 /**
- * Count unread messages addressed to comms.
- *
- * Condition: read_at IS NULL AND processed_at IS NOT NULL
- *   - processed_at IS NOT NULL: message has been delivered to the target session
- *     (set by message-delivery task on successful injection).
- *   - read_at IS NULL: message has not been acknowledged/read by the agent yet.
- *
- * This intentionally excludes undelivered messages (processed_at IS NULL) because
- * those are handled by the message-delivery task, not the heartbeat. The heartbeat
- * only nudges about messages that were delivered but haven't been acted on yet.
- */
-function getUnreadMessageCount(): number {
-  const result = query<MessageCount>(
-    `SELECT COUNT(*) as count FROM messages
-     WHERE to_agent = 'comms'
-       AND read_at IS NULL
-       AND processed_at IS NOT NULL`,
-  );
-  return result[0]?.count ?? 0;
-}
-
-/**
  * Mark a list of worker agent rows as acknowledged.
  */
 function acknowledgeWorkers(ids: string[]): void {
@@ -90,17 +64,10 @@ function acknowledgeWorkers(ids: string[]): void {
 }
 
 /**
- * Build the nudge text from pending worker and message counts.
+ * Build the nudge text from pending worker count.
  */
-function buildNudge(workerCount: number, unreadCount: number): string {
-  const parts: string[] = [];
-  if (workerCount > 0) {
-    parts.push(`${workerCount} worker${workerCount === 1 ? '' : 's'} finished`);
-  }
-  if (unreadCount > 0) {
-    parts.push(`${unreadCount} unread message${unreadCount === 1 ? '' : 's'}`);
-  }
-  return `[heartbeat] ${parts.join(', ')} — check in`;
+function buildNudge(workerCount: number): string {
+  return `[heartbeat] ${workerCount} worker${workerCount === 1 ? '' : 's'} finished — check in`;
 }
 
 /**
@@ -114,29 +81,19 @@ async function run(): Promise<void> {
 
   const pendingWorkers = getPendingWorkers();
 
-  // Skip unread-message nudge if message-delivery already notified comms recently.
-  // This prevents the agent from receiving both a real-time notification and a
-  // heartbeat nudge for the same unread messages (kithkit #30).
-  const lastMessageNotification = getLastNotificationTime('comms');
-  const recentlyNotified = (Date.now() - lastMessageNotification) < DEDUP_WINDOW_MS;
-  const unreadCount = recentlyNotified ? 0 : getUnreadMessageCount();
-
-  if (pendingWorkers.length === 0 && unreadCount === 0) {
+  if (pendingWorkers.length === 0) {
     log.debug('Nothing pending — heartbeat silent');
     return;
   }
 
-  const nudge = buildNudge(pendingWorkers.length, unreadCount);
+  const nudge = buildNudge(pendingWorkers.length);
   const injected = injectMessage('comms', nudge);
 
   if (injected) {
     // Acknowledge the workers we just notified about
     const ids = pendingWorkers.map(w => w.id);
     acknowledgeWorkers(ids);
-    log.info('Heartbeat nudge sent', {
-      workers: pendingWorkers.length,
-      unread: unreadCount,
-    });
+    log.info('Heartbeat nudge sent', { workers: pendingWorkers.length });
   } else {
     log.warn('Heartbeat nudge injection failed — will retry next tick');
   }
