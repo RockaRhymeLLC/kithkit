@@ -1,32 +1,42 @@
-# .kithkit-private — Files that never sync to upstream kithkit
-# These are instance-specific to KKit-Skippy and must stay local.
-# Used by the divergence checker and CI/CD sync workflows.
+# .kithkit-private — R2D2 instance manifest
 #
-# Patterns use glob syntax (matched by minimatch/picomatch).
+# Files listed here are specific to this agent instance and must NEVER
+# sync upstream to the public kithkit repository. The CI/CD sync pipeline
+# uses this manifest to exclude instance-specific files from upstream merges.
+#
+# Glob patterns follow .gitignore syntax.
 
-# Instance configuration
-kithkit.config.yaml
+# ── Identity & Config ─────────────────────────────────────────
 identity.md
-.claude/settings.local.json
+kithkit.config.yaml
 
-# Instance-specific extensions
-daemon/src/extensions/instance/
-daemon/src/extensions/skippy/
-
-# Local state (not tracked in git, but listed for completeness)
-.claude/state/
-.claude/sessions/
-.claude/worktrees/
+# ── Database ──────────────────────────────────────────────────
 kithkit.db
-kithkit.db-wal
 kithkit.db-shm
+kithkit.db-wal
 
-# Local planning docs
-docs/plans/
-docs/specs/
+# ── Instance-specific extension code ─────────────────────────
+daemon/src/extensions/instance/*
 
-# A2A SDK submodule (local dev)
-.a2a-sdk/
+# ── Agent profiles (may contain instance-specific profiles) ──
+.claude/agents/*
 
-# Backup files
-daemon/src/extensions/index.ts.bak.*
+# ── State & sessions (runtime data) ──────────────────────────
+.claude/state/*
+.claude/sessions/*
+
+# ── Instance-specific scripts ────────────────────────────────
+scripts/import-cc4me-memories.py
+scripts/import-flat-memories.py
+scripts/telegram-send.sh
+scripts/email/*
+scripts/reminders/*
+
+# ── Claude Code memory (instance-specific context) ───────────
+.claude/projects/*/memory/*
+
+# ── Worktrees (ephemeral, never sync) ────────────────────────
+.claude/worktrees/*
+
+# ── LaunchDaemon plists (macOS-specific) ─────────────────────
+*.plist
