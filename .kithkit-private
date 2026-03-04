@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # .kithkit-private — files that never sync upstream
 # One path per line. Supports globs. Checked by CI leak guard.
 
@@ -82,37 +81,3 @@ extensions/kkit-chrome-connect/
 .a2a-sdk/
 data/
 daemon/public/data/
-=======
-# .kithkit-private — Files that never sync to upstream kithkit
-# These are instance-specific to KKit-Skippy and must stay local.
-# Used by the divergence checker and CI/CD sync workflows.
-#
-# Patterns use glob syntax (matched by minimatch/picomatch).
-
-# Instance configuration
-kithkit.config.yaml
-identity.md
-.claude/settings.local.json
-
-# Instance-specific extensions
-daemon/src/extensions/instance/
-daemon/src/extensions/skippy/
-
-# Local state (not tracked in git, but listed for completeness)
-.claude/state/
-.claude/sessions/
-.claude/worktrees/
-kithkit.db
-kithkit.db-wal
-kithkit.db-shm
-
-# Local planning docs
-docs/plans/
-docs/specs/
-
-# A2A SDK submodule (local dev)
-.a2a-sdk/
-
-# Backup files
-daemon/src/extensions/index.ts.bak.*
->>>>>>> upstream/main

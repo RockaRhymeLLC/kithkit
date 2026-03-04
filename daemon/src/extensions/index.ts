@@ -222,10 +222,6 @@ async function loadInstanceExtensions(
   scheduler: Scheduler,
 ): Promise<{ shutdown?: () => Promise<void> | void }> {
   try {
-<<<<<<< HEAD
-=======
-    // @ts-expect-error instance/ only exists in personal instance repos
->>>>>>> upstream/main
     const mod = await import('./instance/index.js');
     if (typeof mod.register === 'function') {
       await mod.register(config, server, scheduler);
