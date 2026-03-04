@@ -1,0 +1,93 @@
+# CI — runs on every push and PR to main
+# Tests, type-checking, and instance-specific content leak detection.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # The daemon depends on cc4me-network via a file: link that only
+      # resolves locally. It's dynamically loaded at runtime, not imported
+      # in source. Remove it before install so npm ci succeeds in CI.
+      - name: Remove local-only file dependencies
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('daemon/package.json', 'utf8'));
+            for (const [name, ver] of Object.entries(pkg.dependencies || {})) {
+              if (typeof ver === 'string' && ver.startsWith('file:')) {
+                console.log('Removing local dep:', name, ver);
+                delete pkg.dependencies[name];
+              }
+            }
+            fs.writeFileSync('daemon/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        run: npm run build
+
+      - name: Type-check (daemon)
+        working-directory: daemon
+        run: npx tsc --noEmit
+
+      - name: Type-check (cli)
+        working-directory: cli
+        run: npx tsc --noEmit
+
+      - name: Test (daemon)
+        working-directory: daemon
+        run: npm test
+
+      - name: Test (cli)
+        working-directory: cli
+        run: npm test
+
+  leak-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check for instance-specific content
+        run: |
+          # Blocked patterns — instance-specific identifiers that must never
+          # appear in the public framework repo. Keep in sync with
+          # scripts/install-hooks.sh (local pre-push hook).
+          PATTERNS='BMO|R2D2|Skippy|bmobot|daveh@|7629737488|192\.168\.12|credential-|com\.assistant\.bmo|com\.bmo\.|lindee|kp\.hurley'
+
+          # Files that may legitimately reference these as examples
+          EXCLUDE='README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/'
+
+          FOUND=$(grep -rn -E "$PATTERNS" \
+            --include='*.ts' --include='*.js' --include='*.yaml' \
+            --include='*.yml' --include='*.json' --include='*.md' \
+            --include='*.sh' \
+            . | grep -v node_modules | grep -v -E "$EXCLUDE" || true)
+
+          if [ -n "$FOUND" ]; then
+            echo "::error::Instance-specific content detected in public repo:"
+            echo "$FOUND"
+            echo ""
+            echo "These patterns must not appear in the public framework repo."
+            echo "If this is a false positive, add the file to the EXCLUDE list."
+            exit 1
+          fi
+
+          echo "Leak check passed — no instance-specific content found."

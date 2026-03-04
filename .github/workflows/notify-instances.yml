@@ -1,0 +1,38 @@
+# Notify Instances — dispatches sync events to personal repos after main updates.
+# Each personal repo has an upstream-sync workflow that listens for these events.
+name: Notify Instances
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    # Only dispatch on actual pushes, not PR merges that re-trigger
+    if: github.event_name == 'push'
+    steps:
+      - name: Dispatch upstream-sync to personal repos
+        env:
+          GH_TOKEN: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+        run: |
+          # List of personal instance repos to notify.
+          # Add new instances here as they're created.
+          REPOS=(
+            "KKit-BMO"
+          )
+
+          COMMIT_SHA="${{ github.sha }}"
+          COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
+
+          for repo in "${REPOS[@]}"; do
+            echo "Dispatching upstream-sync to RockaRhymeLLC/$repo..."
+            gh api "repos/RockaRhymeLLC/$repo/dispatches" \
+              -f event_type=upstream-sync \
+              -f "client_payload[sha]=$COMMIT_SHA" \
+              -f "client_payload[message]=$COMMIT_MSG" \
+              2>&1 && echo "  -> dispatched" || echo "  -> FAILED (check token permissions)"
+          done
