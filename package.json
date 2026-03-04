@@ -24,6 +24,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.3.0",
+    "minimatch": "^10.2.4",
     "typescript": "^5.9.3"
   }
 }

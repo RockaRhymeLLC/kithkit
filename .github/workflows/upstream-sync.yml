@@ -1,0 +1,174 @@
+# All times in UTC
+name: Upstream Sync
+
+env:
+  TZ: UTC
+
+on:
+  repository_dispatch:
+    types: [upstream-sync]
+  schedule:
+    # Weekly fallback: Monday 8:00 AM UTC
+    - cron: '0 8 * * 1'
+
+jobs:
+  sync:
+    name: Check and sync upstream
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Add upstream remote
+        run: |
+          git remote add upstream https://github.com/RockaRhymeLLC/kithkit.git || true
+          git fetch upstream main --no-tags
+
+      - name: Check for new upstream commits
+        id: check
+        run: |
+          LOCAL=$(git rev-parse HEAD)
+          UPSTREAM=$(git rev-parse upstream/main)
+          if [ "$LOCAL" = "$UPSTREAM" ]; then
+            echo "up_to_date=true" >> "$GITHUB_OUTPUT"
+            echo "No new upstream commits — already up to date."
+          else
+            AHEAD=$(git rev-list upstream/main..HEAD --count)
+            BEHIND=$(git rev-list HEAD..upstream/main --count)
+            echo "up_to_date=false" >> "$GITHUB_OUTPUT"
+            echo "upstream_sha=${UPSTREAM}" >> "$GITHUB_OUTPUT"
+            echo "commits_behind=${BEHIND}" >> "$GITHUB_OUTPUT"
+            echo "commits_ahead=${AHEAD}" >> "$GITHUB_OUTPUT"
+            echo "Behind by ${BEHIND} commits, ahead by ${AHEAD} commits."
+          fi
+
+      - name: Install dependencies
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          cd daemon && npm ci --ignore-scripts
+          npm ci --ignore-scripts
+
+      - name: Build scripts
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          # Compile divergence-check.ts standalone
+          npx tsc --target ES2022 --module NodeNext --moduleResolution NodeNext \
+            --outDir scripts/dist scripts/divergence-check.ts 2>/dev/null || \
+          node --input-type=module < scripts/divergence-check.ts || true
+
+      - name: Run divergence check
+        if: steps.check.outputs.up_to_date == 'false'
+        id: divergence
+        run: |
+          OUTPUT=$(bash scripts/divergence-check.sh --json 2>&1) || true
+          echo "result<<EOF" >> "$GITHUB_OUTPUT"
+          echo "$OUTPUT" >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+          echo "$OUTPUT"
+
+      - name: Generate sync manifest
+        if: steps.check.outputs.up_to_date == 'false'
+        id: manifest
+        run: |
+          UPSTREAM_SHA="${{ steps.check.outputs.upstream_sha }}"
+          DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          BEHIND="${{ steps.check.outputs.commits_behind }}"
+          AHEAD="${{ steps.check.outputs.commits_ahead }}"
+
+          # Get list of changed files between HEAD and upstream/main
+          CHANGED=$(git diff --name-only HEAD...upstream/main)
+          FRAMEWORK_FILES=""
+          INSTANCE_FILES=""
+
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            # Check .kithkit-private for instance files
+            if grep -qF "$f" .kithkit-private 2>/dev/null; then
+              INSTANCE_FILES="${INSTANCE_FILES}${f},"
+            else
+              FRAMEWORK_FILES="${FRAMEWORK_FILES}${f},"
+            fi
+          done <<< "$CHANGED"
+
+          # Strip trailing commas
+          FRAMEWORK_FILES="${FRAMEWORK_FILES%,}"
+          INSTANCE_FILES="${INSTANCE_FILES%,}"
+
+          echo "date=${DATE}" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+          echo "commits_behind=${BEHIND}" >> "$GITHUB_OUTPUT"
+          echo "commits_ahead=${AHEAD}" >> "$GITHUB_OUTPUT"
+          echo "framework_files=${FRAMEWORK_FILES}" >> "$GITHUB_OUTPUT"
+          echo "instance_files=${INSTANCE_FILES}" >> "$GITHUB_OUTPUT"
+
+      - name: Create sync branch
+        if: steps.check.outputs.up_to_date == 'false'
+        run: |
+          BRANCH="sync/upstream-$(date -u +%Y%m%d-%H%M)"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          # Merge upstream — no-commit so we can review
+          git merge upstream/main --no-commit --no-ff || true
+          # Stage all changes
+          git add -A
+          git diff --cached --quiet || git commit -m "chore: merge upstream/main @ ${{ steps.check.outputs.upstream_sha }}"
+          git push origin "$BRANCH"
+          echo "SYNC_BRANCH=$BRANCH" >> "$GITHUB_ENV"
+
+      - name: Create sync PR
+        if: steps.check.outputs.up_to_date == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          gh pr create \
+            --title "chore: sync upstream @ ${{ steps.check.outputs.upstream_sha }}" \
+            --base main \
+            --head "$SYNC_BRANCH" \
+            --body "$(cat <<'BODY'
+## Upstream Sync
+
+<!-- SYNC-MANIFEST
+date: ${{ steps.manifest.outputs.date }}
+upstream_sha: ${{ steps.manifest.outputs.upstream_sha }}
+commits_behind: ${{ steps.manifest.outputs.commits_behind }}
+commits_ahead: ${{ steps.manifest.outputs.commits_ahead }}
+framework_files: ${{ steps.manifest.outputs.framework_files }}
+instance_files: ${{ steps.manifest.outputs.instance_files }}
+-->
+
+This PR was created automatically by the upstream-sync workflow.
+
+**Do not merge without agent review.** The divergence check output below
+classifies each changed file as `framework` (safe to sync) or `instance`
+(needs manual review before merging).
+
+### Divergence Check
+
+```json
+${{ steps.divergence.outputs.result }}
+```
+
+### Changed Files
+
+| Classification | Files |
+|---|---|
+| Framework (upstream) | `${{ steps.manifest.outputs.framework_files }}` |
+| Instance (review required) | `${{ steps.manifest.outputs.instance_files }}` |
+
+---
+*Auto-generated by `.github/workflows/upstream-sync.yml`*
+BODY
+)"
