@@ -41,6 +41,7 @@ import { registerWithRelay } from './comms/network/registration.js';
 import { handleNetworkRoute } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
+import { commsSessionExists } from '../core/session-bridge.js';
 import { enableVectorSearch } from '../api/memory.js';
 import { readKeychain } from '../core/keychain.js';
 import { parseBody } from '../api/helpers.js';
@@ -221,7 +222,6 @@ async function loadInstanceExtensions(
   scheduler: Scheduler,
 ): Promise<{ shutdown?: () => Promise<void> | void }> {
   try {
-    // @ts-expect-error — instance/ may not exist (gitignored upstream); handled by catch
     const mod = await import('./instance/index.js');
     if (typeof mod.register === 'function') {
       await mod.register(config, server, scheduler);
@@ -285,6 +285,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   _scheduler = new Scheduler({
     tasks: schedulerConfig,
     tickIntervalMs: 1000,
+    sessionExists: commsSessionExists,
   });
 
   // Register core task handlers (context-watchdog, todo-reminder, etc.)
