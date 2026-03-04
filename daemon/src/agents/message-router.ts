@@ -10,7 +10,7 @@
 
 import { insert, query, exec } from '../core/db.js';
 import { injectMessage } from './tmux.js';
-import { notifyNewMessage, recordDirectInjection } from '../automation/tasks/message-delivery.js';
+import { notifyNewMessage } from '../automation/tasks/message-delivery.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('message-router');
@@ -176,9 +176,6 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
             'UPDATE messages SET processed_at = ?, read_at = ? WHERE id = ?',
             now, now, message.id,
           );
-          // Tell the heartbeat dedup that comms was just notified, so it
-          // doesn't fire a redundant "[heartbeat] N unread messages" nudge.
-          recordDirectInjection(req.to);
           return { messageId: message.id, delivered: true };
         }
         // Injection failed (session not alive) — fall through to normal delivery
@@ -210,7 +207,7 @@ export function getMessages(
   agentId: string,
   opts?: { limit?: number; type?: MessageType },
 ): Message[] {
-  let sql = 'SELECT * FROM messages WHERE to_agent = ? OR from_agent = ?';
+  let sql = 'SELECT * FROM messages WHERE (to_agent = ? OR from_agent = ?)';
   const params: unknown[] = [agentId, agentId];
 
   if (opts?.type) {

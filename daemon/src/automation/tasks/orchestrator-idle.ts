@@ -216,32 +216,11 @@ function cleanupOrphanedTasks(): number {
  */
 function respawnForPendingTasks(taskId: string, taskTitle: string, taskDesc: string, pendingCount: number): void {
   try {
-    const sessionDir = createSessionDir('orchestrator');
-    const claudeBin = `${process.env.HOME}/.local/bin/claude`;
+    createSessionDir('orchestrator');
 
-    // Build a prompt that tells the new orchestrator to check its task queue
-    const prompt = [
-      'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality.',
-      '',
-      'Your role: decompose complex tasks, spawn workers, coordinate their output, and report structured results back to the comms agent.',
-      '',
-      `You have ${pendingCount} pending task(s) in the queue. Start by checking the task queue:`,
-      `  curl -s http://localhost:3847/api/orchestrator/tasks?status=pending`,
-      '',
-      `First pending task:`,
-      `  Task ID: ${taskId}`,
-      `  Title: ${taskTitle}`,
-      `  Description: ${taskDesc.slice(0, 500)}`,
-      '',
-      'Work through all pending tasks. For each task:',
-      '1. Assign it: PUT /api/orchestrator/tasks/:id with {"status":"assigned","assignee":"orchestrator"}',
-      '2. Start it: PUT /api/orchestrator/tasks/:id with {"status":"in_progress"}',
-      '3. Do the work (spawn workers as needed)',
-      '4. Complete it: PUT /api/orchestrator/tasks/:id with {"status":"completed","result":"<summary>"}',
-      '5. Report to comms: POST /api/messages with {"from":"orchestrator","to":"comms","type":"result","body":"<result>"}',
-      '',
-      `Session directory: ${sessionDir}`,
-    ].join('\n');
+    // The orchestrator uses --profile orchestrator and discovers tasks from the DB queue.
+    // The prompt is not embedded in the script — pass a simple placeholder.
+    const prompt = `Respawned by idle monitor for ${pendingCount} pending task(s)`;
 
     // Import here to avoid circular at module level — spawnOrchestratorSession is already injectable
     const session = spawnOrchestratorSession(prompt);
@@ -275,7 +254,7 @@ function respawnForPendingTasks(taskId: string, taskTitle: string, taskDesc: str
       details: `Respawned by idle monitor for ${pendingCount} pending task(s): ${taskTitle.slice(0, 100)}`,
     });
 
-    // Send the task as a message so the wrapper's poll loop can also find it
+    // Log the task as a message for audit trail — the orch discovers it from the DB queue
     sendMessage({
       from: 'daemon',
       to: 'orchestrator',
