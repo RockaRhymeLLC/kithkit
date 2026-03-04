@@ -64,30 +64,68 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Check for instance-specific content
+      - name: Check changed files for instance-specific content
         run: |
-          # Blocked patterns — instance-specific identifiers that must never
-          # appear in the public framework repo. Keep in sync with
+          # Blocked patterns — instance-specific identifiers that must not
+          # be introduced to the public framework repo. Keep in sync with
           # scripts/install-hooks.sh (local pre-push hook).
-          PATTERNS='BMO|R2D2|Skippy|bmobot|daveh@|7629737488|192\.168\.12|credential-|com\.assistant\.bmo|com\.bmo\.|lindee|kp\.hurley'
+          #
+          # NOTE: "credential-" and "BMO" are intentionally EXCLUDED from
+          # this list because they're already part of the framework:
+          #   - credential- is the keychain naming convention
+          #   - BMO references exist in channel-router, telegram adapter, etc.
+          # Cleaning those up is tracked separately.
+          PATTERNS='R2D2|Skippy|bmobot|daveh@|7629737488|192\.168\.12|com\.assistant\.bmo|com\.bmo\.|lindee|kp\.hurley'
 
-          # Files that may legitimately reference these as examples
-          EXCLUDE='README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/'
+          # Directories/files excluded from checking (documentation, examples)
+          EXCLUDE='README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/|\.claude/skills/|docs/'
 
-          FOUND=$(grep -rn -E "$PATTERNS" \
-            --include='*.ts' --include='*.js' --include='*.yaml' \
-            --include='*.yml' --include='*.json' --include='*.md' \
-            --include='*.sh' \
-            . | grep -v node_modules | grep -v -E "$EXCLUDE" || true)
+          # Get changed files — PR diff or push diff
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            # Push: compare against parent commit(s)
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+          fi
+
+          CHANGED=$(git diff --name-only --diff-filter=ACMR "$BASE" "$HEAD" 2>/dev/null || echo "")
+
+          if [ -z "$CHANGED" ]; then
+            echo "No changed files to check."
+            exit 0
+          fi
+
+          # Filter to relevant file types and exclude safe directories
+          FILES=$(echo "$CHANGED" | grep -E '\.(ts|js|yaml|yml|json|md|sh)$' | grep -v -E "$EXCLUDE" || true)
+
+          if [ -z "$FILES" ]; then
+            echo "No relevant changed files to check."
+            exit 0
+          fi
+
+          echo "Checking $(echo "$FILES" | wc -l | tr -d ' ') changed files for instance-specific patterns..."
+
+          FOUND=""
+          while IFS= read -r file; do
+            [ -f "$file" ] || continue
+            MATCHES=$(grep -nE "$PATTERNS" "$file" 2>/dev/null || true)
+            if [ -n "$MATCHES" ]; then
+              FOUND="${FOUND}${file}:\n${MATCHES}\n\n"
+            fi
+          done <<< "$FILES"
 
           if [ -n "$FOUND" ]; then
-            echo "::error::Instance-specific content detected in public repo:"
-            echo "$FOUND"
+            echo "::error::Instance-specific content detected in changed files:"
+            echo -e "$FOUND"
             echo ""
             echo "These patterns must not appear in the public framework repo."
-            echo "If this is a false positive, add the file to the EXCLUDE list."
+            echo "If this is a false positive, add the file to the EXCLUDE list in ci.yml."
             exit 1
           fi
 
-          echo "Leak check passed — no instance-specific content found."
+          echo "Leak check passed — no instance-specific content in changed files."

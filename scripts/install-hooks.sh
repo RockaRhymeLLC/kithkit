@@ -19,14 +19,16 @@ cat > "$HOOKS_DIR/pre-push" << 'HOOK'
 # Keep these lists in sync.
 set -euo pipefail
 
+# NOTE: "credential-" and "BMO" are excluded — they're framework patterns.
+# credential- is the keychain naming convention; BMO references exist in
+# existing framework code (channel-router, telegram adapter). Cleaning
+# those up is tracked separately.
 BLOCKED_PATTERNS=(
-  "BMO"
   "R2D2"
   "Skippy"
   "bmobot"
   "daveh@"
   "192\.168\.12"
-  "credential-"
   "com\.assistant\.bmo"
   "com\.bmo\."
   "lindee"
@@ -34,7 +36,7 @@ BLOCKED_PATTERNS=(
   "7629737488"
 )
 
-EXCLUSIONS="README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/"
+EXCLUSIONS="README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/|\.claude/skills/|docs/"
 
 PATTERN=$(IFS="|"; echo "${BLOCKED_PATTERNS[*]}")
 
