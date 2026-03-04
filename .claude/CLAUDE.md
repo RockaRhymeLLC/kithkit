@@ -75,6 +75,7 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `GET /api/orchestrator/tasks/:id/activity` | Get task activity log (paginated) |
 | `POST /api/orchestrator/tasks/:id/workers` | Assign a worker job to a task |
 | `POST /api/config/reload` | Hot-reload config from disk |
+| `POST /api/a2a/send` | Send A2A message (DM or group) with auto/LAN/relay routing |
 
 See `docs/api-reference.md` for full request/response details.
 

@@ -31,7 +31,7 @@ export function configure(opts: { projectDir: string }): void {
 
 // ── Session name mapping ────────────────────────────────────
 
-function resolveSession(agentId: string): string | null {
+export function resolveSession(agentId: string): string | null {
   if (agentId === 'comms') return COMMS_SESSION;
   if (agentId === 'orchestrator') return ORCH_SESSION;
   return null; // Workers don't have tmux sessions

@@ -163,6 +163,9 @@ identity.md
 .claude/state/
 models/
 
+# Instance-specific extensions (never commit to public repo)
+daemon/src/extensions/instance/
+
 # Python virtual environments
 .venv/
 */.venv/

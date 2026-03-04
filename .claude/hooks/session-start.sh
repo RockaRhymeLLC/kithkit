@@ -2,14 +2,14 @@
 #
 # SessionStart Hook (v4)
 #
-# Comms agent bootstrap: injects identity, autonomy, saved state, daemon status.
-# Then triggers self-bootstrap via the Session Start Checklist.
+# Comms agent bootstrap: injects identity, autonomy, saved state, daemon status,
+# and relevant memories. Then triggers self-bootstrap via auto-resume prompt.
 #
 # ONLY runs for the comms agent session. Orchestrator and worker sessions
 # get their prompts from the daemon — this hook exits immediately for them.
 #
 # Fires on: startup, resume, clear, compact
-# Set CC4ME_QUIET_START=1 to suppress auto-resume injection (useful for debugging).
+# Set KITHKIT_QUIET_START=1 to suppress auto-resume injection (useful for debugging).
 
 set -e
 
@@ -46,7 +46,7 @@ SOURCE=$(echo "$HOOK_INPUT" | grep -o '"source"[[:space:]]*:[[:space:]]*"[^"]*"'
 # run outside tmux (LaunchAgent has a clean env with no $TMUX), so they exit
 # here before producing any output or injecting prompts into the comms session.
 SESSION_NAME=$(grep -A1 '^tmux:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'session:' | sed 's/.*session:[[:space:]]*//' | tr -d '"' | tr -d "'")
-SESSION_NAME="${SESSION_NAME:-cc4me}"
+SESSION_NAME="${SESSION_NAME:-comms1}"
 
 if [ -z "$TMUX" ]; then
   # Not in tmux at all — SDK worker or other non-interactive context. Exit clean.
@@ -60,9 +60,13 @@ fi
 
 # ── Comms agent bootstrap ──────────────────────────────────
 
+# Read daemon port from config (default: 3847)
+DAEMON_PORT=$(grep -A1 '^daemon:' "$PROJECT_DIR/kithkit.config.yaml" 2>/dev/null | grep 'port:' | sed 's/.*port:[[:space:]]*//' | tr -d '"' | tr -d "'")
+DAEMON_PORT="${DAEMON_PORT:-3847}"
+
 # Check if daemon is running
 DAEMON_RUNNING=false
-if curl -s --connect-timeout 1 --max-time 2 "http://localhost:3847/status" > /dev/null 2>&1; then
+if curl -s --connect-timeout 1 --max-time 2 "http://localhost:${DAEMON_PORT}/status" > /dev/null 2>&1; then
   DAEMON_RUNNING=true
 fi
 
@@ -127,27 +131,13 @@ if [ -f "$STATE_DIR/assistant-state.md" ]; then
   fi
 fi
 
-# Send "back online" notification on actual restart (not clear/compact)
-# channel.txt is the single source of truth — no fallback to assistant-state.md
-CHANNEL=$(cat "$STATE_DIR/channel.txt" 2>/dev/null | tr -d '[:space:]')
-if [ "$CHANNEL" = "telegram" ] && [ "$SOURCE" != "clear" ] && [ "$SOURCE" != "compact" ]; then
-  if [ -f "$STATE_DIR/assistant-state.md" ]; then
-    LINES_CHECK=$(wc -l < "$STATE_DIR/assistant-state.md" | tr -d ' ')
-    if [ "$LINES_CHECK" -gt 3 ]; then
-      # Send async — don't block session start
-      nohup "$PROJECT_DIR/scripts/telegram-send.sh" "Back online! Resuming where I left off." >/dev/null 2>&1 &
-      disown
-    fi
-  fi
-fi
-
 # Daemon status
 if [ "$DAEMON_RUNNING" = "true" ]; then
   echo "### Daemon"
-  echo "Kithkit daemon is running (port 3847). Transcript watching, Telegram, email, and scheduled tasks are managed by the daemon."
+  echo "Kithkit daemon is running (port ${DAEMON_PORT}). Scheduled tasks, channel delivery, and extensions are managed by the daemon."
 else
   echo "### Daemon"
-  echo "Kithkit daemon is NOT running. Using fallback v1 transcript watcher. Start daemon: \`launchctl load ~/Library/LaunchAgents/com.assistant.daemon.plist\`"
+  echo "Kithkit daemon is NOT running. Start daemon: \`launchctl load ~/Library/LaunchAgents/com.assistant.daemon.plist\`"
 fi
 echo ""
 
@@ -165,16 +155,20 @@ if [ "$DAEMON_RUNNING" = "true" ]; then
       cut -c1-200)
   fi
 
-  # Fallback: use agent name as generic query
+  # Fallback: use generic query
   if [ -z "$SEARCH_QUERY" ]; then
     SEARCH_QUERY="important facts preferences decisions"
   fi
 
   # Query daemon memory API (hybrid search for best results)
-  MEMORY_CONTEXT=$(curl -s --connect-timeout 2 --max-time 5 \
-    -X POST "http://localhost:3847/api/memory/search" \
+  MEMORY_CONTEXT=$(echo "$SEARCH_QUERY" | python3 -c "
+import sys, json
+q = sys.stdin.read().strip()
+print(json.dumps({'mode':'hybrid','query':q,'limit':10}))
+" 2>/dev/null | curl -s --connect-timeout 2 --max-time 5 \
+    -X POST "http://localhost:${DAEMON_PORT}/api/memory/search" \
     -H 'Content-Type: application/json' \
-    -d "{\"mode\":\"hybrid\",\"query\":\"$SEARCH_QUERY\",\"limit\":10}" 2>/dev/null | python3 -c "
+    -d @- 2>/dev/null | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
@@ -186,7 +180,6 @@ try:
         content = m.get('content', '')[:120]
         la = m.get('last_accessed', '')
         if la:
-            # Format as relative time
             from datetime import datetime
             try:
                 accessed = datetime.fromisoformat(la.replace('Z', '+00:00'))
@@ -220,8 +213,8 @@ echo "---"
 # ── Auto-resume: inject a bootstrap prompt via tmux ───────
 # Triggers the agent to act on the saved state already in context,
 # instead of sitting idle waiting for input.
-# Set CC4ME_QUIET_START=1 to suppress (useful for debugging).
-if [ "${CC4ME_QUIET_START:-0}" != "1" ]; then
+# Set KITHKIT_QUIET_START=1 to suppress (useful for debugging).
+if [ "${KITHKIT_QUIET_START:-0}" != "1" ]; then
   TMUX_SOCKET="/private/tmp/tmux-$(id -u)/default"
 
   if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then

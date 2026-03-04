@@ -154,6 +154,7 @@ All endpoints are on `localhost:3847`. JSON responses include `timestamp` (ISO 8
 | `/api/tasks` | GET | List scheduler tasks |
 | `/api/tasks/:name/run` | POST | Manual trigger |
 | `/api/usage` | GET | Token/cost stats |
+| `/api/a2a/send` | POST | Send A2A message (DM or group) — unified endpoint |
 
 See `reference.md` for full request/response details.
 

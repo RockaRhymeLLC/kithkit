@@ -10,7 +10,7 @@
  * This is the single entry point — all extension modules register through here.
  * Zero modifications to upstream kithkit framework files.
  *
- * Instance-specific extensions (BMO, Skippy, etc.) are loaded dynamically from
+ * Instance-specific extensions are loaded dynamically from
  * ./instance/index.ts if it exists. That file is gitignored upstream and never
  * syncs to the public repo.
  */
@@ -50,22 +50,6 @@ import { sendMessage } from '../agents/message-router.js';
 
 const log = createLogger('agent-extension');
 
-// ── Helpers ──────────────────────────────────────────────────
-
-function readBody(req: http.IncomingMessage): Promise<string> {
-  // Check for pre-buffered body from main.ts metrics middleware
-  const rawBody = (req as unknown as Record<string, unknown>)._rawBody;
-  if (rawBody instanceof Buffer) {
-    return Promise.resolve(rawBody.toString());
-  }
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    req.on('data', (chunk: Buffer) => chunks.push(chunk));
-    req.on('end', () => resolve(Buffer.concat(chunks).toString()));
-    req.on('error', reject);
-  });
-}
-
 // ── State ────────────────────────────────────────────────────
 
 let _config: AgentConfig | null = null;
@@ -84,8 +68,7 @@ async function handleAgentP2P(
   if (req.method !== 'POST') return false;
 
   try {
-    const body = await readBody(req);
-    const envelope = JSON.parse(body) as WireEnvelope;
+    const envelope = await parseBody(req) as unknown as WireEnvelope;
     await handleIncomingP2P(envelope);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
@@ -108,8 +91,7 @@ async function handleAgentMessageRoute(
   try {
     const authHeader = req.headers.authorization;
     const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
-    const body = await readBody(req);
-    const parsed = JSON.parse(body);
+    const parsed = await parseBody(req);
     const result = await handleAgentMessage(token, parsed);
     res.writeHead(result.status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result.body));
@@ -130,14 +112,14 @@ async function handleAgentSend(
   if (req.method !== 'POST') return false;
 
   try {
-    const body = await readBody(req);
-    const { peer, type, text, ...extra } = JSON.parse(body);
+    const body = await parseBody(req);
+    const { peer, type, text, ...extra } = body;
     if (!peer || !type) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'peer and type are required' }));
       return true;
     }
-    const result = await sendAgentMessage(peer, type, text, extra);
+    const result = await sendAgentMessage(peer as string, type as string, (text as string) ?? '', extra);
     res.writeHead(result.ok ? 200 : 502, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result));
   } catch (err) {
@@ -239,6 +221,7 @@ async function loadInstanceExtensions(
   scheduler: Scheduler,
 ): Promise<{ shutdown?: () => Promise<void> | void }> {
   try {
+    // @ts-expect-error — instance/ may not exist (gitignored upstream); handled by catch
     const mod = await import('./instance/index.js');
     if (typeof mod.register === 'function') {
       await mod.register(config, server, scheduler);
@@ -320,7 +303,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Register basic extension health check
   registerAgentHealthChecks();
 
-  // Load instance-specific extensions (BMO-specific code)
+  // Load instance-specific extensions (if instance/ directory exists)
   const instanceResult = await loadInstanceExtensions(config, _server, _scheduler);
   _instanceShutdown = instanceResult.shutdown ?? null;
 
