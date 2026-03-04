@@ -180,8 +180,25 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
-          gh pr create \
-            --title "chore: sync upstream @ ${{ steps.check.outputs.upstream_sha }}" \
-            --base main \
-            --head "$SYNC_BRANCH" \
-            --body-file /tmp/sync-pr-body.md
+          PR_TITLE="chore: sync upstream @ ${{ steps.check.outputs.upstream_sha }}"
+          PR_BODY=$(cat /tmp/sync-pr-body.md)
+
+          RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls" \
+            -d "$(jq -n \
+              --arg title "$PR_TITLE" \
+              --arg body "$PR_BODY" \
+              --arg head "$SYNC_BRANCH" \
+              --arg base "main" \
+              '{title: $title, body: $body, head: $head, base: $base}')")
+
+          PR_URL=$(echo "$RESPONSE" | jq -r '.html_url // empty')
+          if [ -n "$PR_URL" ]; then
+            echo "Created PR: $PR_URL"
+          else
+            echo "Failed to create PR. Response:"
+            echo "$RESPONSE" | jq .
+            exit 1
+          fi
