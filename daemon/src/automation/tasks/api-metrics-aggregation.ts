@@ -12,6 +12,7 @@
 
 import { query, exec, getDatabase } from '../../core/db.js';
 import { createLogger } from '../../core/logger.js';
+import { loadConfig } from '../../core/config.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('api-metrics-aggregation');
@@ -33,11 +34,30 @@ interface LatencyRow {
 }
 
 /**
+ * Normalize a raw agent_id (often a User-Agent string) to a known agent name.
+ * Returns the configured agent name for unrecognized UA strings (local traffic).
+ */
+function normalizeAgentId(agentId: string | null): string | null {
+  if (!agentId) return loadConfig().agent?.name?.toLowerCase() ?? null;
+  const lower = agentId.toLowerCase();
+  // Already a known agent name
+  if (['bmo', 'r2', 'skippy'].includes(lower)) return lower;
+  // Raw User-Agent string → local traffic → attribute to this daemon's agent
+  if (lower.startsWith('curl/') || lower.startsWith('python') || lower.startsWith('node')
+    || lower.startsWith('mozilla/') || lower.startsWith('telegrambot')) {
+    return loadConfig().agent?.name?.toLowerCase() ?? null;
+  }
+  return agentId;
+}
+
+/**
  * Aggregate raw request logs for a given hour into hourly metrics.
  */
 function aggregateHour(hour: string): number {
   // Find all distinct (endpoint, method, agent_id) groups for this hour
-  const groups = query<AggGroup>(
+  // NOTE: agent_id is normalized post-query since raw logs may contain
+  // User-Agent strings that need to be mapped to known agent names.
+  const rawGroups = query<AggGroup>(
     `SELECT
        strftime('%Y-%m-%d %H:00', timestamp) as hour,
        path as endpoint,
@@ -53,6 +73,25 @@ function aggregateHour(hour: string): number {
      GROUP BY path, method, agent_id`,
     hour,
   );
+
+  // Re-group after normalizing agent_id (multiple raw UAs → single agent)
+  const groupMap = new Map<string, AggGroup>();
+  for (const g of rawGroups) {
+    const normAgent = normalizeAgentId(g.agent_id);
+    const key = `${g.endpoint}|${g.method}|${normAgent ?? ''}`;
+    const existing = groupMap.get(key);
+    if (existing) {
+      const totalReqs = existing.total_requests + g.total_requests;
+      existing.avg_latency_ms = (existing.avg_latency_ms * existing.total_requests + g.avg_latency_ms * g.total_requests) / totalReqs;
+      existing.total_requests = totalReqs;
+      existing.success_count += g.success_count;
+      existing.error_4xx += g.error_4xx;
+      existing.error_5xx += g.error_5xx;
+    } else {
+      groupMap.set(key, { ...g, agent_id: normAgent });
+    }
+  }
+  const groups = [...groupMap.values()];
 
   if (groups.length === 0) return 0;
 
@@ -72,18 +111,17 @@ function aggregateHour(hour: string): number {
 
   let rowsInserted = 0;
   for (const group of groups) {
-    // Calculate p95 latency for this group
+    // Calculate p95 latency for this group.
+    // Query all latencies for this endpoint/method/hour — the normalization
+    // already merged multiple raw agent_ids, so we match broadly.
     const latencies = query<LatencyRow>(
       `SELECT latency_ms FROM api_request_logs
        WHERE strftime('%Y-%m-%d %H:00', timestamp) = ?
          AND path = ? AND method = ?
-         AND (agent_id = ? OR (agent_id IS NULL AND ? IS NULL))
        ORDER BY latency_ms ASC`,
       hour,
       group.endpoint,
       group.method,
-      group.agent_id,
-      group.agent_id,
     );
 
     let p95 = 0;

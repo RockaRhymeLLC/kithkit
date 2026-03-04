@@ -36,6 +36,7 @@ interface OrchestratorTask {
   priority: number;
   result: string | null;
   error: string | null;
+  work_notes: string | null;
   timeout_seconds: number | null;
   created_at: string;
   assigned_at: string | null;
@@ -167,12 +168,13 @@ export async function handleTaskQueueRoute(
       const ts = now();
 
       exec(
-        `INSERT INTO orchestrator_tasks (id, title, description, status, priority, timeout_seconds, created_at, updated_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
+        `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, timeout_seconds, created_at, updated_at)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
         id,
         body.title,
         typeof body.description === 'string' ? body.description : null,
         priority,
+        typeof body.work_notes === 'string' ? body.work_notes : null,
         typeof body.timeout_seconds === 'number' ? body.timeout_seconds : null,
         ts,
         ts,
@@ -428,6 +430,19 @@ export async function handleTaskQueueRoute(
       }
       if (body.error !== undefined) {
         updates.error = body.error;
+      }
+      if (body.work_notes !== undefined) {
+        if (body.append_work_notes && task.work_notes) {
+          // Append to existing notes with timestamp separator
+          const ts_note = new Date().toISOString().slice(0, 19).replace('T', ' ');
+          updates.work_notes = `${task.work_notes}\n\n[${ts_note}] ${body.work_notes}`;
+        } else if (body.append_work_notes && !task.work_notes) {
+          // First note — no separator needed
+          const ts_note = new Date().toISOString().slice(0, 19).replace('T', ' ');
+          updates.work_notes = `[${ts_note}] ${body.work_notes}`;
+        } else {
+          updates.work_notes = body.work_notes;
+        }
       }
 
       // Validate the final status/assignee combination
