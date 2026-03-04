@@ -143,6 +143,35 @@ run_claude() {
   "$CLAUDE_BIN" --dangerously-skip-permissions -p "$(cat "$pf")"
 }
 
+# Verify task status after Claude exits — fallback for when Claude doesn't update.
+# Prevents zombie tasks from being marked 'failed' by cleanup.
+verify_task_status() {
+  local task_id="$1"
+  local claude_exit="$2"
+
+  [ -z "$task_id" ] && return 0
+
+  local current_status
+  current_status=$(curl -s -f "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$task_id" 2>/dev/null \\
+    | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','unknown'))" 2>/dev/null || echo "unknown")
+
+  if [ "$current_status" = "in_progress" ] || [ "$current_status" = "assigned" ]; then
+    if [ "$claude_exit" -eq 0 ]; then
+      curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$task_id" \\
+        -H "Content-Type: application/json" \\
+        -d '{"status":"completed","result":"Completed (wrapper fallback: Claude exited cleanly but did not explicitly update task status)"}'
+      echo "INFO: Task $task_id was $current_status after Claude exit 0 — marked completed by wrapper" >&2
+    else
+      local fail_json
+      fail_json=$(printf '{"status":"failed","result":"Claude exited with code %s without updating task status"}' "$claude_exit")
+      curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$task_id" \\
+        -H "Content-Type: application/json" \\
+        -d "$fail_json"
+      echo "WARN: Task $task_id — Claude exited $claude_exit without updating status" >&2
+    fi
+  fi
+}
+
 # ── Seed LAST_MSG_ID from current max message ID ─────────────
 # We track the highest message ID we've seen so we can poll for messages
 # with id > LAST_MSG_ID. This avoids a race where the orchestrator Claude
@@ -186,27 +215,43 @@ if msgs:
     msg = msgs[0]
     new_last_id = max(m.get('id', 0) for m in msgs)
     raw = msg.get('body', '')
+    task_id = ''
     try:
         parsed = json.loads(raw)
         out = parsed.get('task', raw)
+        task_id = parsed.get('task_id', '')
     except Exception:
         out = raw
-    # Output: first line = new LAST_MSG_ID, rest = task body
+    # Output: line 1 = new LAST_MSG_ID, line 2 = task_id, rest = task body
     print(new_last_id)
+    print(task_id)
     sys.stdout.write(out)
 " 2>/dev/null || printf '')
 
     if [ -n "$PARSED" ]; then
-      # First line is the new LAST_MSG_ID
+      # Line 1 = new LAST_MSG_ID, line 2 = task_id, rest = task body
       NEW_LAST_ID=$(printf '%s' "$PARSED" | head -1)
-      TASK=$(printf '%s' "$PARSED" | tail -n +2)
+      MSG_TASK_ID=$(printf '%s' "$PARSED" | sed -n '2p')
+      TASK=$(printf '%s' "$PARSED" | tail -n +3)
 
       if [ -n "$TASK" ]; then
         # Advance our cursor so we never re-process this batch
         LAST_MSG_ID="$NEW_LAST_ID"
+        # Transition task status if we have a task_id
+        if [ -n "$MSG_TASK_ID" ]; then
+          curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$MSG_TASK_ID" \\
+            -H "Content-Type: application/json" \\
+            -d '{"status":"assigned","assignee":"orchestrator"}' 2>/dev/null || true
+          curl -s -o /dev/null -X PUT "http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$MSG_TASK_ID" \\
+            -H "Content-Type: application/json" \\
+            -d '{"status":"in_progress"}' 2>/dev/null || true
+        fi
         # Write task to prompt file and run Claude
         printf '%s' "$TASK" > "$PROMPT_FILE"
         run_claude "$PROMPT_FILE"
+        CLAUDE_EXIT=$?
+        # Verify task status — fallback if Claude didn't update it
+        verify_task_status "$MSG_TASK_ID" "$CLAUDE_EXIT"
         # Reset idle timer so we wait the full window for the next task
         elapsed=0
       fi
@@ -254,21 +299,28 @@ if tasks:
           continue
         fi
 
-        # Build a prompt that includes the task ID so the orchestrator can update status
+        # Build prompt with status update instructions BEFORE description
+        # (prevents truncation/ignoring when description is very long)
         TASK_PROMPT="You have a pending orchestrator task to work on.
 
 Task ID: $TASK_ID
 Title: $TASK_TITLE
+Update this task's status as you work: PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID
+Write your result to the task row when done (status: completed, result: <summary>).
 
-$TASK_DESC
-
-When you finish this task, update its status:
-  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"completed\",\"result\":\"{summary of what you did}\"}'
+IMPORTANT — When you finish this task, update its status:
+  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"completed\",\"result\":\"<summary of what you did>\"}'
 If the task fails:
-  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"failed\",\"result\":\"{what went wrong}\"}'"
+  curl -s -X PUT http://localhost:$DAEMON_PORT/api/orchestrator/tasks/$TASK_ID -H 'Content-Type: application/json' -d '{\"status\":\"failed\",\"result\":\"<what went wrong>\"}'
+
+Description:
+$TASK_DESC"
 
         printf '%s' "$TASK_PROMPT" > "$PROMPT_FILE"
         run_claude "$PROMPT_FILE"
+        CLAUDE_EXIT=$?
+        # Verify task status — fallback if Claude didn't update it
+        verify_task_status "$TASK_ID" "$CLAUDE_EXIT"
         # Reset idle timer so we wait the full window for the next task
         elapsed=0
       fi
