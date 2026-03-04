@@ -16,6 +16,7 @@ import { handleMemoryRoute } from './api/memory.js';
 import { handleAgentsRoute, setProfilesDir } from './api/agents.js';
 import { configure as configureTmux } from './agents/tmux.js';
 import { recoverFromRestart } from './agents/recovery.js';
+import { cleanupOrphanedResources } from './core/orphan-cleanup.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
@@ -103,6 +104,18 @@ openDatabase(projectDir);
 
 // Reload persisted timers (must run after openDatabase)
 initTimers();
+
+// Clean up orphaned resources from previous daemon run (dead timers, stuck
+// tasks, zombie worker records). Runs after DB is open and timers are loaded
+// so that stale timer records are visible, but before the scheduler starts.
+const orphanReport = cleanupOrphanedResources();
+if (orphanReport.timersExpired > 0 || orphanReport.tasksFailedOrphaned > 0 || orphanReport.jobsFailedOrphaned > 0) {
+  log.info('Orphan cleanup summary', {
+    timersExpired: orphanReport.timersExpired,
+    tasksFailedOrphaned: orphanReport.tasksFailedOrphaned,
+    jobsFailedOrphaned: orphanReport.jobsFailedOrphaned,
+  });
+}
 
 // Wire up config hot-reload watcher
 const configPath = path.resolve(projectDir, 'kithkit.config.yaml');

@@ -11,20 +11,55 @@ import type http from 'node:http';
 import { exec, query } from '../core/db.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { createLogger } from '../core/logger.js';
+import { loadConfig } from '../core/config.js';
 
 const log = createLogger('api-metrics');
+
+// ── Ingest rate limiting ──────────────────────────────────────
+
+/** Per-agent POST count within the current minute window. */
+interface RateLimitEntry {
+  count: number;
+  windowStart: number; // Unix ms
+}
+
+const _ingestRateMap = new Map<string, RateLimitEntry>();
+const INGEST_RATE_LIMIT = 10;    // max POSTs per minute per agent
+const RATE_WINDOW_MS = 60_000;
+
+/**
+ * Returns true if the agent is over the rate limit.
+ * Resets the counter automatically when the window rolls over.
+ */
+function isRateLimited(agent: string): boolean {
+  const now = Date.now();
+  const entry = _ingestRateMap.get(agent);
+  if (!entry || now - entry.windowStart >= RATE_WINDOW_MS) {
+    _ingestRateMap.set(agent, { count: 1, windowStart: now });
+    return false;
+  }
+  entry.count += 1;
+  return entry.count > INGEST_RATE_LIMIT;
+}
+
+/** Exposed for tests only — resets the in-memory rate limit state. */
+export function _resetIngestRateLimitForTesting(): void {
+  _ingestRateMap.clear();
+}
 
 // ── Request Logging ──────────────────────────────────────────
 
 /**
  * Extract agent identifier from request headers.
- * Checks X-Agent first, then falls back to User-Agent.
+ * Checks X-Agent first, then falls back to the configured agent name
+ * so that local traffic is always attributed to this daemon's agent.
  */
 function extractAgentId(req: http.IncomingMessage): string | null {
   const xAgent = req.headers['x-agent'];
   if (typeof xAgent === 'string' && xAgent.length > 0) return xAgent;
-  const ua = req.headers['user-agent'];
-  if (typeof ua === 'string' && ua.length > 0) return ua;
+  // Local traffic without X-Agent → attribute to this daemon's agent
+  const config = loadConfig();
+  if (config.agent?.name) return config.agent.name.toLowerCase();
   return null;
 }
 
@@ -129,7 +164,7 @@ export async function handleMetricsRoute(
       conditions.push('hour >= ?');
       params.push(fromParam);
     } else {
-      conditions.push("hour >= datetime('now', ?)")
+      conditions.push("hour >= strftime('%Y-%m-%d %H:00', 'now', ?)")
       params.push(`-${hours} hours`);
     }
     if (toParam) {
@@ -297,6 +332,106 @@ export async function handleMetricsRoute(
         hours,
       },
     }));
+    return true;
+  }
+
+  // POST /api/metrics/ingest — receive batched hourly metrics from remote agents
+  if (pathname === '/api/metrics/ingest' && method === 'POST') {
+    // ── Shared secret check ───────────────────────────────────
+    const expectedKey = process.env['METRICS_INGEST_KEY'] ??
+      (loadConfig() as unknown as Record<string, Record<string, unknown>>)
+        ?.metrics_ingest?.key as string | undefined ??
+      null;
+
+    if (expectedKey) {
+      const providedKey = req.headers['x-metrics-key'];
+      if (typeof providedKey !== 'string' || providedKey !== expectedKey) {
+        json(res, 401, withTimestamp({ error: 'Invalid or missing X-Metrics-Key' }));
+        return true;
+      }
+    }
+
+    // ── Parse and validate body ───────────────────────────────
+    let body: Record<string, unknown>;
+    try {
+      body = await parseBody(req);
+    } catch (err) {
+      json(res, 400, withTimestamp({ error: err instanceof Error ? err.message : 'Invalid request body' }));
+      return true;
+    }
+
+    if (!body.agent || typeof body.agent !== 'string') {
+      json(res, 400, withTimestamp({ error: 'agent is required (string)' }));
+      return true;
+    }
+    const agentName = body.agent;
+
+    if (!Array.isArray(body.hourly)) {
+      json(res, 400, withTimestamp({ error: 'hourly is required (array)' }));
+      return true;
+    }
+    if (body.hourly.length > 500) {
+      json(res, 400, withTimestamp({ error: 'hourly array exceeds maximum of 500 items' }));
+      return true;
+    }
+
+    // ── Rate limit ────────────────────────────────────────────
+    if (isRateLimited(agentName)) {
+      json(res, 429, withTimestamp({ error: 'Rate limit exceeded — max 10 requests per minute per agent' }));
+      return true;
+    }
+
+    // ── Upsert each hourly row ────────────────────────────────
+    let ingested = 0;
+    for (const item of body.hourly as unknown[]) {
+      if (!item || typeof item !== 'object') {
+        log.warn('Skipping non-object hourly item', { agent: agentName });
+        continue;
+      }
+      const row = item as Record<string, unknown>;
+
+      // Required fields
+      if (typeof row['hour'] !== 'string' || !row['hour']) continue;
+      if (typeof row['endpoint'] !== 'string' || !row['endpoint']) continue;
+      if (typeof row['method'] !== 'string' || !row['method']) continue;
+      if (typeof row['total_requests'] !== 'number') continue;
+
+      // Optional fields with defaults
+      const successCount    = typeof row['success_count']  === 'number' ? row['success_count']  : 0;
+      const error4xx        = typeof row['error_4xx']      === 'number' ? row['error_4xx']      : 0;
+      const error5xx        = typeof row['error_5xx']      === 'number' ? row['error_5xx']      : 0;
+      const avgLatencyMs    = typeof row['avg_latency_ms'] === 'number' ? row['avg_latency_ms'] : 0;
+      const p95LatencyMs    = typeof row['p95_latency_ms'] === 'number' ? row['p95_latency_ms'] : 0;
+
+      exec(
+        `INSERT INTO api_metrics_hourly
+           (hour, endpoint, method, total_requests, success_count, error_4xx, error_5xx,
+            avg_latency_ms, p95_latency_ms, agent_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (hour, endpoint, method, COALESCE(agent_id, ''))
+         DO UPDATE SET
+           total_requests = excluded.total_requests,
+           success_count  = excluded.success_count,
+           error_4xx      = excluded.error_4xx,
+           error_5xx      = excluded.error_5xx,
+           avg_latency_ms = excluded.avg_latency_ms,
+           p95_latency_ms = MAX(api_metrics_hourly.p95_latency_ms, excluded.p95_latency_ms)`,
+        row['hour'],
+        row['endpoint'],
+        row['method'],
+        row['total_requests'],
+        successCount,
+        error4xx,
+        error5xx,
+        avgLatencyMs,
+        p95LatencyMs,
+        agentName,
+      );
+      ingested += 1;
+    }
+
+    log.info('Metrics ingested', { agent: agentName, ingested });
+    json(res, 200, withTimestamp({ ingested, agent: agentName }));
     return true;
   }
 

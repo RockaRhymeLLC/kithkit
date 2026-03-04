@@ -36,7 +36,10 @@ async function run(): Promise<void> {
   );
 
   if (todos.length === 0) {
-    log.debug('No open todos');
+    log.info('No open todos — nudging agent to find useful work');
+    injectText(
+      '[System] No open todos. Look for useful work: check for unread messages, review PRs, explore improvements, or ask Dave what he needs.',
+    );
     return;
   }
 

@@ -478,6 +478,22 @@ async function run(config: Record<string, unknown>): Promise<void> {
       last_activity: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+
+    // Even while Claude is active, check for pending tasks that arrived since it
+    // started. Claude won't pick these up on its own — inject a soft nudge so it
+    // knows to check the queue when its current work is done.
+    const pendingWhileActive = query<{ count: number }>(
+      `SELECT COUNT(*) as count FROM orchestrator_tasks WHERE status = 'pending'`,
+    );
+    const pendingWhileActiveCount = pendingWhileActive[0]?.count ?? 0;
+    if (pendingWhileActiveCount > 0) {
+      log.debug('Pending tasks queued while Claude is active — injecting soft nudge', { pendingWhileActiveCount });
+      injectMessage(
+        'orchestrator',
+        `[System] ${pendingWhileActiveCount} pending task(s) in queue. Check GET /api/orchestrator/tasks?status=pending when your current work is done.`,
+      );
+    }
+
     return;
   }
 
