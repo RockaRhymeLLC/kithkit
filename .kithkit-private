@@ -6,6 +6,7 @@
 
 # Instance configuration
 kithkit.config.yaml
+.github/workflows/notify-instances.yml
 identity.md
 .claude/settings.local.json
 
