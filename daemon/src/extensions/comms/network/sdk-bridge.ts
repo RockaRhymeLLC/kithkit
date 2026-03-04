@@ -9,7 +9,7 @@
  */
 
 import type {
-  CC4MeNetwork, CommunityConfig, CommunityStatusEvent,
+  A2ANetworkClient, CommunityConfig, CommunityStatusEvent,
   Message, ContactRequest, Broadcast, WireEnvelope,
   GroupMessage, GroupInvitationEvent,
 } from './sdk-types.js';
@@ -23,10 +23,10 @@ import { logCommsEntry, getDisplayName } from '../agent-comms.js';
 
 const log = createLogger('network:sdk');
 
-let _network: CC4MeNetwork | null = null;
+let _network: A2ANetworkClient | null = null;
 let _config: AgentConfig | null = null;
 
-export function getNetworkClient(): CC4MeNetwork | null {
+export function getNetworkClient(): A2ANetworkClient | null {
   return _network;
 }
 
@@ -65,7 +65,7 @@ export async function initNetworkSDK(config: Record<string, unknown>): Promise<b
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let CC4MeNetworkClass: any;
     try {
-      // @ts-expect-error — kithkit-a2a-client is a local dev module, resolved at runtime
+      // @ts-ignore — kithkit-a2a-client is a local dev module, resolved at runtime
       const sdk = await import('kithkit-a2a-client');
       CC4MeNetworkClass = sdk.A2ANetwork;
     } catch {

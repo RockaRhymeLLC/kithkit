@@ -125,6 +125,7 @@ export interface PresenceInfo {
 }
 
 export interface RelayGroup {
+  id: string;
   groupId: string;
   name: string;
   owner: string;
@@ -133,6 +134,7 @@ export interface RelayGroup {
   settings?: Record<string, unknown>;
   memberCount?: number;
   createdAt: string;
+  [key: string]: unknown;
 }
 
 export interface RelayGroupMember {
