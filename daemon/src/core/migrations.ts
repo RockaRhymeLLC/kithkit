@@ -119,7 +119,41 @@ export function runMigrations(db: Database.Database, migrationsDir?: string): nu
 
     // Run each migration in a transaction
     db.transaction(() => {
-      db.exec(sql);
+      // Handle --safe-alter: directives for idempotent ALTER TABLE ADD COLUMN.
+      // SQLite lacks IF NOT EXISTS for ALTER TABLE, so these directives catch
+      // "duplicate column name" errors gracefully — essential for migrations
+      // that may run on both fresh installs and upgrades.
+      const safeAlterLines: string[] = [];
+      const regularSql: string[] = [];
+
+      for (const line of sql.split('\n')) {
+        const safeMatch = line.match(/^--safe-alter:\s*(.+)$/);
+        if (safeMatch) {
+          safeAlterLines.push(safeMatch[1]!.trim());
+        } else {
+          regularSql.push(line);
+        }
+      }
+
+      // Execute regular SQL first
+      const regularContent = regularSql.join('\n').trim();
+      if (regularContent) {
+        db.exec(regularContent);
+      }
+
+      // Execute safe ALTER TABLE statements, ignoring duplicate column errors
+      for (const alter of safeAlterLines) {
+        try {
+          db.exec(`ALTER TABLE ${alter}`);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!msg.includes('duplicate column name')) {
+            throw err;
+          }
+          // Column already exists — safe to skip
+        }
+      }
+
       insertMigration.run(migration.version, migration.name);
     })();
   }
