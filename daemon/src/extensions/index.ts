@@ -222,6 +222,7 @@ async function loadInstanceExtensions(
   scheduler: Scheduler,
 ): Promise<{ shutdown?: () => Promise<void> | void }> {
   try {
+    // @ts-ignore — instance/ is gitignored (agent-specific); absent in CI/upstream
     const mod = await import('./instance/index.js');
     if (typeof mod.register === 'function') {
       await mod.register(config, server, scheduler);
