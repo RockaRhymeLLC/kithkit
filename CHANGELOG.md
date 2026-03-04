@@ -8,6 +8,9 @@ Format: [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Added
+- CI/CD sync pipeline (Phases 1-4) — automated downstream sync, health checks, auto-rollback
+
 ---
 
 ## [Phase 1 Framework Sync] — PR #142
