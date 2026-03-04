@@ -1,0 +1,52 @@
+name: Notify Instances
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  notify-downstream:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Notify KKit-BMO
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+          repository: RockaRhymeLLC/KKit-BMO
+          event-type: upstream-sync
+          client-payload: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "repository": "${{ github.repository }}",
+              "sender": "${{ github.actor }}"
+            }
+
+      - name: Notify KKit-R2
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+          repository: RockaRhymeLLC/KKit-R2
+          event-type: upstream-sync
+          client-payload: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "repository": "${{ github.repository }}",
+              "sender": "${{ github.actor }}"
+            }
+
+      - name: Notify KKit-Skippy
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+          repository: RockaRhymeLLC/KKit-Skippy
+          event-type: upstream-sync
+          client-payload: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "repository": "${{ github.repository }}",
+              "sender": "${{ github.actor }}"
+            }

@@ -252,7 +252,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     config: config as unknown as Record<string, unknown>,
     sendViaLAN,
     getNetworkClient,
-    getAgentCommsSecret: () => readKeychain('agent-comms-secret'),
+    getAgentCommsSecret: () => readKeychain('credential-agent-comms-secret'),
     logCommsEntry,
     sendMessage: sendMessage as (req: { from: string; to: string; type: string; body: string; metadata?: Record<string, unknown> }) => { messageId: number; delivered: boolean },
   });
