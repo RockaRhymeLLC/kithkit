@@ -165,14 +165,14 @@ describe('A2A Router — Peer Resolution', () => {
     const result = router.resolvePeer('bmo');
     assert.ok(result.peer);
     assert.equal(result.peer.name, 'bmo');
-    assert.equal(result.qualified, 'bmo@home');
+    assert.equal(result.qualified, 'bmo@relay.bmobot.ai');
   });
 
   it('11. Case-insensitive match (BMO -> bmo)', () => {
     const result = router.resolvePeer('BMO');
     assert.ok(result.peer);
     assert.equal(result.peer.name, 'bmo');
-    assert.equal(result.qualified, 'bmo@home');
+    assert.equal(result.qualified, 'bmo@relay.bmobot.ai');
   });
 
   it('12. Qualified name (bmo@relay.bmobot.ai) -> skips config lookup', () => {
@@ -184,14 +184,14 @@ describe('A2A Router — Peer Resolution', () => {
   it('13. Unknown bare name -> no peer, still returns qualified name for relay', () => {
     const result = router.resolvePeer('unknown-agent');
     assert.equal(result.peer, undefined);
-    assert.equal(result.qualified, 'unknown-agent@home');
+    assert.equal(result.qualified, 'unknown-agent@relay.bmobot.ai');
   });
 
   it('Prefix matching: "bm" resolves to "bmo" peer', () => {
     const result = router.resolvePeer('bm');
     assert.ok(result.peer);
     assert.equal(result.peer.name, 'bmo');
-    assert.equal(result.qualified, 'bmo@home');
+    assert.equal(result.qualified, 'bmo@relay.bmobot.ai');
   });
 
   it('Prefix matching: ambiguous prefix does not resolve', () => {
@@ -215,7 +215,7 @@ describe('A2A Router — Peer Resolution', () => {
     const ambiguousRouter = new UnifiedA2ARouter(deps);
     const result = ambiguousRouter.resolvePeer('al');
     assert.equal(result.peer, undefined); // ambiguous — should not resolve
-    assert.equal(result.qualified, 'al@home');
+    assert.equal(result.qualified, 'al@relay.bmobot.ai');
   });
 });
 

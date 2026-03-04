@@ -12,6 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 import { _resetConfigForTesting, loadConfig } from '../core/config.js';
+import { openDatabase, closeDatabase, _resetDbForTesting } from '../core/db.js';
 import { initLogger, _resetLoggerForTesting } from '../core/logger.js';
 import { Scheduler } from '../automation/scheduler.js';
 import { register as registerContextWatchdog, _resetForTesting } from '../automation/tasks/context-watchdog.js';
@@ -52,12 +53,15 @@ describe('Context watchdog miss-count warnings (t-222)', () => {
     logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-cw-logs-'));
     _resetConfigForTesting();
     _resetForTesting();
+    _resetDbForTesting();
+    openDatabase(tmpDir);
     // Initialize logger to capture warn output
     initLogger({ logDir, minLevel: 'warn' });
   });
 
   afterEach(() => {
     if (scheduler?.isRunning()) scheduler.stop();
+    _resetDbForTesting();
     _resetConfigForTesting();
     _resetForTesting();
     _resetLoggerForTesting({ logDir: os.tmpdir(), minLevel: 'info' });

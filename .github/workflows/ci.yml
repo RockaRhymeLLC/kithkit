@@ -48,7 +48,7 @@ jobs:
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             DIFF=$(git diff HEAD~1 -- . ':!*.yml' ':!*.md' 2>/dev/null || git diff origin/${{ github.base_ref }}...HEAD 2>/dev/null || true)
           else
-            DIFF=$(git diff HEAD~1 2>/dev/null || true)
+            DIFF=$(git diff HEAD~1 -- . ':!*.yml' ':!*.md' 2>/dev/null || true)
           fi
 
           if [ -z "$DIFF" ]; then
