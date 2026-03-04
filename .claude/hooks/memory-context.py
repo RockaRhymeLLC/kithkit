@@ -39,12 +39,22 @@ STOPWORDS = frozenset({
     "hey", "hi", "hello", "yo", "sup", "yeah", "yep", "nah", "nope",
 })
 
-# Patterns to skip entirely (system/agent/tagged messages, slash commands)
+# Patterns to skip entirely (system/agent messages, slash commands)
+# NOTE: Do NOT skip [Telegram] — those are real user messages that need memory recall
 SKIP_PATTERNS = [
-    r"^\[",           # Tagged messages: [Telegram], [System], etc.
-    r"^/",            # Slash commands
-    r"^Session ",     # Session lifecycle
+    r"^\[System\]",       # System notifications
+    r"^\[timer\]",        # Timer fires
+    r"^\[email-triage\]", # Email triage results
+    r"^\[task ",          # Task completed/failed notifications
+    r"^\[result\]",       # Orchestrator/daemon results
+    r"^\[worker ",        # Worker status notifications
+    r"^\[Agent\]",        # A2A agent messages
+    r"^/",                # Slash commands
+    r"^Session ",         # Session lifecycle
 ]
+
+# Strip channel prefix from user messages before keyword extraction
+CHANNEL_PREFIX = re.compile(r"^\[Telegram\]\s*\w+:\s*")
 
 
 def extract_keywords(text: str) -> list[str]:
@@ -84,7 +94,7 @@ def search_memories(keywords: list[str]) -> list:
     for kw_subset in attempts:
         query = " ".join(kw_subset)
         payload = json.dumps({
-            "mode": "keyword",
+            "mode": "hybrid",
             "query": query,
             "limit": MAX_HITS,
         }).encode()
@@ -101,7 +111,7 @@ def search_memories(keywords: list[str]) -> list:
                 data = json.loads(resp.read())
                 results = data.get("data", [])
                 if results:
-                    return results
+                    return results[:MAX_HITS]
         except Exception:
             return []
 
@@ -128,7 +138,7 @@ def main():
     except (json.JSONDecodeError, ValueError):
         sys.exit(0)
 
-    prompt = hook_input.get("input", "").strip()
+    prompt = hook_input.get("prompt", "").strip()
 
     # Skip empty or very short/generic inputs
     if len(prompt) < MIN_INPUT_LENGTH:
@@ -138,6 +148,9 @@ def main():
     for pattern in SKIP_PATTERNS:
         if re.match(pattern, prompt):
             sys.exit(0)
+
+    # Strip channel prefix (e.g., "[Telegram] Dave: ") before extracting keywords
+    prompt = CHANNEL_PREFIX.sub("", prompt)
 
     # Extract keywords
     keywords = extract_keywords(prompt)
@@ -151,9 +164,9 @@ def main():
 
     # Format output
     hints = [format_hint(m) for m in memories]
-    print("Memory hints (from keyword search):")
+    print("Memory hints (from hybrid search):")
     print("\n".join(hints))
-    print("  (For deeper context, search memories with hybrid mode)")
+    print("  (Search daemon memory for deeper context if needed)")
 
 
 if __name__ == "__main__":
