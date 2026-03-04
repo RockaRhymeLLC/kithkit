@@ -98,6 +98,17 @@ export function startWorker(): Promise<void> {
 
     startupResolve = resolve;
 
+    // Handle spawn errors (e.g., ENOENT when python venv doesn't exist)
+    worker.on('error', (err) => {
+      log.error('TTS worker spawn error', { error: err.message });
+      workerReady = false;
+      worker = null;
+      if (startupResolve) {
+        startupResolve = null;
+        reject(err);
+      }
+    });
+
     // Watch stdout for READY signal
     worker.stdout?.on('data', (data: Buffer) => {
       const lines = data.toString().split('\n');

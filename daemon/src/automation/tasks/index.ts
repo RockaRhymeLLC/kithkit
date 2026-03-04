@@ -20,6 +20,7 @@ import { register as registerCommsHeartbeat } from './comms-heartbeat.js';
 import { register as registerPeerHeartbeat } from './peer-heartbeat.js';
 import { register as registerMetricsAggregation } from './api-metrics-aggregation.js';
 import { register as registerDailyDigest } from './daily-digest.js';
+import { register as registerMetricsPush } from './metrics-push.js';
 export { loadExternalTasks, type LoadResult } from './external-loader.js';
 
 /**
@@ -39,6 +40,7 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'peer-heartbeat', register: registerPeerHeartbeat },
     { name: 'api-metrics-aggregation', register: registerMetricsAggregation },
     { name: 'daily-digest', register: registerDailyDigest },
+    { name: 'metrics-push', register: registerMetricsPush },
   ];
 
   for (const { name, register } of registrations) {

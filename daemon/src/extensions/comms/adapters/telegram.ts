@@ -804,9 +804,9 @@ export class BmoTelegramAdapter implements ChannelAdapter {
    * Returns false if no group chat ID is configured.
    */
   async sendToGroup(text: string): Promise<boolean> {
-    const config = loadConfig();
-    const groupChatId = (config.channels as Record<string, Record<string, unknown>> | undefined)
-      ?.telegram?.home_group_chat_id as string | undefined;
+    const rawConfig = loadConfig() as unknown as Record<string, unknown>;
+    const groupChatId = ((rawConfig.channels as Record<string, Record<string, unknown>> | undefined)
+      ?.telegram?.home_group_chat_id) as string | undefined;
     if (!groupChatId) {
       log.warn('sendToGroup: channels.telegram.home_group_chat_id not configured');
       return false;

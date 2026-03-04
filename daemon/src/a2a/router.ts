@@ -48,7 +48,7 @@ interface A2ANetworkClient {
     queued: string[];
     failed: string[];
   }>;
-  getGroups?(): Promise<Array<{ id: string; name: string; [key: string]: unknown }>>;
+  getGroups?(): Promise<Array<{ id?: string; groupId?: string; name: string; [key: string]: unknown }>>;
 }
 
 export interface RouterDeps {
@@ -79,7 +79,11 @@ export class UnifiedA2ARouter {
     const networkConfig = deps.config.network as { communities?: Array<{ name: string; primary: string }> } | undefined;
     // Use the relay hostname (not community name) for qualified names — SDK resolves by hostname
     const primaryUrl = networkConfig?.communities?.[0]?.primary;
-    this.primaryCommunity = primaryUrl ? new URL(primaryUrl).hostname : null;
+    try {
+      this.primaryCommunity = primaryUrl ? new URL(primaryUrl).hostname : null;
+    } catch {
+      this.primaryCommunity = null;
+    }
   }
 
   // ── Validate ────────────────────────────────────────────────
