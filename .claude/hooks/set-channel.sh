@@ -29,7 +29,6 @@ elif [[ "$PROMPT" == "[Telegram"* ]] || [[ "$PROMPT" == "[3rdParty][Telegram"* ]
     echo "telegram" > "$CHANNEL_FILE"
   fi
 elif [[ "$PROMPT" == "Session cleared"* ]] || \
-     [[ "$PROMPT" == "Session auto-started"* ]] || \
      [[ "$PROMPT" == "/save-state"* ]] || \
      [[ "$PROMPT" == "/clear"* ]] || \
      [[ "$PROMPT" == "/restart"* ]] || \
