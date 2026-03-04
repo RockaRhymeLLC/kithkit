@@ -221,7 +221,6 @@ async function loadInstanceExtensions(
   scheduler: Scheduler,
 ): Promise<{ shutdown?: () => Promise<void> | void }> {
   try {
-    // @ts-expect-error — instance/ may not exist (gitignored upstream); handled by catch
     const mod = await import('./instance/index.js');
     if (typeof mod.register === 'function') {
       await mod.register(config, server, scheduler);
