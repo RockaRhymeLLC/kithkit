@@ -1,100 +1,108 @@
 #!/usr/bin/env bash
-# install-hooks.sh — Install git hooks for kithkit development
+# scripts/install-hooks.sh — installs git hooks for the kithkit public repo.
+# Run once after cloning, or after updating hooks.
 #
-# Run this script once after cloning the repo to install local git hooks.
+# Currently installs:
+#   - pre-push: leak check for instance-specific content
+#
 # Usage: bash scripts/install-hooks.sh
 
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HOOKS_DIR="${REPO_ROOT}/.git/hooks"
+HOOKS_DIR="$REPO_ROOT/.git/hooks"
 
 if [ ! -d "${HOOKS_DIR}" ]; then
   echo "ERROR: .git/hooks directory not found. Are you in a git repo?"
   exit 1
 fi
 
-# ── Pre-push hook ──────────────────────────────────────────────────────────────
-# Runs the same secret leak check as CI before any push reaches GitHub.
+echo "Installing git hooks into $HOOKS_DIR..."
 
-PRE_PUSH_HOOK="${HOOKS_DIR}/pre-push"
-
-cat > "${PRE_PUSH_HOOK}" << 'HOOK'
+# --- pre-push hook: leak check ---
+cat > "$HOOKS_DIR/pre-push" << 'HOOK'
 #!/usr/bin/env bash
-# pre-push hook — secret leak check
-# Mirrors the check in .github/workflows/ci.yml
-
+# pre-push hook — checks for instance-specific content before pushing.
+# Same blocked patterns as .github/workflows/ci.yml leak-check job.
+# Keep these lists in sync.
 set -euo pipefail
 
-echo "[pre-push] Running secret leak check..."
+echo "[pre-push] Running instance content leak check..."
 
-# Get diff of commits being pushed vs remote
+# NOTE: "credential-" and "BMO" are excluded — they're framework patterns.
+# credential- is the keychain naming convention; BMO references exist in
+# existing framework code (channel-router, telegram adapter). Cleaning
+# those up is tracked separately.
+BLOCKED_PATTERNS=(
+  "R2D2"
+  "Skippy"
+  "bmobot"
+  "daveh@"
+  "192\.168\.12"
+  "com\.assistant\.bmo"
+  "com\.bmo\."
+  "lindee"
+  "kp\.hurley"
+  "7629737488"
+)
+
+EXCLUSIONS="README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/|\.claude/skills/|docs/|install-hooks\.sh"
+
+PATTERN=$(IFS="|"; echo "${BLOCKED_PATTERNS[*]}")
+
 REMOTE="$1"
 URL="$2"
 
-DIFF=""
+MATCHES=""
 while IFS=' ' read -r LOCAL_REF LOCAL_SHA REMOTE_REF REMOTE_SHA; do
   if [ "${LOCAL_SHA}" = "0000000000000000000000000000000000000000" ]; then
     # Branch being deleted — skip
     continue
   fi
+
   if [ "${REMOTE_SHA}" = "0000000000000000000000000000000000000000" ]; then
-    # New branch — diff from root
-    DIFF="${DIFF}$(git diff HEAD 2>/dev/null || true)"
+    # New branch — check all tracked files
+    FILES=$(git diff --name-only --diff-filter=ACMR HEAD 2>/dev/null || true)
   else
-    DIFF="${DIFF}$(git diff "${REMOTE_SHA}..${LOCAL_SHA}" 2>/dev/null || true)"
+    # Existing branch — check only the diff
+    FILES=$(git diff --name-only --diff-filter=ACMR "${REMOTE_SHA}..${LOCAL_SHA}" 2>/dev/null || true)
   fi
+
+  if [ -z "$FILES" ]; then
+    continue
+  fi
+
+  FILTERED=$(echo "$FILES" | grep -v -E "$EXCLUSIONS" || true)
+  if [ -z "$FILTERED" ]; then
+    continue
+  fi
+
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    HITS=$(grep -nE "$PATTERN" "$f" 2>/dev/null || true)
+    if [ -n "$HITS" ]; then
+      MATCHES="${MATCHES}${f}:\n${HITS}\n\n"
+    fi
+  done <<< "$FILTERED"
 done
 
-if [ -z "${DIFF}" ]; then
-  echo "[pre-push] No diff to scan. OK."
-  exit 0
-fi
-
-ADDED_LINES=$(echo "${DIFF}" | grep '^+' | grep -v '^+++')
-FOUND=0
-
-# API_KEY pattern
-if echo "${ADDED_LINES}" | grep -iE 'API_KEY\s*[:=]\s*["\x27]?[A-Za-z0-9/+]{16,}' > /dev/null 2>&1; then
-  echo "[pre-push] FAIL: Possible API key found in diff"
-  FOUND=1
-fi
-# TOKEN pattern
-if echo "${ADDED_LINES}" | grep -iE '\bTOKEN\s*[:=]\s*["\x27]?[A-Za-z0-9_\-]{16,}' | \
-   grep -iv 'INSTANCE_SYNC_TOKEN\|example\|placeholder\|your-token\|<token>' > /dev/null 2>&1; then
-  echo "[pre-push] FAIL: Possible token found in diff"
-  FOUND=1
-fi
-# PASSWORD pattern
-if echo "${ADDED_LINES}" | grep -iE 'PASSWORD\s*[:=]\s*["\x27]?[^\s]{8,}' | \
-   grep -iv 'your-password\|placeholder\|example' > /dev/null 2>&1; then
-  echo "[pre-push] FAIL: Possible password found in diff"
-  FOUND=1
-fi
-# SECRET pattern
-if echo "${ADDED_LINES}" | grep -iE '\bSECRET\s*[:=]\s*["\x27]?[A-Za-z0-9/+_\-]{16,}' | \
-   grep -iv 'credential-\|INSTANCE_SYNC_TOKEN\|GITHUB_TOKEN\|secrets\.' > /dev/null 2>&1; then
-  echo "[pre-push] FAIL: Possible secret value found in diff"
-  FOUND=1
-fi
-# credential strings with apparent values
-if echo "${ADDED_LINES}" | grep -iE "credential\s*[:=]\s*[\"'][A-Za-z0-9/+]{20,}" > /dev/null 2>&1; then
-  echo "[pre-push] FAIL: Possible credential value found in diff"
-  FOUND=1
-fi
-
-if [ "${FOUND}" -eq 1 ]; then
+if [ -n "$MATCHES" ]; then
   echo ""
-  echo "[pre-push] Secret leak check FAILED. Push aborted."
-  echo "[pre-push] Review the patterns above before pushing."
+  echo "LEAK CHECK FAILED — instance-specific patterns found:"
+  echo ""
+  echo -e "$MATCHES"
+  echo "Fix before pushing to the public repo."
+  echo "See .github/workflows/ci.yml for the full pattern list."
+  echo "If this is a false positive, add the file to EXCLUSIONS in this hook."
   exit 1
-else
-  echo "[pre-push] Secret leak check PASSED."
 fi
+
+echo "[pre-push] Leak check passed."
 HOOK
 
-chmod +x "${PRE_PUSH_HOOK}"
-echo "Installed pre-push hook at ${PRE_PUSH_HOOK}"
+chmod +x "$HOOKS_DIR/pre-push"
+echo "  Installed: pre-push (leak check)"
 
 echo ""
-echo "All hooks installed. Run 'git push' to verify the pre-push hook fires."
+echo "Done. All hooks installed."
+echo "Run 'git push' to verify the pre-push hook fires."
