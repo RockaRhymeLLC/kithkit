@@ -54,7 +54,7 @@ export async function handleNetworkRoute(
         return true;
       }
       const result = await network.requestContact(body.username);
-      json(res, 200, withTimestamp(result as Record<string, unknown>));
+      json(res, 200, withTimestamp(result as unknown as Record<string, unknown>));
       return true;
     }
     if (subpath === 'contacts/pending' && method === 'GET') {
@@ -95,7 +95,7 @@ export async function handleNetworkRoute(
       const username = subpath.slice('presence/'.length);
       if (!username) { json(res, 400, withTimestamp({ error: 'username is required' })); return true; }
       const presence = await network.checkPresence(username);
-      json(res, 200, withTimestamp(presence as Record<string, unknown>));
+      json(res, 200, withTimestamp(presence as unknown as Record<string, unknown>));
       return true;
     }
 
@@ -112,7 +112,7 @@ export async function handleNetworkRoute(
       }
       const settings = typeof body.settings === 'object' ? body.settings as Record<string, unknown> : undefined;
       const group = await network.createGroup(body.name, settings);
-      json(res, 201, withTimestamp(group as Record<string, unknown>));
+      json(res, 201, withTimestamp(group as unknown as Record<string, unknown>));
       return true;
     }
     if (subpath === 'groups/invitations' && method === 'GET') {
