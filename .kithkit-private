@@ -1,0 +1,80 @@
+# .kithkit-private — files that never sync upstream
+# One path per line. Supports globs. Checked by CI leak guard.
+
+# Instance config (gitignored but listed for completeness)
+kithkit.config.yaml
+identity.md
+
+# Instance extensions
+daemon/src/extensions/instance/
+daemon/src/extensions/cowork-bridge.ts
+daemon/src/extensions/cowork-crypto.ts
+daemon/src/extensions/skippy/
+
+# Instance automation tasks
+daemon/src/extensions/automation/tasks/morning-briefing.ts
+daemon/src/extensions/automation/tasks/blog-reminder.ts
+daemon/src/extensions/automation/tasks/lindee-inbox-watch.ts
+daemon/src/extensions/automation/tasks/supabase-keep-alive.ts
+daemon/src/extensions/automation/tasks/memory-sync.ts
+daemon/src/extensions/automation/tasks/a2a-digest.ts
+daemon/src/extensions/automation/tasks/nightly-todo.ts
+
+# Instance tests
+daemon/src/__tests__/bmo-*.test.ts
+daemon/src/__tests__/cowork-*.test.ts
+daemon/src/__tests__/metrics-ingest.test.ts
+
+# Instance scripts
+scripts/chiptune.py
+scripts/email/
+scripts/game/
+scripts/import-*.ts
+scripts/import-*.json
+scripts/import-*.py
+scripts/triage-*.ts
+scripts/triage-*.json
+
+# Instance services
+services/
+
+# Instance skills (non-framework)
+.claude/skills/tax-prep.md
+.claude/skills/agent-comms.md
+.claude/skills/cowork.md
+.claude/skills/azure-tos.md
+.claude/skills/blog.md
+.claude/skills/business-formation.md
+.claude/skills/calendar.md
+.claude/skills/cloudflare-tos.md
+.claude/skills/daemon-api.md
+.claude/skills/delivery-stats.md
+.claude/skills/email-access.md
+.claude/skills/email-compose.md
+.claude/skills/lemon-squeezy-tos.md
+.claude/skills/lindee-email.md
+.claude/skills/m365-tos.md
+.claude/skills/macos-automation.md
+.claude/skills/npm-tos.md
+.claude/skills/remind.md
+.claude/skills/save-state.md
+.claude/skills/supabase-tos.md
+.claude/skills/telegram-tos.md
+.claude/skills/telegram.md
+.claude/skills/timer.md
+.claude/skills/weekly-retro.md
+
+# Instance agents (extra profiles beyond framework defaults)
+.claude/agents/
+
+# Instance hooks (extra)
+.claude/hooks/announce-restart.py
+.claude/hooks/memory-context.py
+
+# Instance content
+blog/
+projects/
+extensions/kkit-chrome-connect/
+.a2a-sdk/
+data/
+daemon/public/data/
