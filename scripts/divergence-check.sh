@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-<<<<<<< HEAD
 # divergence-check.sh — Bash wrapper for divergence-check.ts
 #
 # Compiles the TypeScript script if needed, then runs it with node.
@@ -7,18 +6,11 @@
 #
 # Usage:
 #   bash scripts/divergence-check.sh [--json]
-=======
-# divergence-check.sh — shell wrapper for divergence-check.ts
-# Called by .github/workflows/upstream-sync.yml
-#
-# Usage: bash scripts/divergence-check.sh [--json]
->>>>>>> upstream/main
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-<<<<<<< HEAD
 TS_SCRIPT="$SCRIPT_DIR/divergence-check.ts"
 COMPILED_OUT="$SCRIPT_DIR/dist/divergence-check.mjs"
 
@@ -73,7 +65,3 @@ fi
 echo "Error: could not find tsx, tsc, or ts-node to run divergence-check.ts" >&2
 echo "Install tsx: npm install -g tsx" >&2
 exit 1
-=======
-
-exec npx tsx "$SCRIPT_DIR/divergence-check.ts" "$@"
->>>>>>> upstream/main
