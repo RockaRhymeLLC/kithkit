@@ -12,7 +12,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { openDatabase, _resetDbForTesting, query } from '../core/db.js';
-import { handleTaskQueueRoute } from '../api/task-queue.js';
+import { handleTaskQueueRoute, _setInjectMessageForTesting, _resetInjectMessageForTesting } from '../api/task-queue.js';
+
+// Mock injectMessage to prevent real tmux injections during tests
+_setInjectMessageForTesting(() => true);
 
 const TEST_PORT = 19870;
 

@@ -17,10 +17,23 @@ import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { query, exec, get } from '../core/db.js';
-import { injectMessage } from '../agents/tmux.js';
+import { injectMessage as _injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('task-queue');
+
+// ── Injectable dep (overridable for testing) ─────────────────
+let injectMessage = _injectMessage;
+
+/** @internal Override injectMessage for testing (prevents real tmux injection). */
+export function _setInjectMessageForTesting(fn: typeof _injectMessage): void {
+  injectMessage = fn;
+}
+
+/** @internal Reset injectMessage to real implementation. */
+export function _resetInjectMessageForTesting(): void {
+  injectMessage = _injectMessage;
+}
 
 // ── Types ────────────────────────────────────────────────────
 

@@ -191,27 +191,12 @@ export function injectText(
     });
 
     if (pressEnter) {
-      execFileSync('/bin/sleep', ['0.3'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      // Brief pause to let tmux buffer the text before submitting
+      execFileSync('/bin/sleep', ['0.15'], { stdio: ['pipe', 'pipe', 'pipe'] });
 
-      const MAX_ENTER_ATTEMPTS = 3;
-      const ENTER_DELAYS = [300, 500, 800];
-      for (let attempt = 1; attempt <= MAX_ENTER_ATTEMPTS; attempt++) {
-        execFileSync(tmux, ['send-keys', '-t', `${session}:`, 'Enter'], {
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
-
-        const delay = ENTER_DELAYS[attempt - 1] ?? 800;
-        execFileSync('/bin/sleep', [String(delay / 1000)], { stdio: ['pipe', 'pipe', 'pipe'] });
-
-        if (attempt < MAX_ENTER_ATTEMPTS) {
-          const pane = capturePane(session);
-          const lines = pane.split('\n').filter(l => l.trim().length > 0);
-          const lastLines = lines.slice(-5);
-          const textStillPending = lastLines.some(l => l.includes(text.slice(0, 40)));
-          if (!textStillPending) break;
-          log.debug(`Enter attempt ${attempt} pending — retrying (backoff ${delay}ms)`);
-        }
-      }
+      execFileSync(tmux, ['send-keys', '-t', `${session}:`, 'Enter'], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+      });
     }
 
     log.debug(`Injected text (${text.length} chars)`, { session });
