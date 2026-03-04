@@ -7,7 +7,8 @@ export interface A2ASendRequest {
   group?: string;    // Group UUID
   payload: {
     type: string;
-    text?: string;
+    text?: string;         // Canonical field for message content
+    message?: unknown;     // Accepted alias — normalized to 'text' by router
     [key: string]: unknown;
   };
   route?: 'auto' | 'lan' | 'relay';
