@@ -133,6 +133,7 @@ export interface RelayGroup {
   settings?: Record<string, unknown>;
   memberCount?: number;
   createdAt: string;
+  [key: string]: unknown;
 }
 
 export interface RelayGroupMember {

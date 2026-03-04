@@ -48,7 +48,7 @@ interface A2ANetworkClient {
     queued: string[];
     failed: string[];
   }>;
-  getGroups?(): Promise<Array<{ id: string; name: string; [key: string]: unknown }>>;
+  getGroups?(): Promise<Array<{ groupId: string; name: string; [key: string]: unknown }>>;
 }
 
 export interface RouterDeps {

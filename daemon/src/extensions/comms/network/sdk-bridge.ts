@@ -9,7 +9,7 @@
  */
 
 import type {
-  CC4MeNetwork, CommunityConfig, CommunityStatusEvent,
+  A2ANetworkClient, CommunityConfig, CommunityStatusEvent,
   Message, ContactRequest, Broadcast, WireEnvelope,
   GroupMessage, GroupInvitationEvent,
 } from './sdk-types.js';
@@ -23,10 +23,10 @@ import { logCommsEntry, getDisplayName } from '../agent-comms.js';
 
 const log = createLogger('network:sdk');
 
-let _network: CC4MeNetwork | null = null;
+let _network: A2ANetworkClient | null = null;
 let _config: AgentConfig | null = null;
 
-export function getNetworkClient(): CC4MeNetwork | null {
+export function getNetworkClient(): A2ANetworkClient | null {
   return _network;
 }
 
@@ -63,11 +63,11 @@ export async function initNetworkSDK(config: Record<string, unknown>): Promise<b
   try {
     // Dynamic import — kithkit-a2a-client is optional
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let CC4MeNetworkClass: any;
+    let A2ANetworkClientClass: any;
     try {
-      // @ts-expect-error — kithkit-a2a-client is a local dev module, resolved at runtime
+      // @ts-ignore — kithkit-a2a-client is a local dev module, resolved at runtime
       const sdk = await import('kithkit-a2a-client');
-      CC4MeNetworkClass = sdk.A2ANetwork;
+      A2ANetworkClientClass = sdk.A2ANetwork;
     } catch {
       log.warn('kithkit-a2a-client package not installed — P2P messaging unavailable. Install with: npm install kithkit-a2a-client');
       return false;
@@ -92,7 +92,7 @@ export async function initNetworkSDK(config: Record<string, unknown>): Promise<b
       communities: networkConfig.communities.map((c: NetworkCommunity) => c.name),
     });
 
-    _network = new CC4MeNetworkClass(sdkOptions);
+    _network = new A2ANetworkClientClass(sdkOptions);
 
     wireMessageEvent();
     wireGroupMessageEvent();
