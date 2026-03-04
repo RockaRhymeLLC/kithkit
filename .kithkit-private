@@ -9,6 +9,7 @@
 # ── Identity & Config ─────────────────────────────────────────
 identity.md
 kithkit.config.yaml
+.github/workflows/notify-instances.yml
 
 # ── Database ──────────────────────────────────────────────────
 kithkit.db
