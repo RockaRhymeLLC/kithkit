@@ -27,7 +27,7 @@ export async function handleNetworkRoute(
         json(res, 200, withTimestamp({ initialized: false }));
         return true;
       }
-      const communities = network.communities.map(c => ({
+      const communities = network.communities.map((c: { name: string; primary: string; failover?: string }) => ({
         name: c.name, primary: c.primary, failover: c.failover,
         ...getCommunityStatus(c.name),
       }));

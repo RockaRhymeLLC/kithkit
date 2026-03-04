@@ -20,6 +20,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
 
       # The daemon depends on cc4me-network via a file: link that only
       # resolves locally. It's dynamically loaded at runtime, not imported

@@ -10,6 +10,13 @@
 - [ ] CI/CD
 - [ ] Other
 
+## Changes
+
+<!-- List the key changes made. Be specific. -->
+
+-
+-
+
 ## Upstream Contribution Checklist
 
 If this PR originates from a personal instance repo:
@@ -24,4 +31,16 @@ If this PR originates from a personal instance repo:
 
 ## Test Plan
 
-<!-- How were these changes tested? -->
+<!-- How were these changes tested? What should reviewers verify? -->
+
+- [ ]
+- [ ] `npm install && npm run build && npm test` passes in `daemon/`
+
+## Instance Impact
+
+<!-- Does this change affect instance-specific behavior or only the framework? -->
+
+- [ ] Framework-only — instances can sync without any changes
+- [ ] Instance-affecting — instances need to update config, hooks, or extension code after sync
+
+<!-- If instance-affecting, describe what each instance needs to do: -->
