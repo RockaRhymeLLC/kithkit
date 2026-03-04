@@ -31,7 +31,7 @@ export function configure(opts: { projectDir: string }): void {
 
 // ── Session name mapping ────────────────────────────────────
 
-function resolveSession(agentId: string): string | null {
+export function resolveSession(agentId: string): string | null {
   if (agentId === 'comms') return COMMS_SESSION;
   if (agentId === 'orchestrator') return ORCH_SESSION;
   return null; // Workers don't have tmux sessions
@@ -86,7 +86,7 @@ export function injectMessage(agentId: string, text: string): boolean {
 // ── Orchestrator session lifecycle ──────────────────────────
 
 // How long the wrapper waits for a new task before exiting (ms)
-const ORCHESTRATOR_IDLE_WAIT_MS = 2 * 60 * 1000; // 2 minutes
+const ORCHESTRATOR_IDLE_WAIT_MS = 5 * 60 * 1000; // 5 minutes
 // How often to poll for new tasks while idle (ms)
 const ORCHESTRATOR_POLL_INTERVAL_MS = 10 * 1000; // 10 seconds
 
@@ -286,7 +286,7 @@ exit 0
  * Returns the session name, or null if spawn failed.
  *
  * The session runs a wrapper script that keeps the shell alive between tasks,
- * polling for new work for up to 2 minutes before exiting cleanly.
+ * polling for new work for up to 5 minutes before exiting cleanly.
  */
 export function spawnOrchestratorSession(prompt: string): string | null {
   const session = resolveSession('orchestrator')!;

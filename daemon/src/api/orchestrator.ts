@@ -65,13 +65,15 @@ export async function handleOrchestratorRoute(
     const taskId = randomUUID();
     const ts = new Date().toISOString();
     const priority = typeof body.priority === 'number' ? body.priority : 0;
+    const workNotes = typeof body.work_notes === 'string' ? body.work_notes : null;
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?)`,
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
       taskId,
       task.slice(0, 200),
       context ?? task,
       priority,
+      workNotes,
       ts,
       ts,
     );
@@ -290,7 +292,10 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '- Spawn workers via POST http://localhost:3847/api/agents/spawn (profiles: research, coding, testing)',
     '- Check worker status via GET http://localhost:3847/api/agents/:id/status',
     '- Report results to comms via: curl -s -X POST http://localhost:3847/api/messages -H "Content-Type: application/json" -d \'{"from":"orchestrator","to":"comms","type":"result","body":"<your result>","metadata":{"task_id":"<task-id>"}}\'',
-    '- When a task is complete, send a result message to comms and wait for the next task',
+    '- YOU must explicitly mark tasks completed via PUT /api/orchestrator/tasks/<task_id> with status: completed and result: <summary>. The daemon does NOT auto-complete tasks.',
+    '- Write work notes as you progress: PUT /api/orchestrator/tasks/<task_id> with work_notes: "<note>" and append_work_notes: true',
+    '- If you need help or context, ask comms: POST /api/messages with {from: "orchestrator", to: "comms", type: "question", body: "<what you need>"}',
+    '- Task lifecycle: (1) update task to in_progress, (2) do work + write work_notes, (3) mark task completed with result, (4) send result message to comms',
     '- If the daemon sends you a shutdown nudge (idle timeout), wrap up gracefully: send any unsent context to comms, then exit',
     '- Do not interact with the human directly — only comms talks to humans',
     '',

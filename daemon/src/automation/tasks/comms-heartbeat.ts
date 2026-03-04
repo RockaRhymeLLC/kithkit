@@ -54,12 +54,22 @@ function getPendingWorkers(): AgentRow[] {
 
 /**
  * Count unread messages addressed to comms.
+ *
+ * Condition: read_at IS NULL AND processed_at IS NOT NULL
+ *   - processed_at IS NOT NULL: message has been delivered to the target session
+ *     (set by message-delivery task on successful injection).
+ *   - read_at IS NULL: message has not been acknowledged/read by the agent yet.
+ *
+ * This intentionally excludes undelivered messages (processed_at IS NULL) because
+ * those are handled by the message-delivery task, not the heartbeat. The heartbeat
+ * only nudges about messages that were delivered but haven't been acted on yet.
  */
 function getUnreadMessageCount(): number {
   const result = query<MessageCount>(
     `SELECT COUNT(*) as count FROM messages
      WHERE to_agent = 'comms'
-       AND processed_at IS NULL`,
+       AND read_at IS NULL
+       AND processed_at IS NOT NULL`,
   );
   return result[0]?.count ?? 0;
 }
