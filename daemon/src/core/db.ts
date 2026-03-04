@@ -5,6 +5,8 @@
 
 import Database from 'better-sqlite3';
 import path from 'node:path';
+import os from 'node:os';
+import fs from 'node:fs';
 import { runMigrations } from './migrations.js';
 
 let _db: Database.Database | null = null;
@@ -207,6 +209,147 @@ export function query<T>(sql: string, ...params: unknown[]): T[] {
 export function exec(sql: string, ...params: unknown[]): Database.RunResult {
   const db = getDatabase();
   return db.prepare(sql).run(...params);
+}
+
+/**
+ * Resolve the database file path from config or platform default.
+ * Expands ~ to homedir. Creates parent directory if needed.
+ *
+ * Priority: configPath > platform default
+ * Platform defaults:
+ *   darwin → ~/Library/Application Support/kithkit/kithkit.db
+ *   linux  → $XDG_DATA_HOME/kithkit/kithkit.db (fallback ~/.local/share/...)
+ *   other  → ~/.kithkit/data/kithkit.db
+ */
+export function resolveDbPath(projectDir: string, configPath?: string): string {
+  let resolved: string;
+
+  if (configPath) {
+    if (configPath.startsWith('~/')) {
+      resolved = path.join(os.homedir(), configPath.slice(2));
+    } else if (path.isAbsolute(configPath)) {
+      resolved = configPath;
+    } else {
+      // Relative path — resolve against projectDir (backward compat)
+      resolved = path.resolve(projectDir, configPath);
+    }
+  } else {
+    // Platform default
+    const home = os.homedir();
+    if (process.platform === 'darwin') {
+      resolved = path.join(home, 'Library', 'Application Support', 'kithkit', 'kithkit.db');
+    } else if (process.platform === 'linux') {
+      const xdgData = process.env['XDG_DATA_HOME'] ?? path.join(home, '.local', 'share');
+      resolved = path.join(xdgData, 'kithkit', 'kithkit.db');
+    } else {
+      resolved = path.join(home, '.kithkit', 'data', 'kithkit.db');
+    }
+  }
+
+  // Ensure parent directory exists
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+
+  return resolved;
+}
+
+/**
+ * Migrate the legacy DB from projectDir/kithkit.db to newDbPath if needed.
+ *
+ * IMPORTANT: Call this BEFORE openDatabase() — opening the DB first holds a
+ * WAL lock that prevents a clean backup.
+ *
+ * Migration steps:
+ * 1. If old path doesn't exist or new path already exists → skip (log warning if both exist)
+ * 2. Copy using better-sqlite3 backup() API (handles WAL correctly)
+ * 3. Verify integrity with PRAGMA integrity_check
+ * 4. Rename old .db, .db-wal, .db-shm to .migrated-backup variants
+ *
+ * Returns true if migration was performed, false otherwise.
+ * On error: logs and returns false (caller continues with old path — no data loss).
+ */
+export async function migrateDbIfNeeded(
+  projectDir: string,
+  newDbPath: string,
+  log: { info: (msg: string, meta?: Record<string, unknown>) => void; error: (msg: string, meta?: Record<string, unknown>) => void; warn: (msg: string, meta?: Record<string, unknown>) => void },
+): Promise<boolean> {
+  const oldPath = path.join(projectDir, 'kithkit.db');
+
+  const oldExists = fs.existsSync(oldPath);
+  const newExists = fs.existsSync(newDbPath);
+
+  // Normalize: if paths resolve to the same file, nothing to do
+  if (path.resolve(oldPath) === path.resolve(newDbPath)) {
+    return false;
+  }
+
+  if (!oldExists) {
+    return false; // Nothing to migrate
+  }
+
+  if (oldExists && newExists) {
+    log.warn('Legacy kithkit.db found at project root — it is no longer used. You may delete it safely.', { path: oldPath });
+    return false;
+  }
+
+  // oldExists && !newExists — perform migration
+  log.info('Migrating database to new location...', { from: oldPath, to: newDbPath });
+
+  let oldDb: Database.Database | null = null;
+  let verifyDb: Database.Database | null = null;
+
+  try {
+    // Open old DB read-only for backup
+    oldDb = new Database(oldPath, { readonly: true });
+
+    // Copy using SQLite online backup API (safe for live WAL DBs)
+    await oldDb.backup(newDbPath);
+    oldDb.close();
+    oldDb = null;
+
+    // Verify integrity of the copy
+    verifyDb = new Database(newDbPath, { readonly: true });
+    const rows = verifyDb.pragma('integrity_check') as { integrity_check: string }[];
+    verifyDb.close();
+    verifyDb = null;
+
+    const ok = rows.length === 1 && rows[0]?.integrity_check === 'ok';
+    if (!ok) {
+      throw new Error(`integrity_check failed: ${JSON.stringify(rows)}`);
+    }
+
+    // Rename old files to .migrated-backup variants
+    fs.renameSync(oldPath, `${oldPath}.migrated-backup`);
+    for (const suffix of ['-wal', '-shm']) {
+      const walPath = `${oldPath}${suffix}`;
+      if (fs.existsSync(walPath)) {
+        fs.renameSync(walPath, `${oldPath}.migrated-backup${suffix}`);
+      }
+    }
+
+    log.info('Database migrated successfully. Legacy file kept as backup.', {
+      from: oldPath,
+      to: newDbPath,
+      backup: `${oldPath}.migrated-backup`,
+    });
+    return true;
+
+  } catch (err) {
+    // Clean up handles
+    try { oldDb?.close(); } catch { /* ignore */ }
+    try { verifyDb?.close(); } catch { /* ignore */ }
+
+    // If backup created a partial file at newDbPath, remove it to avoid confusion
+    if (!newExists && fs.existsSync(newDbPath)) {
+      try { fs.unlinkSync(newDbPath); } catch { /* ignore */ }
+    }
+
+    log.error('Database migration failed — continuing with existing location', {
+      error: err instanceof Error ? err.message : String(err),
+      oldPath,
+      newPath: newDbPath,
+    });
+    return false;
+  }
 }
 
 /** Reset for testing. */

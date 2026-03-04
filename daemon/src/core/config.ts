@@ -27,6 +27,7 @@ export interface DaemonConfig {
   log_dir: string;
   log_rotation: { max_size_mb: number; max_files: number };
   lan?: LanConfig;
+  db_path?: string;  // Optional override for database file location
 }
 
 export interface SchedulerConfig {
