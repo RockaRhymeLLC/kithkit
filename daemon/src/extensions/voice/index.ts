@@ -110,7 +110,7 @@ function getClientIp(req: http.IncomingMessage): string {
 function checkVoiceEnabled(res: http.ServerResponse): boolean {
   if (!_enabled) {
     res.writeHead(503, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ error: 'Voice is not enabled' }));
+    res.end(JSON.stringify({ error: 'Voice subsystem is disabled' }));
     return false;
   }
   return true;
