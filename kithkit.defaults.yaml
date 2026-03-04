@@ -9,6 +9,13 @@ daemon:
   port: 3847
   log_level: info
   log_dir: logs
+  # db_path: "~/Library/Application Support/kithkit/kithkit.db"
+  # Database file location. If omitted, uses the platform default:
+  #   macOS  → ~/Library/Application Support/kithkit/kithkit.db
+  #   Linux  → $XDG_DATA_HOME/kithkit/kithkit.db  (fallback: ~/.local/share/kithkit/kithkit.db)
+  #   Other  → ~/.kithkit/data/kithkit.db
+  # Supports ~ expansion. Relative paths resolve from projectDir (not recommended).
+  # Changing db_path requires a daemon restart — hot-reload is rejected.
   lan:
     enabled: false
     bind_host: "127.0.0.1"

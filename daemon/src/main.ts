@@ -8,7 +8,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, type KithkitConfig } from './core/config.js';
-import { openDatabase, closeDatabase } from './core/db.js';
+import { openDatabase, closeDatabase, resolveDbPath, migrateDbIfNeeded } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
@@ -20,7 +20,7 @@ import { cleanupOrphanedResources } from './core/orphan-cleanup.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
-import { handleConfigRoute, setConfigWatcher } from './api/config.js';
+import { handleConfigRoute, setConfigWatcher, setCurrentDbPath, setConfigFilePath } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
 import { handleSelftestRoute } from './api/selftest.js';
 import { handleTaskQueueRoute } from './api/task-queue.js';
@@ -100,7 +100,12 @@ const log = createLogger('main');
 
 // ── Database ─────────────────────────────────────────────────
 
-openDatabase(projectDir);
+// Resolve DB path from config (or platform default), then migrate if needed.
+// Migration MUST run before openDatabase() to avoid WAL lock on the source.
+const resolvedDbPath = resolveDbPath(projectDir, config.daemon.db_path);
+await migrateDbIfNeeded(projectDir, resolvedDbPath, log);
+openDatabase(projectDir, resolvedDbPath);
+log.info('Database opened', { path: resolvedDbPath });
 
 // Reload persisted timers (must run after openDatabase)
 initTimers();
@@ -120,6 +125,8 @@ if (orphanReport.timersExpired > 0 || orphanReport.tasksFailedOrphaned > 0 || or
 const configPath = path.resolve(projectDir, 'kithkit.config.yaml');
 const configWatcher = createConfigWatcher(configPath, config);
 setConfigWatcher(configWatcher);
+setCurrentDbPath(resolvedDbPath);
+setConfigFilePath(configPath);
 configWatcher.start();
 log.info('Config watcher started', { path: configPath });
 
@@ -193,6 +200,7 @@ const server = http.createServer((req, res) => {
       degraded: isDegraded(),
       extension: ext ? ext.name : null,
       extensionRoutes: extRoutes,
+      db_path: resolvedDbPath,
     }));
     return;
   }
