@@ -22,6 +22,8 @@ import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
 import { handleConfigRoute, setConfigWatcher } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
+import { handleOrchestratorWorkersRoute, setProfilesDir as setWorkerProfilesDir } from './api/orchestrator-workers.js';
+import { handleOrchestratorMessagesRoute } from './api/orchestrator-messages.js';
 import { handleSelftestRoute } from './api/selftest.js';
 import { handleTaskQueueRoute } from './api/task-queue.js';
 import { handleContactsRoute } from './api/contacts.js';
@@ -125,6 +127,7 @@ log.info('Config watcher started', { path: configPath });
 
 // Wire up agent profiles directory
 setProfilesDir(path.resolve(projectDir, '.claude', 'agents'));
+setWorkerProfilesDir(path.resolve(projectDir, '.claude', 'agents'));
 
 // Configure tmux session management
 configureTmux({ projectDir });
@@ -237,6 +240,8 @@ const server = http.createServer((req, res) => {
     if (url.pathname.startsWith('/api/')) {
       const handlers = [
         () => handleAgentsRoute(req, res, url.pathname),
+        () => handleOrchestratorWorkersRoute(req, res, url.pathname, url.searchParams),
+        () => handleOrchestratorMessagesRoute(req, res, url.pathname, url.searchParams),
         () => handleOrchestratorRoute(req, res, url.pathname),
         () => handleTaskQueueRoute(req, res, url.pathname, url.searchParams),
         () => handleContactsRoute(req, res, url.pathname, url.searchParams),

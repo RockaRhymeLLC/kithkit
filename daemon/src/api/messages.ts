@@ -19,6 +19,7 @@ import {
 } from '../agents/message-router.js';
 import type { MessageType } from '../agents/message-router.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
+import { query } from '../core/db.js';
 
 const VALID_MESSAGE_TYPES: readonly string[] = ['text', 'task', 'result', 'error', 'status'];
 
@@ -89,6 +90,21 @@ export async function handleMessagesRoute(
         }
         throw err;
       }
+      return true;
+    }
+
+    // GET /api/messages/unread-summary — lightweight unread count per agent
+    if (pathname === '/api/messages/unread-summary' && method === 'GET') {
+      const rows = query<{ to_agent: string; count: number }>(
+        `SELECT to_agent, COUNT(*) as count FROM messages
+         WHERE read_at IS NULL AND processed_at IS NOT NULL
+         GROUP BY to_agent`,
+      );
+      const summary: Record<string, number> = {};
+      for (const row of rows) {
+        summary[row.to_agent] = row.count;
+      }
+      json(res, 200, withTimestamp({ summary }));
       return true;
     }
 

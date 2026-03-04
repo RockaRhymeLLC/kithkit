@@ -22,6 +22,7 @@ import { register as registerPeerHeartbeat } from './peer-heartbeat.js';
 import { register as registerMetricsAggregation } from './api-metrics-aggregation.js';
 import { register as registerDailyDigest } from './daily-digest.js';
 import { register as registerUpstreamSync } from './upstream-sync.js';
+import { register as registerOrchStaleTaskRecovery } from './orch-stale-task-recovery.js';
 export { loadExternalTasks, type LoadResult } from './external-loader.js';
 
 /**
@@ -43,6 +44,7 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'api-metrics-aggregation', register: registerMetricsAggregation },
     { name: 'daily-digest', register: registerDailyDigest },
     { name: 'upstream-sync', register: registerUpstreamSync },
+    { name: 'orch-stale-task-recovery', register: registerOrchStaleTaskRecovery },
   ];
 
   for (const { name, register } of registrations) {

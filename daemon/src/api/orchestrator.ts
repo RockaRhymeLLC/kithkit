@@ -88,11 +88,11 @@ export async function handleOrchestratorRoute(
       }
 
       // Create session directory for orchestrator artifacts
-      const sessionDir = createSessionDir('orchestrator');
+      createSessionDir('orchestrator');
 
-      // Spawn orchestrator with the task as initial prompt (includes memory context)
-      const orchestratorPrompt = await buildOrchestratorPrompt(task, context, sessionDir, taskId);
-      const session = spawnOrchestratorSession(orchestratorPrompt);
+      // Spawn orchestrator — it uses --profile orchestrator and discovers tasks from the DB.
+      // The prompt parameter is kept for backward compat but is not embedded in the script.
+      const session = spawnOrchestratorSession('spawn');
 
       if (!session) {
         // Mark task as failed since we couldn't spawn
@@ -156,15 +156,12 @@ export async function handleOrchestratorRoute(
 
     const orchState = orchStateCheck; // already computed above
 
-    // Always store the task message so the wrapper's poll loop can find it
+    // Task is already in the DB. Log the escalation as a message for audit trail.
     sendMessage({
       from: 'comms',
       to: 'orchestrator',
       type: 'task',
       body: JSON.stringify({ task, context, task_id: taskId }),
-      // When Claude is actively running, use direct=false so the message is
-      // queued for the wrapper's poll loop instead of injected into tmux
-      direct: false,
     });
 
     // Update activity so idle checker knows we just got work
@@ -173,12 +170,22 @@ export async function handleOrchestratorRoute(
       updated_at: new Date().toISOString(),
     });
 
+    // Notify orch directly so it picks up the new task promptly without waiting
+    // for the next idle-monitor tick. The orch checks its task queue on receipt.
+    sendMessage({
+      from: 'comms',
+      to: 'orchestrator',
+      type: 'task',
+      body: `New task queued: ${task.slice(0, 200)} (task_id: ${taskId})`,
+      direct: true,
+    });
+
     if (orchState === 'active') {
-      log.info('Task queued for running orchestrator (Claude active, wrapper will poll)', { task: task.slice(0, 100), taskId });
+      log.info('Task queued for running orchestrator (Claude active, notified directly)', { task: task.slice(0, 100), taskId });
       json(res, 200, withTimestamp({
         status: 'queued',
         task_id: taskId,
-        message: 'Task queued — orchestrator is busy, wrapper will pick it up between runs',
+        message: 'Task queued — orchestrator is busy, notified directly',
       }));
     } else {
       log.info('Task escalated to waiting orchestrator', { task: task.slice(0, 100), taskId });

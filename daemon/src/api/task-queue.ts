@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { query, exec, get } from '../core/db.js';
 import { injectMessage as _injectMessage } from '../agents/tmux.js';
+import { killJob } from '../agents/lifecycle.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('task-queue');
@@ -37,7 +38,7 @@ export function _resetInjectMessageForTesting(): void {
 
 // ── Types ────────────────────────────────────────────────────
 
-type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed';
+type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
 type ActivityType = 'progress' | 'note';
 
 interface OrchestratorTask {
@@ -51,6 +52,7 @@ interface OrchestratorTask {
   error: string | null;
   work_notes: string | null;
   timeout_seconds: number | null;
+  retry_count: number;
   created_at: string;
   assigned_at: string | null;
   started_at: string | null;
@@ -77,19 +79,20 @@ interface TaskActivity {
 
 // ── Constants ────────────────────────────────────────────────
 
-const VALID_STATUSES: readonly TaskStatus[] = ['pending', 'assigned', 'in_progress', 'completed', 'failed'];
-const TERMINAL_STATUSES: readonly TaskStatus[] = ['completed', 'failed'];
+const VALID_STATUSES: readonly TaskStatus[] = ['pending', 'assigned', 'in_progress', 'completed', 'failed', 'cancelled'];
+const TERMINAL_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'cancelled'];
 const VALID_ACTIVITY_TYPES: readonly ActivityType[] = ['progress', 'note'];
 
 /**
  * Valid status transitions. Key = current status, value = allowed next statuses.
  */
 const VALID_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
-  pending: ['assigned', 'failed'],
-  assigned: ['in_progress', 'failed', 'pending'],
-  in_progress: ['completed', 'failed'],
+  pending: ['assigned', 'failed', 'cancelled'],
+  assigned: ['in_progress', 'failed', 'pending', 'cancelled'],
+  in_progress: ['completed', 'failed', 'cancelled'],
   completed: [],
-  failed: [],
+  failed: ['pending'],  // Allow retry: failed → pending
+  cancelled: [],
 };
 
 // ── Validation ───────────────────────────────────────────────
@@ -218,7 +221,7 @@ export async function handleTaskQueueRoute(
         );
       } else {
         tasks = query<OrchestratorTask>(
-          'SELECT * FROM orchestrator_tasks ORDER BY priority DESC, created_at ASC',
+          `SELECT * FROM orchestrator_tasks WHERE status != 'cancelled' ORDER BY priority DESC, created_at ASC`,
         );
       }
 
@@ -351,6 +354,54 @@ export async function handleTaskQueueRoute(
       return true;
     }
 
+    // POST /api/orchestrator/tasks/:id/retry — retry a failed task
+    if (subpath === '/retry' && method === 'POST') {
+      const task = getTask(taskId);
+      if (!task) {
+        json(res, 404, withTimestamp({ error: 'Task not found' }));
+        return true;
+      }
+
+      if (task.status !== 'failed') {
+        json(res, 409, withTimestamp({ error: `Can only retry failed tasks, current status: ${task.status}` }));
+        return true;
+      }
+
+      const ts = now();
+      const newRetryCount = (task.retry_count ?? 0) + 1;
+
+      exec(
+        `UPDATE orchestrator_tasks SET status = 'pending', assignee = NULL, error = NULL, retry_count = ?, updated_at = ? WHERE id = ?`,
+        newRetryCount, ts, taskId,
+      );
+
+      // Log activity
+      exec(
+        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+         VALUES (?, 'daemon', 'note', 'retry', ?, ?)`,
+        taskId, `Task retried (attempt ${newRetryCount})`, ts,
+      );
+
+      // Alert comms after 2 consecutive failures
+      if (newRetryCount >= 2) {
+        try {
+          exec(
+            `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+             VALUES ('daemon', 'comms', 'status', ?, ?)`,
+            `Task "${task.title}" has failed ${newRetryCount} times and is being retried. Investigation may be needed.`, ts,
+          );
+          injectMessage('comms', `[alert] Task "${task.title.slice(0, 80)}" failed ${newRetryCount} times — retrying`);
+        } catch (err) {
+          log.warn('Failed to alert comms about repeated failure', { taskId, retryCount: newRetryCount });
+        }
+      }
+
+      const updated = getTask(taskId)!;
+      log.info('Task retried', { id: taskId, retryCount: newRetryCount });
+      json(res, 200, withTimestamp(updated));
+      return true;
+    }
+
     // GET /api/orchestrator/tasks/:id — get task detail
     if (!subpath && method === 'GET') {
       const task = getTask(taskId);
@@ -473,13 +524,15 @@ export async function handleTaskQueueRoute(
         ...values, taskId,
       );
 
-      // Fix 4: Auto-log activity on status change
+      // Auto-log activity on status change
       if (updates.status) {
         const activityMessage = updates.status === 'completed'
           ? `Status → completed. Result: ${(updates.result as string)?.slice(0, 200) ?? '(none)'}`
           : updates.status === 'failed'
             ? `Status → failed. Error: ${(updates.error as string)?.slice(0, 200) ?? '(none)'}`
-            : `Status → ${updates.status}`;
+            : updates.status === 'cancelled'
+              ? `Status → cancelled`
+              : `Status → ${updates.status}`;
 
         exec(
           `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
@@ -488,14 +541,31 @@ export async function handleTaskQueueRoute(
         );
       }
 
+      // Kill associated workers when cancelling an in_progress task
+      if (updates.status === 'cancelled' && task.status === 'in_progress') {
+        const workers = getTaskWorkers(taskId);
+        for (const worker of workers) {
+          try {
+            killJob(worker.worker_id);
+            log.info('Killed worker for cancelled task', { taskId, workerId: worker.worker_id });
+          } catch (err) {
+            log.warn('Failed to kill worker during task cancellation', {
+              taskId, workerId: worker.worker_id, error: String(err),
+            });
+          }
+        }
+      }
+
       const updated = getTask(taskId)!;
       log.info('Task updated', { id: taskId, status: updated.status, assignee: updated.assignee });
 
-      // Fix 2: Auto-notify comms on task completion/failure
+      // Auto-notify comms on task completion/failure/cancellation
       if (updates.status && TERMINAL_STATUSES.includes(updates.status as TaskStatus)) {
         const msgBody = updates.status === 'completed'
           ? `Task completed: ${updated.title}\n\nResult: ${updated.result ?? '(no result provided)'}`
-          : `Task failed: ${updated.title}\n\nError: ${updated.error ?? '(no error details)'}`;
+          : updates.status === 'cancelled'
+            ? `Task cancelled: ${updated.title}`
+            : `Task failed: ${updated.title}\n\nError: ${updated.error ?? '(no error details)'}`;
 
         try {
           exec(
