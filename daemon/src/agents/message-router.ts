@@ -169,12 +169,12 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
       if (req.direct) {
         const injected = tmuxInjector(req.to, req.body);
         if (injected) {
-          // Mark as processed AND read — the full content was already displayed
-          // in the tmux session, so no follow-up notification is needed.
+          // Mark as processed, read, AND notified — the full content was already
+          // displayed in the tmux session. No follow-up notification needed.
           const now = new Date().toISOString();
           exec(
-            'UPDATE messages SET processed_at = ?, read_at = ? WHERE id = ?',
-            now, now, message.id,
+            'UPDATE messages SET processed_at = ?, read_at = ?, notified_at = ? WHERE id = ?',
+            now, now, now, message.id,
           );
           // Tell the heartbeat dedup that comms was just notified, so it
           // doesn't fire a redundant "[heartbeat] N unread messages" nudge.
