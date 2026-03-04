@@ -216,6 +216,8 @@ export class UnifiedA2ARouter {
   //    (unwrap to plain string)
 
   private normalizePayload(payload: A2ASendRequest['payload']): A2ASendRequest['payload'] {
+    // Shallow copy — nested objects (e.g. metadata) are shared with the caller.
+    // This is intentional: we only mutate top-level fields (text, message).
     const result = { ...payload };
 
     // Alias: message → text (if text is absent)
