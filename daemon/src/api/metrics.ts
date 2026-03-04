@@ -42,6 +42,19 @@ function isRateLimited(agent: string): boolean {
   return entry.count > INGEST_RATE_LIMIT;
 }
 
+/** Prune stale entries from the rate limit map (entries older than one window). */
+function pruneStaleRateLimitEntries(): void {
+  const now = Date.now();
+  for (const [key, entry] of _ingestRateMap) {
+    if (now - entry.windowStart >= RATE_WINDOW_MS * 2) {
+      _ingestRateMap.delete(key);
+    }
+  }
+}
+
+// Sweep stale entries every 5 minutes to prevent unbounded growth
+setInterval(pruneStaleRateLimitEntries, 5 * 60 * 1000).unref();
+
 /** Exposed for tests only — resets the in-memory rate limit state. */
 export function _resetIngestRateLimitForTesting(): void {
   _ingestRateMap.clear();

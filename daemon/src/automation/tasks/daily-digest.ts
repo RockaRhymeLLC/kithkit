@@ -1,9 +1,13 @@
 /**
- * Daily Digest — morning Telegram report for Dave.
+ * Daily Digest — morning summary report.
  *
- * Runs daily at 7am CT (configured via cron in kithkit.config.yaml).
+ * Runs daily (configured via cron in kithkit.config.yaml).
  * Gathers overnight activity, metrics, blockers, and team status,
  * then delivers a concise digest via the daemon send API.
+ *
+ * Delivery channels are configured per-instance in the scheduler task
+ * config (`channels` array). Defaults to all configured channels if
+ * no channels are specified.
  *
  * Data sources:
  * - Git log (PRs merged, recent commits)
@@ -315,16 +319,22 @@ function formatDigest(sections: DigestSection[], date: string): string {
 
 /**
  * Send the digest via the daemon's send API.
+ * Channels are determined by the task config (`channels` array).
+ * If no channels are configured, omits the field to let the send API
+ * use its default routing.
  */
-async function sendDigest(message: string): Promise<void> {
+async function sendDigest(message: string, channels?: string[]): Promise<void> {
   const config = loadConfig();
   const port = (config as unknown as Record<string, Record<string, unknown>>)?.daemon?.port ?? 3847;
 
-  const body = JSON.stringify({
+  const payload: Record<string, unknown> = {
     message,
-    channels: ['telegram'],
     parse_mode: 'HTML',
-  });
+  };
+  if (channels && channels.length > 0) {
+    payload.channels = channels;
+  }
+  const body = JSON.stringify(payload);
 
   const result = await fetchLocal(`http://127.0.0.1:${port}/api/send`, {
     method: 'POST',
@@ -408,8 +418,9 @@ async function run(config: Record<string, unknown>): Promise<void> {
   const sections = [gitSection, todoSection, metricsSection, blockerSection, teamSection];
   const message = formatDigest(sections, dateStr);
 
-  // Send via daemon
-  await sendDigest(message);
+  // Send via daemon — channels come from task config (instance-specific)
+  const channels = config.channels as string[] | undefined;
+  await sendDigest(message, channels);
 
   const durationMs = Date.now() - startMs;
   log.info('Daily digest sent', { durationMs });

@@ -33,21 +33,32 @@ interface LatencyRow {
   latency_ms: number;
 }
 
+/** Cached agent name from config — avoids calling loadConfig() per row. */
+let _cachedAgentName: string | null | undefined;
+function getAgentName(): string | null {
+  if (_cachedAgentName === undefined) {
+    _cachedAgentName = loadConfig().agent?.name?.toLowerCase() ?? null;
+  }
+  return _cachedAgentName;
+}
+
 /**
  * Normalize a raw agent_id (often a User-Agent string) to a known agent name.
  * Returns the configured agent name for unrecognized UA strings (local traffic).
+ *
+ * Heuristic: if the value contains '/' or starts with 'mozilla' it's a
+ * User-Agent string from automated HTTP clients — attribute to this daemon.
+ * Otherwise accept it as a bare agent name (framework-agnostic, no allowlist).
  */
 function normalizeAgentId(agentId: string | null): string | null {
-  if (!agentId) return loadConfig().agent?.name?.toLowerCase() ?? null;
+  if (!agentId) return getAgentName();
   const lower = agentId.toLowerCase();
-  // Already a known agent name
-  if (['bmo', 'r2', 'skippy'].includes(lower)) return lower;
-  // Raw User-Agent string → local traffic → attribute to this daemon's agent
-  if (lower.startsWith('curl/') || lower.startsWith('python') || lower.startsWith('node')
-    || lower.startsWith('mozilla/') || lower.startsWith('telegrambot')) {
-    return loadConfig().agent?.name?.toLowerCase() ?? null;
+  // User-Agent strings (contain '/' like curl/8.x, python-requests/2.x, node-fetch/3.x)
+  if (lower.includes('/') || lower.startsWith('mozilla')) {
+    return getAgentName();
   }
-  return agentId;
+  // Bare agent name — accept as-is
+  return lower;
 }
 
 /**
@@ -111,17 +122,23 @@ function aggregateHour(hour: string): number {
 
   let rowsInserted = 0;
   for (const group of groups) {
-    // Calculate p95 latency for this group.
-    // Query all latencies for this endpoint/method/hour — the normalization
-    // already merged multiple raw agent_ids, so we match broadly.
+    // Calculate p95 latency for this group, filtered by normalized agent_id.
+    // When agent_id is null (local traffic), match rows where agent_id IS NULL
+    // or matches common UA patterns that normalizeAgentId maps to this daemon.
     const latencies = query<LatencyRow>(
-      `SELECT latency_ms FROM api_request_logs
-       WHERE strftime('%Y-%m-%d %H:00', timestamp) = ?
-         AND path = ? AND method = ?
-       ORDER BY latency_ms ASC`,
-      hour,
-      group.endpoint,
-      group.method,
+      group.agent_id
+        ? `SELECT latency_ms FROM api_request_logs
+           WHERE strftime('%Y-%m-%d %H:00', timestamp) = ?
+             AND path = ? AND method = ?
+             AND (agent_id = ? OR agent_id LIKE '%/%' OR agent_id LIKE 'mozilla%' OR agent_id IS NULL)
+           ORDER BY latency_ms ASC`
+        : `SELECT latency_ms FROM api_request_logs
+           WHERE strftime('%Y-%m-%d %H:00', timestamp) = ?
+             AND path = ? AND method = ?
+           ORDER BY latency_ms ASC`,
+      ...(group.agent_id
+        ? [hour, group.endpoint, group.method, group.agent_id]
+        : [hour, group.endpoint, group.method]),
     );
 
     let p95 = 0;
@@ -162,6 +179,7 @@ function purgeOldLogs(): number {
  * Main aggregation logic.
  */
 async function run(): Promise<void> {
+  _cachedAgentName = undefined; // Reset cache each run
   const startMs = Date.now();
 
   // Find distinct hours in raw logs that haven't been aggregated yet

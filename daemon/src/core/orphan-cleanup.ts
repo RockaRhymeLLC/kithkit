@@ -24,7 +24,7 @@
 import { execFileSync } from 'node:child_process';
 import { query, exec } from './db.js';
 import { createLogger } from './logger.js';
-import { TMUX_BIN, TMUX_SOCKET } from '../agents/tmux.js';
+import { TMUX_BIN, TMUX_SOCKET, resolveSession } from '../agents/tmux.js';
 
 const log = createLogger('orphan-cleanup');
 
@@ -39,14 +39,13 @@ export interface OrphanCleanupReport {
 // ── Session liveness helpers ─────────────────────────────────
 
 /**
- * Map a timer's `session` column to a tmux session name.
- * The timers table stores the agent id ('comms' | 'orchestrator') in the
- * session column (normalised by timer-api.ts's normalizeAgentId()).
+ * Map a timer's `session` column (agent id) to a tmux session name.
+ * Delegates to tmux.ts resolveSession() — single source of truth for
+ * agent-to-session mapping.
  */
-const AGENT_TO_TMUX: Record<string, string> = {
-  comms: 'comms1',
-  orchestrator: 'orch1',
-};
+function agentToTmuxSession(agentId: string): string {
+  return resolveSession(agentId) ?? agentId;
+}
 
 /**
  * Check whether a tmux session is currently alive.
@@ -124,7 +123,7 @@ export function cleanupOrphanedResources(): OrphanCleanupReport {
   const sessionAliveCache = new Map<string, boolean>();
 
   for (const timer of activeTimers) {
-    const tmuxSession = AGENT_TO_TMUX[timer.session] ?? timer.session;
+    const tmuxSession = agentToTmuxSession(timer.session);
 
     if (!sessionAliveCache.has(tmuxSession)) {
       sessionAliveCache.set(tmuxSession, isTmuxSessionAlive(tmuxSession));
@@ -157,7 +156,7 @@ export function cleanupOrphanedResources(): OrphanCleanupReport {
 
   for (const task of activeTasks) {
     const assignee = task.assignee ?? 'orchestrator';
-    const tmuxSession = AGENT_TO_TMUX[assignee] ?? AGENT_TO_TMUX['orchestrator']!;
+    const tmuxSession = agentToTmuxSession(assignee);
 
     if (!sessionAliveCache.has(tmuxSession)) {
       sessionAliveCache.set(tmuxSession, isTmuxSessionAlive(tmuxSession));
