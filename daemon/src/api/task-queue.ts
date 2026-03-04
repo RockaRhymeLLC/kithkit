@@ -1,7 +1,8 @@
 /**
  * Task Queue API — structured task management for orchestrator work.
  *
- * State machine: pending → assigned → in_progress → completed/failed
+ * State machine: pending → assigned → in_progress → completed/failed/cancelled
+ * Retry: failed → pending (increments retry_count)
  *
  * Routes:
  *   POST   /api/orchestrator/tasks              — Create a task
@@ -11,6 +12,8 @@
  *   POST   /api/orchestrator/tasks/:id/activity — Post activity entry
  *   GET    /api/orchestrator/tasks/:id/activity — Get activity log (paginated)
  *   POST   /api/orchestrator/tasks/:id/workers  — Assign worker to task
+ *   POST   /api/orchestrator/tasks/:id/retry    — Retry a failed task
+ *   POST   /api/orchestrator/tasks/:id/cancel   — Cancel a pending/in_progress task
  */
 
 import type http from 'node:http';
@@ -24,7 +27,7 @@ const log = createLogger('task-queue');
 
 // ── Types ────────────────────────────────────────────────────
 
-type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed';
+type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
 type ActivityType = 'progress' | 'note';
 
 interface OrchestratorTask {
@@ -36,6 +39,7 @@ interface OrchestratorTask {
   priority: number;
   result: string | null;
   error: string | null;
+  retry_count: number;
   work_notes: string | null;
   timeout_seconds: number | null;
   created_at: string;
@@ -64,19 +68,20 @@ interface TaskActivity {
 
 // ── Constants ────────────────────────────────────────────────
 
-const VALID_STATUSES: readonly TaskStatus[] = ['pending', 'assigned', 'in_progress', 'completed', 'failed'];
-const TERMINAL_STATUSES: readonly TaskStatus[] = ['completed', 'failed'];
+const VALID_STATUSES: readonly TaskStatus[] = ['pending', 'assigned', 'in_progress', 'completed', 'failed', 'cancelled'];
+const TERMINAL_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'cancelled'];
 const VALID_ACTIVITY_TYPES: readonly ActivityType[] = ['progress', 'note'];
 
 /**
  * Valid status transitions. Key = current status, value = allowed next statuses.
  */
 const VALID_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
-  pending: ['assigned', 'failed'],
-  assigned: ['in_progress', 'failed', 'pending'],
-  in_progress: ['completed', 'failed'],
+  pending: ['assigned', 'failed', 'cancelled'],
+  assigned: ['in_progress', 'failed', 'pending', 'cancelled'],
+  in_progress: ['completed', 'failed', 'cancelled'],
   completed: [],
-  failed: [],
+  failed: ['pending'],  // retry: failed → pending
+  cancelled: [],
 };
 
 // ── Validation ───────────────────────────────────────────────
@@ -205,7 +210,7 @@ export async function handleTaskQueueRoute(
         );
       } else {
         tasks = query<OrchestratorTask>(
-          'SELECT * FROM orchestrator_tasks ORDER BY priority DESC, created_at ASC',
+          "SELECT * FROM orchestrator_tasks WHERE status != 'cancelled' ORDER BY priority DESC, created_at ASC",
         );
       }
 
@@ -335,6 +340,95 @@ export async function handleTaskQueueRoute(
 
       log.info('Worker assigned to task', { taskId, workerId: body.worker_id, role });
       json(res, 201, withTimestamp({ task_id: taskId, worker_id: body.worker_id, role, assigned_at: ts }));
+      return true;
+    }
+
+
+    // POST /api/orchestrator/tasks/:id/retry — retry a failed task
+    if (subpath === '/retry' && method === 'POST') {
+      const task = getTask(taskId);
+      if (!task) {
+        json(res, 404, withTimestamp({ error: 'Task not found' }));
+        return true;
+      }
+
+      if (task.status !== 'failed') {
+        json(res, 409, withTimestamp({ error: `Can only retry failed tasks, current status: ${task.status}` }));
+        return true;
+      }
+
+      const ts = now();
+      const newRetryCount = (task.retry_count ?? 0) + 1;
+
+      exec(
+        `UPDATE orchestrator_tasks SET status = 'pending', assignee = NULL, error = NULL, result = NULL, retry_count = ?, completed_at = NULL, updated_at = ? WHERE id = ?`,
+        newRetryCount, ts, taskId,
+      );
+
+      // Log retry activity
+      exec(
+        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+         VALUES (?, 'daemon', 'note', 'retry', ?, ?)`,
+        taskId, `Task retried (attempt ${newRetryCount + 1})`, ts,
+      );
+
+      // Alert comms after 2 consecutive failures
+      if (newRetryCount >= 2) {
+        injectMessage('comms', `[task alert] "${task.title}" has failed ${newRetryCount} times and is being retried (attempt ${newRetryCount + 1})`);
+      }
+
+      const updated = getTask(taskId)!;
+      log.info('Task retried', { id: taskId, retry_count: newRetryCount });
+      json(res, 200, withTimestamp(updated));
+      return true;
+    }
+
+    // POST /api/orchestrator/tasks/:id/cancel — cancel a task
+    if (subpath === '/cancel' && method === 'POST') {
+      const task = getTask(taskId);
+      if (!task) {
+        json(res, 404, withTimestamp({ error: 'Task not found' }));
+        return true;
+      }
+
+      if (TERMINAL_STATUSES.includes(task.status as TaskStatus)) {
+        json(res, 409, withTimestamp({ error: `Cannot cancel ${task.status} task` }));
+        return true;
+      }
+
+      const ts = now();
+
+      // If in_progress, kill assigned workers first
+      if (task.status === 'in_progress') {
+        const workers = getTaskWorkers(taskId);
+        for (const w of workers) {
+          try {
+            // Mark worker job as cancelled in DB
+            exec(
+              `UPDATE worker_jobs SET status = 'failed', error = 'parent task cancelled', finished_at = ? WHERE id = ? AND status IN ('queued', 'running')`,
+              ts, w.worker_id,
+            );
+          } catch {
+            // Worker may not exist or already finished
+          }
+        }
+      }
+
+      exec(
+        `UPDATE orchestrator_tasks SET status = 'cancelled', completed_at = ?, updated_at = ? WHERE id = ?`,
+        ts, ts, taskId,
+      );
+
+      // Log cancellation activity
+      exec(
+        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+         VALUES (?, 'daemon', 'note', 'cancelled', 'Task cancelled', ?)`,
+        taskId, ts,
+      );
+
+      const updated = getTask(taskId)!;
+      log.info('Task cancelled', { id: taskId, previous_status: task.status });
+      json(res, 200, withTimestamp(updated));
       return true;
     }
 
