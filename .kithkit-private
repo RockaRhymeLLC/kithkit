@@ -67,6 +67,9 @@ services/
 # Instance agents (extra profiles beyond framework defaults)
 .claude/agents/
 
+# Instance workflows (upstream-sync runs on instances, not the public repo)
+.github/workflows/upstream-sync.yml
+
 # Instance hooks (extra)
 .claude/hooks/announce-restart.py
 .claude/hooks/memory-context.py
