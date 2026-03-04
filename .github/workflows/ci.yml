@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: daemon/package-lock.json
+
+      - name: Install dependencies
+        working-directory: daemon
+        run: npm ci
+
+      - name: Build
+        working-directory: daemon
+        run: npm run build
+
+      - name: Run tests
+        working-directory: daemon
+        run: npm test
+
+  secret-leak-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Check for secret patterns in changed files
+        run: |
+          echo "Scanning diff for secret patterns..."
+          # Get the diff of files added/modified in this push or PR
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            DIFF=$(git diff HEAD~1 -- . ':!*.yml' ':!*.md' 2>/dev/null || git diff origin/${{ github.base_ref }}...HEAD 2>/dev/null || true)
+          else
+            DIFF=$(git diff HEAD~1 2>/dev/null || true)
+          fi
+
+          if [ -z "$DIFF" ]; then
+            echo "No diff found to scan."
+            exit 0
+          fi
+
+          # Check only added lines (lines starting with +) for secret patterns
+          ADDED_LINES=$(echo "$DIFF" | grep '^+' | grep -v '^+++')
+
+          FOUND=0
+          # API_KEY pattern
+          if echo "$ADDED_LINES" | grep -iE 'API_KEY\s*[:=]\s*["\x27]?[A-Za-z0-9/+]{16,}' > /dev/null 2>&1; then
+            echo "FAIL: Possible API key found in diff"
+            FOUND=1
+          fi
+          # TOKEN pattern (excluding obvious placeholder/test values)
+          if echo "$ADDED_LINES" | grep -iE '\bTOKEN\s*[:=]\s*["\x27]?[A-Za-z0-9_\-]{16,}' | grep -iv 'INSTANCE_SYNC_TOKEN\|example\|placeholder\|your-token\|<token>' > /dev/null 2>&1; then
+            echo "FAIL: Possible token found in diff"
+            FOUND=1
+          fi
+          # PASSWORD pattern
+          if echo "$ADDED_LINES" | grep -iE 'PASSWORD\s*[:=]\s*["\x27]?[^\s]{8,}' | grep -iv 'your-password\|placeholder\|example' > /dev/null 2>&1; then
+            echo "FAIL: Possible password found in diff"
+            FOUND=1
+          fi
+          # SECRET (bare secret assignment, not keychain key names)
+          if echo "$ADDED_LINES" | grep -iE '\bSECRET\s*[:=]\s*["\x27]?[A-Za-z0-9/+_\-]{16,}' | grep -iv 'credential-\|INSTANCE_SYNC_TOKEN\|GITHUB_TOKEN\|secrets\.' > /dev/null 2>&1; then
+            echo "FAIL: Possible secret value found in diff"
+            FOUND=1
+          fi
+          # credential strings with apparent values (not keychain lookup key names)
+          if echo "$ADDED_LINES" | grep -iE "credential\s*[:=]\s*[\"'][A-Za-z0-9/+]{20,}" > /dev/null 2>&1; then
+            echo "FAIL: Possible credential value found in diff"
+            FOUND=1
+          fi
+
+          if [ "$FOUND" -eq 1 ]; then
+            echo ""
+            echo "Secret leak check FAILED. Review the patterns above."
+            echo "If this is a false positive, update the leak check patterns in .github/workflows/ci.yml"
+            exit 1
+          else
+            echo "Secret leak check PASSED. No obvious secret patterns detected."
+          fi
