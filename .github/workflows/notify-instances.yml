@@ -10,29 +10,50 @@ permissions:
   contents: read
 
 jobs:
-  dispatch:
+  notify-downstream:
     runs-on: ubuntu-latest
     # Only dispatch on actual pushes, not PR merges that re-trigger
     if: github.event_name == 'push'
+
     steps:
-      - name: Dispatch upstream-sync to personal repos
-        env:
-          GH_TOKEN: ${{ secrets.INSTANCE_SYNC_TOKEN }}
-        run: |
-          # List of personal instance repos to notify.
-          # Add new instances here as they're created.
-          REPOS=(
-            "KKit-BMO"
-          )
+      - name: Notify KKit-BMO
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+          repository: RockaRhymeLLC/KKit-BMO
+          event-type: upstream-sync
+          client-payload: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "repository": "${{ github.repository }}",
+              "sender": "${{ github.actor }}"
+            }
 
-          COMMIT_SHA="${{ github.sha }}"
-          COMMIT_MSG=$(echo "${{ github.event.head_commit.message }}" | head -1)
+      - name: Notify KKit-R2
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+          repository: RockaRhymeLLC/KKit-R2
+          event-type: upstream-sync
+          client-payload: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "repository": "${{ github.repository }}",
+              "sender": "${{ github.actor }}"
+            }
 
-          for repo in "${REPOS[@]}"; do
-            echo "Dispatching upstream-sync to RockaRhymeLLC/$repo..."
-            gh api "repos/RockaRhymeLLC/$repo/dispatches" \
-              -f event_type=upstream-sync \
-              -f "client_payload[sha]=$COMMIT_SHA" \
-              -f "client_payload[message]=$COMMIT_MSG" \
-              2>&1 && echo "  -> dispatched" || echo "  -> FAILED (check token permissions)"
-          done
+      - name: Notify KKit-Skippy
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+          repository: RockaRhymeLLC/KKit-Skippy
+          event-type: upstream-sync
+          client-payload: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "repository": "${{ github.repository }}",
+              "sender": "${{ github.actor }}"
+            }

@@ -38,7 +38,6 @@ function teardownDb(): void {
 interface Memory {
   id: number;
   content: string;
-  type: string;
   category: string | null;
   tags: string;
   source: string | null;
@@ -52,7 +51,6 @@ async function storeMemoryWithEmbedding(content: string, opts?: { category?: str
 
   const mem = insert<Memory>('memories', {
     content,
-    type: 'fact',
     category: opts?.category ?? null,
     tags: JSON.stringify(opts?.tags ?? []),
     source: 'test',
