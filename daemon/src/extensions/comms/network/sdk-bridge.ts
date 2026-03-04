@@ -9,7 +9,7 @@
  */
 
 import type {
-  CC4MeNetwork, CommunityConfig, CommunityStatusEvent,
+  A2ANetworkClient, CommunityConfig, CommunityStatusEvent,
   Message, ContactRequest, Broadcast, WireEnvelope,
   GroupMessage, GroupInvitationEvent,
 } from './sdk-types.js';
@@ -23,10 +23,10 @@ import { logCommsEntry, getDisplayName } from '../agent-comms.js';
 
 const log = createLogger('network:sdk');
 
-let _network: CC4MeNetwork | null = null;
+let _network: A2ANetworkClient | null = null;
 let _config: AgentConfig | null = null;
 
-export function getNetworkClient(): CC4MeNetwork | null {
+export function getNetworkClient(): A2ANetworkClient | null {
   return _network;
 }
 
