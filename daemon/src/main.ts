@@ -22,10 +22,10 @@ import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
 import { handleConfigRoute, setConfigWatcher } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
-import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleSelftestRoute } from './api/selftest.js';
 import { handleTaskQueueRoute } from './api/task-queue.js';
 import { handleContactsRoute } from './api/contacts.js';
+import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleMetricsRoute, logRequest } from './api/metrics.js';
 import {
   getExtension,
@@ -116,7 +116,6 @@ if (orphanReport.timersExpired > 0 || orphanReport.tasksFailedOrphaned > 0 || or
     jobsFailedOrphaned: orphanReport.jobsFailedOrphaned,
   });
 }
-
 // Wire up config hot-reload watcher
 const configPath = path.resolve(projectDir, 'kithkit.config.yaml');
 const configWatcher = createConfigWatcher(configPath, config);
@@ -239,7 +238,6 @@ const server = http.createServer((req, res) => {
       const handlers = [
         () => handleAgentsRoute(req, res, url.pathname),
         () => handleOrchestratorRoute(req, res, url.pathname),
-        () => handleTimerRoute(req, res, url.pathname),
         () => handleTaskQueueRoute(req, res, url.pathname, url.searchParams),
         () => handleContactsRoute(req, res, url.pathname, url.searchParams),
         () => handleSendRoute(req, res, url.pathname),
@@ -250,6 +248,7 @@ const server = http.createServer((req, res) => {
         () => handleConfigRoute(req, res, url.pathname),
         () => handleSelftestRoute(req, res, url.pathname),
         () => handleMetricsRoute(req, res, url.pathname, url.searchParams),
+        () => handleTimerRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {
         const handled = await handler();
