@@ -53,8 +53,16 @@ SKIP_PATTERNS = [
     r"^Session ",         # Session lifecycle
 ]
 
-# Strip channel prefix from user messages before keyword extraction
-CHANNEL_PREFIX = re.compile(r"^\[Telegram\]\s*\w+:\s*")
+# Strip all leading [bracket] metadata segments (timestamps, channel tags, etc.)
+# then strip the optional "Username: " prefix that follows them.
+# Handles formats like:
+#   [8:40 AM] [Telegram] Dave: message
+#   [Telegram] Dave: message
+#   [3rdParty][Telegram] Name: message
+# Only strips "Word:" if at least one [bracket] block preceded it,
+# so plain messages starting with "Note: ..." are not truncated.
+METADATA_PREFIX = re.compile(r"^(?:\[[^\]]*\]\s*)+(?:\w+:\s*)?")
+
 
 
 def extract_keywords(text: str) -> list[str]:
@@ -149,8 +157,8 @@ def main():
         if re.match(pattern, prompt):
             sys.exit(0)
 
-    # Strip channel prefix (e.g., "[Telegram] Dave: ") before extracting keywords
-    prompt = CHANNEL_PREFIX.sub("", prompt)
+    # Strip leading metadata prefix (e.g., "[8:40 AM] [Telegram] Dave: ") before extracting keywords
+    prompt = METADATA_PREFIX.sub("", prompt)
 
     # Extract keywords
     keywords = extract_keywords(prompt)
