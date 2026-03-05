@@ -195,6 +195,26 @@ export async function handleOrchestratorRoute(
   if (pathname === '/api/orchestrator/status' && method === 'GET') {
     const alive = isOrchestratorAlive();
     const state = getOrchestratorState(); // 'active' | 'waiting' | 'dead'
+    const ts = new Date().toISOString();
+
+    // Reconcile: if the session is alive but the DB record says 'crashed' or
+    // 'stopped', fix it before returning. This window opens after a daemon
+    // restart — cleanupOrphanedAgents() marks the row 'crashed', and if a
+    // new escalation hasn't fired yet the status endpoint would return a
+    // misleading 'crashed' state even though a session is running.
+    if (state !== 'dead') {
+      const staleStatuses = ['crashed', 'stopped'];
+      const current = query<{ status: string }>(
+        "SELECT status FROM agents WHERE id = 'orchestrator'",
+      );
+      if (current[0] && staleStatuses.includes(current[0].status)) {
+        update('agents', 'orchestrator', { status: 'running', updated_at: ts });
+        log.info('Reconciled stale orchestrator agent status', {
+          was: current[0].status, now: 'running',
+        });
+      }
+    }
+
     const agentRows = query<{ status: string; started_at: string | null; last_activity: string | null }>(
       "SELECT status, started_at, last_activity FROM agents WHERE id = 'orchestrator'",
     );
