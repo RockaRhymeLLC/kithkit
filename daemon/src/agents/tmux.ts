@@ -23,6 +23,9 @@ export const TMUX_SOCKET = `/private/tmp/tmux-${process.getuid?.() ?? 501}/defau
 const COMMS_SESSION = 'comms1';
 const ORCH_SESSION = 'orch1';
 
+/** Maximum characters allowed in a single tmux send-keys injection. */
+const MAX_INJECT_LENGTH = 4000;
+
 let projectDir = process.cwd();
 
 export function configure(opts: { projectDir: string }): void {
@@ -60,9 +63,29 @@ export function injectMessage(agentId: string, text: string): boolean {
     return false;
   }
 
+  // Sanitize input: cap length and strip control/escape sequences
+  if (text.length > MAX_INJECT_LENGTH) {
+    log.warn('injectMessage: text truncated', {
+      agentId, originalLength: text.length, maxLength: MAX_INJECT_LENGTH,
+    });
+  }
+  let safeText = text.slice(0, MAX_INJECT_LENGTH);
+  // Strip ANSI escape sequences (ESC [ ... and ESC O ...)
+  safeText = safeText.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+  safeText = safeText.replace(/\x1b[^[]/g, '');
+  // Strip raw escape bytes and other C0 control chars except newline and tab
+  safeText = safeText.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+
+  if (safeText.length === 0) {
+    log.warn('injectMessage: text empty after sanitization', {
+      agentId, originalLength: text.length,
+    });
+    return false;
+  }
+
   try {
     // Prepend EST timestamp and send as keystrokes, then press Enter
-    const stamped = `${estTimestamp()} ${text}`;
+    const stamped = `${estTimestamp()} ${safeText}`;
     execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', `${session}:`, '-l', stamped], {
       timeout: 5000,
     });
@@ -71,7 +94,7 @@ export function injectMessage(agentId: string, text: string): boolean {
     execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', `${session}:`, 'Enter'], {
       timeout: 5000,
     });
-    log.info('Message injected into tmux session', { agentId, session, length: text.length });
+    log.info('Message injected into tmux session', { agentId, session, length: safeText.length });
     return true;
   } catch (err) {
     log.error('Failed to inject message into tmux', {

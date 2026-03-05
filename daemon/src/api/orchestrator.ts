@@ -22,6 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { exec, query, update } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
 import { logActivity } from './activity.js';
+import { createRateLimiter } from './rate-limit.js';
 
 const log = createLogger('orchestrator-api');
 
@@ -35,6 +36,8 @@ const SHUTDOWN_TIMEOUT_MS = 60_000;
 // Track the pending shutdown timer so we can cancel it on new spawn
 let pendingShutdownTimer: ReturnType<typeof setTimeout> | null = null;
 
+const escalateLimiter = createRateLimiter('escalate', 20);
+
 // ── Route handler ────────────────────────────────────────────
 
 export async function handleOrchestratorRoute(
@@ -46,6 +49,8 @@ export async function handleOrchestratorRoute(
 
   // POST /api/orchestrator/escalate — send task, spawn if needed
   if (pathname === '/api/orchestrator/escalate' && method === 'POST') {
+    if (!escalateLimiter(req, res)) return true;
+
     const body = await parseBody(req);
 
     if (!body.task || typeof body.task !== 'string') {

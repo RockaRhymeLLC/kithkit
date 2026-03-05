@@ -248,7 +248,139 @@ async function downloadTelegramFile(token: string, fileId: string, filename: str
   }
 }
 
+// ── Retry helper ─────────────────────────────────────────────
+
+/**
+ * Thrown by fn() to signal a permanent failure that must not be retried
+ * (e.g. HTTP 400 / 401 / 403 from Telegram).
+ */
+class NonRetriableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NonRetriableError';
+  }
+}
+
+/**
+ * Retry a Telegram API call with exponential backoff.
+ *
+ * - Attempt 1: immediate
+ * - On failure: wait getRetryDelay() ms (if provided) or baseDelayMs * attempt
+ * - Max 3 attempts total
+ * - Retries on: network error, timeout, HTTP 429, HTTP 5xx
+ * - Does NOT retry on: NonRetriableError (HTTP 400, 401, 403)
+ *
+ * @param getRetryDelay  Called after each failed attempt; return value overrides
+ *                       baseDelayMs for that sleep. Evaluated lazily so callers
+ *                       can update a closure variable inside fn() and have the
+ *                       updated value picked up (fixes the 429 retry_after bug).
+ */
+async function withRetry<T>(
+  fn: () => Promise<T>,
+  maxAttempts = 3,
+  baseDelayMs = 1000,
+  getRetryDelay?: () => number | undefined,
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof NonRetriableError) throw err; // permanent — do not retry
+      lastError = err;
+      if (attempt < maxAttempts) {
+        const customDelay = getRetryDelay?.();
+        const delayMs = customDelay ?? baseDelayMs * attempt;
+        log.warn(`Telegram request failed, retrying (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+  }
+
+  throw lastError;
+}
+
 // ── Send message ─────────────────────────────────────────────
+
+/**
+ * Inner send — single attempt.
+ * - Resolves true on success.
+ * - Throws NonRetriableError for permanent failures (400 / 401 / 403).
+ * - Throws a regular Error for retriable failures (429, 5xx, network, timeout)
+ *   so that withRetry can schedule another attempt.
+ *   For 429 the caller is expected to update a shared `retryAfterMs` variable
+ *   before this function throws, so withRetry's getRetryDelay callback reads
+ *   the correct value.
+ */
+async function telegramSendOnce(
+  text: string,
+  token: string,
+  data: string,
+  onRateLimit: (retryAfterMs: number) => void,
+): Promise<true> {
+  return new Promise((resolve, reject) => {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${token}/sendMessage`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      timeout: 30_000,
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(body) as {
+            ok: boolean;
+            error_code?: number;
+            description?: string;
+            parameters?: { retry_after?: number };
+          };
+          if (result.ok) {
+            log.debug(`Sent to Telegram (${text.length} chars)`);
+            stopTypingLoop();
+            resolve(true);
+          } else if (result.error_code === 429) {
+            const retryAfterMs = (result.parameters?.retry_after ?? 5) * 1000;
+            log.warn('Telegram 429: rate limited', { retryAfterMs });
+            onRateLimit(retryAfterMs); // update caller's variable BEFORE throwing
+            reject(new Error(`Telegram 429: retry after ${retryAfterMs}ms`));
+          } else if (
+            result.error_code != null &&
+            (result.error_code === 400 || result.error_code === 401 || result.error_code === 403)
+          ) {
+            // Permanent failure — must not be retried
+            log.error('Telegram send failed (non-retriable)', { error_code: result.error_code, response: body });
+            stopTypingLoop();
+            reject(new NonRetriableError(`Telegram non-retriable error ${result.error_code}: ${result.description ?? body}`));
+          } else {
+            log.error('Telegram send failed', { response: body });
+            stopTypingLoop();
+            reject(new Error(`Telegram error ${result.error_code ?? 'unknown'}: ${result.description ?? body}`));
+          }
+        } catch (parseErr) {
+          if (parseErr instanceof NonRetriableError) { reject(parseErr); return; }
+          log.error('Telegram send: unparseable response');
+          stopTypingLoop();
+          reject(new Error('Telegram send: unparseable response'));
+        }
+      });
+    });
+
+    req.on('timeout', () => {
+      req.destroy(new Error('Request timed out'));
+    });
+
+    req.on('error', (err) => {
+      log.error('Telegram send error', { error: err.message });
+      reject(err);
+    });
+
+    req.write(data);
+    req.end();
+  });
+}
 
 async function telegramSend(text: string, chatId?: string): Promise<boolean> {
   const token = await getBotToken();
@@ -273,51 +405,33 @@ async function telegramSend(text: string, chatId?: string): Promise<boolean> {
     ...(alreadyHtml || hasMarkdown ? { parse_mode: 'HTML' } : {}),
   });
 
-  return new Promise<boolean>((resolve) => {
-    const req = https.request({
-      hostname: 'api.telegram.org',
-      path: `/bot${token}/sendMessage`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
-    }, (res) => {
-      let body = '';
-      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
-      res.on('end', () => {
-        try {
-          const result = JSON.parse(body);
-          if (result.ok) {
-            log.debug(`Sent to Telegram (${truncated.length} chars)`);
-            resolve(true);
-          } else {
-            log.error('Telegram send failed', { response: body });
-            resolve(false);
-          }
-        } catch {
-          log.error('Telegram send: unparseable response');
-          resolve(false);
-        }
-        stopTypingLoop();
-      });
-    });
-
-    req.on('error', (err) => {
-      log.error('Telegram send error', { error: err.message });
-      resolve(false);
-    });
-
-    req.write(data);
-    req.end();
-  });
+  // Retry with backoff — track retryAfterMs from 429 responses.
+  // `retryAfterMs` is updated inside the attempt via onRateLimit callback;
+  // `() => retryAfterMs` is evaluated lazily by withRetry after each failure
+  // so the updated value is always used for the next sleep interval.
+  let retryAfterMs: number | undefined;
+  try {
+    await withRetry(
+      () => telegramSendOnce(truncated, token, data, (ms) => { retryAfterMs = ms; }),
+      3,
+      1000,
+      () => retryAfterMs,
+    );
+    return true;
+  } catch (err) {
+    // NonRetriableError and exhausted-retry errors both end up here
+    return false;
+  }
 }
 
 // ── Send photo ───────────────────────────────────────────────
 
-export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: string): Promise<void> {
+export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: string): Promise<boolean> {
   const token = await getBotToken();
   const targetChatId = chatId ?? _replyChatId ?? await getChatId();
   if (!token || !targetChatId) {
     log.error('Cannot send photo: missing bot token or chat ID');
-    return;
+    return false;
   }
 
   const boundary = `----FormBoundary${Date.now()}`;
@@ -333,25 +447,60 @@ export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: 
 
   const body = Buffer.concat(parts);
 
-  const req = https.request({
-    hostname: 'api.telegram.org',
-    path: `/bot${token}/sendPhoto`,
-    method: 'POST',
-    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
-  }, (res) => {
-    let responseBody = '';
-    res.on('data', (chunk: Buffer) => { responseBody += chunk.toString(); });
-    res.on('end', () => {
-      try {
-        const result = JSON.parse(responseBody);
-        if (!result.ok) log.error('Telegram sendPhoto failed', { response: responseBody });
-      } catch { log.error('Telegram sendPhoto: unparseable response'); }
+  return new Promise<boolean>((resolve) => {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${token}/sendPhoto`,
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
+      timeout: 30_000,
+    }, (res) => {
+      let responseBody = '';
+      res.on('data', (chunk: Buffer) => { responseBody += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(responseBody) as { ok: boolean };
+          if (result.ok) {
+            resolve(true);
+          } else {
+            log.error('Telegram sendPhoto failed', { response: responseBody });
+            resolve(false);
+          }
+        } catch {
+          log.error('Telegram sendPhoto: unparseable response');
+          resolve(false);
+        }
+      });
     });
-  });
 
-  req.on('error', (err) => { log.error('Telegram sendPhoto error', { error: err.message }); });
-  req.write(body);
-  req.end();
+    req.on('timeout', () => {
+      req.destroy(new Error('Request timed out'));
+    });
+
+    req.on('error', (err) => {
+      log.error('Telegram sendPhoto error', { error: err.message });
+      resolve(false);
+    });
+
+    req.write(body);
+    req.end();
+  });
+}
+
+/**
+ * Send a file (photo buffer) via Telegram with retry on network/429/5xx errors.
+ * Returns true on success, false if all attempts fail.
+ */
+export async function telegramSendFile(photoBuffer: Buffer, chatId?: string, caption?: string): Promise<boolean> {
+  try {
+    await withRetry(async () => {
+      const ok = await sendPhoto(photoBuffer, chatId, caption);
+      if (!ok) throw new Error('sendPhoto returned false');
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ── Inbound message buffer ───────────────────────────────────
