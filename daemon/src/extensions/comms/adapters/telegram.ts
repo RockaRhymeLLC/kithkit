@@ -251,50 +251,75 @@ async function downloadTelegramFile(token: string, fileId: string, filename: str
 // ── Retry helper ─────────────────────────────────────────────
 
 /**
+ * Thrown by fn() to signal a permanent failure that must not be retried
+ * (e.g. HTTP 400 / 401 / 403 from Telegram).
+ */
+class NonRetriableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'NonRetriableError';
+  }
+}
+
+/**
  * Retry a Telegram API call with exponential backoff.
  *
  * - Attempt 1: immediate
- * - On failure: wait retryAfterMs (429) or baseDelayMs * attempt (other errors)
+ * - On failure: wait getRetryDelay() ms (if provided) or baseDelayMs * attempt
  * - Max 3 attempts total
  * - Retries on: network error, timeout, HTTP 429, HTTP 5xx
- * - Does NOT retry on: HTTP 400, 401, 403
+ * - Does NOT retry on: NonRetriableError (HTTP 400, 401, 403)
+ *
+ * @param getRetryDelay  Called after each failed attempt; return value overrides
+ *                       baseDelayMs for that sleep. Evaluated lazily so callers
+ *                       can update a closure variable inside fn() and have the
+ *                       updated value picked up (fixes the 429 retry_after bug).
  */
 async function withRetry<T>(
-  fn: () => Promise<T | false>,
+  fn: () => Promise<T>,
   maxAttempts = 3,
   baseDelayMs = 1000,
-  retryAfterMs?: number,
-): Promise<T | false> {
-  let lastResult: T | false = false;
+  getRetryDelay?: () => number | undefined,
+): Promise<T> {
+  let lastError: unknown;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    lastResult = await fn();
-    if (lastResult !== false) return lastResult;
-
-    if (attempt < maxAttempts) {
-      const delayMs = retryAfterMs != null ? retryAfterMs : baseDelayMs * attempt;
-      log.warn(`Telegram request failed, retrying (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms`);
-      await new Promise(resolve => setTimeout(resolve, delayMs));
-      // Reset retryAfterMs after first use — subsequent attempts use exponential backoff
-      retryAfterMs = undefined;
+    try {
+      return await fn();
+    } catch (err) {
+      if (err instanceof NonRetriableError) throw err; // permanent — do not retry
+      lastError = err;
+      if (attempt < maxAttempts) {
+        const customDelay = getRetryDelay?.();
+        const delayMs = customDelay ?? baseDelayMs * attempt;
+        log.warn(`Telegram request failed, retrying (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
     }
   }
 
-  return lastResult;
+  throw lastError;
 }
 
 // ── Send message ─────────────────────────────────────────────
 
 /**
- * Inner send — single attempt. Returns false on failure, or a 429 sentinel
- * so the retry wrapper can honour Telegram's retry_after value.
+ * Inner send — single attempt.
+ * - Resolves true on success.
+ * - Throws NonRetriableError for permanent failures (400 / 401 / 403).
+ * - Throws a regular Error for retriable failures (429, 5xx, network, timeout)
+ *   so that withRetry can schedule another attempt.
+ *   For 429 the caller is expected to update a shared `retryAfterMs` variable
+ *   before this function throws, so withRetry's getRetryDelay callback reads
+ *   the correct value.
  */
 async function telegramSendOnce(
   text: string,
   token: string,
   data: string,
-): Promise<boolean | { retry429: true; retryAfterMs: number }> {
-  return new Promise((resolve) => {
+  onRateLimit: (retryAfterMs: number) => void,
+): Promise<true> {
+  return new Promise((resolve, reject) => {
     const req = https.request({
       hostname: 'api.telegram.org',
       path: `/bot${token}/sendMessage`,
@@ -309,6 +334,7 @@ async function telegramSendOnce(
           const result = JSON.parse(body) as {
             ok: boolean;
             error_code?: number;
+            description?: string;
             parameters?: { retry_after?: number };
           };
           if (result.ok) {
@@ -318,24 +344,26 @@ async function telegramSendOnce(
           } else if (result.error_code === 429) {
             const retryAfterMs = (result.parameters?.retry_after ?? 5) * 1000;
             log.warn('Telegram 429: rate limited', { retryAfterMs });
-            resolve({ retry429: true, retryAfterMs });
+            onRateLimit(retryAfterMs); // update caller's variable BEFORE throwing
+            reject(new Error(`Telegram 429: retry after ${retryAfterMs}ms`));
           } else if (
             result.error_code != null &&
             (result.error_code === 400 || result.error_code === 401 || result.error_code === 403)
           ) {
-            // Non-retriable errors — log and fail permanently
+            // Permanent failure — must not be retried
             log.error('Telegram send failed (non-retriable)', { error_code: result.error_code, response: body });
             stopTypingLoop();
-            resolve(false);
+            reject(new NonRetriableError(`Telegram non-retriable error ${result.error_code}: ${result.description ?? body}`));
           } else {
             log.error('Telegram send failed', { response: body });
             stopTypingLoop();
-            resolve(false);
+            reject(new Error(`Telegram error ${result.error_code ?? 'unknown'}: ${result.description ?? body}`));
           }
-        } catch {
+        } catch (parseErr) {
+          if (parseErr instanceof NonRetriableError) { reject(parseErr); return; }
           log.error('Telegram send: unparseable response');
           stopTypingLoop();
-          resolve(false);
+          reject(new Error('Telegram send: unparseable response'));
         }
       });
     });
@@ -346,7 +374,7 @@ async function telegramSendOnce(
 
     req.on('error', (err) => {
       log.error('Telegram send error', { error: err.message });
-      resolve(false);
+      reject(err);
     });
 
     req.write(data);
@@ -377,23 +405,23 @@ async function telegramSend(text: string, chatId?: string): Promise<boolean> {
     ...(alreadyHtml || hasMarkdown ? { parse_mode: 'HTML' } : {}),
   });
 
-  // Retry with backoff — track retryAfterMs from 429 responses
+  // Retry with backoff — track retryAfterMs from 429 responses.
+  // `retryAfterMs` is updated inside the attempt via onRateLimit callback;
+  // `() => retryAfterMs` is evaluated lazily by withRetry after each failure
+  // so the updated value is always used for the next sleep interval.
   let retryAfterMs: number | undefined;
-  const result = await withRetry(
-    async () => {
-      const attempt = await telegramSendOnce(truncated, token, data);
-      if (typeof attempt === 'object' && 'retry429' in attempt) {
-        retryAfterMs = attempt.retryAfterMs;
-        return false;
-      }
-      return attempt;
-    },
-    3,
-    1000,
-    retryAfterMs,
-  );
-
-  return result !== false;
+  try {
+    await withRetry(
+      () => telegramSendOnce(truncated, token, data, (ms) => { retryAfterMs = ms; }),
+      3,
+      1000,
+      () => retryAfterMs,
+    );
+    return true;
+  } catch (err) {
+    // NonRetriableError and exhausted-retry errors both end up here
+    return false;
+  }
 }
 
 // ── Send photo ───────────────────────────────────────────────
@@ -464,8 +492,15 @@ export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: 
  * Returns true on success, false if all attempts fail.
  */
 export async function telegramSendFile(photoBuffer: Buffer, chatId?: string, caption?: string): Promise<boolean> {
-  const ok = await withRetry(() => sendPhoto(photoBuffer, chatId, caption));
-  return ok !== false;
+  try {
+    await withRetry(async () => {
+      const ok = await sendPhoto(photoBuffer, chatId, caption);
+      if (!ok) throw new Error('sendPhoto returned false');
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ── Inbound message buffer ───────────────────────────────────
