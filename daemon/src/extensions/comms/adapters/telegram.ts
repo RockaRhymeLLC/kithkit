@@ -279,6 +279,7 @@ async function telegramSend(text: string, chatId?: string): Promise<boolean> {
       path: `/bot${token}/sendMessage`,
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      timeout: 30_000,
     }, (res) => {
       let body = '';
       res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
@@ -298,6 +299,10 @@ async function telegramSend(text: string, chatId?: string): Promise<boolean> {
         }
         stopTypingLoop();
       });
+    });
+
+    req.on('timeout', () => {
+      req.destroy(new Error('Request timed out'));
     });
 
     req.on('error', (err) => {
@@ -338,6 +343,7 @@ export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: 
     path: `/bot${token}/sendPhoto`,
     method: 'POST',
     headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
+    timeout: 30_000,
   }, (res) => {
     let responseBody = '';
     res.on('data', (chunk: Buffer) => { responseBody += chunk.toString(); });
@@ -347,6 +353,10 @@ export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: 
         if (!result.ok) log.error('Telegram sendPhoto failed', { response: responseBody });
       } catch { log.error('Telegram sendPhoto: unparseable response'); }
     });
+  });
+
+  req.on('timeout', () => {
+    req.destroy(new Error('Request timed out'));
   });
 
   req.on('error', (err) => { log.error('Telegram sendPhoto error', { error: err.message }); });
