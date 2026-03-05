@@ -24,7 +24,7 @@ import {
   TMUX_BIN,
   TMUX_SOCKET,
 } from '../../agents/tmux.js';
-import { cleanupSessionDirs as _cleanupSessionDirs, createSessionDir } from '../../agents/lifecycle.js';
+import { cleanupSessionDirs as _cleanupSessionDirs } from '../../agents/lifecycle.js';
 import { sendMessage } from '../../agents/message-router.js';
 import { createLogger } from '../../core/logger.js';
 import { logActivity, getActivity } from '../../api/activity.js';
@@ -76,19 +76,16 @@ const CONTEXT_STALE_SECONDS = 600; // Ignore context data older than 10 min
 const GRACE_PERIOD_MS = 60 * 1000; // 60 seconds to exit after nudge
 
 /**
- * Check if the Claude process is actively running in the orchestrator's tmux session.
+ * Check if Claude is actively processing in the orchestrator's tmux session.
  *
- * The orchestrator runs inside a bash wrapper script, so tmux's pane_current_command
- * always reports "bash" — not "claude". Instead, we get the wrapper's PID via
- * `#{pane_pid}` and use `pgrep -P <panePid> -f claude` to check whether a claude
- * process is a descendant of the wrapper. This matches the approach used by
- * `getOrchestratorState()` in agents/tmux.ts.
+ * With --profile, Claude IS the tmux pane process. To distinguish "actively processing"
+ * from "idle at the input prompt," we check whether Claude has child processes
+ * (tool execution spawns children like bash, node, etc.).
  */
 function isClaudeProcessRunning(): boolean {
   try {
     const session = _getOrchestratorSession();
 
-    // Get the PID of the wrapper bash process that owns the tmux pane
     const panePid = execFileSync(TMUX_BIN, [
       '-S', TMUX_SOCKET,
       'display-message',
@@ -100,15 +97,14 @@ function isClaudeProcessRunning(): boolean {
       return false;
     }
 
-    // Check if any "claude" process is a descendant of the wrapper PID.
-    // pgrep exits 0 if found, non-zero if not.
+    // Check if the pane process has child processes (tools running = actively working)
     try {
-      execFileSync('/usr/bin/pgrep', ['-P', panePid, '-f', 'claude'], {
+      execFileSync('/usr/bin/pgrep', ['-P', panePid], {
         timeout: 5000,
       });
-      return true;
+      return true; // Has children → actively processing
     } catch {
-      return false;
+      return false; // No children → idle at input prompt
     }
   } catch {
     return false;
@@ -214,37 +210,9 @@ function cleanupOrphanedTasks(): number {
  * Spawn a fresh orchestrator session to process pending tasks.
  * Called by the idle monitor when the orchestrator is dead but pending tasks exist.
  */
-function respawnForPendingTasks(taskId: string, taskTitle: string, taskDesc: string, pendingCount: number): void {
+function respawnForPendingTasks(taskId: string, taskTitle: string, _taskDesc: string, pendingCount: number): void {
   try {
-    const sessionDir = createSessionDir('orchestrator');
-    const claudeBin = `${process.env.HOME}/.local/bin/claude`;
-
-    // Build a prompt that tells the new orchestrator to check its task queue
-    const prompt = [
-      'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality.',
-      '',
-      'Your role: decompose complex tasks, spawn workers, coordinate their output, and report structured results back to the comms agent.',
-      '',
-      `You have ${pendingCount} pending task(s) in the queue. Start by checking the task queue:`,
-      `  curl -s http://localhost:3847/api/orchestrator/tasks?status=pending`,
-      '',
-      `First pending task:`,
-      `  Task ID: ${taskId}`,
-      `  Title: ${taskTitle}`,
-      `  Description: ${taskDesc.slice(0, 500)}`,
-      '',
-      'Work through all pending tasks. For each task:',
-      '1. Assign it: PUT /api/orchestrator/tasks/:id with {"status":"assigned","assignee":"orchestrator"}',
-      '2. Start it: PUT /api/orchestrator/tasks/:id with {"status":"in_progress"}',
-      '3. Do the work (spawn workers as needed)',
-      '4. Complete it: PUT /api/orchestrator/tasks/:id with {"status":"completed","result":"<summary>"}',
-      '5. Report to comms: POST /api/messages with {"from":"orchestrator","to":"comms","type":"result","body":"<result>"}',
-      '',
-      `Session directory: ${sessionDir}`,
-    ].join('\n');
-
-    // Import here to avoid circular at module level — spawnOrchestratorSession is already injectable
-    const session = spawnOrchestratorSession(prompt);
+    const session = spawnOrchestratorSession();
     if (!session) {
       log.error('Failed to respawn orchestrator for pending tasks');
       return;
@@ -275,12 +243,12 @@ function respawnForPendingTasks(taskId: string, taskTitle: string, taskDesc: str
       details: `Respawned by idle monitor for ${pendingCount} pending task(s): ${taskTitle.slice(0, 100)}`,
     });
 
-    // Send the task as a message so the wrapper's poll loop can also find it
+    // Send the task as a message so it appears in the orchestrator's message history
     sendMessage({
       from: 'daemon',
       to: 'orchestrator',
       type: 'task',
-      body: JSON.stringify({ task: taskTitle, context: taskDesc, task_id: taskId }),
+      body: JSON.stringify({ task: taskTitle, context: _taskDesc, task_id: taskId }),
     });
 
     log.info('Orchestrator respawned for pending tasks', { session, pendingCount, taskId });
@@ -665,7 +633,7 @@ export function _setDepsForTesting(deps: {
   isOrchestratorAlive?: () => boolean;
   killOrchestratorSession?: () => boolean;
   injectMessage?: (target: string, text: string) => boolean;
-  spawnOrchestratorSession?: (prompt: string) => string | null;
+  spawnOrchestratorSession?: () => string | null;
   cleanupSessionDirs?: (maxAgeDays?: number) => number;
 } | null): void {
   if (deps === null) {
