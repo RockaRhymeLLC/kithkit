@@ -30,7 +30,7 @@ export interface ScheduledTask {
 }
 
 /** Handler function for in-process tasks (registered via registerHandler). */
-export type TaskHandler = (context: TaskHandlerContext) => Promise<void>;
+export type TaskHandler = (context: TaskHandlerContext) => Promise<string | void>;
 
 /** Context passed to in-process task handlers. */
 export interface TaskHandlerContext {
@@ -372,15 +372,26 @@ export class Scheduler {
     const startedAt = new Date().toISOString();
     const start = Date.now();
 
+    const timeoutMs = (task.config.timeout_ms as number) ?? 300_000; // 5 min default
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`In-process handler timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      // Don't keep process alive just for the timeout
+      if (timer.unref) timer.unref();
+    });
+
     try {
-      await handler({ taskName: task.name, config: task.config });
+      const result = await Promise.race([handler({ taskName: task.name, config: task.config }), timeoutPromise]);
       const durationMs = Date.now() - start;
       const finishedAt = new Date().toISOString();
+      const output = typeof result === 'string' ? result : 'completed';
 
       // Persist to DB (same pattern as runTask in task-runner.ts)
       dbExec(
         'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
-        task.name, 'success', 'In-process handler completed', durationMs, startedAt, finishedAt,
+        task.name, 'success', output, durationMs, startedAt, finishedAt,
       );
       const rows = query<TaskResult>(
         'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
@@ -390,7 +401,7 @@ export class Scheduler {
         id: 0,
         task_name: task.name,
         status: 'success',
-        output: 'In-process handler completed',
+        output,
         duration_ms: durationMs,
         started_at: startedAt,
         finished_at: finishedAt,
