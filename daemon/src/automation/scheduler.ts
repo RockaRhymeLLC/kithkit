@@ -372,8 +372,18 @@ export class Scheduler {
     const startedAt = new Date().toISOString();
     const start = Date.now();
 
+    const timeoutMs = (task.config.timeout_ms as number) ?? 300_000; // 5 min default
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`In-process handler timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      // Don't keep process alive just for the timeout
+      if (timer.unref) timer.unref();
+    });
+
     try {
-      await handler({ taskName: task.name, config: task.config });
+      await Promise.race([handler({ taskName: task.name, config: task.config }), timeoutPromise]);
       const durationMs = Date.now() - start;
       const finishedAt = new Date().toISOString();
 
