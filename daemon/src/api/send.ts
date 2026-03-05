@@ -83,6 +83,15 @@ export async function handleSendRoute(
         }
       }
 
+      // Return 502 only when every channel attempted delivery and all failed.
+      // Partial success (some channels delivered) still returns 200.
+      const resultValues = Object.values(results);
+      const allFailed = resultValues.length > 0 && resultValues.every(v => v === false);
+      if (allFailed) {
+        json(res, 502, withTimestamp({ error: 'All delivery channels failed', results }));
+        return true;
+      }
+
       json(res, 200, withTimestamp({ results }));
       return true;
     }
