@@ -48,6 +48,8 @@ import { parseBody } from '../api/helpers.js';
 import { UnifiedA2ARouter } from '../a2a/router.js';
 import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { sendMessage } from '../agents/message-router.js';
+import { createBmoTelegramAdapter, type BmoTelegramAdapter } from './comms/adapters/telegram.js';
+import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
 
 const log = createLogger('agent-extension');
 
@@ -57,6 +59,7 @@ let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
 let _initialized = false;
 let _instanceShutdown: (() => Promise<void> | void) | null = null;
+let _telegramAdapter: BmoTelegramAdapter | null = null;
 
 // ── Route Handlers ──────────────────────────────────────────
 
@@ -222,7 +225,6 @@ async function loadInstanceExtensions(
   scheduler: Scheduler,
 ): Promise<{ shutdown?: () => Promise<void> | void }> {
   try {
-    // @ts-expect-error instance/ only exists in personal instance repos
     const mod = await import('./instance/index.js');
     if (typeof mod.register === 'function') {
       await mod.register(config, server, scheduler);
@@ -305,6 +307,41 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Register basic extension health check
   registerAgentHealthChecks();
 
+  // ── Telegram adapter ─────────────────────────────────────
+  const channels = (config as unknown as Record<string, unknown>).channels as Record<string, Record<string, unknown>> | undefined;
+  const telegramConfig = channels?.telegram;
+  if (telegramConfig?.enabled) {
+    try {
+      _telegramAdapter = await createBmoTelegramAdapter();
+      registerAdapter(_telegramAdapter);
+
+      // Register webhook route for inbound Telegram updates
+      const webhookPath = (telegramConfig.webhook_path as string) ?? '/telegram';
+      registerRoute(webhookPath, async (req, res) => {
+        if (req.method !== 'POST') return false;
+        try {
+          const body = await parseBody(req);
+          await _telegramAdapter!.handleUpdate(body as Parameters<BmoTelegramAdapter['handleUpdate']>[0]);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          log.error('Telegram webhook error', { error: err instanceof Error ? err.message : String(err) });
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: false, error: 'Invalid update' }));
+        }
+        return true;
+      });
+
+      log.info('Telegram adapter initialized and registered', { webhookPath });
+    } catch (err) {
+      log.error('Failed to initialize Telegram adapter', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  } else {
+    log.info('Telegram not enabled in config');
+  }
+
   // Load instance-specific extensions (if instance/ directory exists)
   const instanceResult = await loadInstanceExtensions(config, _server, _scheduler);
   _instanceShutdown = instanceResult.shutdown ?? null;
@@ -323,6 +360,12 @@ async function onShutdown(): Promise<void> {
   // Shutdown instance extensions first
   if (_instanceShutdown) {
     await _instanceShutdown();
+  }
+  // Telegram cleanup
+  if (_telegramAdapter) {
+    _telegramAdapter.stopTyping();
+    unregisterAdapter('telegram');
+    _telegramAdapter = null;
   }
   await stopNetworkSDK();
   stopAgentComms();
@@ -352,4 +395,5 @@ export function _resetForTesting(): void {
   _scheduler = null;
   _initialized = false;
   _instanceShutdown = null;
+  _telegramAdapter = null;
 }
