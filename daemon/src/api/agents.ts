@@ -19,6 +19,7 @@ import { loadProfiles } from '../agents/profiles.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { logActivity, getActivity } from './activity.js';
 import { update } from '../core/db.js';
+import { createRateLimiter } from './rate-limit.js';
 
 // ── Configuration ────────────────────────────────────────────
 
@@ -27,6 +28,8 @@ let profilesDir: string = '';
 export function setProfilesDir(dir: string): void {
   profilesDir = dir;
 }
+
+const spawnLimiter = createRateLimiter('spawn', 10);
 
 // ── Route handler ────────────────────────────────────────────
 
@@ -40,6 +43,8 @@ export async function handleAgentsRoute(
   try {
     // POST /api/agents/spawn
     if (pathname === '/api/agents/spawn' && method === 'POST') {
+      if (!spawnLimiter(req, res)) return true;
+
       const body = await parseBody(req);
 
       // Validate required fields
