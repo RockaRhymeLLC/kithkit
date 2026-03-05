@@ -2,7 +2,7 @@
  * Tests for tmux.ts — session name helpers.
  *
  * The buildOrchestratorWrapperScript function was removed in the v2 orchestrator
- * cutover (replaced by --profile orchestrator). These tests cover the remaining
+ * cutover (replaced by --agent orchestrator). These tests cover the remaining
  * pure logic portions of the module.
  */
 
