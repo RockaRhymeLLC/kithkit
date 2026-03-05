@@ -210,7 +210,7 @@ function cleanupOrphanedTasks(): number {
  * Spawn a fresh orchestrator session to process pending tasks.
  * Called by the idle monitor when the orchestrator is dead but pending tasks exist.
  */
-function respawnForPendingTasks(taskId: string, taskTitle: string, _taskDesc: string, pendingCount: number): void {
+function respawnForPendingTasks(taskId: string, taskTitle: string, taskDesc: string, pendingCount: number): void {
   try {
     const session = spawnOrchestratorSession();
     if (!session) {
@@ -248,7 +248,7 @@ function respawnForPendingTasks(taskId: string, taskTitle: string, _taskDesc: st
       from: 'daemon',
       to: 'orchestrator',
       type: 'task',
-      body: JSON.stringify({ task: taskTitle, context: _taskDesc, task_id: taskId }),
+      body: JSON.stringify({ task: taskTitle, context: taskDesc, task_id: taskId }),
     });
 
     log.info('Orchestrator respawned for pending tasks', { session, pendingCount, taskId });

@@ -10,6 +10,7 @@
 
 import { execFileSync, execFile } from 'node:child_process';
 import { createLogger } from '../core/logger.js';
+import { loadConfig } from '../core/config.js';
 import { estTimestamp } from '../core/session-bridge.js';
 
 const log = createLogger('tmux');
@@ -132,9 +133,10 @@ export function spawnOrchestratorSession(): string | null {
 
     // Inject startup nudge after a short delay for Claude to initialize.
     // The nudge triggers the orchestrator to poll the task queue (per its profile SOP).
-    execFile('/bin/sleep', ['3'], () => {
+    execFile('/bin/sleep', ['5'], () => {
       try {
-        injectMessage('orchestrator', 'You have been spawned. Check the task queue for pending work: curl -s \'http://localhost:3847/api/orchestrator/tasks?status=pending\'');
+        const port = loadConfig().daemon.port;
+        injectMessage('orchestrator', `You have been spawned. Check the task queue for pending work: curl -s 'http://localhost:${port}/api/orchestrator/tasks?status=pending'`);
       } catch (err) {
         log.warn('Failed to inject startup nudge', {
           error: err instanceof Error ? err.message : String(err),
