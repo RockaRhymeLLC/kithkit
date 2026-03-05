@@ -89,7 +89,7 @@ export function injectMessage(agentId: string, text: string): boolean {
  * Spawn an orchestrator tmux session running Claude Code with the orchestrator profile.
  * Returns the session name, or null if spawn failed.
  *
- * The orchestrator uses --profile to load its instructions from .claude/agents/orchestrator.md.
+ * The orchestrator uses --agent to load its instructions from .claude/agents/orchestrator.md.
  * On startup, it polls the task queue for pending work. The daemon injects nudges via
  * send-keys when new tasks arrive or when shutdown is needed.
  */
@@ -119,7 +119,7 @@ export function spawnOrchestratorSession(): string | null {
       '-c', projectDir, // working directory
       '-x', '200',      // width
       '-y', '50',       // height
-      claudeBin, '--profile', 'orchestrator', '--dangerously-skip-permissions',
+      claudeBin, '--agent', 'orchestrator', '--dangerously-skip-permissions',
     ], {
       timeout: 10000,
       env: {
@@ -193,7 +193,7 @@ export function isOrchestratorAlive(): boolean {
 /**
  * Check if the orchestrator is actively running Claude (not just idle at prompt).
  *
- * With --profile, Claude IS the tmux pane process. To distinguish "actively processing"
+ * With --agent, Claude IS the tmux pane process. To distinguish "actively processing"
  * from "idle at the input prompt," we check whether Claude has child processes
  * (tool execution spawns children like bash, node, etc.).
  *

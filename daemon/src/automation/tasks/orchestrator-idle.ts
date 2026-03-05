@@ -78,7 +78,7 @@ const GRACE_PERIOD_MS = 60 * 1000; // 60 seconds to exit after nudge
 /**
  * Check if Claude is actively processing in the orchestrator's tmux session.
  *
- * With --profile, Claude IS the tmux pane process. To distinguish "actively processing"
+ * With --agent, Claude IS the tmux pane process. To distinguish "actively processing"
  * from "idle at the input prompt," we check whether Claude has child processes
  * (tool execution spawns children like bash, node, etc.).
  */
