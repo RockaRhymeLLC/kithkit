@@ -14,14 +14,20 @@ import {
   killOrchestratorSession,
   isOrchestratorAlive,
   getOrchestratorState,
+  injectMessage,
 } from '../agents/tmux.js';
 import { sendMessage } from '../agents/message-router.js';
+import { loadConfig } from '../core/config.js';
 import { randomUUID } from 'node:crypto';
 import { exec, query, update } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
 import { logActivity } from './activity.js';
 
 const log = createLogger('orchestrator-api');
+
+function getConfigPort(): number {
+  return loadConfig().daemon.port;
+}
 
 // Shutdown timeout: if orchestrator doesn't ack within 60s, force kill
 const SHUTDOWN_TIMEOUT_MS = 60_000;
@@ -146,14 +152,14 @@ export async function handleOrchestratorRoute(
 
     const orchState = orchStateCheck; // already computed above
 
-    // Always store the task message so the wrapper's poll loop can find it
+    // Store the task message for the orchestrator to discover via the task queue
     sendMessage({
       from: 'comms',
       to: 'orchestrator',
       type: 'task',
       body: JSON.stringify({ task, context, task_id: taskId }),
       // When Claude is actively running, use direct=false so the message is
-      // queued for the wrapper's poll loop instead of injected into tmux
+      // queued rather than injected into tmux mid-processing
       direct: false,
     });
 
@@ -164,18 +170,20 @@ export async function handleOrchestratorRoute(
     });
 
     if (orchState === 'active') {
-      log.info('Task queued for running orchestrator (Claude active, wrapper will poll)', { task: task.slice(0, 100), taskId });
+      log.info('Task queued for running orchestrator (Claude active, will pick up from queue)', { task: task.slice(0, 100), taskId });
       json(res, 200, withTimestamp({
         status: 'queued',
         task_id: taskId,
-        message: 'Task queued — orchestrator is busy, wrapper will pick it up between runs',
+        message: 'Task queued — orchestrator is busy, will pick it up from the task queue',
       }));
     } else {
-      log.info('Task escalated to waiting orchestrator', { task: task.slice(0, 100), taskId });
+      // Orchestrator is waiting (idle at prompt) — inject a nudge so it checks the queue
+      injectMessage('orchestrator', `[System] New task queued (${taskId.slice(0, 8)}). Check pending tasks: curl -s 'http://localhost:${getConfigPort()}/api/orchestrator/tasks?status=pending'`);
+      log.info('Task escalated to waiting orchestrator with tmux nudge', { task: task.slice(0, 100), taskId });
       json(res, 200, withTimestamp({
         status: 'escalated',
         task_id: taskId,
-        message: 'Task sent to waiting orchestrator',
+        message: 'Task sent to waiting orchestrator with tmux nudge',
       }));
     }
     return true;
