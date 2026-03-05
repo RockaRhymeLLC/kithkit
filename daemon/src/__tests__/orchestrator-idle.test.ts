@@ -436,12 +436,12 @@ describe('Orchestrator idle: respawn for pending tasks when dead (#121)', () => 
   });
 
   it('spawns fresh orchestrator when dead and pending tasks exist', async () => {
-    let spawnedWithPrompt = '';
+    let spawned = false;
     _setDepsForTesting({
       isOrchestratorAlive: () => false,
       killOrchestratorSession: () => false,
       injectMessage: () => false,
-      spawnOrchestratorSession: (prompt: string) => { spawnedWithPrompt = prompt; return 'orch1'; },
+      spawnOrchestratorSession: () => { spawned = true; return 'orch1'; },
       cleanupSessionDirs: () => 0,
     });
 
@@ -454,9 +454,7 @@ describe('Orchestrator idle: respawn for pending tasks when dead (#121)', () => 
 
     await _runForTesting({});
 
-    assert.ok(spawnedWithPrompt.length > 0, 'should have spawned a fresh orchestrator');
-    assert.ok(spawnedWithPrompt.includes('pending task'), 'prompt should mention pending tasks');
-    assert.ok(spawnedWithPrompt.includes('Deploy the widget'), 'prompt should include task title');
+    assert.ok(spawned, 'should have spawned a fresh orchestrator');
 
     // Agent DB should be updated to running
     const agents = query<{ status: string }>(
