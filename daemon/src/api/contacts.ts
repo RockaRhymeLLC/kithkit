@@ -111,6 +111,32 @@ function buildChanges(
   return changes;
 }
 
+/**
+ * Derive the caller's role from server-side state rather than a self-reported header.
+ * Workers are tracked in worker_jobs — if the caller identifies via X-Agent-Id
+ * and has an active worker job, they get read-only access.
+ */
+function resolveCallerRole(req: http.IncomingMessage): string | null {
+  const agentId = req.headers['x-agent-id'] as string | undefined;
+  if (!agentId) return null;
+
+  // Check if this agent ID has an active worker job
+  const jobs = query<{ profile: string }>(
+    "SELECT profile FROM worker_jobs WHERE id = ? AND status IN ('running', 'queued') LIMIT 1",
+    agentId,
+  );
+  if (jobs.length > 0) return 'worker';
+
+  // Check the agents table for type
+  const agents = query<{ type: string }>(
+    'SELECT type FROM agents WHERE id = ? LIMIT 1',
+    agentId,
+  );
+  if (agents.length > 0 && agents[0].type === 'worker') return 'worker';
+
+  return null;
+}
+
 // ── Route handler ─────────────────────────────────────────────
 
 export async function handleContactsRoute(
@@ -122,7 +148,7 @@ export async function handleContactsRoute(
   if (!pathname.startsWith('/api/contacts')) return false;
 
   const method = req.method ?? 'GET';
-  const agentRole = (req.headers['x-agent-role'] as string | undefined) ?? null;
+  const agentRole = resolveCallerRole(req);
 
   // Worker access control — read-only
   if (agentRole === 'worker' && (method === 'POST' || method === 'PUT' || method === 'DELETE')) {
