@@ -317,12 +317,12 @@ async function telegramSend(text: string, chatId?: string): Promise<boolean> {
 
 // ── Send photo ───────────────────────────────────────────────
 
-export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: string): Promise<void> {
+export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: string): Promise<boolean> {
   const token = await getBotToken();
   const targetChatId = chatId ?? _replyChatId ?? await getChatId();
   if (!token || !targetChatId) {
     log.error('Cannot send photo: missing bot token or chat ID');
-    return;
+    return false;
   }
 
   const boundary = `----FormBoundary${Date.now()}`;
@@ -338,30 +338,44 @@ export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: 
 
   const body = Buffer.concat(parts);
 
-  const req = https.request({
-    hostname: 'api.telegram.org',
-    path: `/bot${token}/sendPhoto`,
-    method: 'POST',
-    headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
-    timeout: 30_000,
-  }, (res) => {
-    let responseBody = '';
-    res.on('data', (chunk: Buffer) => { responseBody += chunk.toString(); });
-    res.on('end', () => {
-      try {
-        const result = JSON.parse(responseBody);
-        if (!result.ok) log.error('Telegram sendPhoto failed', { response: responseBody });
-      } catch { log.error('Telegram sendPhoto: unparseable response'); }
+  return new Promise<boolean>((resolve) => {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${token}/sendPhoto`,
+      method: 'POST',
+      headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}`, 'Content-Length': body.length },
+      timeout: 30_000,
+    }, (res) => {
+      let responseBody = '';
+      res.on('data', (chunk: Buffer) => { responseBody += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(responseBody) as { ok: boolean };
+          if (result.ok) {
+            resolve(true);
+          } else {
+            log.error('Telegram sendPhoto failed', { response: responseBody });
+            resolve(false);
+          }
+        } catch {
+          log.error('Telegram sendPhoto: unparseable response');
+          resolve(false);
+        }
+      });
     });
-  });
 
-  req.on('timeout', () => {
-    req.destroy(new Error('Request timed out'));
-  });
+    req.on('timeout', () => {
+      req.destroy(new Error('Request timed out'));
+    });
 
-  req.on('error', (err) => { log.error('Telegram sendPhoto error', { error: err.message }); });
-  req.write(body);
-  req.end();
+    req.on('error', (err) => {
+      log.error('Telegram sendPhoto error', { error: err.message });
+      resolve(false);
+    });
+
+    req.write(body);
+    req.end();
+  });
 }
 
 // ── Inbound message buffer ───────────────────────────────────
