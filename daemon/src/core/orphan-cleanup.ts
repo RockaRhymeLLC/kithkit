@@ -24,7 +24,7 @@
 import { execFileSync } from 'node:child_process';
 import { query, exec } from './db.js';
 import { createLogger } from './logger.js';
-import { TMUX_BIN, TMUX_SOCKET, resolveSession } from '../agents/tmux.js';
+import { TMUX_BIN, TMUX_SOCKET, resolveSession, getOrchestratorState, killOrchestratorSession } from '../agents/tmux.js';
 
 const log = createLogger('orphan-cleanup');
 
@@ -34,6 +34,7 @@ export interface OrphanCleanupReport {
   timersExpired: number;
   tasksFailedOrphaned: number;
   jobsFailedOrphaned: number;
+  staleOrchSessionKilled?: boolean;
 }
 
 // ── Session liveness helpers ─────────────────────────────────
@@ -210,14 +211,30 @@ export function cleanupOrphanedResources(): OrphanCleanupReport {
     });
   }
 
+  // ── 4. Stale orchestrator sessions ──────────────────────
+  //
+  // If the orch tmux session exists but has no Claude process running
+  // (getOrchestratorState() returns 'waiting'), it is a zombie from a
+  // previous run — the wrapper exited but tmux stayed alive with just
+  // bash. The escalate handler would see it as alive and queue work that
+  // nobody picks up. Kill it so the next escalation spawns a fresh session.
+
+  const orchState = getOrchestratorState();
+  if (orchState === 'waiting') {
+    log.info('cleanupOrphanedResources: stale orch session detected — killing for clean spawn');
+    killOrchestratorSession();
+    report.staleOrchSessionKilled = true;
+  }
+
   // ── Summary ──────────────────────────────────────────────
 
   const totalCleaned = report.timersExpired + report.tasksFailedOrphaned + report.jobsFailedOrphaned;
-  if (totalCleaned > 0) {
+  if (totalCleaned > 0 || report.staleOrchSessionKilled) {
     log.info('Orphan cleanup completed', {
       timersExpired: report.timersExpired,
       tasksFailedOrphaned: report.tasksFailedOrphaned,
       jobsFailedOrphaned: report.jobsFailedOrphaned,
+      staleOrchSessionKilled: report.staleOrchSessionKilled ?? false,
       total: totalCleaned,
     });
   } else {
