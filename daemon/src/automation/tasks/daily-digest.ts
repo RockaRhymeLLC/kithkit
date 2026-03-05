@@ -118,7 +118,7 @@ function getTodoActivity(): DigestSection {
     // Completed todos in last 24h (todos table has updated_at, not completed_at)
     const completed = query<TodoRow>(
       `SELECT id, title, status FROM todos
-       WHERE status = 'done'
+       WHERE status = 'completed'
          AND updated_at >= datetime('now', '-24 hours')
        ORDER BY updated_at DESC
        LIMIT 5`,
@@ -130,7 +130,7 @@ function getTodoActivity(): DigestSection {
 
     // Open todos count
     const openResult = query<{ count: number }>(
-      `SELECT COUNT(*) as count FROM todos WHERE status != 'done'`,
+      `SELECT COUNT(*) as count FROM todos WHERE status NOT IN ('completed', 'cancelled')`,
     );
     const openCount = openResult[0]?.count ?? 0;
     if (openCount > 0) {
