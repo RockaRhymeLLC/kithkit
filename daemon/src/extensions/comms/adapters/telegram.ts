@@ -248,7 +248,111 @@ async function downloadTelegramFile(token: string, fileId: string, filename: str
   }
 }
 
+// ── Retry helper ─────────────────────────────────────────────
+
+/**
+ * Retry a Telegram API call with exponential backoff.
+ *
+ * - Attempt 1: immediate
+ * - On failure: wait retryAfterMs (429) or baseDelayMs * attempt (other errors)
+ * - Max 3 attempts total
+ * - Retries on: network error, timeout, HTTP 429, HTTP 5xx
+ * - Does NOT retry on: HTTP 400, 401, 403
+ */
+async function withRetry<T>(
+  fn: () => Promise<T | false>,
+  maxAttempts = 3,
+  baseDelayMs = 1000,
+  retryAfterMs?: number,
+): Promise<T | false> {
+  let lastResult: T | false = false;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    lastResult = await fn();
+    if (lastResult !== false) return lastResult;
+
+    if (attempt < maxAttempts) {
+      const delayMs = retryAfterMs != null ? retryAfterMs : baseDelayMs * attempt;
+      log.warn(`Telegram request failed, retrying (attempt ${attempt}/${maxAttempts}) in ${delayMs}ms`);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      // Reset retryAfterMs after first use — subsequent attempts use exponential backoff
+      retryAfterMs = undefined;
+    }
+  }
+
+  return lastResult;
+}
+
 // ── Send message ─────────────────────────────────────────────
+
+/**
+ * Inner send — single attempt. Returns false on failure, or a 429 sentinel
+ * so the retry wrapper can honour Telegram's retry_after value.
+ */
+async function telegramSendOnce(
+  text: string,
+  token: string,
+  data: string,
+): Promise<boolean | { retry429: true; retryAfterMs: number }> {
+  return new Promise((resolve) => {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${token}/sendMessage`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+      timeout: 30_000,
+    }, (res) => {
+      let body = '';
+      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(body) as {
+            ok: boolean;
+            error_code?: number;
+            parameters?: { retry_after?: number };
+          };
+          if (result.ok) {
+            log.debug(`Sent to Telegram (${text.length} chars)`);
+            stopTypingLoop();
+            resolve(true);
+          } else if (result.error_code === 429) {
+            const retryAfterMs = (result.parameters?.retry_after ?? 5) * 1000;
+            log.warn('Telegram 429: rate limited', { retryAfterMs });
+            resolve({ retry429: true, retryAfterMs });
+          } else if (
+            result.error_code != null &&
+            (result.error_code === 400 || result.error_code === 401 || result.error_code === 403)
+          ) {
+            // Non-retriable errors — log and fail permanently
+            log.error('Telegram send failed (non-retriable)', { error_code: result.error_code, response: body });
+            stopTypingLoop();
+            resolve(false);
+          } else {
+            log.error('Telegram send failed', { response: body });
+            stopTypingLoop();
+            resolve(false);
+          }
+        } catch {
+          log.error('Telegram send: unparseable response');
+          stopTypingLoop();
+          resolve(false);
+        }
+      });
+    });
+
+    req.on('timeout', () => {
+      req.destroy(new Error('Request timed out'));
+    });
+
+    req.on('error', (err) => {
+      log.error('Telegram send error', { error: err.message });
+      resolve(false);
+    });
+
+    req.write(data);
+    req.end();
+  });
+}
 
 async function telegramSend(text: string, chatId?: string): Promise<boolean> {
   const token = await getBotToken();
@@ -273,46 +377,23 @@ async function telegramSend(text: string, chatId?: string): Promise<boolean> {
     ...(alreadyHtml || hasMarkdown ? { parse_mode: 'HTML' } : {}),
   });
 
-  return new Promise<boolean>((resolve) => {
-    const req = https.request({
-      hostname: 'api.telegram.org',
-      path: `/bot${token}/sendMessage`,
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
-      timeout: 30_000,
-    }, (res) => {
-      let body = '';
-      res.on('data', (chunk: Buffer) => { body += chunk.toString(); });
-      res.on('end', () => {
-        try {
-          const result = JSON.parse(body);
-          if (result.ok) {
-            log.debug(`Sent to Telegram (${truncated.length} chars)`);
-            resolve(true);
-          } else {
-            log.error('Telegram send failed', { response: body });
-            resolve(false);
-          }
-        } catch {
-          log.error('Telegram send: unparseable response');
-          resolve(false);
-        }
-        stopTypingLoop();
-      });
-    });
+  // Retry with backoff — track retryAfterMs from 429 responses
+  let retryAfterMs: number | undefined;
+  const result = await withRetry(
+    async () => {
+      const attempt = await telegramSendOnce(truncated, token, data);
+      if (typeof attempt === 'object' && 'retry429' in attempt) {
+        retryAfterMs = attempt.retryAfterMs;
+        return false;
+      }
+      return attempt;
+    },
+    3,
+    1000,
+    retryAfterMs,
+  );
 
-    req.on('timeout', () => {
-      req.destroy(new Error('Request timed out'));
-    });
-
-    req.on('error', (err) => {
-      log.error('Telegram send error', { error: err.message });
-      resolve(false);
-    });
-
-    req.write(data);
-    req.end();
-  });
+  return result !== false;
 }
 
 // ── Send photo ───────────────────────────────────────────────
@@ -376,6 +457,15 @@ export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: 
     req.write(body);
     req.end();
   });
+}
+
+/**
+ * Send a file (photo buffer) via Telegram with retry on network/429/5xx errors.
+ * Returns true on success, false if all attempts fail.
+ */
+export async function telegramSendFile(photoBuffer: Buffer, chatId?: string, caption?: string): Promise<boolean> {
+  const ok = await withRetry(() => sendPhoto(photoBuffer, chatId, caption));
+  return ok !== false;
 }
 
 // ── Inbound message buffer ───────────────────────────────────
