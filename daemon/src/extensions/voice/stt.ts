@@ -18,7 +18,7 @@ import { loadConfig } from '../../core/config.js';
 const log = createLogger('stt');
 
 const WHISPER_CLI = loadConfig().tools?.whisper_cli_path ?? '/opt/homebrew/bin/whisper-cli';
-const TRANSCRIBE_TIMEOUT_MS = 30_000; // 30s max for any transcription
+const TRANSCRIBE_TIMEOUT_MS = loadConfig().voice?.transcription_timeout_ms ?? 30_000;
 
 /**
  * Known whisper hallucination patterns.

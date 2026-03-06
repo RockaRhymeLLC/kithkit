@@ -8,6 +8,7 @@
 import { execFile } from 'node:child_process';
 import { exec as dbExec, query } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
+import { loadConfig } from '../core/config.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -40,7 +41,7 @@ export function runTask(
 ): Promise<TaskResult> {
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
-  const timeoutMs = options.timeoutMs ?? 300_000; // 5 min default
+  const timeoutMs = options.timeoutMs ?? (loadConfig().task_runner?.default_timeout_ms ?? 300_000);
 
   return new Promise((resolve) => {
     // Require explicit args array — no shell fallback
@@ -68,14 +69,14 @@ export function runTask(
       args,
       {
         timeout: timeoutMs,
-        maxBuffer: 1024 * 1024, // 1MB
+        maxBuffer: loadConfig().task_runner?.max_buffer_bytes ?? 1024 * 1024,
         env: { ...process.env, ...options.env },
         cwd: options.cwd,
       },
       (error, stdout, stderr) => {
         const durationMs = Date.now() - startMs;
         const finishedAt = new Date().toISOString();
-        const output = (stdout + (stderr ? '\n' + stderr : '')).trim().slice(0, 50_000);
+        const output = (stdout + (stderr ? '\n' + stderr : '')).trim().slice(0, loadConfig().task_runner?.max_output_chars ?? 50_000);
 
         let status: TaskResult['status'] = 'success';
         if (error) {
