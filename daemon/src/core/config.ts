@@ -75,13 +75,6 @@ export interface VoiceConfig {
   client_prune_interval_ms: number;
 }
 
-export interface CoworkConfig {
-  auth_timeout_ms: number;
-  cdp_command_timeout_ms: number;
-  list_tabs_timeout_ms: number;
-  switch_tab_timeout_ms: number;
-}
-
 export interface TaskRunnerConfig {
   default_timeout_ms: number;
   max_buffer_bytes: number;
@@ -97,7 +90,6 @@ export interface KithkitConfig {
   tools?: ToolsConfig;
   timers?: TimerConfig;
   voice?: VoiceConfig;
-  cowork?: CoworkConfig;
   task_runner?: TaskRunnerConfig;
 }
 
@@ -123,7 +115,6 @@ const DEFAULTS: KithkitConfig = {
   },
   timers: { nag_interval_ms: 30_000, max_nag_duration_ms: 600_000, default_snooze_seconds: 300 },
   voice: { max_audio_bytes: 10 * 1024 * 1024, max_tts_chars: 500, response_timeout_ms: 30_000, audio_convert_timeout_ms: 15_000, transcription_timeout_ms: 30_000, client_stale_timeout_ms: 60_000, client_prune_interval_ms: 15_000 },
-  cowork: { auth_timeout_ms: 5_000, cdp_command_timeout_ms: 30_000, list_tabs_timeout_ms: 10_000, switch_tab_timeout_ms: 10_000 },
   task_runner: { default_timeout_ms: 300_000, max_buffer_bytes: 1024 * 1024, max_output_chars: 50_000 },
 };
 
