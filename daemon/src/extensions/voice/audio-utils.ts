@@ -44,7 +44,7 @@ export function cleanupTemp(filepath: string): void {
 }
 
 const FFMPEG = loadConfig().tools?.ffmpeg_path ?? '/opt/homebrew/bin/ffmpeg';
-const CONVERT_TIMEOUT_MS = 15_000; // 15s max for any conversion
+const CONVERT_TIMEOUT_MS = loadConfig().voice?.audio_convert_timeout_ms ?? 15_000;
 
 /**
  * Convert any audio file to 16kHz mono WAV suitable for whisper-cli.

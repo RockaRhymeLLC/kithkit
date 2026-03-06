@@ -13,7 +13,7 @@
 
 import http from 'node:http';
 import { createLogger } from '../../core/logger.js';
-import { getProjectDir } from '../../core/config.js';
+import { getProjectDir, loadConfig } from '../../core/config.js';
 import { registerRoute } from '../../core/route-registry.js';
 import { registerCheck } from '../../core/extended-status.js';
 import { injectText } from '../../core/session-bridge.js';
@@ -43,9 +43,9 @@ import {
 
 const log = createLogger('voice-server');
 
-const MAX_AUDIO_BYTES = 10 * 1024 * 1024; // 10MB max upload
-const MAX_TTS_CHARS = 500; // Max chars per TTS request (prevents OOM on long text)
-const VOICE_RESPONSE_TIMEOUT_MS = 30_000; // Max wait for Claude's response
+const MAX_AUDIO_BYTES = loadConfig().voice?.max_audio_bytes ?? 10 * 1024 * 1024;
+const MAX_TTS_CHARS = loadConfig().voice?.max_tts_chars ?? 500;
+const VOICE_RESPONSE_TIMEOUT_MS = loadConfig().voice?.response_timeout_ms ?? 30_000;
 
 // ── State ────────────────────────────────────────────────────
 
