@@ -91,6 +91,16 @@ export interface EmailConfig {
   fastmail_jmap_session_url: string;
 }
 
+export interface CalDAVConfig {
+  url: string;
+  username: string;
+  password: string;       // Plain text or "keychain:<label>" for Keychain lookup
+}
+
+export interface CalendarConfig {
+  caldav?: CalDAVConfig;
+}
+
 export interface KithkitConfig {
   agent: AgentConfig;
   tmux?: TmuxConfig;
@@ -103,6 +113,7 @@ export interface KithkitConfig {
   task_runner?: TaskRunnerConfig;
   weather?: WeatherConfig;
   email?: EmailConfig;
+  calendar?: CalendarConfig;
 }
 
 // ── Defaults ─────────────────────────────────────────────────
