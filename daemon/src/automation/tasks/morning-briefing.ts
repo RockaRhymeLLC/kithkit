@@ -8,19 +8,20 @@
  * location, delivery channels) is driven by scheduler task config.
  *
  * Data sources:
- * - Calendar: icalbuddy (macOS) + internal calendar DB
+ * - Calendar: CalDAV API + internal calendar DB
  * - Weather: Open-Meteo API with wttr.in fallback
  * - Todos: SQLite (open todos, priority-sorted)
  * - Email: task_results from the email-check task
  * - Overnight messages: daemon log scan
  */
 
-import { execFile, execSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { query } from '../../core/db.js';
 import { loadConfig, getProjectDir } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
+import { fetchTodayEvents } from './caldav-client.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('morning-briefing');
@@ -42,14 +43,32 @@ function execCommand(cmd: string, args: string[], timeoutMs = 10_000): Promise<s
 
 // ── Calendar ─────────────────────────────────────────────────
 
-function gatherCalendar(): string {
+/**
+ * Fetch today's events from a CalDAV server.
+ * Falls back gracefully if CalDAV is not configured or unreachable.
+ */
+async function gatherCalendar(): Promise<string> {
+  const config = loadConfig();
+  const caldavConfig = config.calendar?.caldav;
+
+  if (!caldavConfig?.url) {
+    log.debug('No CalDAV config — skipping external calendar');
+    return 'Calendar not configured.';
+  }
+
   try {
-    const output = execSync(
-      'icalbuddy -n -nc -nrd -npn -ea -eep notes,url -df "%A, %b %e, %Y" -b "• " -iep title,datetime eventsToday',
-      { encoding: 'utf8', timeout: 10_000 },
-    ).trim();
-    return output || 'No events today.';
-  } catch {
+    const events = await fetchTodayEvents(caldavConfig);
+
+    if (events.length === 0) return 'No events today.';
+
+    return events
+      .map(ev => {
+        if (ev.allDay) return `• ${ev.title}`;
+        return `• ${ev.startTime} ${ev.title}`;
+      })
+      .join('\n');
+  } catch (err) {
+    log.warn('CalDAV calendar fetch failed', { error: errMsg(err) });
     return 'Calendar unavailable.';
   }
 }
@@ -219,7 +238,11 @@ function gatherOvernightMessages(): string {
 
 // ── Delivery ─────────────────────────────────────────────────
 
-async function sendBriefing(message: string, channels?: string[]): Promise<void> {
+async function sendBriefing(
+  message: string,
+  channels?: string[],
+  telegramChatId?: string,
+): Promise<void> {
   const config = loadConfig();
   const port = (config as unknown as Record<string, Record<string, unknown>>)?.daemon?.port ?? 3847;
 
@@ -229,6 +252,10 @@ async function sendBriefing(message: string, channels?: string[]): Promise<void>
   };
   if (channels && channels.length > 0) {
     payload.channels = channels;
+  }
+  // Allow targeting a specific Telegram chat (e.g., Chrissy's DM vs Dave's group)
+  if (telegramChatId) {
+    payload.metadata = { chat_id: telegramChatId };
   }
 
   const resp = await fetch(`http://127.0.0.1:${port}/api/send`, {
@@ -249,6 +276,7 @@ async function run(config: Record<string, unknown>): Promise<string> {
 
   const location = (config.weather_location as string) ?? 'Baltimore';
   const channels = config.channels as string[] | undefined;
+  const telegramChatId = config.telegram_chat_id as string | undefined;
 
   const today = new Date().toLocaleDateString('en-US', {
     weekday: 'long',
@@ -258,10 +286,12 @@ async function run(config: Record<string, unknown>): Promise<string> {
   });
 
   // Gather data (parallel where possible)
-  const [weather] = await Promise.all([gatherWeather(location)]);
+  const [weather, calendar] = await Promise.all([
+    gatherWeather(location),
+    gatherCalendar(),
+  ]);
 
   // Synchronous DB/filesystem queries
-  const calendar = gatherCalendar();
   const internalCal = gatherInternalCalendar();
   const todos = gatherTodos();
   const email = gatherEmailSummary();
@@ -294,10 +324,10 @@ async function run(config: Record<string, unknown>): Promise<string> {
 
   const message = parts.join('\n').trim();
 
-  await sendBriefing(message, channels);
+  await sendBriefing(message, channels, telegramChatId);
 
   const summary = `Sent briefing: weather OK, ` +
-    `${calendar === 'No events today.' ? '0 events' : 'events listed'}, ` +
+    `${calendar === 'No events today.' || calendar === 'Calendar not configured.' ? '0 events' : 'events listed'}, ` +
     `${todos === 'No open to-dos.' ? '0 todos' : 'todos listed'}`;
   log.info('Morning briefing sent', { summary });
   return summary;
