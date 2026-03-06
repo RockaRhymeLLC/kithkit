@@ -289,6 +289,26 @@ export function listSessions(): string[] {
   }
 }
 
+// ── Session liveness check ──────────────────────────────────
+
+/**
+ * Check whether the tmux session for a given agent ID is currently alive.
+ * Returns true if the session exists, false otherwise.
+ */
+export function isSessionAlive(agentId: string): boolean {
+  const session = resolveSession(agentId);
+  if (!session) return false;
+
+  try {
+    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
+      timeout: 5000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // ── Testing ─────────────────────────────────────────────────
 
 export function _getCommsSession(): string { return COMMS_SESSION; }
