@@ -90,13 +90,13 @@ async function gatherWeather(location: string): Promise<string> {
   try {
     const geoRaw = await execCommand('/usr/bin/curl', [
       '-s', '--max-time', '5',
-      `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(location)}&count=1`,
+      `${loadConfig().weather?.geocoding_api_url ?? 'https://geocoding-api.open-meteo.com/v1/search'}?name=${encodeURIComponent(location)}&count=1`,
     ]);
     const geo = JSON.parse(geoRaw.trim());
     if (!geo.results?.length) throw new Error('No geocoding results');
     const { latitude, longitude, timezone } = geo.results[0];
 
-    const url = `https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}` +
+    const url = `${loadConfig().weather?.forecast_api_url ?? 'https://api.open-meteo.com/v1/forecast'}?latitude=${latitude}&longitude=${longitude}` +
       `&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code` +
       `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max` +
       `&temperature_unit=fahrenheit&wind_speed_unit=mph` +
@@ -136,7 +136,7 @@ async function gatherWeather(location: string): Promise<string> {
     const loc = location.replace(/\s+/g, '+');
     const current = await execCommand('/usr/bin/curl', [
       '-s', '--max-time', '8',
-      `wttr.in/${loc}?format=%c+%t+|+Humidity:+%h+|+Wind:+%w`,
+      `${loadConfig().weather?.wttr_base_url ?? 'https://wttr.in'}/${loc}?format=%c+%t+|+Humidity:+%h+|+Wind:+%w`,
     ]);
     return current.trim() || 'Weather unavailable.';
   } catch (err) {
