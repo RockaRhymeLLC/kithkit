@@ -19,6 +19,7 @@ import type {
   Verbosity,
   ChannelCapabilities,
 } from '../../../../comms/adapter.js';
+import { loadConfig } from '../../../../core/config.js';
 import { readKeychain } from '../../../../core/keychain.js';
 import { createLogger } from '../../../../core/logger.js';
 
@@ -383,7 +384,7 @@ export class BmoJmapAdapter implements ChannelAdapter {
 
   private async _getSession(): Promise<JmapSession> {
     await this._getCreds();
-    const response = await fetch('https://api.fastmail.com/.well-known/jmap', {
+    const response = await fetch(loadConfig().email?.fastmail_jmap_session_url ?? 'https://api.fastmail.com/.well-known/jmap', {
       method: 'GET',
       headers: this._getHeaders(),
     });

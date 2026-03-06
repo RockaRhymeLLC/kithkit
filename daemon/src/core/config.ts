@@ -81,6 +81,16 @@ export interface TaskRunnerConfig {
   max_output_chars: number;
 }
 
+export interface WeatherConfig {
+  geocoding_api_url: string;
+  forecast_api_url: string;
+  wttr_base_url: string;
+}
+
+export interface EmailConfig {
+  fastmail_jmap_session_url: string;
+}
+
 export interface KithkitConfig {
   agent: AgentConfig;
   tmux?: TmuxConfig;
@@ -91,6 +101,8 @@ export interface KithkitConfig {
   timers?: TimerConfig;
   voice?: VoiceConfig;
   task_runner?: TaskRunnerConfig;
+  weather?: WeatherConfig;
+  email?: EmailConfig;
 }
 
 // ── Defaults ─────────────────────────────────────────────────
@@ -116,6 +128,14 @@ const DEFAULTS: KithkitConfig = {
   timers: { nag_interval_ms: 30_000, max_nag_duration_ms: 600_000, default_snooze_seconds: 300 },
   voice: { max_audio_bytes: 10 * 1024 * 1024, max_tts_chars: 500, response_timeout_ms: 30_000, audio_convert_timeout_ms: 15_000, transcription_timeout_ms: 30_000, client_stale_timeout_ms: 60_000, client_prune_interval_ms: 15_000 },
   task_runner: { default_timeout_ms: 300_000, max_buffer_bytes: 1024 * 1024, max_output_chars: 50_000 },
+  weather: {
+    geocoding_api_url: 'https://geocoding-api.open-meteo.com/v1/search',
+    forecast_api_url: 'https://api.open-meteo.com/v1/forecast',
+    wttr_base_url: 'https://wttr.in',
+  },
+  email: {
+    fastmail_jmap_session_url: 'https://api.fastmail.com/.well-known/jmap',
+  },
 };
 
 // ── Deep merge ───────────────────────────────────────────────
