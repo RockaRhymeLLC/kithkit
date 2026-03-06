@@ -25,8 +25,6 @@ export interface AgentProfile {
   maxTurns: number;
   /** Controls how much effort Claude puts into responses (maps to SDK effort param) */
   effort: EffortLevel;
-  /** Per-worker cost cap in USD (maps to SDK maxBudgetUsd) */
-  maxBudgetUsd: number;
   /** Markdown body — becomes systemPrompt append content */
   body: string;
 }
@@ -51,7 +49,6 @@ const DEFAULTS: Omit<AgentProfile, 'name' | 'body'> = {
   permissionMode: 'bypassPermissions',
   maxTurns: 20,
   effort: 'high',
-  maxBudgetUsd: 1.0,
 };
 
 // ── Parsing ──────────────────────────────────────────────────
@@ -134,13 +131,6 @@ export function validateProfile(
     }
   }
 
-  // Validate maxBudgetUsd if provided
-  if (frontmatter.maxBudgetUsd !== undefined) {
-    if (typeof frontmatter.maxBudgetUsd !== 'number' || frontmatter.maxBudgetUsd <= 0) {
-      throw new ProfileValidationError('maxBudgetUsd must be a positive number');
-    }
-  }
-
   return {
     name: frontmatter.name as string,
     description: typeof frontmatter.description === 'string' ? frontmatter.description : DEFAULTS.description,
@@ -154,7 +144,6 @@ export function validateProfile(
     effort: VALID_EFFORT_LEVELS.includes(frontmatter.effort as typeof VALID_EFFORT_LEVELS[number])
       ? frontmatter.effort as EffortLevel
       : DEFAULTS.effort,
-    maxBudgetUsd: typeof frontmatter.maxBudgetUsd === 'number' ? frontmatter.maxBudgetUsd : DEFAULTS.maxBudgetUsd,
     body,
   };
 }

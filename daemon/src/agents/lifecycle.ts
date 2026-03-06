@@ -82,7 +82,6 @@ export interface SpawnRequest {
   prompt: string;
   cwd?: string;
   timeoutMs?: number;
-  maxBudgetUsd?: number;
   /** Which persistent agent spawned this worker ('comms' | 'orchestrator'). */
   spawned_by?: string;
 }
@@ -224,7 +223,6 @@ function startWorker(jobId: string, req: SpawnRequest): void {
     },
     cwd: req.cwd,
     timeoutMs: req.timeoutMs,
-    maxBudgetUsd: req.maxBudgetUsd ?? req.profile.maxBudgetUsd ?? undefined,
   };
 
   // SDK adapter assigns its own internal ID
