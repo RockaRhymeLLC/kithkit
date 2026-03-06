@@ -18,6 +18,7 @@ import { json, withTimestamp, parseBody } from './helpers.js';
 import { injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { insert, update, query } from '../core/db.js';
+import { loadConfig } from '../core/config.js';
 
 const log = createLogger('timer-api');
 
@@ -36,9 +37,9 @@ function normalizeAgentId(agent: string): string {
 
 // ── Constants ────────────────────────────────────────────────
 
-const NAG_INTERVAL_MS = 30_000;      // 30 seconds between nags
-const MAX_NAG_DURATION_MS = 600_000; // 10 minutes before auto-expire
-const DEFAULT_SNOOZE_S = 300;        // 5 minutes default snooze
+const NAG_INTERVAL_MS = loadConfig().timers?.nag_interval_ms ?? 30_000;
+const MAX_NAG_DURATION_MS = loadConfig().timers?.max_nag_duration_ms ?? 600_000;
+const DEFAULT_SNOOZE_S = loadConfig().timers?.default_snooze_seconds ?? 300;
 
 // ── Timer state ──────────────────────────────────────────────
 
