@@ -59,6 +59,28 @@ export interface ToolsConfig {
   whisper_cli_path: string;
 }
 
+export interface TimerConfig {
+  nag_interval_ms: number;
+  max_nag_duration_ms: number;
+  default_snooze_seconds: number;
+}
+
+export interface VoiceConfig {
+  max_audio_bytes: number;
+  max_tts_chars: number;
+  response_timeout_ms: number;
+  audio_convert_timeout_ms: number;
+  transcription_timeout_ms: number;
+  client_stale_timeout_ms: number;
+  client_prune_interval_ms: number;
+}
+
+export interface TaskRunnerConfig {
+  default_timeout_ms: number;
+  max_buffer_bytes: number;
+  max_output_chars: number;
+}
+
 export interface KithkitConfig {
   agent: AgentConfig;
   tmux?: TmuxConfig;
@@ -66,6 +88,9 @@ export interface KithkitConfig {
   scheduler: SchedulerConfig;
   security: SecurityConfig;
   tools?: ToolsConfig;
+  timers?: TimerConfig;
+  voice?: VoiceConfig;
+  task_runner?: TaskRunnerConfig;
 }
 
 // ── Defaults ─────────────────────────────────────────────────
@@ -88,6 +113,9 @@ const DEFAULTS: KithkitConfig = {
     ffmpeg_path: '/opt/homebrew/bin/ffmpeg',
     whisper_cli_path: '/opt/homebrew/bin/whisper-cli',
   },
+  timers: { nag_interval_ms: 30_000, max_nag_duration_ms: 600_000, default_snooze_seconds: 300 },
+  voice: { max_audio_bytes: 10 * 1024 * 1024, max_tts_chars: 500, response_timeout_ms: 30_000, audio_convert_timeout_ms: 15_000, transcription_timeout_ms: 30_000, client_stale_timeout_ms: 60_000, client_prune_interval_ms: 15_000 },
+  task_runner: { default_timeout_ms: 300_000, max_buffer_bytes: 1024 * 1024, max_output_chars: 50_000 },
 };
 
 // ── Deep merge ───────────────────────────────────────────────

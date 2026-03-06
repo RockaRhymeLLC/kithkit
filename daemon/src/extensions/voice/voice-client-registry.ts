@@ -10,6 +10,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { createLogger } from '../../core/logger.js';
+import { loadConfig } from '../../core/config.js';
 
 const log = createLogger('voice-registry');
 
@@ -24,8 +25,8 @@ export interface VoiceClient {
 const clients = new Map<string, VoiceClient>();
 let pruneTimer: ReturnType<typeof setInterval> | null = null;
 
-const STALE_TIMEOUT_MS = 60_000; // 60 seconds
-const PRUNE_INTERVAL_MS = 15_000; // check every 15s
+const STALE_TIMEOUT_MS = loadConfig().voice?.client_stale_timeout_ms ?? 60_000;
+const PRUNE_INTERVAL_MS = loadConfig().voice?.client_prune_interval_ms ?? 15_000;
 
 /**
  * Register or update a voice client. Used for both initial registration
