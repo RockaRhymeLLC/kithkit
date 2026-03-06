@@ -13,6 +13,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { createLogger } from '../../core/logger.js';
+import { loadConfig } from '../../core/config.js';
 
 const log = createLogger('audio-utils');
 
@@ -42,7 +43,7 @@ export function cleanupTemp(filepath: string): void {
   }
 }
 
-const FFMPEG = '/opt/homebrew/bin/ffmpeg';
+const FFMPEG = loadConfig().tools?.ffmpeg_path ?? '/opt/homebrew/bin/ffmpeg';
 const CONVERT_TIMEOUT_MS = 15_000; // 15s max for any conversion
 
 /**
