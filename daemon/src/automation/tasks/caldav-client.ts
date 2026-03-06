@@ -208,8 +208,8 @@ function buildCalendarQueryXML(): string {
   // time-range filter. Using local Date ensures we query for "today" in the
   // user's timezone, and getUTC* methods convert to the Z-suffix format CalDAV expects.
   const now = new Date();
-  const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+  const startOfDay = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  const endOfDay = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate() + 1));
 
   // Format as iCal UTC datetime: YYYYMMDDTHHMMSSZ
   // The Date objects hold local midnight/midnight+1; getUTC* converts to UTC.
