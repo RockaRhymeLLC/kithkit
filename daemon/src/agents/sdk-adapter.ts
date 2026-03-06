@@ -44,8 +44,6 @@ export interface SpawnOptions {
   cwd?: string;
   /** Inactivity timeout in ms (default: 300000 = 5 min) */
   timeoutMs?: number;
-  /** Max budget in USD */
-  maxBudgetUsd?: number;
 }
 
 export type WorkerStatus = 'running' | 'completed' | 'failed' | 'timeout';
@@ -141,7 +139,7 @@ export function spawnWorker(opts: SpawnOptions): string {
   if (opts.profile.disallowedTools) sdkOptions.disallowedTools = opts.profile.disallowedTools;
   if (opts.profile.maxTurns) sdkOptions.maxTurns = opts.profile.maxTurns;
   if (opts.profile.effort) sdkOptions.effort = opts.profile.effort;
-  if (opts.maxBudgetUsd !== undefined) sdkOptions.maxBudgetUsd = opts.maxBudgetUsd;
+  // maxBudgetUsd intentionally omitted — no budget cap on workers
   if (opts.cwd) sdkOptions.cwd = opts.cwd;
 
   if (opts.profile.permissionMode === 'bypassPermissions') {
