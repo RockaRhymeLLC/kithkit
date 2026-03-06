@@ -61,6 +61,12 @@ async function resolvePassword(password: string): Promise<string> {
  *   DTSTART;VALUE=DATE:20260306         → all-day
  *   DTSTART:20260306T140000Z            → timed (UTC)
  *   DTSTART;TZID=America/New_York:20260306T100000  → timed (with tz)
+ *
+ * Limitation: TZID values are currently ignored — times with TZID but no Z
+ * suffix are treated as local system time. This is acceptable when the CalDAV
+ * server and this machine share a timezone, but will be wrong for remote
+ * calendars in different timezones. A full VTIMEZONE resolver would be needed
+ * to handle this correctly.
  */
 function parseDTValue(line: string): { date: Date; allDay: boolean } {
   const colonIdx = line.indexOf(':');
@@ -144,7 +150,14 @@ function parseICSEvents(responseBody: string): CalendarEvent[] {
 
         if (upper.startsWith('SUMMARY')) {
           const idx = line.indexOf(':');
-          if (idx !== -1) title = line.slice(idx + 1).trim();
+          if (idx !== -1) {
+            // Unescape RFC 5545 escaped characters in SUMMARY values
+            title = line.slice(idx + 1).trim()
+              .replace(/\\n/gi, ' ')
+              .replace(/\\,/g, ',')
+              .replace(/\\;/g, ';')
+              .replace(/\\\\/g, '\\');
+          }
         } else if (upper.startsWith('DTSTART')) {
           const parsed = parseDTValue(line);
           allDay = parsed.allDay;
@@ -191,11 +204,15 @@ function parseICSEvents(responseBody: string): CalendarEvent[] {
  * Build the calendar-query XML body for fetching today's events.
  */
 function buildCalendarQueryXML(): string {
+  // Build start/end of today in local time, then format as UTC for the CalDAV
+  // time-range filter. Using local Date ensures we query for "today" in the
+  // user's timezone, and getUTC* methods convert to the Z-suffix format CalDAV expects.
   const now = new Date();
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
 
   // Format as iCal UTC datetime: YYYYMMDDTHHMMSSZ
+  // The Date objects hold local midnight/midnight+1; getUTC* converts to UTC.
   const fmt = (d: Date): string => {
     const pad = (n: number) => n.toString().padStart(2, '0');
     return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}` +
