@@ -13,10 +13,11 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { createLogger } from '../../core/logger.js';
+import { loadConfig } from '../../core/config.js';
 
 const log = createLogger('stt');
 
-const WHISPER_CLI = '/opt/homebrew/bin/whisper-cli';
+const WHISPER_CLI = loadConfig().tools?.whisper_cli_path ?? '/opt/homebrew/bin/whisper-cli';
 const TRANSCRIBE_TIMEOUT_MS = 30_000; // 30s max for any transcription
 
 /**

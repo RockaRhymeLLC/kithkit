@@ -52,12 +52,20 @@ export interface TmuxConfig {
   session?: string;
 }
 
+export interface ToolsConfig {
+  tmux_path: string;
+  himalaya_path: string;
+  ffmpeg_path: string;
+  whisper_cli_path: string;
+}
+
 export interface KithkitConfig {
   agent: AgentConfig;
   tmux?: TmuxConfig;
   daemon: DaemonConfig;
   scheduler: SchedulerConfig;
   security: SecurityConfig;
+  tools?: ToolsConfig;
 }
 
 // ── Defaults ─────────────────────────────────────────────────
@@ -73,6 +81,12 @@ const DEFAULTS: KithkitConfig = {
   scheduler: { tasks: [] },
   security: {
     rate_limits: { incoming_max_per_minute: 5, outgoing_max_per_minute: 10 },
+  },
+  tools: {
+    tmux_path: '/opt/homebrew/bin/tmux',
+    himalaya_path: '/opt/homebrew/bin/himalaya',
+    ffmpeg_path: '/opt/homebrew/bin/ffmpeg',
+    whisper_cli_path: '/opt/homebrew/bin/whisper-cli',
   },
 };
 
