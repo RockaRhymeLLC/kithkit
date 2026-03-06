@@ -17,7 +17,7 @@ const log = createLogger('tmux');
 
 // ── Config ──────────────────────────────────────────────────
 
-export const TMUX_BIN = '/opt/homebrew/bin/tmux';
+export const TMUX_BIN = loadConfig().tools?.tmux_path ?? '/opt/homebrew/bin/tmux';
 export const TMUX_SOCKET = `/private/tmp/tmux-${process.getuid?.() ?? 501}/default`;
 
 const COMMS_SESSION = 'comms1';

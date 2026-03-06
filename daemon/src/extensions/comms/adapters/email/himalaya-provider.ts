@@ -20,11 +20,12 @@ import type {
   ChannelCapabilities,
 } from '../../../../comms/adapter.js';
 import { createLogger } from '../../../../core/logger.js';
+import { loadConfig } from '../../../../core/config.js';
 
 const execFileAsync = promisify(execFile);
 const log = createLogger('bmo-email-himalaya');
 
-const HIMALAYA_BIN = '/opt/homebrew/bin/himalaya';
+const HIMALAYA_BIN = loadConfig().tools?.himalaya_path ?? '/opt/homebrew/bin/himalaya';
 
 // ── Types ────────────────────────────────────────────────────
 
