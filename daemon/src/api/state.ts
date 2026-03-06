@@ -4,6 +4,8 @@
  */
 
 import type http from 'node:http';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import {
   insert,
   get,
@@ -77,6 +79,11 @@ interface WorkerJob {
 
 const VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'];
 const VALID_TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'cancelled'];
+
+const execFileAsync = promisify(execFile);
+
+let _usageHistoryCache: { data: unknown; expiresAt: number } | null = null;
+const USAGE_HISTORY_CACHE_MS = 5 * 60 * 1000;
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -381,6 +388,60 @@ export async function handleStateRoute(
         cost_usd: Math.round(totalCostUsd * 10000) / 10000,
         jobs: rows.length,
       }));
+      return true;
+    }
+
+    // ── Usage History ───────────────────────────────────────
+    if (pathname === '/api/usage/history' && method === 'GET') {
+      const now = Date.now();
+      if (_usageHistoryCache && now < _usageHistoryCache.expiresAt) {
+        json(res, 200, _usageHistoryCache.data);
+        return true;
+      }
+      try {
+        const projectRoot = new URL('../../..', import.meta.url).pathname;
+        const { stdout } = await execFileAsync('npx', ['ccusage', 'daily', '--json'], { cwd: projectRoot, timeout: 30_000 });
+        const parsed = JSON.parse(stdout) as unknown;
+        _usageHistoryCache = { data: parsed, expiresAt: now + USAGE_HISTORY_CACHE_MS };
+        json(res, 200, parsed);
+      } catch (err) {
+        json(res, 500, { error: err instanceof Error ? err.message : String(err) });
+      }
+      return true;
+    }
+
+    // ── Cross-Agent Proxy ────────────────────────────────────
+    if (pathname.startsWith('/api/proxy/agent/') && method === 'GET') {
+      const AGENT_IPS: Record<string, string> = {
+        r2: 'http://192.168.12.212:3847',
+        skippy: 'http://192.168.12.142:3847',
+      };
+      const rest = pathname.slice('/api/proxy/agent/'.length);
+      const slash = rest.indexOf('/');
+      const agentName = slash === -1 ? rest : rest.slice(0, slash);
+      const agentPath = slash === -1 ? '' : rest.slice(slash + 1);
+      const base = AGENT_IPS[agentName];
+      if (!base) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        json(res, 404, { error: 'Unknown agent', agent: agentName });
+        return true;
+      }
+      const targetUrl = base + '/api/' + agentPath;
+      const ctrl = new AbortController();
+      const timeout = setTimeout(() => ctrl.abort(), 5000);
+      try {
+        const upstream = await fetch(targetUrl, { signal: ctrl.signal });
+        clearTimeout(timeout);
+        const data = await upstream.json() as unknown;
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Content-Type', 'application/json');
+        res.writeHead(upstream.status);
+        res.end(JSON.stringify(data));
+      } catch {
+        clearTimeout(timeout);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        json(res, 502, { error: 'Agent unreachable', agent: agentName });
+      }
       return true;
     }
 
