@@ -182,8 +182,13 @@ export function loadProfiles(dir: string): Map<string, AgentProfile> {
   const files = fs.readdirSync(dir).filter(f => f.endsWith('.md')).sort();
 
   for (const file of files) {
-    const profile = loadProfile(path.join(dir, file));
-    profiles.set(profile.name, profile);
+    try {
+      const profile = loadProfile(path.join(dir, file));
+      profiles.set(profile.name, profile);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[profiles] Skipping ${file}: ${msg}`);
+    }
   }
 
   return profiles;
