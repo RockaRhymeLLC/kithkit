@@ -14,7 +14,7 @@
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { query, exec, update } from '../../core/db.js';
-import { resolveProjectPath } from '../../core/config.js';
+import { resolveProjectPath, loadConfig } from '../../core/config.js';
 import {
   isOrchestratorAlive as _isOrchestratorAlive,
   killOrchestratorSession as _killOrchestratorSession,
@@ -120,7 +120,7 @@ function buildShutdownPrompt(reason: string): string {
     `Shutdown requested: ${reason}`,
     'Please wrap up gracefully:',
     '1. If you have any unsent findings or context, send a final result to comms now:',
-    '   curl -s -X POST http://localhost:3847/api/messages -H "Content-Type: application/json" -d \'{"from":"orchestrator","to":"comms","type":"result","body":"<any final notes>"}\'',
+    `   curl -s -X POST http://localhost:${loadConfig().daemon.port}/api/messages -H "Content-Type: application/json" -d '{"from":"orchestrator","to":"comms","type":"result","body":"<any final notes>"}'`,
     '2. Then exit by running: exit',
     '',
     'If you are actively working on something, say so — the daemon will check again later.',

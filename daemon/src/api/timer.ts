@@ -115,6 +115,15 @@ function complete(entry: TimerEntry, status: TimerStatus): void {
 /** Start the nag cycle for a fired timer. `firedAt` is the epoch ms when it first fired. */
 function startNagCycle(entry: TimerEntry, firedAt: number): void {
   entry.nagHandle = setInterval(() => {
+    // Guard: stop if timer was acked/cancelled/expired since last nag
+    if (entry.status !== 'fired') {
+      if (entry.nagHandle !== undefined) {
+        clearInterval(entry.nagHandle);
+        entry.nagHandle = undefined;
+      }
+      return;
+    }
+
     const elapsed = Math.floor((Date.now() - firedAt) / 1000);
 
     if (elapsed >= MAX_NAG_DURATION_MS / 1000) {
