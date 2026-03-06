@@ -23,6 +23,7 @@ import { exec, query, update } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
 import { logActivity } from './activity.js';
 import { createRateLimiter } from './rate-limit.js';
+import { cancelSessionTimers } from './timer.js';
 
 const log = createLogger('orchestrator-api');
 
@@ -269,6 +270,12 @@ export async function handleOrchestratorRoute(
       }),
     });
 
+    // Fix 3: cancel all orchestrator timers immediately on shutdown request
+    const cancelledTimers = cancelSessionTimers('orchestrator');
+    if (cancelledTimers > 0) {
+      log.info('Cancelled orchestrator timers on shutdown', { count: cancelledTimers });
+    }
+
     // Set a timeout to force-kill if no acknowledgment (cancellable on new spawn)
     pendingShutdownTimer = setTimeout(() => {
       pendingShutdownTimer = null;
@@ -287,6 +294,8 @@ export async function handleOrchestratorRoute(
           event_type: 'session_end',
           details: `Force-killed after ${effectiveTimeout / 1000}s shutdown timeout (was ${orchState})`,
         });
+        // Cancel any timers that fired during the shutdown window
+        cancelSessionTimers('orchestrator');
       }
     }, effectiveTimeout);
 
