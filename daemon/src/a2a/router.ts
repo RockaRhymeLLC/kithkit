@@ -53,7 +53,7 @@ interface A2ANetworkClient {
 
 export interface RouterDeps {
   config: Record<string, unknown>;
-  sendViaLAN: (peer: PeerConfig, msg: AgentMessage, secret: string, agentName: string) => Promise<Record<string, unknown>>;
+  sendViaLAN: (peer: PeerConfig, msg: AgentMessage, agentName: string) => Promise<Record<string, unknown>>;
   getNetworkClient: () => A2ANetworkClient | null;
   getAgentCommsSecret: () => Promise<string | null>;
   logCommsEntry: (entry: Record<string, unknown>) => void;
@@ -521,16 +521,6 @@ export class UnifiedA2ARouter {
     payload: A2ASendRequest['payload'],
     messageId: string,
   ): Promise<DeliveryAttempt> {
-    const secret = await this.deps.getAgentCommsSecret();
-    if (!secret) {
-      return {
-        route: 'lan',
-        status: 'failed',
-        error: 'Agent comms secret not found in Keychain',
-        latencyMs: 0,
-      };
-    }
-
     // Build the AgentMessage by flattening payload fields
     // Strip reserved fields from remainingPayload to prevent spoofing
     const { type, text, from: _from, messageId: _mid, timestamp: _ts, ...remainingPayload } = payload;
@@ -545,7 +535,7 @@ export class UnifiedA2ARouter {
 
     const startTime = Date.now();
     try {
-      const result = await this.deps.sendViaLAN(peer, msg, secret, this.agentName);
+      const result = await this.deps.sendViaLAN(peer, msg, this.agentName);
       const latencyMs = Date.now() - startTime;
 
       // sendViaLAN already logs internally (Story 4 note: do NOT double-log LAN)
