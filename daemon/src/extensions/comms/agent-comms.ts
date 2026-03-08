@@ -3,13 +3,12 @@
  *
  * Handles both inbound (from peers) and outbound (to peers) messaging.
  * Messages are injected into the tmux session with [Agent] prefix.
- * LAN-direct HTTP communication using a shared secret for auth.
+ * LAN-direct HTTP communication between peers.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
-import { readKeychain } from '../../core/keychain.js';
 import { injectText } from '../../core/session-bridge.js';
 import { getProjectDir } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
@@ -172,22 +171,11 @@ function validateMessage(body: unknown): { valid: boolean; error?: string } {
 
 // ── Handle Incoming ───────────────────────────────────────────
 /**
- * Handle an incoming LAN agent message (Bearer auth).
+ * Handle an incoming LAN agent message.
  */
 export async function handleAgentMessage(
-  authToken: string | null,
   body: unknown,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
-  // Auth check (async keychain)
-  const secret = await readKeychain('credential-agent-comms-secret');
-  if (!authToken || !secret || authToken !== secret) {
-    log.warn('Agent message rejected: invalid auth', { hasToken: !!authToken });
-    return {
-      status: 401,
-      body: { error: 'Unauthorized: invalid or missing bearer token' },
-    };
-  }
-
   const validation = validateMessage(body);
   if (!validation.valid) {
     log.warn('Agent message rejected: invalid structure', { error: validation.error });
@@ -228,7 +216,6 @@ export async function handleAgentMessage(
 export function sendViaLAN(
   peer: PeerConfig,
   msg: AgentMessage,
-  secret: string,
   agentName: string,
 ): Promise<Record<string, unknown>> {
   const payload = JSON.stringify(msg);
@@ -247,7 +234,6 @@ export function sendViaLAN(
         '-w', '\n%{http_code}',
         '-X', 'POST', url,
         '-H', 'Content-Type: application/json',
-        '-H', `Authorization: Bearer ${secret}`,
         '--data-raw', payload,
       ];
 
@@ -383,12 +369,7 @@ export async function sendAgentMessage(
     ...extra,
   };
 
-  const secret = await readKeychain('credential-agent-comms-secret');
-  if (!secret) {
-    return { ok: false, queued: false, error: 'Agent comms secret not found in Keychain' };
-  }
-
-  return sendViaLAN(peer, msg, secret, agentName) as Promise<Record<string, unknown>>;
+  return sendViaLAN(peer, msg, agentName) as Promise<Record<string, unknown>>;
 }
 
 // ── Agent Status ──────────────────────────────────────────────
