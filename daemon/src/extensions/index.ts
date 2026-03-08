@@ -93,10 +93,8 @@ async function handleAgentMessageRoute(
   if (req.method !== 'POST') return false;
 
   try {
-    const authHeader = req.headers.authorization;
-    const token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
     const parsed = await parseBody(req);
-    const result = await handleAgentMessage(token, parsed);
+    const result = await handleAgentMessage(parsed);
     res.writeHead(result.status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result.body));
   } catch (err) {
