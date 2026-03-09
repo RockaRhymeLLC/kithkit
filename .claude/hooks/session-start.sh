@@ -210,4 +210,28 @@ fi
 
 echo "---"
 
+# ── Auto-resume: inject a bootstrap prompt via tmux ───────
+# Triggers the agent to act on the saved state already in context,
+# instead of sitting idle waiting for input.
+# Set KITHKIT_QUIET_START=1 to suppress (useful for debugging).
+if [ "${KITHKIT_QUIET_START:-0}" != "1" ]; then
+  TMUX_SOCKET="/private/tmp/tmux-$(id -u)/default"
+
+  if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
+    PROMPT="Session cleared and restored. Review the saved state above and follow any Next Steps in order."
+  else
+    PROMPT="Session auto-started. Review the saved state above. If there are Next Steps or action items, follow them in order. If there are no Next Steps, check todos and work on pending tasks autonomously."
+  fi
+
+  # Spawn a detached background job that waits for the session to initialize,
+  # then injects a prompt. nohup + disown ensures it survives hook exit.
+  nohup bash -c "
+    sleep 4
+    $TMUX_BIN -S '$TMUX_SOCKET' send-keys -t '$SESSION_NAME' -l '$PROMPT'
+    sleep 0.1
+    $TMUX_BIN -S '$TMUX_SOCKET' send-keys -t '$SESSION_NAME' Enter
+  " >/dev/null 2>&1 &
+  disown
+fi
+
 exit 0
