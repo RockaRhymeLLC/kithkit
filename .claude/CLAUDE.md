@@ -178,6 +178,14 @@ curl -s -X POST http://localhost:3847/api/orchestrator/escalate \
 
 After escalating, tell the human what you sent and that you're waiting for results. When the orchestrator posts a result message, relay it to the human with your own commentary.
 
+### Task Tracking (Comms Agent)
+
+When you receive any task assignment — from a human, a peer agent, or self-identified work — **immediately create a todo** via `POST /api/todos` before starting or escalating. Include the task description and source. If the assigning agent provided a reference ID, include it in the todo description for cross-reference.
+
+This ensures the reminder system (todo-reminder task) tracks all commitments and nothing falls through the cracks. Mark todos as `in_progress` when work begins and `done` when complete.
+
+This applies only to the comms agent. The orchestrator uses the `orchestrator_tasks` queue, not todos.
+
 ### Task Execution (Orchestrator)
 
 When you are the orchestrator:
