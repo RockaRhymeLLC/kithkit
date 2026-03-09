@@ -40,14 +40,16 @@ The init wizard asks for a name and personality template — everything else is 
 ## Architecture
 
 ```
-Human ←→ Comms Agent ←→ Daemon (Orchestrator) ←→ Worker Agents
-              ↕                    ↕
-          Identity              SQLite DB
+Human ←→ Comms Agent ←→ Daemon ←→ Orchestrator ←→ Worker Agents
+              ↕            ↕
+          Identity      SQLite DB
 ```
 
-**Comms agent** — a persistent Claude Code session with your agent's identity. Handles conversations directly and delegates complex tasks to workers.
+**Comms agent** — a persistent Claude Code session with your agent's identity. Handles conversations directly and escalates complex tasks to the orchestrator.
 
-**Daemon (Orchestrator)** — a background HTTP server on `localhost:3847`. Manages state (SQLite), agent lifecycle, scheduling, and channel routing. Acts as the Orchestrator for all Worker agents.
+**Daemon** — a background HTTP server on `localhost:3847`. Manages state (SQLite), agent lifecycle, scheduling, and channel routing.
+
+**Orchestrator** — an on-demand Claude Code session spawned when the comms agent escalates a task. Decomposes work, spawns workers, synthesizes results, and reports back to comms.
 
 **Worker agents** — ephemeral Claude Code agents scoped by profiles (research, coding, testing, etc.). Spawned on demand; killed when the task is done.
 

@@ -2,6 +2,8 @@
 
 The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It binds to localhost only — no remote access. All JSON responses include a `timestamp` field (ISO 8601). Invalid JSON bodies return `400 { "error": "Invalid JSON" }`.
 
+**Optional LAN listener:** When `daemon.lan.enabled` is true in config, a second HTTP server binds to the LAN interface (e.g. `0.0.0.0:<lan_port>`) and serves only `/health` and `/agent/*` routes (A2A endpoints). All other routes return `403`. This enables direct peer-to-peer communication without tunneling.
+
 ## Table of Contents
 
 - [Common Pitfalls](#common-pitfalls)
@@ -17,7 +19,11 @@ The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It bin
 - [Usage & Metrics](#usage--metrics)
 - [Orchestrator](#orchestrator)
 - [Timers](#timers)
+- [Contacts](#contacts)
+- [Selftest](#selftest)
 - [A2A Messaging](#a2a-messaging)
+- [Extension Routes](#extension-routes)
+- [Voice Endpoints](#voice-endpoints)
 - [Error Responses](#error-responses)
 
 ---
@@ -159,11 +165,12 @@ Worker-assignment also uses `worker_id`, not `jobId`:
 
 | From | Allowed next statuses |
 |------|-----------------------|
-| `pending` | `assigned`, `failed` |
-| `assigned` | `in_progress`, `failed`, `pending` |
-| `in_progress` | `completed`, `failed` |
+| `pending` | `assigned`, `failed`, `cancelled` |
+| `assigned` | `in_progress`, `failed`, `pending`, `cancelled` |
+| `in_progress` | `completed`, `failed`, `cancelled` |
 | `completed` | (terminal — no updates allowed) |
-| `failed` | (terminal — no updates allowed) |
+| `failed` | `pending` (retry) |
+| `cancelled` | (terminal — no updates allowed) |
 
 ```bash
 # Will fail if task is already 'completed' or 'failed'
@@ -254,7 +261,10 @@ curl http://localhost:3847/health
 | `version` | string | Daemon version |
 | `degraded` | boolean | `true` if extension init failed |
 | `extension` | string \| null | Registered extension name, or `null` |
-| `extensionRoutes` | string[] | Routes registered by the extension |
+| `extensionRoutes` | string[] | Routes registered by the extension (localhost only) |
+| `db_path` | string | Database file path (localhost only) |
+
+**Security note:** When the request originates from outside localhost (detected via `Cf-Connecting-Ip` header, e.g. through a Cloudflare tunnel), the `extensionRoutes` and `db_path` fields are stripped from the response to avoid leaking internal details.
 
 ---
 
@@ -1579,6 +1589,18 @@ curl http://localhost:3847/api/usage
 
 ---
 
+### GET /api/usage/history
+
+Daily usage history from `ccusage`. Results are cached for 5 minutes.
+
+```bash
+curl http://localhost:3847/api/usage/history
+```
+
+Returns the JSON output of `npx ccusage daily --json`. On error, returns `500` with an error message.
+
+---
+
 ### GET /api/metrics
 
 Aggregated API request metrics. Useful for diagnosing repeat errors and identifying slow endpoints.
@@ -1667,6 +1689,135 @@ curl "http://localhost:3847/api/metrics?agent=comms"
 ```
 
 `repeat_offenders` lists agent+endpoint combinations that have produced 3 or more errors across multiple hours — useful for spotting systematic bugs.
+
+---
+
+### POST /api/metrics/ingest
+
+Receive batched hourly metrics from remote agents. Used by peer agents to share their metrics with a central dashboard.
+
+```bash
+curl -X POST http://localhost:3847/api/metrics/ingest \
+  -H 'Content-Type: application/json' \
+  -H 'X-Metrics-Key: <shared-secret>' \
+  -d '{"agent": "bmo", "hourly": [{"hour": "2026-03-08 14", "endpoint": "/api/messages", "method": "POST", "total_requests": 120, "success_count": 118, "error_4xx": 2, "error_5xx": 0, "avg_latency_ms": 11.2, "p95_latency_ms": 28.0}]}'
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `agent` | string | Yes | Agent name (used as `agent_id` in the metrics table) |
+| `hourly` | array | Yes | Array of hourly metric rows (max 500) |
+
+Each hourly row must include `hour` (string), `endpoint` (string), `method` (string), and `total_requests` (number). Other fields (`success_count`, `error_4xx`, `error_5xx`, `avg_latency_ms`, `p95_latency_ms`) default to 0.
+
+**Authentication:** If `METRICS_INGEST_KEY` env var or `metrics_ingest.key` config is set, the request must include a matching `X-Metrics-Key` header. Returns `401` if the key is missing or wrong.
+
+**Rate limiting:** 10 requests per minute per agent. Returns `429` on excess.
+
+```json
+// Response 200
+{
+  "ingested": 1,
+  "agent": "bmo",
+  "timestamp": "2026-03-08T14:00:00.000Z"
+}
+```
+
+---
+
+## Contacts
+
+CRUD endpoints for the centralized contact registry. Supports people, machines, and services.
+
+### GET /api/contacts
+
+List all contacts. Supports filtering.
+
+```bash
+curl 'http://localhost:3847/api/contacts'
+curl 'http://localhost:3847/api/contacts?type=person&role=peer'
+curl 'http://localhost:3847/api/contacts?tag=agent&q=bmo'
+```
+
+| Query Param | Type | Description |
+|-------------|------|-------------|
+| `type` | string | Filter by type: `person`, `machine`, `service` |
+| `role` | string | Filter by role: `owner`, `peer`, `family`, `client`, `service`, `monitored`, `self` |
+| `tag` | string | Filter by tag (exact match in JSON array) |
+| `q` | string | Search by name (LIKE match) |
+
+### GET /api/contacts/search
+
+Search contacts across multiple fields.
+
+```bash
+curl 'http://localhost:3847/api/contacts/search?email=dave&role=owner'
+```
+
+| Query Param | Type | Description |
+|-------------|------|-------------|
+| `email` | string | Search by email (LIKE match) |
+| `telegram_id` | string | Exact match on telegram_id |
+| `role` | string | Exact match on role |
+| `q` | string | Search across name, notes, email, metadata |
+
+### POST /api/contacts
+
+Create a contact.
+
+```bash
+curl -X POST http://localhost:3847/api/contacts \
+  -H 'Content-Type: application/json' \
+  -d '{"name": "BMO", "type": "machine", "role": "peer", "ip": "192.168.12.169", "tags": ["agent"]}'
+```
+
+Required: `name` (string). Optional: `type`, `email`, `phone`, `telegram_id`, `ssh_host`, `ssh_user`, `ip`, `hostname`, `role`, `url`, `metadata` (object), `tags` (string array), `notes`.
+
+### GET /api/contacts/:id
+
+Get a single contact by ID.
+
+### PUT /api/contacts/:id
+
+Update a contact. Accepts any of the fields from POST. Changes are tracked in the audit trail.
+
+### DELETE /api/contacts/:id
+
+Delete a contact. Returns `204` on success. Audit trail is cascade-deleted.
+
+### GET /api/contacts/:id/history
+
+Get the audit trail for a contact.
+
+**Access control:** Workers (identified via `X-Agent-Id` header with an active job) have read-only access. POST/PUT/DELETE return `403` for workers.
+
+---
+
+## Selftest
+
+### GET /api/selftest
+
+Comprehensive system health check. Runs a battery of checks covering daemon core, database, extension, config, identity file, CLAUDE.md, tmux, comms session, Node.js, git, and channel router.
+
+```bash
+curl http://localhost:3847/api/selftest
+```
+
+```json
+// Response 200
+{
+  "status": "healthy",
+  "timestamp": "2026-03-08T12:00:00.000Z",
+  "checks": [
+    { "name": "daemon", "status": "pass", "message": "Running on port 3847", "durationMs": 0 },
+    { "name": "database", "status": "pass", "message": "Database query OK", "durationMs": 1 },
+    { "name": "extension", "status": "pass", "message": "Extension \"agent\" is healthy", "durationMs": 0 }
+  ],
+  "summary": { "total": 11, "pass": 10, "fail": 0, "skip": 1 }
+}
+```
+
+Overall `status`: `"healthy"` (all pass/skip), `"degraded"` (non-core failures), `"unhealthy"` (daemon check fails).
 
 ---
 
@@ -2125,6 +2276,38 @@ curl -X POST "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/workers" \
 
 ---
 
+### POST /api/orchestrator/tasks/:id/retry
+
+Retry a failed task. Resets it to `pending` status with a null assignee and increments `retry_count`. After 2 consecutive failures, the comms agent is alerted.
+
+```bash
+curl -X POST "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/retry"
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | Updated task object (status = `pending`) |
+| 404 | `{ "error": "Task not found" }` |
+| 409 | `{ "error": "Can only retry failed tasks, current status: ..." }` |
+
+---
+
+### POST /api/orchestrator/tasks/:id/cancel
+
+Cancel a pending or in-progress task. If `in_progress`, kills assigned workers first. Terminal tasks (`completed`, `failed`, `cancelled`) cannot be cancelled.
+
+```bash
+curl -X POST "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/cancel"
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | Updated task object (status = `cancelled`) |
+| 404 | `{ "error": "Task not found" }` |
+| 409 | `{ "error": "Cannot cancel completed task" }` |
+
+---
+
 ## Timers
 
 ### POST /api/timer
@@ -2309,7 +2492,7 @@ Send a message to another agent (DM) or to a group.
 
 | Route | Behavior |
 |-------|----------|
-| `auto` (default) | Tries LAN first (if peer in config), falls back to relay |
+| `auto` (default) | Tries relay first, falls back to LAN (if peer in config) |
 | `lan` | LAN only — requires peer in `agent-comms.peers` config + Keychain secret |
 | `relay` | Relay only — uses network SDK |
 
@@ -2459,3 +2642,167 @@ To see which extension routes are registered:
 ```bash
 curl http://localhost:3847/health | jq '.extensionRoutes'
 ```
+
+The agent extension registers these routes:
+
+### POST /agent/p2p
+
+Receive an incoming P2P message from a peer agent on the LAN.
+
+**Security:**
+- **HMAC-SHA256 authentication** via `X-Signature` header. The sender computes `HMAC-SHA256(body, shared_secret)` and sends the hex digest. The receiver verifies against its own copy of the secret (stored in Keychain as `credential-agent-comms-secret`). If the secret is available but the signature is invalid, returns `401`.
+- During the transition period, messages without a signature are accepted with a warning (if the Keychain secret is available but no signature is sent).
+- If the Keychain is unavailable, messages are accepted without verification (fail-open for availability on trusted LAN).
+- **Rate limiting** at 30 requests per minute per source IP. Returns `429` with `Retry-After: 60` header on excess.
+
+```json
+// Request body: WireEnvelope from the peer
+// Response 200
+{ "ok": true }
+
+// Response 401 (invalid signature)
+{ "ok": false, "error": "Invalid signature" }
+
+// Response 429 (rate limited)
+{ "ok": false, "error": "Rate limit exceeded" }
+```
+
+### POST /agent/message
+
+Receive an incoming agent-to-agent message. This is the handler for messages delivered via the comms subsystem.
+
+**No authentication required.** This endpoint is served on the localhost-only listener and does not require bearer tokens or other auth headers.
+
+```bash
+curl -X POST http://localhost:3847/agent/message \
+  -H 'Content-Type: application/json' \
+  -d '{"from": "bmo", "type": "text", "text": "Hello!"}'
+```
+
+### POST /agent/send
+
+Send a message to a peer agent. Lower-level than `/api/a2a/send`.
+
+```bash
+curl -X POST http://localhost:3847/agent/send \
+  -H 'Content-Type: application/json' \
+  -d '{"peer": "bmo", "type": "text", "text": "Hello!"}'
+```
+
+Required: `peer` (string), `type` (string). Optional: `text` (string), plus any extra fields.
+
+### GET /agent/status
+
+Get agent-to-agent comms status (LAN peers, connectivity).
+
+### GET /agent/extended-status
+
+Get extended agent status including session info, channel state, open todos, and service health.
+
+### GET /api/context
+
+Get the agent's current context summary (todos, decisions, calendar, memories).
+
+### /api/network/*
+
+Network SDK API — contacts, presence, groups, broadcasts. See the network sub-routes:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/network/status` | GET | Network SDK status and community info |
+| `/api/network/contacts` | GET | List contacts |
+| `/api/network/contacts/request` | POST | Send a contact request (`{username}`) |
+| `/api/network/contacts/pending` | GET | List pending contact requests |
+| `/api/network/contacts/accept` | POST | Accept a contact request (`{username}`) |
+| `/api/network/contacts/deny` | POST | Deny a contact request (`{username}`) |
+| `/api/network/contacts/:username` | DELETE | Remove a contact |
+| `/api/network/presence/:username` | GET | Check a contact's presence |
+| `/api/network/groups` | GET | List groups |
+| `/api/network/groups` | POST | Create a group (`{name, settings?}`) |
+| `/api/network/groups/invitations` | GET | List pending group invitations |
+| `/api/network/groups/:id/members` | GET | List group members |
+| `/api/network/groups/:id/invite` | POST | Invite an agent to a group (`{agent, greeting?}`) |
+| `/api/network/groups/:id/send` | POST | **Deprecated** — use `/api/a2a/send` |
+| `/api/network/groups/:id/accept` | POST | Accept a group invitation |
+| `/api/network/groups/:id/decline` | POST | Decline a group invitation |
+| `/api/network/groups/:id/leave` | POST | Leave a group |
+| `/api/network/groups/:id/transfer` | POST | Transfer group ownership (`{newOwner}`) |
+| `/api/network/groups/:id/members/:username` | DELETE | Remove a member from a group |
+| `/api/network/groups/:id` | DELETE | Dissolve a group |
+| `/api/network/broadcasts` | GET | Check for new broadcasts |
+
+### POST /hook/response
+
+Notification endpoint for Claude Code hook events.
+
+---
+
+## Voice Endpoints
+
+Voice routes are registered by the voice extension (when `voice.enabled` is true in config). All voice endpoints return `503` if voice is disabled.
+
+### POST /voice/register
+
+Register a voice client for receiving audio notifications.
+
+```bash
+curl -X POST http://localhost:3847/voice/register \
+  -H 'Content-Type: application/json' \
+  -d '{"clientId": "my-client", "callbackUrl": "http://localhost:8080/audio"}'
+```
+
+### POST /voice/unregister
+
+Unregister a voice client.
+
+### GET /voice/status
+
+Get voice subsystem status (registered clients, TTS worker readiness).
+
+### POST /voice/stt
+
+Speech-to-text only. Send a WAV audio file in the request body (max 10MB).
+
+```bash
+curl -X POST http://localhost:3847/voice/stt \
+  -H 'Content-Type: application/octet-stream' \
+  --data-binary @recording.wav
+```
+
+```json
+// Response 200
+{ "text": "Hello, how are you?" }
+```
+
+### POST /voice/transcribe
+
+Full voice pipeline: transcribe audio, inject into Claude session, optionally return TTS audio response. Sends WAV audio in the request body.
+
+- If the active channel is `voice`, returns the response as `audio/wav` with `X-Transcription` and `X-Response-Text` headers.
+- If the active channel is `telegram` or other, injects the text and returns a JSON acknowledgment.
+- Returns `429` if another voice request is already in progress.
+
+### POST /voice/speak
+
+Text-to-speech synthesis. Returns WAV audio.
+
+```bash
+curl -X POST http://localhost:3847/voice/speak \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "Hello world"}' \
+  --output response.wav
+```
+
+Max text length is configurable (default 500 chars).
+
+### POST /voice/notify
+
+Send a voice notification to connected clients. Plays a chime, then synthesizes and pushes the audio.
+
+```bash
+curl -X POST http://localhost:3847/voice/notify \
+  -H 'Content-Type: application/json' \
+  -d '{"text": "You have a new message", "type": "notification"}'
+```
+
+Falls back gracefully if no voice client is connected.
