@@ -122,7 +122,12 @@ export async function handleStateRoute(
   try {
     // ── Todos ──────────────────────────────────────────────
     if (pathname === '/api/todos' && method === 'GET') {
-      const todos = list<Todo>('todos', undefined, 'created_at DESC');
+      const filter: Record<string, unknown> = {};
+      const status = searchParams.get('status');
+      if (status && VALID_TODO_STATUSES.includes(status)) filter.status = status;
+      const priority = searchParams.get('priority');
+      if (priority && VALID_PRIORITIES.includes(priority)) filter.priority = priority;
+      const todos = list<Todo>('todos', Object.keys(filter).length ? filter : undefined, 'created_at DESC');
       json(res, 200, withTimestamp({ data: todos }));
       return true;
     }
