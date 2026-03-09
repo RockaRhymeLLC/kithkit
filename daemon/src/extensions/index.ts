@@ -16,6 +16,7 @@
  */
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import type { KithkitConfig } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
 import { registerRoute } from '../core/route-registry.js';
@@ -60,6 +61,29 @@ let _instanceShutdown: (() => Promise<void> | void) | null = null;
 
 // ── Route Handlers ──────────────────────────────────────────
 
+/**
+ * Read raw request body as a string (needed for HMAC verification).
+ * Respects the pre-buffered _rawBody from metrics middleware if available.
+ */
+function parseBodyRaw(req: http.IncomingMessage): Promise<string> {
+  const pre = (req as unknown as Record<string, unknown>)._rawBody;
+  if (pre instanceof Buffer) {
+    return Promise.resolve(pre.toString());
+  }
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let size = 0;
+    const MAX = 1024 * 1024; // 1MB
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX) { reject(new Error('Request body too large')); return; }
+      body += chunk.toString();
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
 async function handleAgentP2P(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -69,7 +93,41 @@ async function handleAgentP2P(
   if (req.method !== 'POST') return false;
 
   try {
-    const envelope = await parseBody(req) as unknown as WireEnvelope;
+    const bodyStr = await parseBodyRaw(req);
+    const envelope = JSON.parse(bodyStr) as WireEnvelope;
+
+    // Verify HMAC signature if secret is available
+    const signature = req.headers['x-signature'] as string | undefined;
+    let secret: string | null = null;
+    try {
+      secret = await readKeychain('credential-agent-comms-secret');
+    } catch {
+      // Keychain unavailable — fail open (availability > security on trusted LAN)
+      log.warn('P2P HMAC: keychain read failed, accepting message without verification');
+    }
+
+    if (secret && signature) {
+      const hmac = crypto.createHmac('sha256', secret);
+      hmac.update(bodyStr);
+      const expected = hmac.digest('hex');
+      const sigBuf = Buffer.from(signature, 'hex');
+      const expBuf = Buffer.from(expected, 'hex');
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        log.warn('P2P message rejected: invalid HMAC signature', {
+          sender: (envelope as unknown as Record<string, unknown>).sender,
+        });
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid signature' }));
+        return true;
+      }
+    } else if (secret && !signature) {
+      // Secret available but no signature sent — warn but accept (transition period)
+      log.warn('P2P message accepted without signature (transition period)', {
+        sender: (envelope as unknown as Record<string, unknown>).sender,
+      });
+    }
+    // If !secret (keychain locked/unavailable), accept without verification (fail-open)
+
     await handleIncomingP2P(envelope);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
