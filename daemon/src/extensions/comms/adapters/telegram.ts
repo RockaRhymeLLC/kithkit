@@ -742,8 +742,12 @@ function handleReaction(reaction: MessageReactionUpdated): void {
   if (removed.length > 0) parts.push(`removed ${removed.join(' ')}`);
 
   const chatId = reaction.chat.id.toString();
-  _replyChatId = chatId;
-  persistReplyChatId(chatId);
+  const chatType = reaction.chat.type ?? 'private';
+  // Only update persisted reply chat ID for private/DM chats.
+  if (chatType === 'private') {
+    _replyChatId = chatId;
+    persistReplyChatId(chatId);
+  }
 
   if (commsSessionExists()) {
     injectToComms(`[Telegram] ${firstName} ${parts.join(', ')} on a message`);
@@ -832,8 +836,12 @@ export class BmoTelegramAdapter implements ChannelAdapter {
     const ctx = extractMessageContext(msg, token);
     if (ctx.isSelf) return;
 
-    _replyChatId = ctx.replyChatId;
-    persistReplyChatId(ctx.replyChatId);
+    // Only update persisted reply chat ID for private/DM chats.
+    // Group chat messages should not override the default DM target.
+    if (ctx.chatType === 'private') {
+      _replyChatId = ctx.replyChatId;
+      persistReplyChatId(ctx.replyChatId);
+    }
 
     const { senderId, replyChatId, firstName, chatType } = ctx;
 
