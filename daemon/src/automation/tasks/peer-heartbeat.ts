@@ -13,9 +13,21 @@
 
 import { createLogger } from '../../core/logger.js';
 import { loadConfig } from '../../core/config.js';
+import { scanForPeers } from '../../core/lan-discovery.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('peer-heartbeat');
+
+const _lastScan = new Map<string, number>();
+const SCAN_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+
+function shouldScan(peerName: string): boolean {
+  const key = peerName.toLowerCase();
+  const last = _lastScan.get(key) ?? 0;
+  if (Date.now() - last < SCAN_COOLDOWN_MS) return false;
+  _lastScan.set(key, Date.now());
+  return true;
+}
 
 interface PeerConfig {
   name: string;
@@ -76,6 +88,16 @@ async function run(): Promise<void> {
         });
         failed++;
         log.debug(`Heartbeat failed for ${peer.name}`, { error: result.error });
+
+        // Attempt LAN discovery to find peer at a new IP
+        if (shouldScan(peer.name)) {
+          const discovered = await scanForPeers(peer.port ?? 3847);
+          const newIP = discovered.get(peer.name.toLowerCase());
+          if (newIP) {
+            comms.setPeerIpOverride(peer.name, newIP);
+            log.info(`Discovered ${peer.name} at new IP ${newIP}`);
+          }
+        }
       }
     } catch (err) {
       comms.updatePeerState(peer.name, {
@@ -86,6 +108,22 @@ async function run(): Promise<void> {
       log.warn(`Heartbeat error for ${peer.name}`, {
         error: err instanceof Error ? err.message : String(err),
       });
+
+      // Attempt LAN discovery to find peer at a new IP
+      if (shouldScan(peer.name)) {
+        try {
+          const discovered = await scanForPeers(peer.port ?? 3847);
+          const newIP = discovered.get(peer.name.toLowerCase());
+          if (newIP) {
+            comms.setPeerIpOverride(peer.name, newIP);
+            log.info(`Discovered ${peer.name} at new IP ${newIP}`);
+          }
+        } catch (scanErr) {
+          log.warn(`LAN discovery scan failed for ${peer.name}`, {
+            error: scanErr instanceof Error ? scanErr.message : String(scanErr),
+          });
+        }
+      }
     }
   }
 
