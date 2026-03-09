@@ -364,7 +364,28 @@ export class UnifiedA2ARouter {
       };
     }
 
-    // Auto: try LAN first (if peer in config), fall back to relay
+    // Auto: try relay first, fall back to LAN
+    const relayAttempt = await this.attemptRelay(qualified, request.payload, messageId);
+    attempts.push(relayAttempt);
+
+    if (relayAttempt.status === 'success') {
+      const relayStatus = relayAttempt.relayStatus ?? 'delivered';
+      this.logDBSuccess(messageId, target, 'dm', 'relay', request.payload, attempts);
+      return {
+        ok: true,
+        messageId,
+        target,
+        targetType: 'dm',
+        route: 'relay',
+        status: relayStatus,
+        attempts,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
+    log.info(`Relay failed for ${target}, falling back to LAN`, { messageId });
+
+    // LAN fallback (only if peer in config)
     if (peer) {
       const lanAttempt = await this.attemptLAN(peer, request.payload, messageId);
       attempts.push(lanAttempt);
@@ -382,27 +403,6 @@ export class UnifiedA2ARouter {
           timestamp: new Date().toISOString(),
         };
       }
-
-      log.info(`LAN failed for ${target}, falling back to relay`, { messageId });
-    }
-
-    // Relay fallback (or relay-only if no peer)
-    const relayAttempt = await this.attemptRelay(qualified, request.payload, messageId);
-    attempts.push(relayAttempt);
-
-    if (relayAttempt.status === 'success') {
-      const relayStatus = relayAttempt.relayStatus ?? 'delivered';
-      this.logDBSuccess(messageId, target, 'dm', 'relay', request.payload, attempts);
-      return {
-        ok: true,
-        messageId,
-        target,
-        targetType: 'dm',
-        route: 'relay',
-        status: relayStatus,
-        attempts,
-        timestamp: new Date().toISOString(),
-      };
     }
 
     return {
