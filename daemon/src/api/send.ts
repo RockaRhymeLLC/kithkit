@@ -51,8 +51,17 @@ export async function handleSendRoute(
         }
       }
 
+      // Merge top-level chat_id into metadata so the Telegram adapter receives it.
+      // Explicit metadata.chatId from the caller takes precedence over top-level chat_id.
+      const metadata: Record<string, unknown> = {
+        ...(body.metadata as Record<string, unknown> | undefined),
+      };
+      if (typeof body.chat_id === 'string' && !metadata.chatId) {
+        metadata.chatId = body.chat_id;
+      }
+
       const results = await routeMessage(
-        { text: body.message as string, metadata: body.metadata as Record<string, unknown> | undefined },
+        { text: body.message as string, metadata },
         channels,
       );
 
