@@ -110,7 +110,9 @@ async function handleAgentP2P(
       const hmac = crypto.createHmac('sha256', secret);
       hmac.update(bodyStr);
       const expected = hmac.digest('hex');
-      if (!crypto.timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'))) {
+      const sigBuf = Buffer.from(signature, 'hex');
+      const expBuf = Buffer.from(expected, 'hex');
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
         log.warn('P2P message rejected: invalid HMAC signature', {
           sender: (envelope as unknown as Record<string, unknown>).sender,
         });
