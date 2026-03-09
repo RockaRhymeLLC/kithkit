@@ -9,6 +9,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
+import { readKeychain } from '../../core/keychain.js';
 import { injectText } from '../../core/session-bridge.js';
 import { getProjectDir } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
@@ -241,7 +242,7 @@ export async function handleAgentMessage(
 }
 
 // ── LAN Send (curl) ──────────────────────────────────────────
-export function sendViaLAN(
+export async function sendViaLAN(
   peer: PeerConfig,
   msg: AgentMessage,
   agentName: string,
@@ -249,6 +250,20 @@ export function sendViaLAN(
   const payload = JSON.stringify(msg);
   const hosts = [peer.host];
   if (peer.ip && peer.ip !== peer.host) hosts.push(peer.ip);
+
+  // Compute HMAC signature if shared secret is available
+  let signatureHeaders: string[] = [];
+  try {
+    const secret = await readKeychain('credential-agent-comms-secret');
+    if (secret) {
+      const hmac = crypto.createHmac('sha256', secret);
+      hmac.update(payload);
+      signatureHeaders = ['-H', `X-Signature: ${hmac.digest('hex')}`];
+    }
+  } catch {
+    // Keychain unavailable — send without signature (peer will fail-open)
+    log.warn('HMAC: keychain read failed, sending without signature');
+  }
 
   const startTime = Date.now();
 
@@ -262,6 +277,7 @@ export function sendViaLAN(
         '-w', '\n%{http_code}',
         '-X', 'POST', url,
         '-H', 'Content-Type: application/json',
+        ...signatureHeaders,
         '--data-raw', payload,
       ];
 

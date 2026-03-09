@@ -189,19 +189,30 @@ const server = http.createServer((req, res) => {
   // Health endpoint
   if (req.method === 'GET' && url.pathname === '/health') {
     const health = getHealth(VERSION);
-    const extRoutes = getRegisteredRoutes();
     const ext = getExtension();
+
+    // Detect if request is from localhost or external (via tunnel/proxy)
+    const remoteAddr = req.socket.remoteAddress ?? '';
+    const cfIp = req.headers['cf-connecting-ip'] as string | undefined;
+    const isLocal = !cfIp && (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1');
+
+    const response: Record<string, unknown> = {
+      ...health,
+      degraded: isDegraded(),
+      extension: ext ? ext.name : null,
+    };
+
+    // Only include sensitive details for localhost requests
+    if (isLocal) {
+      response.extensionRoutes = getRegisteredRoutes();
+      response.db_path = resolvedDbPath;
+    }
+
     res.writeHead(200, {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
     });
-    res.end(JSON.stringify({
-      ...health,
-      degraded: isDegraded(),
-      extension: ext ? ext.name : null,
-      extensionRoutes: extRoutes,
-      db_path: resolvedDbPath,
-    }));
+    res.end(JSON.stringify(response));
     return;
   }
 
