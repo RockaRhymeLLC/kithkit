@@ -49,10 +49,13 @@ import { parseBody } from '../api/helpers.js';
 import { UnifiedA2ARouter } from '../a2a/router.js';
 import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { sendMessage } from '../agents/message-router.js';
+import { RateLimiter } from '../core/rate-limiter.js';
 
 const log = createLogger('agent-extension');
 
 // ── State ────────────────────────────────────────────────────
+
+const p2pRateLimiter = new RateLimiter(30, 60_000); // 30 req/min per IP
 
 let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
@@ -91,6 +94,17 @@ async function handleAgentP2P(
   _searchParams: URLSearchParams,
 ): Promise<boolean> {
   if (req.method !== 'POST') return false;
+
+  // Rate limit by source IP
+  const clientIp = req.socket.remoteAddress ?? 'unknown';
+  if (!p2pRateLimiter.check(clientIp)) {
+    res.writeHead(429, {
+      'Content-Type': 'application/json',
+      'Retry-After': '60',
+    });
+    res.end(JSON.stringify({ ok: false, error: 'Rate limit exceeded' }));
+    return true;
+  }
 
   try {
     const bodyStr = await parseBodyRaw(req);
@@ -298,6 +312,9 @@ async function loadInstanceExtensions(
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
   _config = asAgentConfig(config);
 
+  // Start P2P rate limiter cleanup
+  p2pRateLimiter.startCleanup();
+
   // Enable vector search (sqlite-vec + ONNX embeddings)
   enableVectorSearch();
 
@@ -380,6 +397,7 @@ async function onShutdown(): Promise<void> {
   if (_instanceShutdown) {
     await _instanceShutdown();
   }
+  p2pRateLimiter.stop();
   await stopNetworkSDK();
   stopAgentComms();
   if (_scheduler) {
