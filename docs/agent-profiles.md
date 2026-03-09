@@ -49,7 +49,7 @@ The markdown body (everything after the `---` frontmatter closing) becomes the w
 
 ## Built-in Profiles
 
-Kithkit ships 6 built-in profiles in the `profiles/` directory. They're copied to `.claude/agents/` during `kithkit init`.
+Kithkit ships 6 built-in worker profiles in the `profiles/` directory. They're copied to `.claude/agents/` during `kithkit init`. Two additional system profiles (`orchestrator` and `memory-worker`) are created in `.claude/agents/` for internal use.
 
 ### research
 
@@ -104,6 +104,27 @@ Challenges plans and designs to find weaknesses and simpler alternatives.
 - **Blocked**: Bash, Edit, Write, NotebookEdit
 - **Max turns**: 15
 - **Use for**: Pre-build review, stress-testing designs, finding edge cases
+
+### System Profiles
+
+These are created in `.claude/agents/` and used internally by the daemon.
+
+#### orchestrator
+
+Task orchestrator — decomposes work, delegates to workers, reports results.
+
+- **Model**: opus
+- **Max turns**: 200
+- **Use for**: Complex multi-step tasks escalated from comms
+
+#### memory-worker
+
+Memory consolidation and cleanup worker.
+
+- **Tools**: Bash
+- **Model**: haiku
+- **Max turns**: 40
+- **Use for**: Deduplication, consolidation, and cleanup of the memory store
 
 ## Creating Custom Profiles
 
