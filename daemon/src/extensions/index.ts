@@ -16,6 +16,7 @@
  */
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import type { KithkitConfig } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
 import { registerRoute } from '../core/route-registry.js';
@@ -50,10 +51,13 @@ import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { sendMessage } from '../agents/message-router.js';
 import { createBmoTelegramAdapter, type BmoTelegramAdapter } from './comms/adapters/telegram.js';
 import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
+import { RateLimiter } from '../core/rate-limiter.js';
 
 const log = createLogger('agent-extension');
 
 // ── State ────────────────────────────────────────────────────
+
+const p2pRateLimiter = new RateLimiter(30, 60_000); // 30 req/min per IP
 
 let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
@@ -63,6 +67,29 @@ let _telegramAdapter: BmoTelegramAdapter | null = null;
 
 // ── Route Handlers ──────────────────────────────────────────
 
+/**
+ * Read raw request body as a string (needed for HMAC verification).
+ * Respects the pre-buffered _rawBody from metrics middleware if available.
+ */
+function parseBodyRaw(req: http.IncomingMessage): Promise<string> {
+  const pre = (req as unknown as Record<string, unknown>)._rawBody;
+  if (pre instanceof Buffer) {
+    return Promise.resolve(pre.toString());
+  }
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let size = 0;
+    const MAX = 1024 * 1024; // 1MB
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX) { reject(new Error('Request body too large')); return; }
+      body += chunk.toString();
+    });
+    req.on('end', () => resolve(body));
+    req.on('error', reject);
+  });
+}
+
 async function handleAgentP2P(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -71,8 +98,53 @@ async function handleAgentP2P(
 ): Promise<boolean> {
   if (req.method !== 'POST') return false;
 
+  // Rate limit by source IP
+  const clientIp = req.socket.remoteAddress ?? 'unknown';
+  if (!p2pRateLimiter.check(clientIp)) {
+    res.writeHead(429, {
+      'Content-Type': 'application/json',
+      'Retry-After': '60',
+    });
+    res.end(JSON.stringify({ ok: false, error: 'Rate limit exceeded' }));
+    return true;
+  }
+
   try {
-    const envelope = await parseBody(req) as unknown as WireEnvelope;
+    const bodyStr = await parseBodyRaw(req);
+    const envelope = JSON.parse(bodyStr) as WireEnvelope;
+
+    // Verify HMAC signature if secret is available
+    const signature = req.headers['x-signature'] as string | undefined;
+    let secret: string | null = null;
+    try {
+      secret = await readKeychain('credential-agent-comms-secret');
+    } catch {
+      // Keychain unavailable — fail open (availability > security on trusted LAN)
+      log.warn('P2P HMAC: keychain read failed, accepting message without verification');
+    }
+
+    if (secret && signature) {
+      const hmac = crypto.createHmac('sha256', secret);
+      hmac.update(bodyStr);
+      const expected = hmac.digest('hex');
+      const sigBuf = Buffer.from(signature, 'hex');
+      const expBuf = Buffer.from(expected, 'hex');
+      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+        log.warn('P2P message rejected: invalid HMAC signature', {
+          sender: (envelope as unknown as Record<string, unknown>).sender,
+        });
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Invalid signature' }));
+        return true;
+      }
+    } else if (secret && !signature) {
+      // Secret available but no signature sent — warn but accept (transition period)
+      log.warn('P2P message accepted without signature (transition period)', {
+        sender: (envelope as unknown as Record<string, unknown>).sender,
+      });
+    }
+    // If !secret (keychain locked/unavailable), accept without verification (fail-open)
+
     await handleIncomingP2P(envelope);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
@@ -242,6 +314,9 @@ async function loadInstanceExtensions(
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
   _config = asAgentConfig(config);
 
+  // Start P2P rate limiter cleanup
+  p2pRateLimiter.startCleanup();
+
   // Enable vector search (sqlite-vec + ONNX embeddings)
   enableVectorSearch();
 
@@ -365,6 +440,7 @@ async function onShutdown(): Promise<void> {
     unregisterAdapter('telegram');
     _telegramAdapter = null;
   }
+  p2pRateLimiter.stop();
   await stopNetworkSDK();
   stopAgentComms();
   if (_scheduler) {
