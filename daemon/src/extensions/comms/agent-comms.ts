@@ -60,6 +60,26 @@ export function setRouter(router: { send: (body: unknown) => Promise<{ ok: boole
   _router = router;
 }
 
+// Runtime peer IP overrides (from LAN discovery)
+const _peerIPOverrides = new Map<string, { ip: string; updatedAt: number }>();
+const IP_OVERRIDE_TTL_MS = 30 * 60 * 1000; // 30 minutes
+
+export function setPeerIpOverride(peerName: string, ip: string): void {
+  const key = peerName.toLowerCase();
+  _peerIPOverrides.set(key, { ip, updatedAt: Date.now() });
+}
+
+export function getPeerIpOverride(peerName: string): string | null {
+  const key = peerName.toLowerCase();
+  const entry = _peerIPOverrides.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.updatedAt > IP_OVERRIDE_TTL_MS) {
+    _peerIPOverrides.delete(key);
+    return null;
+  }
+  return entry.ip;
+}
+
 // ── Peer Lookup ──────────────────────────────────────────────
 export function getPeerByName(name: string): PeerConfig | undefined {
   const peers = (_config as CommsConfig)?.['agent-comms']?.peers ?? [];
@@ -220,8 +240,11 @@ export async function sendViaLAN(
   agentName: string,
 ): Promise<Record<string, unknown>> {
   const payload = JSON.stringify(msg);
-  const hosts = [peer.host];
-  if (peer.ip && peer.ip !== peer.host) hosts.push(peer.ip);
+  const overrideIP = getPeerIpOverride(peer.name);
+  const hosts: string[] = [];
+  if (overrideIP) hosts.push(overrideIP);
+  if (peer.host && peer.host !== overrideIP) hosts.push(peer.host);
+  if (peer.ip && peer.ip !== peer.host && peer.ip !== overrideIP) hosts.push(peer.ip);
 
   // Compute HMAC signature if shared secret is available
   let signatureHeaders: string[] = [];
