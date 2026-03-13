@@ -61,6 +61,7 @@ export class Scheduler {
   private _getLastHumanActivity?: () => Date | null;
   private _sessionExists?: () => boolean;
   private _started = false;
+  private _sleepUntil = new Map<string, Date>();
 
   constructor(options: SchedulerOptions) {
     this._tickIntervalMs = options.tickIntervalMs ?? 1000;
@@ -210,6 +211,41 @@ export class Scheduler {
     return this._started;
   }
 
+  /**
+   * Put a task to sleep for N hours (in-memory, resets on restart).
+   * Returns the wake-up time.
+   */
+  sleepTask(name: string, hours: number): Date {
+    const task = this._tasks.get(name);
+    if (!task) throw new Error(`Task not found: ${name}`);
+    const wakeAt = new Date(Date.now() + hours * 3_600_000);
+    this._sleepUntil.set(name, wakeAt);
+    return wakeAt;
+  }
+
+  /**
+   * Cancel a task's sleep (wake it up immediately).
+   */
+  wakeTask(name: string): void {
+    const task = this._tasks.get(name);
+    if (!task) throw new Error(`Task not found: ${name}`);
+    this._sleepUntil.delete(name);
+  }
+
+  /**
+   * Get the sleep state for a task, or null if not sleeping.
+   */
+  getTaskSleep(name: string): { sleeping_until: string } | null {
+    const wakeAt = this._sleepUntil.get(name);
+    if (!wakeAt) return null;
+    // Auto-expire stale entries
+    if (Date.now() >= wakeAt.getTime()) {
+      this._sleepUntil.delete(name);
+      return null;
+    }
+    return { sleeping_until: wakeAt.toISOString() };
+  }
+
   // ── Internals ──────────────────────────────────────────
 
   private _loadTasks(configs: TaskScheduleConfig[]): void {
@@ -294,6 +330,14 @@ export class Scheduler {
       if (!task.enabled || task.running || !task.nextRunAt) continue;
 
       if (now >= task.nextRunAt) {
+        // Skip tasks that are sleeping
+        const wakeAt = this._sleepUntil.get(task.name);
+        if (wakeAt) {
+          if (Date.now() < wakeAt.getTime()) continue;
+          // Sleep expired — clean up
+          this._sleepUntil.delete(task.name);
+        }
+
         // Skip idle-only tasks when agent is not idle
         if (task.idleOnly && !this._isIdle(task.idleAfterMs)) continue;
 
