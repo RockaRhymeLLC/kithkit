@@ -1,15 +1,15 @@
 /**
- * BMO Channel Router — wraps the kithkit channel-router with BMO-specific behavior.
+ * Channel Router — wraps the kithkit channel-router with agent-specific behavior.
  *
  * Adds:
- * - channel.txt file management (BMO's active channel state)
+ * - channel.txt file management (agent's active channel state)
  * - Telegram typing indicators
  * - Voice-pending callback support
  * - Response hook for web voice
  * - Direct Telegram send (bypasses channel check)
  *
  * This module bridges between the kithkit channel-router (multi-adapter dispatch)
- * and BMO's channel.txt-based routing model (single active channel at a time).
+ * and the agent's channel.txt-based routing model (single active channel at a time).
  *
  * Ported from CC4Me v1 daemon/src/comms/channel-router.ts
  */
@@ -24,11 +24,11 @@ import {
 } from '../../comms/channel-router.js';
 import type { ChannelAdapter, OutboundMessage } from '../../comms/adapter.js';
 
-const log = createLogger('r2-channel-router');
+const log = createLogger('channel-router');
 
 // ── Types ────────────────────────────────────────────────────
 
-export type BmoChannel = 'terminal' | 'telegram' | 'telegram-verbose' | 'silent' | 'voice';
+export type AgentChannel = 'terminal' | 'telegram' | 'telegram-verbose' | 'silent' | 'voice';
 type MessageHandler = (text: string) => void;
 
 // ── State ────────────────────────────────────────────────────
@@ -41,19 +41,19 @@ const CHANNEL_FILE_REL = '.claude/state/channel.txt';
 
 // ── Channel file management ──────────────────────────────────
 
-/** Get BMO's current active channel from state file. */
-export function getChannel(): BmoChannel {
+/** Get agent's current active channel from state file. */
+export function getChannel(): AgentChannel {
   try {
     const content = fs.readFileSync(resolveProjectPath(CHANNEL_FILE_REL), 'utf8').trim();
     if (['terminal', 'telegram', 'telegram-verbose', 'silent', 'voice'].includes(content)) {
-      return content as BmoChannel;
+      return content as AgentChannel;
     }
   } catch { /* missing file */ }
   return 'terminal';
 }
 
-/** Set BMO's active channel. Also updates last_active_channel for text channels. */
-export function setChannel(channel: BmoChannel): void {
+/** Set agent's active channel. Also updates last_active_channel for text channels. */
+export function setChannel(channel: AgentChannel): void {
   fs.writeFileSync(resolveProjectPath(CHANNEL_FILE_REL), channel + '\n');
   log.info(`Channel set to: ${channel}`);
   // Track text channels as last active (voice is an input method, not a channel)
@@ -67,13 +67,13 @@ export function setChannel(channel: BmoChannel): void {
 // Voice input does NOT update this — voice is an input method, not a channel.
 // Used by the voice pipeline to route responses to the right text channel.
 
-const TEXT_CHANNELS: BmoChannel[] = ['telegram', 'telegram-verbose', 'terminal'];
+const TEXT_CHANNELS: AgentChannel[] = ['telegram', 'telegram-verbose', 'terminal'];
 
 /**
  * Update last_active_channel when an inbound message arrives from a text channel.
  * Stored in the feature_state DB table for persistence across daemon restarts.
  */
-export function updateLastActiveChannel(channel: BmoChannel): void {
+export function updateLastActiveChannel(channel: AgentChannel): void {
   if (!TEXT_CHANNELS.includes(channel)) return;
   try {
     const db = getDatabase();
@@ -94,7 +94,7 @@ export function updateLastActiveChannel(channel: BmoChannel): void {
 /**
  * Get the last active text channel. Defaults to 'telegram' if none recorded.
  */
-export function getLastActiveChannel(): BmoChannel {
+export function getLastActiveChannel(): AgentChannel {
   try {
     const db = getDatabase();
     const row = db.prepare(
@@ -103,7 +103,7 @@ export function getLastActiveChannel(): BmoChannel {
     if (row) {
       const parsed = JSON.parse(row.state);
       if (parsed.channel && TEXT_CHANNELS.includes(parsed.channel)) {
-        return parsed.channel as BmoChannel;
+        return parsed.channel as AgentChannel;
       }
     }
   } catch { /* missing or parse error */ }
@@ -113,13 +113,13 @@ export function getLastActiveChannel(): BmoChannel {
 // ── Adapter registration ─────────────────────────────────────
 
 /**
- * Register the Telegram adapter with both kithkit channel-router and BMO router.
+ * Register the Telegram adapter with both kithkit channel-router and agent router.
  * Captures a reference for typing indicator control.
  */
 export function registerTelegramAdapter(adapter: ChannelAdapter & { startTyping?(): Promise<void>; stopTyping?(): void }): void {
   _telegramAdapter = adapter;
   registerAdapter(adapter);
-  log.info('Telegram adapter registered with BMO channel router');
+  log.info('Telegram adapter registered with channel router');
 }
 
 /**
@@ -188,10 +188,10 @@ export function sendDirectTelegram(text: string): boolean {
 // ── Outgoing message routing ─────────────────────────────────
 
 /**
- * Route an outgoing message based on BMO's active channel.
+ * Route an outgoing message based on the agent's active channel.
  *
  * Called by transcript-stream when it detects a new assistant message.
- * Maps BMO's channel.txt to kithkit adapter dispatch.
+ * Maps the agent's channel.txt to kithkit adapter dispatch.
  */
 export function routeOutgoingMessage(text: string, thinking?: string): void {
   // Clear voice-pending (voice input defaults to active channel for faster delivery)
@@ -245,9 +245,9 @@ export function routeOutgoingMessage(text: string, thinking?: string): void {
 
 // ── Init ─────────────────────────────────────────────────────
 
-/** Initialize the BMO channel router. */
-export function initBmoChannelRouter(): void {
-  log.info(`BMO channel router initialized (current: ${getChannel()})`);
+/** Initialize the channel router. */
+export function initChannelRouter(): void {
+  log.info(`Channel router initialized (current: ${getChannel()})`);
 }
 
 // ── Testing ──────────────────────────────────────────────────
