@@ -4,7 +4,7 @@
  * Handles:
  * - Outbound message delivery via Telegram Bot API
  * - Inbound webhook processing (text, photos, documents, voice, reactions)
- * - Access control (safe/approved/pending/blocked sender tiers)
+ * - Access control (config-driven safe/approved/pending/blocked sender tiers)
  * - Typing indicator management
  * - Session wakeup (starts tmux session on first message)
  * - Browser hand-off command interception
@@ -571,7 +571,7 @@ let _pendingApprovalContext: {
 
 /**
  * Register agent's extended sender classification.
- * Checks config owner/allowed_users first, then safe-senders/3rd-party-senders files.
+ * Reads owner and allowed_users from channels.telegram in kithkit.config.yaml.
  */
 function registerAgentTiers(): void {
   // Read owner and allowed_users from channels.telegram config
@@ -591,14 +591,8 @@ function registerAgentTiers(): void {
     log.info('Telegram config safe IDs', { ids: [...configSafeIds] });
   }
 
-  // Load safe-senders.json and 3rd-party-senders.json
-  const safeSenders = loadJsonFile<Array<{ telegram_id?: string }>>('.claude/state/safe-senders.json') ?? [];
+  // Load 3rd-party-senders.json for approved/pending third-party senders
   const thirdParty = loadJsonFile<Array<{ id?: string; channels?: Record<string, unknown> }>>('.claude/state/3rd-party-senders.json') ?? [];
-
-  const fileSafeIds = new Set<string>();
-  for (const s of safeSenders) {
-    if (s.telegram_id) fileSafeIds.add(s.telegram_id);
-  }
 
   const approvedIds = new Set<string>();
   const pendingIds = new Set<string>();
@@ -615,7 +609,6 @@ function registerAgentTiers(): void {
 
   registerTier('telegram', (senderId: string) => {
     if (configSafeIds.has(senderId)) return 'safe';
-    if (fileSafeIds.has(senderId)) return 'safe';
     if (approvedIds.has(senderId)) return 'approved';
     if (pendingIds.has(senderId)) return 'pending';
     return null; // fall through to default

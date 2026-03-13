@@ -160,4 +160,4 @@ Same as the "By Layer" table from the dashboard, but with additional per-layer d
 - Timestamps are displayed in UTC
 - Hashes are truncated to 8 chars in output for readability
 - Elapsed time is shown in human-friendly format (ms for <1s, s for <60s, m:ss for >=60s)
-- Chat IDs can be cross-referenced with safe-senders.json and 3rd-party-senders.json for names
+- Chat IDs can be cross-referenced with `kithkit.config.yaml` (channels.telegram.owner/allowed_users) and 3rd-party-senders.json for names

@@ -265,7 +265,7 @@ Kithkit uses two layers of state persistence:
 | `autonomy.json` | Current autonomy mode (yolo / confident / cautious / supervised) |
 | `channel.txt` | Active channel (`telegram`, `silent`, etc.) |
 | `assistant-state.md` | Saved work context (written before restart, read on resume) |
-| `safe-senders.json` | Trusted contacts for message authentication |
+
 
 ---
 
