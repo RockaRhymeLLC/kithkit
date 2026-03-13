@@ -1,6 +1,6 @@
 # Telegram Bot Integration
 
-Connect Kithkit's comms agent to Telegram so messages from safe senders are injected into the Claude session and replies are sent back via the bot.
+Connect Kithkit's comms agent to Telegram so messages from authorized senders are injected into the Claude session and replies are sent back via the bot.
 
 ## Prerequisites
 
@@ -57,15 +57,16 @@ curl "https://api.telegram.org/bot<TOKEN>/getWebhookInfo"
 
 Set `polling: true` in config (see below). The daemon polls every few seconds. Do not use alongside webhook — Telegram will reject one of them.
 
-### 5. Add your chat ID to safe-senders
+### 5. Add your chat ID to kithkit.config.yaml
 
 Edit `kithkit.config.yaml`:
 
 ```yaml
-telegram:
-  safe_senders:
-    - chat_id: 123456789   # your personal Telegram user ID
-      name: Dave
+channels:
+  telegram:
+    owner: "123456789"        # your personal Telegram user ID (primary owner)
+    allowed_users:            # additional trusted users (optional)
+      - "987654321"
 ```
 
 ## Configuration
@@ -73,15 +74,15 @@ telegram:
 ### Webhook mode
 
 ```yaml
-extensions:
+channels:
   telegram:
     enabled: true
     mode: webhook
     webhook_path: /telegram/webhook
     token_credential: credential-telegram-bot
-    safe_senders:
-      - chat_id: 123456789
-        name: Dave
+    owner: "123456789"          # primary owner chat ID
+    allowed_users:              # additional trusted users (optional)
+      - "987654321"
     media_dir: data/telegram-media
     max_message_length: 4000
 ```
@@ -89,15 +90,13 @@ extensions:
 ### Polling mode
 
 ```yaml
-extensions:
+channels:
   telegram:
     enabled: true
     mode: polling
     poll_interval_ms: 3000
     token_credential: credential-telegram-bot
-    safe_senders:
-      - chat_id: 123456789
-        name: Dave
+    owner: "123456789"
     media_dir: data/telegram-media
     max_message_length: 4000
 ```
@@ -217,14 +216,12 @@ async function withTyping(chatId: number, fn: () => Promise<void>): Promise<void
 
 ### Sender classification
 
-```typescript
-type SenderClass = 'safe' | 'approved' | 'pending' | 'blocked';
+Sender authorization is driven by `kithkit.config.yaml`. The `owner` and `allowed_users` fields under `channels.telegram` define trusted senders. Third-party approved senders live in `.claude/state/3rd-party-senders.json`.
 
-function classifySender(chatId: number): SenderClass {
-  const entry = config.safe_senders.find(s => s.chat_id === chatId);
-  if (!entry) return 'pending';
-  return entry.status ?? 'safe';
-}
+```typescript
+// Handled by the daemon's registerAgentTiers() — reads from config at startup.
+// To authorize a new sender: add their chat ID to kithkit.config.yaml and reload config.
+// POST /api/config/reload
 ```
 
 ### Media handling
@@ -247,7 +244,7 @@ async function savePhoto(photo: TelegramPhotoSize[]): Promise<string> {
 |---------|-------------|-----|
 | Webhook receives nothing | Telegram can't reach your URL | Check tunnel is running; re-register webhook URL |
 | Double messages delivered | Webhook AND polling both active | Set only one mode; delete webhook with `deleteWebhook` API |
-| Agent not responding to messages | Chat ID not in safe_senders | Add the correct chat ID; check classification logs |
+| Agent not responding to messages | Chat ID not in config | Add chat ID to `channels.telegram.owner` or `allowed_users` in `kithkit.config.yaml`; reload config |
 | Media files not saving | `media_dir` missing or not writable | Create directory; check permissions |
 | Polling conflicts / 409 errors | Webhook still registered | Call `deleteWebhook` before enabling polling |
 | Markdown render errors | Unescaped special chars | Strip or escape `_*[]()~` in output before sending |
