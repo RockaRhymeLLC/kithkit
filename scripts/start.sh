@@ -33,6 +33,20 @@ fi
 # Build arguments array
 ARGS=()
 
+# Permission mode: config-driven bypass (survives reboots)
+SKIP_PERMS=$(read_config '.claude.skip_permissions' 'false')
+if [ "$SKIP_PERMS" = "true" ]; then
+    ARGS+=("--dangerously-skip-permissions")
+fi
+
+# Fallback: state file from previous --skip-permissions invocation
+if [ -f "$STATE_DIR/skip-permissions" ]; then
+    # Only add if not already added from config
+    if [ "$SKIP_PERMS" != "true" ]; then
+        ARGS+=("--dangerously-skip-permissions")
+    fi
+fi
+
 # Add system prompt if identity file exists
 if [ -f "$IDENTITY_FILE" ]; then
     ARGS+=("--append-system-prompt" "$(cat "$IDENTITY_FILE")")
