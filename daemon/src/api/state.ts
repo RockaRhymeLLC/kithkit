@@ -17,6 +17,10 @@ import {
   getDatabase,
 } from '../core/db.js';
 import { loadContext } from '../core/context-loader.js';
+import { storeMemoryInternal } from './memory.js';
+import { createLogger } from '../core/logger.js';
+
+const log = createLogger('state-api');
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -214,6 +218,27 @@ export async function handleStateRoute(
 
         update('todos', Number(todoId), data);
         const updated = get<Todo>('todos', Number(todoId));
+
+        // Auto-store completion memory when a todo is marked done or completed
+        const newStatus = body.status as string | undefined;
+        if (newStatus === 'done' || newStatus === 'completed') {
+          try {
+            const todoTitle = (updated!.title || '').substring(0, 100);
+            const todoDesc = (updated!.description || '').substring(0, 150);
+            const content = `Completed todo #${updated!.id}: ${todoTitle}${todoDesc ? ' — ' + todoDesc : ''}`;
+            await storeMemoryInternal({
+              content,
+              category: 'event',
+              tags: ['auto', 'todo-completion'],
+              source: 'todo-completion',
+              importance: 3,
+              dedup: true,
+            });
+          } catch (err) {
+            log.warn('Failed to auto-store todo completion memory', { error: String(err) });
+          }
+        }
+
         json(res, 200, withTimestamp(updated!));
         return true;
       }

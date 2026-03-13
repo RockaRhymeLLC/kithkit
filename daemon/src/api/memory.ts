@@ -175,6 +175,61 @@ function searchMemories(filters: SearchFilters): Record<string, unknown>[] {
   return rows.map(formatMemory);
 }
 
+// ── Internal store function ───────────────────────────────────
+
+/**
+ * Store a memory directly (no HTTP round-trip). Safe to call from other API
+ * handlers — failures are non-fatal by convention; callers should wrap in
+ * try/catch if they don't want to propagate errors.
+ *
+ * The `dedup` option uses a simple time-based check (same source + first 50
+ * chars of content stored within the last 5 minutes) rather than vector
+ * similarity, so it works even when vector search is disabled.
+ */
+export async function storeMemoryInternal(opts: {
+  content: string;
+  category?: string;
+  tags?: string[];
+  source?: string;
+  importance?: number;
+  dedup?: boolean;
+}): Promise<void> {
+  const { content, category, tags, source, importance, dedup } = opts;
+
+  // Simple time-based dedup: skip if an identical (or near-identical) memory
+  // with the same source was stored in the last 5 minutes.
+  if (dedup && source) {
+    const prefix = content.slice(0, 50);
+    const existing = query<{ id: number }>(
+      `SELECT id FROM memories WHERE source = ? AND content LIKE ? AND created_at >= datetime('now', '-5 minutes') LIMIT 1`,
+      source,
+      `${prefix}%`,
+    );
+    if (existing.length > 0) return;
+  }
+
+  const data: Record<string, unknown> = { content };
+  if (category) data.category = category;
+  if (tags) data.tags = JSON.stringify(tags);
+  if (source) data.source = source;
+  if (importance != null) data.importance = importance;
+
+  const memory = insert<Memory>('memories', data);
+
+  // Auto-generate embedding if vector search is available (non-fatal on failure)
+  try {
+    if (_vectorEnabled) {
+      const embedding = await generateEmbedding(content);
+      const buf = embeddingToBuffer(embedding);
+      const db = getDatabase();
+      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(buf, memory.id);
+      indexEmbedding(memory.id, embedding);
+    }
+  } catch {
+    // Embedding failure is non-fatal
+  }
+}
+
 // ── Route handler ────────────────────────────────────────────
 
 export async function handleMemoryRoute(
