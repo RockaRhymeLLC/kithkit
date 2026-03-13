@@ -1,8 +1,8 @@
 /**
- * BMO Himalaya Email Adapter — wraps the himalaya CLI for IMAP accounts.
+ * Himalaya Email Adapter — wraps the himalaya CLI for IMAP accounts.
  *
  * Implements the kithkit ChannelAdapter interface for email via himalaya CLI.
- * Also provides BMO EmailProvider methods for richer email operations.
+ * Also provides EmailProvider methods for richer email operations.
  *
  * Supports Gmail (IMAP via app password), Yahoo, and other IMAP providers
  * configured in himalaya.
@@ -23,7 +23,7 @@ import { createLogger } from '../../../../core/logger.js';
 import { loadConfig } from '../../../../core/config.js';
 
 const execFileAsync = promisify(execFile);
-const log = createLogger('bmo-email-himalaya');
+const log = createLogger('email-himalaya');
 
 const HIMALAYA_BIN = loadConfig().tools?.himalaya_path ?? '/opt/homebrew/bin/himalaya';
 
@@ -55,18 +55,18 @@ interface HimalayaEnvelope {
   has_attachment: boolean;
 }
 
-// ── BmoHimalayaAdapter ───────────────────────────────────────
+// ── HimalayaAdapter ───────────────────────────────────────────
 
 /**
- * BMO Himalaya email adapter — ChannelAdapter + EmailProvider.
+ * Himalaya email adapter — ChannelAdapter + EmailProvider.
  *
  * Usage:
- *   const adapter = new BmoHimalayaAdapter('gmail');
+ *   const adapter = new HimalayaAdapter('gmail');
  *   if (adapter.isConfigured()) {
  *     registerAdapter(adapter);
  *   }
  */
-export class BmoHimalayaAdapter implements ChannelAdapter {
+export class HimalayaAdapter implements ChannelAdapter {
   readonly name: string;
   private readonly account: string;
   private _inboundBuffer: InboundMessage[] = [];
@@ -92,7 +92,7 @@ export class BmoHimalayaAdapter implements ChannelAdapter {
   async send(message: OutboundMessage): Promise<boolean> {
     try {
       const to = message.metadata?.to as string;
-      const subject = message.metadata?.subject as string ?? 'Message from BMO';
+      const subject = message.metadata?.subject as string ?? `Message from ${loadConfig().agent?.name ?? 'Assistant'}`;
       if (!to) {
         log.error('Cannot send email: no recipient (metadata.to)');
         return false;

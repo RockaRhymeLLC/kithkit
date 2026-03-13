@@ -5,6 +5,9 @@
 agent:
   name: Assistant
 
+claude:
+  skip_permissions: false    # Set true to always pass --dangerously-skip-permissions
+
 daemon:
   port: 3847
   bind_host: "127.0.0.1"
