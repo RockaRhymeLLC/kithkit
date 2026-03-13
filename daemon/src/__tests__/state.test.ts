@@ -361,6 +361,72 @@ describe('State API', { concurrency: 1 }, () => {
     });
   });
 
+  // ── Todo query filters ───────────────────────────────────────
+
+  describe('Todo query filters', () => {
+    beforeEach(setup);
+    afterEach(teardown);
+
+    it('filters todos by ?status= query parameter', async () => {
+      await request('POST', '/api/todos', { title: 'Pending task' });
+      const created = JSON.parse((await request('POST', '/api/todos', { title: 'Done task' })).body);
+      await request('PUT', `/api/todos/${created.id}`, { status: 'completed' });
+
+      const allRes = await request('GET', '/api/todos');
+      assert.equal(JSON.parse(allRes.body).data.length, 2, 'Should have 2 total todos');
+
+      const pendingRes = await request('GET', '/api/todos?status=pending');
+      assert.equal(pendingRes.status, 200);
+      const pendingBody = JSON.parse(pendingRes.body);
+      assert.equal(pendingBody.data.length, 1, 'Should have 1 pending todo');
+      assert.equal(pendingBody.data[0].title, 'Pending task');
+      assert.equal(pendingBody.data[0].status, 'pending');
+
+      const completedRes = await request('GET', '/api/todos?status=completed');
+      const completedBody = JSON.parse(completedRes.body);
+      assert.equal(completedBody.data.length, 1, 'Should have 1 completed todo');
+      assert.equal(completedBody.data[0].title, 'Done task');
+    });
+
+    it('filters todos by ?priority= query parameter', async () => {
+      await request('POST', '/api/todos', { title: 'High priority', priority: 'high' });
+      await request('POST', '/api/todos', { title: 'Low priority', priority: 'low' });
+      await request('POST', '/api/todos', { title: 'Also low', priority: 'low' });
+
+      const highRes = await request('GET', '/api/todos?priority=high');
+      assert.equal(highRes.status, 200);
+      const highBody = JSON.parse(highRes.body);
+      assert.equal(highBody.data.length, 1, 'Should have 1 high priority todo');
+      assert.equal(highBody.data[0].title, 'High priority');
+
+      const lowRes = await request('GET', '/api/todos?priority=low');
+      const lowBody = JSON.parse(lowRes.body);
+      assert.equal(lowBody.data.length, 2, 'Should have 2 low priority todos');
+    });
+
+    it('ignores invalid filter values', async () => {
+      await request('POST', '/api/todos', { title: 'A todo' });
+
+      const res = await request('GET', '/api/todos?status=bogus');
+      assert.equal(res.status, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.data.length, 1, 'Invalid filter should be ignored, returning all todos');
+    });
+
+    it('combines status and priority filters', async () => {
+      await request('POST', '/api/todos', { title: 'High pending', priority: 'high' });
+      await request('POST', '/api/todos', { title: 'Low pending', priority: 'low' });
+      const created = JSON.parse((await request('POST', '/api/todos', { title: 'High done', priority: 'high' })).body);
+      await request('PUT', `/api/todos/${created.id}`, { status: 'completed' });
+
+      const res = await request('GET', '/api/todos?status=pending&priority=high');
+      assert.equal(res.status, 200);
+      const body = JSON.parse(res.body);
+      assert.equal(body.data.length, 1, 'Should match only high+pending');
+      assert.equal(body.data[0].title, 'High pending');
+    });
+  });
+
   // ── Usage endpoint ───────────────────────────────────────────
 
   describe('Usage endpoint', () => {
