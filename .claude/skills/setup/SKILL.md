@@ -84,12 +84,11 @@ Creates:
 
 Creates: `.claude/state/autonomy.json`
 
-### 3. Safe Senders
-- Add Telegram user IDs
-- Add email addresses
+### 3. Allowed Senders
+- Add Telegram user IDs (owner and allowed_users)
 - Configure trust levels
 
-Creates: `.claude/state/safe-senders.json`
+Set in `kithkit.config.yaml` under `channels.telegram.owner` and `channels.telegram.allowed_users`.
 
 ### 4. Integrations
 
@@ -103,7 +102,7 @@ Creates: `.claude/state/safe-senders.json`
 2. Get bot token
 3. Store: `security add-generic-password -a "assistant" -s "credential-telegram-bot" -w "TOKEN" -U`
 4. Get user's chat ID (message bot, check getUpdates endpoint)
-5. Add to safe-senders.json
+5. Add chat ID to `kithkit.config.yaml` under `channels.telegram.owner` (primary user) or `channels.telegram.allowed_users` (additional users)
 6. Set up Cloudflare tunnel:
    - Guide through `cloudflared tunnel create`
    - Or run `node scripts/telegram-setup/setup.js` for interactive setup
@@ -211,12 +210,12 @@ Creates: `.claude/state/calendar.md`
    - Recommend `confident` for new users
    - Create autonomy.json with chosen mode
 
-4. **Safe Senders**
+4. **Allowed Senders**
    - Ask: "Do you want to configure Telegram integration?"
    - If yes: Get chat ID
+   - Add chat ID to `kithkit.config.yaml` under `channels.telegram.owner`
    - Ask: "Do you want to configure email integration?"
    - If yes: Get email address
-   - Create safe-senders.json
 
 5. **Integrations**
    - If Telegram: Guide through bot token + tunnel setup
@@ -271,7 +270,7 @@ Ready? Let's begin...
 Here's what I configured:
 - Identity: "Jarvis"
 - Autonomy: confident
-- Safe Senders: Telegram (1 user), Email (1 address)
+- Allowed Senders: Telegram (1 user configured in kithkit.config.yaml)
 - Integrations: Telegram bot, Fastmail email
 - Session: Running in tmux (detached)
 - Scheduled Jobs: email-reminder, context-watchdog
@@ -289,7 +288,6 @@ The setup process copies from `.template` files:
 
 - `autonomy.json.template` > `autonomy.json`
 - `identity.json.template` > `identity.json`
-- `safe-senders.json.template` > `safe-senders.json`
 - `memory.md.template` > `memory.md`
 - `calendar.md.template` > `calendar.md`
 - `system-prompt.txt.template` > `system-prompt.txt` (with {{NAME}} and {{PERSONALITY}} replaced)

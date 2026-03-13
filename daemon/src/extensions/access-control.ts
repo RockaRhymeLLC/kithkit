@@ -7,7 +7,7 @@
  *
  * Classification tiers (checked in order):
  *   1. blocked  → silently drop
- *   2. safe     → full access (from kithkit.config.yaml)
+ *   2. safe     → full access (from kithkit.config.yaml channels.telegram.allowed_users)
  *   3. approved → inject with [3rdParty] tag (from 3rd-party-senders.json)
  *   4. denied   → re-trigger approval flow
  *   5. unknown  → hold, notify primary, wait for approval
@@ -75,10 +75,6 @@ function getStateFilePath(): string {
   return path.join(getProjectDir(), '.claude', 'state', '3rd-party-senders.json');
 }
 
-function getSafeSendersPath(): string {
-  return path.join(getProjectDir(), '.claude', 'state', 'safe-senders.json');
-}
-
 /**
  * Read state fresh from disk every time (no stale cache).
  */
@@ -98,24 +94,6 @@ function writeState(state: ThirdPartySendersState): void {
   fs.writeFileSync(filePath, JSON.stringify(state, null, 2) + '\n', 'utf8');
 }
 
-// ── Safe sender check (channel-aware) ───────────────────────
-
-function isSafeSender(id: string, channel: string): boolean {
-  try {
-    const raw = fs.readFileSync(getSafeSendersPath(), 'utf8');
-    const data = JSON.parse(raw);
-    if (channel === 'telegram') {
-      return (data.telegram?.users ?? []).includes(id);
-    }
-    if (channel === 'email') {
-      return (data.email?.addresses ?? []).includes(id);
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
-
 // ── Channel-aware classification ────────────────────────────
 
 /**
@@ -131,12 +109,7 @@ export function classifyAgentSender(id: string, channel: string): AgentSenderTie
     return 'blocked';
   }
 
-  // 2. Safe sender (from safe-senders.json, channel-aware)
-  if (isSafeSender(id, channel)) {
-    return 'safe';
-  }
-
-  // 3. Approved 3rd party (with expiry check)
+  // 2. Approved 3rd party (with expiry check)
   const approved = state.approved.find(s => s.id === id && s.channel === channel);
   if (approved) {
     if (approved.expires && new Date(approved.expires) < new Date()) {
