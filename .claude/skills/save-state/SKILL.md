@@ -80,6 +80,7 @@ Needs to work without JavaScript for accessibility.
    - Include file paths for easy navigation
 
 3. **Write State File**
+   - **Read `.claude/state/assistant-state.md` first** (the Write tool requires reading before overwriting — skip if file doesn't exist yet)
    - Write to `.claude/state/assistant-state.md`
    - Overwrites previous state (it's current state, not history)
 
