@@ -32,15 +32,16 @@ security add-generic-password -a "assistant" -s "credential-telegram-bot" -w "YO
 3. Visit: `https://api.telegram.org/bot<YOUR_TOKEN>/getUpdates`
 4. Find your `chat.id` in the response
 
-### 4. Add to Safe Senders
+### 4. Add to Allowed Users
 
-Update `.claude/state/safe-senders.json`:
-```json
-{
-  "telegram": {
-    "users": ["YOUR_CHAT_ID"]
-  }
-}
+Update `kithkit.config.yaml`:
+```yaml
+channels:
+  telegram:
+    owner: "YOUR_CHAT_ID"
+    # or for additional users:
+    # allowed_users:
+    #   - "ANOTHER_CHAT_ID"
 ```
 
 ## Architecture
@@ -84,7 +85,7 @@ curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
 ## Security Notes
 
 - Never log or expose the bot token
-- Always verify sender is in safe senders list before processing
+- Sender authorization is configured via `kithkit.config.yaml` (`channels.telegram.owner` and `channels.telegram.allowed_users`)
 - Apply secure data gate rules (see CLAUDE.md)
 - Bot token is stored encrypted in Keychain
 
@@ -93,7 +94,7 @@ curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
 **Bot not responding:**
 - Check token is correct
 - Ensure gateway is running: `curl http://localhost:3847/health`
-- Verify chat ID in safe senders
+- Verify chat ID is in `kithkit.config.yaml` under `channels.telegram.owner` or `allowed_users`
 - Check watcher is running: `pgrep -f transcript-watcher`
 
 **Permission denied:**
