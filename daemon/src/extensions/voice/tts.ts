@@ -13,6 +13,7 @@
  */
 
 import { spawn, ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { createLogger } from '../../core/logger.js';
@@ -80,6 +81,14 @@ export function startWorker(): Promise<void> {
     log.info('Starting TTS worker', { script, engine: _engine, port: WORKER_PORT });
 
     const pythonBin = path.join(_projectDir, 'daemon', 'src', 'extensions', 'voice', '.venv', 'bin', 'python3');
+
+    // Pre-flight: verify python binary exists before attempting spawn
+    if (!fs.existsSync(pythonBin)) {
+      log.error('TTS worker python binary not found — run: python3.12 -m venv daemon/src/extensions/voice/.venv', { pythonBin });
+      reject(new Error(`Python binary not found: ${pythonBin}`));
+      return;
+    }
+
     const args = [
       script,
       '--port', String(WORKER_PORT),
