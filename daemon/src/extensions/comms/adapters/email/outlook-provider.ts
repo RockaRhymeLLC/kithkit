@@ -1,10 +1,10 @@
 /**
- * BMO Outlook Email Adapter — wraps the Python IMAP script for Outlook accounts.
+ * Outlook Email Adapter — wraps the Python IMAP script for Outlook accounts.
  *
  * Implements the kithkit ChannelAdapter interface for email via the
  * outlook-imap.py script (OAuth2 XOAUTH2 with automatic token refresh via MSAL).
  *
- * Also provides BMO EmailProvider methods for richer email operations
+ * Also provides EmailProvider methods for richer email operations
  * (search, mark-as-read, move) used by email triage tasks.
  *
  * Ported from CC4Me v1 daemon/src/comms/adapters/email/outlook-provider.ts
@@ -21,10 +21,10 @@ import type {
   ChannelCapabilities,
 } from '../../../../comms/adapter.js';
 import { createLogger } from '../../../../core/logger.js';
-import { getProjectDir } from '../../../../core/config.js';
+import { getProjectDir, loadConfig } from '../../../../core/config.js';
 
 const execFileAsync = promisify(execFile);
-const log = createLogger('bmo-email-outlook');
+const log = createLogger('email-outlook');
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -53,18 +53,18 @@ interface OutlookMessage {
   body?: string;
 }
 
-// ── BmoOutlookAdapter ────────────────────────────────────────
+// ── OutlookAdapter ────────────────────────────────────────────
 
 /**
- * BMO Outlook email adapter — ChannelAdapter + EmailProvider.
+ * Outlook email adapter — ChannelAdapter + EmailProvider.
  *
  * Usage:
- *   const adapter = new BmoOutlookAdapter();
+ *   const adapter = new OutlookAdapter();
  *   if (adapter.isConfigured()) {
  *     registerAdapter(adapter);
  *   }
  */
-export class BmoOutlookAdapter implements ChannelAdapter {
+export class OutlookAdapter implements ChannelAdapter {
   readonly name = 'email-outlook';
 
   private _inboundBuffer: InboundMessage[] = [];
@@ -90,7 +90,7 @@ export class BmoOutlookAdapter implements ChannelAdapter {
   async send(message: OutboundMessage): Promise<boolean> {
     try {
       const to = message.metadata?.to as string;
-      const subject = message.metadata?.subject as string ?? 'Message from BMO';
+      const subject = message.metadata?.subject as string ?? `Message from ${loadConfig().agent?.name ?? 'Assistant'}`;
       if (!to) {
         log.error('Cannot send email: no recipient (metadata.to)');
         return false;

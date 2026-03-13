@@ -1,10 +1,10 @@
 /**
- * BMO JMAP Email Adapter — Fastmail email via JMAP protocol.
+ * JMAP Email Adapter — Fastmail email via JMAP protocol.
  *
  * Implements the kithkit ChannelAdapter interface for email sending/receiving
  * via the JMAP API with bearer token auth.
  *
- * Also provides BMO EmailProvider methods for richer email operations
+ * Also provides EmailProvider methods for richer email operations
  * (search, mark-as-read, attachments) used by email triage tasks.
  *
  * Ported from CC4Me v1 daemon/src/comms/adapters/email/jmap-provider.ts
@@ -23,7 +23,7 @@ import { loadConfig } from '../../../../core/config.js';
 import { readKeychain } from '../../../../core/keychain.js';
 import { createLogger } from '../../../../core/logger.js';
 
-const log = createLogger('bmo-email-jmap');
+const log = createLogger('email-jmap');
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -65,18 +65,18 @@ interface JmapSession {
   primaryAccounts: Record<string, string>;
 }
 
-// ── BmoJmapAdapter ───────────────────────────────────────────
+// ── JmapAdapter ───────────────────────────────────────────────
 
 /**
- * BMO JMAP email adapter — ChannelAdapter + EmailProvider.
+ * JMAP email adapter — ChannelAdapter + EmailProvider.
  *
  * Usage:
- *   const adapter = new BmoJmapAdapter();
+ *   const adapter = new JmapAdapter();
  *   if (await adapter.isConfigured()) {
  *     registerAdapter(adapter);
  *   }
  */
-export class BmoJmapAdapter implements ChannelAdapter {
+export class JmapAdapter implements ChannelAdapter {
   readonly name = 'email-jmap';
 
   private _creds: JmapCredentials | null = null;
@@ -99,7 +99,7 @@ export class BmoJmapAdapter implements ChannelAdapter {
   async send(message: OutboundMessage): Promise<boolean> {
     try {
       const to = message.metadata?.to as string;
-      const subject = message.metadata?.subject as string ?? 'Message from BMO';
+      const subject = message.metadata?.subject as string ?? `Message from ${loadConfig().agent?.name ?? 'Assistant'}`;
       if (!to) {
         log.error('Cannot send email: no recipient (metadata.to)');
         return false;
