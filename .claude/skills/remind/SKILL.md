@@ -40,7 +40,7 @@ The `<id>` is derived from the date/time: `YYYYMMDD-HHMM` (e.g., `20260131-1030`
 1. **Parse the request**: Extract message, date, and time from arguments
 2. **Resolve relative dates**: "tomorrow", "Friday", "tonight", etc. into absolute dates
 3. **Validate**: Ensure the date/time is in the future
-4. **Get chat ID**: Look up the user's Telegram chat ID from memory or safe-senders.json
+4. **Get chat ID**: Look up the user's Telegram chat ID from memory or kithkit.config.yaml
 5. **Create the script**:
 
 ```bash
@@ -169,6 +169,6 @@ Reminder canceled: 20260131-1030
 - Reminders fire even when you're not in an active Claude Code session
 - Each reminder is one-shot and self-cleaning (deletes its own script + plist after firing)
 - If the Mac is asleep when a reminder is due, launchd fires it on next wake
-- Get chat ID from safe-senders.json or memory. Override by specifying a different recipient.
+- Get chat ID from `kithkit.config.yaml` (channels.telegram.owner) or memory. Override by specifying a different recipient.
 - Always use `telegram-send.sh` for reminders (not the transcript stream) since reminders fire outside sessions
 - Ensure `scripts/reminders/` directory exists before creating scripts
