@@ -86,7 +86,7 @@ Just write your response as normal terminal output. The daemon's transcript stre
 
 ### Via Utility Script (channel = silent only)
 ```bash
-# With explicit chat ID (from safe-senders.json or memory)
+# With explicit chat ID (from kithkit.config.yaml or memory)
 TELEGRAM_CHAT_ID=CHAT_ID ./scripts/telegram-send.sh "Your message"
 
 # Two-argument form
@@ -188,7 +188,7 @@ security find-generic-password -s "credential-telegram-bot" -w
 ```
 
 ### Chat ID
-Stored in safe-senders.json and/or memory.
+Stored in kithkit.config.yaml (channels.telegram.owner/allowed_users) and/or memory.
 
 ## Testing
 

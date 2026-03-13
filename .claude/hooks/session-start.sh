@@ -216,11 +216,12 @@ echo "---"
 # Set KITHKIT_QUIET_START=1 to suppress (useful for debugging).
 if [ "${KITHKIT_QUIET_START:-0}" != "1" ]; then
   TMUX_SOCKET="/private/tmp/tmux-$(id -u)/default"
+  STATE_FILE="$STATE_DIR/assistant-state.md"
 
   if [ "$SOURCE" = "clear" ] || [ "$SOURCE" = "compact" ]; then
-    PROMPT="Session cleared and restored. Review the saved state above and follow any Next Steps in order."
+    PROMPT="Session cleared and restored. Read the file $STATE_FILE to load your saved state, then follow any Next Steps in order."
   else
-    PROMPT="Session auto-started. Review the saved state above. If there are Next Steps or action items, follow them in order. If there are no Next Steps, check todos and work on pending tasks autonomously."
+    PROMPT="Session auto-started. Read the file $STATE_FILE to load your saved state. If there are Next Steps or action items, follow them in order. If there are no Next Steps, check todos and work on pending tasks autonomously."
   fi
 
   # Spawn a detached background job that waits for the session to initialize,

@@ -104,7 +104,7 @@ curl -s "https://api.telegram.org/bot${TOKEN}/deleteWebhook" | jq .
 
 Then set `mode: polling` in your config (see Config Snippet below).
 
-### Step 4 — Add your chat ID to safe-senders
+### Step 4 — Add your chat ID to kithkit.config.yaml
 
 Find your chat ID by sending a message to your bot, then:
 
@@ -113,16 +113,14 @@ TOKEN=$(security find-generic-password -s credential-telegram-bot -w)
 curl -s "https://api.telegram.org/bot${TOKEN}/getUpdates" | jq '.result[0].message.chat.id'
 ```
 
-Add yourself as a safe sender in `.claude/state/safe-senders.json`:
+Add yourself as an authorized sender in `kithkit.config.yaml`:
 
-```json
-[
-  {
-    "name": "Your Name",
-    "telegram_chat_id": "123456789",
-    "tier": "safe"
-  }
-]
+```yaml
+channels:
+  telegram:
+    owner: "123456789"          # primary owner chat ID
+    allowed_users:              # additional trusted users (optional)
+      - "987654321"
 ```
 
 ---
@@ -305,23 +303,13 @@ export function startTypingIndicator(
 
 ### Sender classification
 
+Sender authorization is driven by `kithkit.config.yaml`. The `owner` and `allowed_users` fields under `channels.telegram` define trusted senders. Third-party approved senders live in `.claude/state/3rd-party-senders.json`.
+
 ```typescript
-import safeSendersRaw from "../state/safe-senders.json" assert { type: "json" };
-import thirdPartySendersRaw from "../state/3rd-party-senders.json" assert { type: "json" };
-
-type Tier = "safe" | "approved" | "pending" | "blocked";
-
-export function classifySender(chatId: string): Tier {
-  if (safeSendersRaw.some((s: any) => s.telegram_chat_id === chatId)) {
-    return "safe";
-  }
-  const thirdParty = thirdPartySendersRaw.find(
-    (s: any) => s.telegram_chat_id === chatId
-  );
-  if (!thirdParty) return "pending";
-  if (thirdParty.blocked) return "blocked";
-  return "approved";
-}
+// Classification is handled by registerAgentTiers() in the Telegram adapter.
+// Safe senders come from config (channels.telegram.owner + allowed_users).
+// Third-party approved senders come from .claude/state/3rd-party-senders.json.
+// To add a new trusted sender: update kithkit.config.yaml and POST /api/config/reload.
 ```
 
 ### Media handling
@@ -386,7 +374,7 @@ export async function saveMedia(
 
 **3rd party messages not tagged correctly**
 
-- Confirm the sender is in `3rd-party-senders.json` (not `safe-senders.json`)
+- Confirm the sender is in `3rd-party-senders.json` (for third-party approved senders), or add their chat ID to `kithkit.config.yaml` (for trusted users)
 - The `[3rdParty]` prefix is what triggers restricted capability mode in the agent
 
 **Media not saving**
