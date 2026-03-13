@@ -43,11 +43,76 @@ function execCommand(cmd: string, args: string[], timeoutMs = 10_000): Promise<s
 
 // ── Calendar ─────────────────────────────────────────────────
 
+interface EventKitEvent {
+  title: string;
+  startTime: string;
+  endTime: string;
+  allDay: boolean;
+  calendar: string;
+}
+
 /**
- * Fetch today's events from a CalDAV server.
- * Falls back gracefully if CalDAV is not configured or unreachable.
+ * Try fetching today's events from macOS Calendar.app via EventKit.
+ * Returns null if the helper is unavailable or fails.
+ */
+async function fetchEventKitEvents(): Promise<EventKitEvent[] | null> {
+  const scriptPath = path.join(getProjectDir(), 'scripts', 'calendar-events.swift');
+  try {
+    if (!fs.existsSync(scriptPath)) {
+      log.debug('EventKit helper not found', { path: scriptPath });
+      return null;
+    }
+    const output = await execCommand('/usr/bin/swift', [scriptPath], 15_000);
+    const parsed = JSON.parse(output.trim());
+    if (parsed.error) {
+      log.warn('EventKit helper returned error', { error: parsed.error });
+      return null;
+    }
+    if (!Array.isArray(parsed)) {
+      log.warn('EventKit helper returned non-array');
+      return null;
+    }
+    return parsed as EventKitEvent[];
+  } catch (err) {
+    log.warn('EventKit helper failed', { error: errMsg(err) });
+    return null;
+  }
+}
+
+/**
+ * Format a list of EventKit events into briefing lines.
+ * Includes calendar name in parentheses when events span multiple calendars.
+ */
+function formatEventKitEvents(events: EventKitEvent[]): string {
+  if (events.length === 0) return 'No events today.';
+
+  const calendars = new Set(events.map(ev => ev.calendar));
+  const multiCal = calendars.size > 1;
+
+  return events
+    .map(ev => {
+      const suffix = multiCal ? ` (${ev.calendar})` : '';
+      if (ev.allDay) return `• ${ev.title}${suffix}`;
+      return `• ${ev.startTime} ${ev.title}${suffix}`;
+    })
+    .join('\n');
+}
+
+/**
+ * Fetch today's events. Strategy:
+ * 1. Try local EventKit (covers iCloud + Outlook via Calendar.app)
+ * 2. Fall back to CalDAV if EventKit unavailable
+ * 3. Return "Calendar not configured." if neither works
  */
 async function gatherCalendar(): Promise<string> {
+  // 1. Try EventKit first
+  const ekEvents = await fetchEventKitEvents();
+  if (ekEvents !== null) {
+    log.debug('Using EventKit calendar data', { eventCount: ekEvents.length });
+    return formatEventKitEvents(ekEvents);
+  }
+
+  // 2. Fall back to CalDAV
   const config = loadConfig();
   const caldavConfig = config.calendar?.caldav;
 
@@ -255,7 +320,7 @@ async function sendBriefing(
   }
   // Allow targeting a specific Telegram chat (e.g., Chrissy's DM vs Dave's group)
   if (telegramChatId) {
-    payload.metadata = { chat_id: telegramChatId };
+    payload.metadata = { chatId: telegramChatId };
   }
 
   const resp = await fetch(`http://127.0.0.1:${port}/api/send`, {
