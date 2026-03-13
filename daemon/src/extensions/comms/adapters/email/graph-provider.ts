@@ -1,10 +1,10 @@
 /**
- * BMO Graph Email Adapter — M365 email via Microsoft Graph API.
+ * Graph Email Adapter — M365 email via Microsoft Graph API.
  *
  * Implements the kithkit ChannelAdapter interface for email sending/receiving
  * via Graph API with client credentials OAuth2.
  *
- * Also implements the BMO EmailProvider interface for richer email operations
+ * Also implements the EmailProvider interface for richer email operations
  * (search, mark-as-read, attachments) used by email triage tasks.
  *
  * Ported from CC4Me v1 daemon/src/comms/adapters/email/graph-provider.ts
@@ -20,9 +20,10 @@ import type {
   ChannelCapabilities,
 } from '../../../../comms/adapter.js';
 import { readKeychain } from '../../../../core/keychain.js';
+import { loadConfig } from '../../../../core/config.js';
 import { createLogger } from '../../../../core/logger.js';
 
-const log = createLogger('bmo-email-graph');
+const log = createLogger('email-graph');
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -61,18 +62,18 @@ async function getAzureCredentials(): Promise<AzureCredentials> {
   return { clientId, tenantId, clientSecret, userEmail };
 }
 
-// ── BmoGraphAdapter ──────────────────────────────────────────
+// ── GraphAdapter ──────────────────────────────────────────────
 
 /**
- * BMO Graph email adapter — ChannelAdapter + EmailProvider.
+ * Graph email adapter — ChannelAdapter + EmailProvider.
  *
  * Usage:
- *   const adapter = new BmoGraphAdapter();
+ *   const adapter = new GraphAdapter();
  *   if (await adapter.isConfigured()) {
  *     registerAdapter(adapter);
  *   }
  */
-export class BmoGraphAdapter implements ChannelAdapter {
+export class GraphAdapter implements ChannelAdapter {
   readonly name = 'email-graph';
 
   private _tokenCache: { token: string; expiresAt: number } | null = null;
@@ -91,7 +92,7 @@ export class BmoGraphAdapter implements ChannelAdapter {
   async send(message: OutboundMessage): Promise<boolean> {
     try {
       const to = message.metadata?.to as string;
-      const subject = message.metadata?.subject as string ?? 'Message from BMO';
+      const subject = message.metadata?.subject as string ?? `Message from ${loadConfig().agent?.name ?? 'Assistant'}`;
       if (!to) {
         log.error('Cannot send email: no recipient (metadata.to)');
         return false;

@@ -1,5 +1,5 @@
 /**
- * BMO Telegram Adapter — implements kithkit ChannelAdapter for Telegram.
+ * Telegram Adapter — implements kithkit ChannelAdapter for Telegram.
  *
  * Handles:
  * - Outbound message delivery via Telegram Bot API
@@ -33,7 +33,7 @@ import { createLogger } from '../../../core/logger.js';
 import { updateLastActiveChannel } from '../channel-router.js';
 import { markdownToTelegramHtml, hasMarkdownPatterns, hasHtmlTags } from './telegram-format.js';
 
-const log = createLogger('bmo-telegram');
+const log = createLogger('telegram');
 
 const MEDIA_DIR_REL = '.claude/state/telegram-media';
 const REPLY_CHAT_ID_REL = '.claude/state/reply-chat-id.txt';
@@ -561,7 +561,7 @@ function doInject(text: string, firstName: string, isThirdParty: boolean, chatTy
 
 // ── Access control integration ───────────────────────────────
 
-/** BMO 3rd-party approval state */
+/** 3rd-party approval state */
 const _approvalQueues: Map<string, Array<{ text: string; firstName: string }>> = new Map();
 let _pendingApprovalContext: {
   senderChatId: string;
@@ -570,10 +570,10 @@ let _pendingApprovalContext: {
 } | null = null;
 
 /**
- * Register BMO's extended sender classification.
+ * Register agent's extended sender classification.
  * Checks config owner/allowed_users first, then safe-senders/3rd-party-senders files.
  */
-function registerBmoTiers(): void {
+function registerAgentTiers(): void {
   // Read owner and allowed_users from channels.telegram config
   const rawConfig = loadConfig() as unknown as Record<string, unknown>;
   const channels = rawConfig.channels as Record<string, unknown> | undefined;
@@ -613,7 +613,7 @@ function registerBmoTiers(): void {
     }
   }
 
-  registerTier('bmo-telegram', (senderId: string) => {
+  registerTier('telegram', (senderId: string) => {
     if (configSafeIds.has(senderId)) return 'safe';
     if (fileSafeIds.has(senderId)) return 'safe';
     if (approvedIds.has(senderId)) return 'approved';
@@ -755,15 +755,15 @@ function handleReaction(reaction: MessageReactionUpdated): void {
   }
 }
 
-// ── BmoTelegramAdapter class ─────────────────────────────────
+// ── TelegramAdapter class ─────────────────────────────────────
 
 /**
- * BMO Telegram adapter — implements kithkit ChannelAdapter.
+ * Telegram adapter — implements kithkit ChannelAdapter.
  *
- * Created via `createBmoTelegramAdapter()`. Call `init()` after creation
+ * Created via `createTelegramAdapter()`. Call `init()` after creation
  * to load keychain credentials and register access control tiers.
  */
-export class BmoTelegramAdapter implements ChannelAdapter {
+export class TelegramAdapter implements ChannelAdapter {
   readonly name = 'telegram';
 
   /** Initialize adapter — load keychain creds, restore state. */
@@ -776,10 +776,10 @@ export class BmoTelegramAdapter implements ChannelAdapter {
     _replyChatId = loadReplyChatId();
     if (_replyChatId) log.info(`Restored reply chat ID: ${_replyChatId}`);
 
-    // Register BMO sender tiers
-    registerBmoTiers();
+    // Register agent sender tiers
+    registerAgentTiers();
 
-    log.info('BMO Telegram adapter initialized');
+    log.info('Telegram adapter initialized');
   }
 
   /** Send a message via Telegram Bot API. */
@@ -973,10 +973,10 @@ export class BmoTelegramAdapter implements ChannelAdapter {
 }
 
 /**
- * Create and initialize a BMO Telegram adapter.
+ * Create and initialize a Telegram adapter.
  */
-export async function createBmoTelegramAdapter(): Promise<BmoTelegramAdapter> {
-  const adapter = new BmoTelegramAdapter();
+export async function createTelegramAdapter(): Promise<TelegramAdapter> {
+  const adapter = new TelegramAdapter();
   await adapter.init();
   return adapter;
 }
