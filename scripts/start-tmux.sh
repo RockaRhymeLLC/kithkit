@@ -10,6 +10,7 @@
 #   ./start-tmux.sh                    # Start new session or attach to existing
 #   ./start-tmux.sh --detach           # Start detached (for launchd)
 #   ./start-tmux.sh --skip-permissions # Skip Claude's permission prompts
+#   Config: set claude.skip_permissions=true in kithkit.config.yaml (preferred, survives reboots)
 
 set -e
 
