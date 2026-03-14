@@ -182,3 +182,4 @@ __pycache__/
 *~
 Thumbs.db
 scripts/calendar-events
+scripts/reminders

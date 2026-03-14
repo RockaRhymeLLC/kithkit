@@ -71,7 +71,7 @@ let events = store.events(matching: predicate)
 // ── Format output ───────────────────────────────────────────
 
 let timeFormatter = DateFormatter()
-timeFormatter.dateFormat = "HH:mm"
+timeFormatter.dateFormat = "h:mm a"
 timeFormatter.locale = Locale(identifier: "en_US_POSIX")
 
 var results: [[String: Any]] = []
