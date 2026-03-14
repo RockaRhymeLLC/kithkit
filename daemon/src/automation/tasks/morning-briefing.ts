@@ -57,26 +57,47 @@ interface EventKitEvent {
  */
 async function fetchEventKitEvents(): Promise<EventKitEvent[] | null> {
   const scriptPath = path.join(getProjectDir(), 'scripts', 'calendar-events.swift');
+
+  // 1. Try running binary/script directly
   try {
-    if (!fs.existsSync(scriptPath)) {
-      log.debug('EventKit helper not found', { path: scriptPath });
-      return null;
+    if (fs.existsSync(scriptPath)) {
+      // Prefer compiled binary (avoids swift interpreter overhead + TCC issues)
+      const binaryPath = scriptPath.replace(/\.swift$/, '');
+      const useBinary = fs.existsSync(binaryPath);
+      const output = useBinary
+        ? await execCommand(binaryPath, [], 15_000)
+        : await execCommand('/usr/bin/swift', [scriptPath], 15_000);
+      const parsed = JSON.parse(output.trim());
+      if (parsed.error) {
+        log.warn('EventKit helper returned error', { error: parsed.error });
+      } else if (Array.isArray(parsed)) {
+        return parsed as EventKitEvent[];
+      }
     }
-    const output = await execCommand('/usr/bin/swift', [scriptPath], 15_000);
-    const parsed = JSON.parse(output.trim());
-    if (parsed.error) {
-      log.warn('EventKit helper returned error', { error: parsed.error });
-      return null;
-    }
-    if (!Array.isArray(parsed)) {
-      log.warn('EventKit helper returned non-array');
-      return null;
-    }
-    return parsed as EventKitEvent[];
   } catch (err) {
-    log.warn('EventKit helper failed', { error: errMsg(err) });
-    return null;
+    log.warn('EventKit helper failed (will try cache)', { error: errMsg(err) });
   }
+
+  // 2. Fall back to cache file (populated by terminal-context runs of the binary)
+  try {
+    const home = process.env.HOME ?? '/Users/agent';
+    const cachePath = path.join(home, '.cache', 'kithkit', 'calendar-events.json');
+    if (fs.existsSync(cachePath)) {
+      const raw = fs.readFileSync(cachePath, 'utf8');
+      const cache = JSON.parse(raw);
+      const cachedAt = new Date(cache.cached_at);
+      const ageHours = (Date.now() - cachedAt.getTime()) / (1000 * 60 * 60);
+      if (ageHours < 12 && Array.isArray(cache.events)) {
+        log.info('Using cached calendar events', { ageHours: Math.round(ageHours * 10) / 10, count: cache.events.length });
+        return cache.events as EventKitEvent[];
+      }
+      log.debug('Calendar cache too old', { ageHours: Math.round(ageHours) });
+    }
+  } catch (err) {
+    log.debug('Calendar cache read failed', { error: errMsg(err) });
+  }
+
+  return null;
 }
 
 /**

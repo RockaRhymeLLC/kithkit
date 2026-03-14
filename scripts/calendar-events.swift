@@ -110,6 +110,22 @@ do {
     let data = try JSONSerialization.data(withJSONObject: results, options: [.sortedKeys])
     if let str = String(data: data, encoding: .utf8) {
         print(str)
+
+        // Also write to cache file so daemon can read events even when
+        // EventKit TCC access isn't available from launchd context.
+        let cacheDir = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".cache/kithkit")
+        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
+        let cachePath = cacheDir.appendingPathComponent("calendar-events.json")
+        let cacheEntry: [String: Any] = [
+            "events": results,
+            "cached_at": ISO8601DateFormatter().string(from: Date()),
+            "days": days
+        ]
+        if let cacheData = try? JSONSerialization.data(withJSONObject: cacheEntry, options: [.sortedKeys]),
+           let cacheStr = String(data: cacheData, encoding: .utf8) {
+            try? cacheStr.write(to: cachePath, atomically: true, encoding: .utf8)
+        }
     } else {
         print("[]")
     }

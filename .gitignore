@@ -181,3 +181,4 @@ __pycache__/
 *.swo
 *~
 Thumbs.db
+scripts/calendar-events
