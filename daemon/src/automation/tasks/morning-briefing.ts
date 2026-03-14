@@ -250,25 +250,88 @@ async function gatherWeather(location: string): Promise<string> {
   }
 }
 
-// ── Todos ────────────────────────────────────────────────────
+// ── Reminders (Apple Reminders via EventKit helper) ──────────
 
-function gatherTodos(): string {
+interface AppleReminder {
+  title: string;
+  list: string;
+  priority: number;
+  dueDate?: string;
+  notes?: string;
+}
+
+/**
+ * Fetch incomplete Apple Reminders. Strategy:
+ * 1. Try running the compiled binary directly
+ * 2. Fall back to swift interpreter
+ * 3. Fall back to cache file
+ */
+async function gatherReminders(): Promise<string> {
+  const scriptPath = path.join(getProjectDir(), 'scripts', 'reminders.swift');
+  const binaryPath = scriptPath.replace(/\.swift$/, '');
+  let reminders: AppleReminder[] | null = null;
+
+  // 1. Try binary/script
   try {
-    const rows = query<{ title: string; priority: string; due_date: string | null }>(
-      `SELECT title, priority, due_date FROM todos
-       WHERE status NOT IN ('completed', 'cancelled')
-       ORDER BY CASE priority
-         WHEN 'critical' THEN 0 WHEN 'high' THEN 1
-         WHEN 'medium' THEN 2 ELSE 3 END
-       LIMIT 10`,
-    );
-    if (rows.length === 0) return 'No open to-dos.';
-    return rows
-      .map(r => `• ${r.title}${r.due_date ? ` (due: ${r.due_date})` : ''}`)
-      .join('\n');
-  } catch {
-    return 'To-do list unavailable.';
+    if (fs.existsSync(binaryPath)) {
+      const output = await execCommand(binaryPath, [], 15_000);
+      const parsed = JSON.parse(output.trim());
+      if (!parsed.error && Array.isArray(parsed)) {
+        reminders = parsed;
+      }
+    } else if (fs.existsSync(scriptPath)) {
+      const output = await execCommand('/usr/bin/swift', [scriptPath], 30_000);
+      const parsed = JSON.parse(output.trim());
+      if (!parsed.error && Array.isArray(parsed)) {
+        reminders = parsed;
+      }
+    }
+  } catch (err) {
+    log.debug('Reminders helper failed (will try cache)', { error: errMsg(err) });
   }
+
+  // 2. Fall back to cache
+  if (!reminders) {
+    try {
+      const home = process.env.HOME ?? '/Users/agent';
+      const cachePath = path.join(home, '.cache', 'kithkit', 'reminders.json');
+      if (fs.existsSync(cachePath)) {
+        const raw = fs.readFileSync(cachePath, 'utf8');
+        const cache = JSON.parse(raw);
+        const cachedAt = new Date(cache.cached_at);
+        const ageHours = (Date.now() - cachedAt.getTime()) / (1000 * 60 * 60);
+        if (ageHours < 24 && Array.isArray(cache.reminders)) {
+          log.info('Using cached reminders', { ageHours: Math.round(ageHours * 10) / 10, count: cache.reminders.length });
+          reminders = cache.reminders;
+        }
+      }
+    } catch (err) {
+      log.debug('Reminders cache read failed', { error: errMsg(err) });
+    }
+  }
+
+  if (!reminders || reminders.length === 0) return 'No reminders.';
+
+  // Format: group by list, show priority and due date
+  const byList = new Map<string, AppleReminder[]>();
+  for (const r of reminders) {
+    const list = byList.get(r.list) ?? [];
+    list.push(r);
+    byList.set(r.list, list);
+  }
+
+  const lines: string[] = [];
+  for (const [listName, items] of byList) {
+    if (byList.size > 1) lines.push(`<i>${listName}</i>`);
+    for (const r of items.slice(0, 8)) {
+      const pri = r.priority === 1 ? ' !!' : r.priority === 5 ? ' !' : '';
+      const due = r.dueDate ? ` (${r.dueDate})` : '';
+      lines.push(`• ${r.title}${pri}${due}`);
+    }
+    if (items.length > 8) lines.push(`  … +${items.length - 8} more`);
+  }
+
+  return lines.join('\n');
 }
 
 // ── Email (from task_results) ────────────────────────────────
@@ -358,6 +421,21 @@ async function sendBriefing(
 // ── Main ─────────────────────────────────────────────────────
 
 async function run(config: Record<string, unknown>): Promise<string> {
+  // Dedup guard: skip if a briefing was sent in the last hour (prevents
+  // accidental duplicates from manual /api/tasks/.../run triggers)
+  try {
+    const recent = query<{ id: number }>(
+      `SELECT id FROM task_results
+       WHERE task_name = 'morning-briefing' AND status = 'success'
+       AND started_at > datetime('now', '-1 hour')
+       LIMIT 1`,
+    );
+    if (recent.length > 0) {
+      log.info('Skipping morning briefing — already sent within the last hour');
+      return 'Skipped (duplicate within 1 hour)';
+    }
+  } catch { /* proceed if check fails */ }
+
   log.info('Gathering morning briefing data');
 
   const location = (config.weather_location as string) ?? 'Baltimore';
@@ -371,15 +449,15 @@ async function run(config: Record<string, unknown>): Promise<string> {
     year: 'numeric',
   });
 
-  // Gather data (parallel where possible)
-  const [weather, calendar] = await Promise.all([
+  // Gather data in parallel
+  const [weather, calendar, reminders] = await Promise.all([
     gatherWeather(location),
     gatherCalendar(),
+    gatherReminders(),
   ]);
 
   // Synchronous DB/filesystem queries
   const internalCal = gatherInternalCalendar();
-  const todos = gatherTodos();
   const email = gatherEmailSummary();
   const overnight = gatherOvernightMessages();
 
@@ -394,11 +472,11 @@ async function run(config: Record<string, unknown>): Promise<string> {
     calendar,
   ];
 
-  if (internalCal) {
-    parts.push('', '<b>Reminders</b>', internalCal);
-  }
+  parts.push('', '<b>Reminders</b>', reminders);
 
-  parts.push('', '<b>To-Dos</b>', todos);
+  if (internalCal) {
+    parts.push('', '<b>Agent Notes</b>', internalCal);
+  }
 
   if (email !== 'No recent email data.') {
     parts.push('', '<b>Email</b>', email);
@@ -414,7 +492,7 @@ async function run(config: Record<string, unknown>): Promise<string> {
 
   const summary = `Sent briefing: weather OK, ` +
     `${calendar === 'No events today.' || calendar === 'Calendar not configured.' ? '0 events' : 'events listed'}, ` +
-    `${todos === 'No open to-dos.' ? '0 todos' : 'todos listed'}`;
+    `${reminders === 'No reminders.' ? '0 reminders' : 'reminders listed'}`;
   log.info('Morning briefing sent', { summary });
   return summary;
 }
