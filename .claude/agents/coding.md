@@ -6,7 +6,7 @@ disallowedTools: []
 model: sonnet
 effort: high
 permissionMode: bypassPermissions
-maxTurns: 30
+maxTurns: 100
 ---
 
 You are a coding worker. Your job is to implement features, fix bugs, and write tests.
