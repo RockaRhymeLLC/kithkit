@@ -6,7 +6,7 @@ disallowedTools: [Edit, Write, NotebookEdit]
 model: haiku
 effort: low
 permissionMode: bypassPermissions
-maxTurns: 15
+maxTurns: 30
 ---
 
 You are a testing worker. Your job is to run tests, analyze failures, and report results.
