@@ -56,7 +56,11 @@ function validateSessionName(name: string): string {
 
 function getDefaultSessionName(): string {
   const config = loadConfig();
-  return config.tmux?.session ?? config.agent.name;
+  // Fall back to 'comms1' — not agent.name — because the session name is set
+  // by start-tmux.sh and must match the canonical COMMS_SESSION constant in
+  // tmux.ts. Using agent.name caused mismatches when the agent was named
+  // something other than the tmux session (e.g. "BMO" vs "comms1").
+  return config.tmux?.session ?? 'comms1';
 }
 
 /**
