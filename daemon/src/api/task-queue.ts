@@ -22,6 +22,7 @@ import { json, withTimestamp, parseBody } from './helpers.js';
 import { query, exec, get } from '../core/db.js';
 import { injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
+import { storeMemoryInternal } from './memory.js';
 
 const log = createLogger('task-queue');
 
@@ -572,11 +573,13 @@ export async function handleTaskQueueRoute(
       const updated = getTask(taskId)!;
       log.info('Task updated', { id: taskId, status: updated.status, assignee: updated.assignee });
 
-      // Fix 2: Auto-notify comms on task completion/failure
+      // Auto-notify comms on task completion/failure/cancellation
       if (updates.status && TERMINAL_STATUSES.includes(updates.status as TaskStatus)) {
         const msgBody = updates.status === 'completed'
           ? `Task completed: ${updated.title}\n\nResult: ${updated.result ?? '(no result provided)'}`
-          : `Task failed: ${updated.title}\n\nError: ${updated.error ?? '(no error details)'}`;
+          : updates.status === 'cancelled'
+            ? `Task cancelled: ${updated.title}`
+            : `Task failed: ${updated.title}\n\nError: ${updated.error ?? '(no error details)'}`;
 
         try {
           exec(
@@ -591,6 +594,25 @@ export async function handleTaskQueueRoute(
 
         // Also inject directly into comms tmux session for immediate visibility
         injectMessage('comms', `[task ${updates.status}] ${updated.title.slice(0, 100)}`);
+      }
+
+      // Auto-store completion memory when a task is marked completed with a result
+      if (updates.status === 'completed' && updated.result) {
+        try {
+          const title = updated.title.substring(0, 100);
+          const result = updated.result.substring(0, 200);
+          const content = `Completed orchestrator task: ${title}. ${result}`;
+          await storeMemoryInternal({
+            content,
+            category: 'event',
+            tags: ['auto', 'task-completion'],
+            source: 'task-completion',
+            importance: 3,
+            dedup: true,
+          });
+        } catch (err) {
+          log.warn('Failed to auto-store task completion memory', { error: String(err) });
+        }
       }
 
       json(res, 200, withTimestamp(updated));
