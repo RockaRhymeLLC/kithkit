@@ -7,8 +7,8 @@ Standard procedure for restarting kithkit services. Three independent services, 
 | Service | Plist Label | KeepAlive | What It Does |
 |---------|------------|-----------|--------------|
 | Daemon | `com.assistant.daemon` | Yes | Node.js on port 3847 — API, scheduler, integrations |
-| Comms Agent | `com.assistant.<agent>` | No | Tmux session running Claude Code (the "brain") |
-| Restart Watcher | `com.<agent>.restart-watcher` | Yes | Polls for restart flag, triggers comms agent restart |
+| Comms Agent | `com.assistant.comms` | No | Tmux session running Claude Code (the "brain") |
+| Restart Watcher | `com.assistant.restart-watcher` | Yes | Polls for restart flag, triggers comms agent restart |
 
 ## 1. Daemon Only
 
@@ -53,7 +53,7 @@ scripts/restart.sh
 
 **Emergency method** (session unresponsive):
 ```bash
-tmux kill-session -t <session-name>
+tmux kill-session -t comms1
 scripts/start-tmux.sh --detach --skip-permissions
 ```
 
@@ -63,7 +63,7 @@ scripts/start-tmux.sh --detach --skip-permissions
 
 **Post-restart:**
 - SessionStart hook auto-loads saved state
-- Verify: `tmux has-session -t =<session-name> && echo "alive"`
+- Verify: `tmux has-session -t =comms1 && echo "alive"`
 
 **Impact:** Daemon keeps running. New session picks up saved state via hook.
 
@@ -74,15 +74,15 @@ Restart everything. Use when: machine reboot, major upgrade, things are weird.
 ```bash
 # Order matters: daemon first, then comms
 launchctl unload ~/Library/LaunchAgents/com.assistant.daemon.plist
-launchctl unload ~/Library/LaunchAgents/com.<agent>.restart-watcher.plist
-tmux kill-session -t =<session-name> 2>/dev/null
+launchctl unload ~/Library/LaunchAgents/com.assistant.restart-watcher.plist
+tmux kill-session -t =comms1 2>/dev/null
 
 # Bring back up
 launchctl load ~/Library/LaunchAgents/com.assistant.daemon.plist
 sleep 2
 curl -s http://localhost:3847/health  # wait for healthy
-launchctl load ~/Library/LaunchAgents/com.<agent>.restart-watcher.plist
-launchctl load ~/Library/LaunchAgents/com.assistant.<agent>.plist
+launchctl load ~/Library/LaunchAgents/com.assistant.restart-watcher.plist
+launchctl load ~/Library/LaunchAgents/com.assistant.comms.plist
 ```
 
 **Post-restart:** Run the daemon health check, then attach to tmux to confirm comms agent resumed.
@@ -111,7 +111,7 @@ Agents spawned by the daemon (orchestrator, workers) may need to trigger a daemo
 | Restart comms | `/restart` (from inside session) |
 | Restart comms (external) | `scripts/restart.sh` |
 | Check daemon health | `curl -s http://localhost:3847/health` |
-| Check comms alive | `tmux has-session -t =<session-name>` |
+| Check comms alive | `tmux has-session -t =comms1` |
 | Check watcher alive | `launchctl list \| grep restart-watcher` |
 | View daemon logs | `tail -f logs/daemon.log` |
 | View daemon errors | `tail logs/daemon-stderr.log` |

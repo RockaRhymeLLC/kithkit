@@ -18,7 +18,9 @@ const log = createLogger('tmux');
 // ── Config ──────────────────────────────────────────────────
 
 export const TMUX_BIN = loadConfig().tools?.tmux_path ?? '/opt/homebrew/bin/tmux';
-export const TMUX_SOCKET = `/private/tmp/tmux-${process.getuid?.() ?? 501}/default`;
+// macOS uses /private/tmp; Linux uses /tmp — detect at startup.
+const _tmuxTmpDir = process.platform === 'darwin' ? '/private/tmp' : '/tmp';
+export const TMUX_SOCKET = `${_tmuxTmpDir}/tmux-${process.getuid?.() ?? 501}/default`;
 
 const COMMS_SESSION = 'comms1';
 const ORCH_SESSION = 'orch1';
@@ -131,7 +133,24 @@ export function spawnOrchestratorSession(): string | null {
   }
 
   try {
-    const claudeBin = `${process.env.HOME}/.local/bin/claude`;
+    // Resolve the Claude binary: check common install locations before falling
+    // back to bare 'claude' (relies on PATH at spawn time).
+    const claudeBin = (() => {
+      const candidates = [
+        `${process.env.HOME}/.local/bin/claude`,
+        '/opt/homebrew/bin/claude',
+        '/usr/local/bin/claude',
+      ];
+      for (const p of candidates) {
+        try {
+          execFileSync('/bin/test', ['-x', p], { timeout: 2000 });
+          return p;
+        } catch {
+          // not found at this path
+        }
+      }
+      return 'claude'; // rely on PATH
+    })();
 
     // Create a new detached tmux session running Claude with the orchestrator profile
     execFileSync(TMUX_BIN, [
