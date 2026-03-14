@@ -73,6 +73,14 @@ scheduler:
       config:
         requires_session: false
 
+    - name: "comms-heartbeat"
+      enabled: true
+      interval: "60s"
+
+    - name: "orch-stale-task-recovery"
+      enabled: true
+      interval: "5m"
+
 security:
   rate_limits:
     incoming_max_per_minute: 5
