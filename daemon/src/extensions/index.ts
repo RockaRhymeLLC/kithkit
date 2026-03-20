@@ -49,10 +49,7 @@ import { parseBody } from '../api/helpers.js';
 import { UnifiedA2ARouter } from '../a2a/router.js';
 import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { sendMessage } from '../agents/message-router.js';
-import { createTelegramAdapter, type TelegramAdapter } from './comms/adapters/telegram.js';
-import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
 import { RateLimiter } from '../core/rate-limiter.js';
-import { initVoice, stopVoice } from './voice/index.js';
 
 const log = createLogger('agent-extension');
 
@@ -64,7 +61,6 @@ let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
 let _initialized = false;
 let _instanceShutdown: (() => Promise<void> | void) | null = null;
-let _telegramAdapter: TelegramAdapter | null = null;
 
 // ── Route Handlers ──────────────────────────────────────────
 
@@ -381,54 +377,6 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Register basic extension health check
   registerAgentHealthChecks();
 
-  // ── Telegram adapter ─────────────────────────────────────
-  const channels = (config as unknown as Record<string, unknown>).channels as Record<string, Record<string, unknown>> | undefined;
-  const telegramConfig = channels?.telegram;
-  if (telegramConfig?.enabled) {
-    try {
-      _telegramAdapter = await createTelegramAdapter();
-      registerAdapter(_telegramAdapter);
-
-      // Register webhook route for inbound Telegram updates
-      const webhookPath = (telegramConfig.webhook_path as string) ?? '/telegram';
-      registerRoute(webhookPath, async (req, res) => {
-        if (req.method !== 'POST') return false;
-        try {
-          const body = await parseBody(req);
-          await _telegramAdapter!.handleUpdate(body as Parameters<TelegramAdapter['handleUpdate']>[0]);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true }));
-        } catch (err) {
-          log.error('Telegram webhook error', { error: err instanceof Error ? err.message : String(err) });
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: false, error: 'Invalid update' }));
-        }
-        return true;
-      });
-
-      log.info('Telegram adapter initialized and registered', { webhookPath });
-    } catch (err) {
-      log.error('Failed to initialize Telegram adapter', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  } else {
-    log.info('Telegram not enabled in config');
-  }
-
-  // ── Voice extension ─────────────────────────────────────
-  const voiceConfig = channels?.voice as import('./config.js').VoiceConfig | undefined;
-  try {
-    await initVoice(voiceConfig ?? { enabled: false });
-    if (voiceConfig?.enabled) {
-      log.info('Voice extension initialized');
-    }
-  } catch (err) {
-    log.error('Voice extension failed to initialize', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-
   // Load instance-specific extensions (if instance/ directory exists)
   const instanceResult = await loadInstanceExtensions(config, _server, _scheduler);
   _instanceShutdown = instanceResult.shutdown ?? null;
@@ -448,14 +396,7 @@ async function onShutdown(): Promise<void> {
   if (_instanceShutdown) {
     await _instanceShutdown();
   }
-  // Telegram cleanup
-  if (_telegramAdapter) {
-    _telegramAdapter.stopTyping();
-    unregisterAdapter('telegram');
-    _telegramAdapter = null;
-  }
   p2pRateLimiter.stop();
-  stopVoice();
   await stopNetworkSDK();
   stopAgentComms();
   if (_scheduler) {
@@ -484,5 +425,4 @@ export function _resetForTesting(): void {
   _scheduler = null;
   _initialized = false;
   _instanceShutdown = null;
-  _telegramAdapter = null;
 }
