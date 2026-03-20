@@ -20,6 +20,7 @@ import { sendMessage } from '../../../agents/message-router.js';
 import { readKeychain } from '../../../core/keychain.js';
 import { loadKeyFromKeychain } from './crypto.js';
 import { logCommsEntry, getDisplayName } from '../agent-comms.js';
+import { handleMemorySync } from '../../../self-improvement/memory-sync.js';
 
 const log = createLogger('network:sdk');
 
@@ -223,6 +224,14 @@ function wireMessageEvent(): void {
     // Status pings are liveness checks only — do not store or inject
     if (msg.payload?.type === 'status') {
       log.debug(`Status ping from ${msg.sender} via network — acknowledged, not stored`);
+      return;
+    }
+
+    // Memory-sync messages: handled by self-improvement subsystem, not comms
+    if (msg.payload?.type === 'memory-sync') {
+      handleMemorySync(msg.payload as Record<string, unknown>).catch((err) =>
+        log.warn('handleMemorySync failed for inbound A2A message', { error: String(err), sender: msg.sender }),
+      );
       return;
     }
 

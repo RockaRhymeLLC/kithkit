@@ -114,6 +114,7 @@ export interface KithkitConfig {
   weather?: WeatherConfig;
   email?: EmailConfig;
   calendar?: CalendarConfig;
+  self_improvement?: Record<string, unknown>;
 }
 
 // ── Defaults ─────────────────────────────────────────────────
