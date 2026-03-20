@@ -296,6 +296,7 @@ async function loadInstanceExtensions(
   scheduler: Scheduler,
 ): Promise<{ shutdown?: () => Promise<void> | void }> {
   try {
+    // @ts-ignore — instance/index.js is repo-specific and absent in upstream kithkit; handled by catch below
     const mod = await import('./instance/index.js');
     if (typeof mod.register === 'function') {
       await mod.register(config, server, scheduler);

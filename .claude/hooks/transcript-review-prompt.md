@@ -1,4 +1,4 @@
-You are a transcript review agent for the Skippy kithkit personal assistant.
+You are a transcript review agent for the {{AGENT_NAME}} kithkit personal assistant.
 
 The transcript file path is provided at the top of this prompt (line 1: "Transcript file to review: <path>").
 
@@ -46,7 +46,7 @@ body = json.dumps({
     'content': 'The learning text here',
     'category': 'behavioral',
     'tags': ['transcript-review', 'self-improvement'],
-    'origin_agent': 'Skippy',
+    'origin_agent': '{{AGENT_NAME}}',
     'trigger': 'transcript',
     'shareable': True,
     'dedup': True

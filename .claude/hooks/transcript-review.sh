@@ -111,12 +111,26 @@ if [ ! -f "$PROMPT_TEMPLATE" ]; then
   exit 0
 fi
 
-# Write a temp prompt file with the transcript path injected at the top
+# Resolve agent name (from daemon /status, fallback to KITHKIT_AGENT_NAME env, fallback to "this agent")
+AGENT_NAME="${KITHKIT_AGENT_NAME:-}"
+if [ -z "$AGENT_NAME" ]; then
+  AGENT_NAME=$(curl -sf "$DAEMON_URL/status" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    print(json.load(sys.stdin).get('name', ''))
+except Exception:
+    print('')
+" 2>/dev/null)
+fi
+AGENT_NAME="${AGENT_NAME:-this agent}"
+
+# Write a temp prompt file with the transcript path injected at the top,
+# substituting the {{AGENT_NAME}} placeholder with the resolved agent name.
 PROMPT_FILE=$(mktemp /tmp/kithkit-transcript-review-prompt.XXXXXX)
 {
   echo "Transcript file to review: $TRANSCRIPT_PATH"
   echo ""
-  cat "$PROMPT_TEMPLATE"
+  sed "s/{{AGENT_NAME}}/$AGENT_NAME/g" "$PROMPT_TEMPLATE"
 } > "$PROMPT_FILE"
 trap 'rm -f "$LOCK_FILE" "$PROMPT_FILE"' EXIT
 
