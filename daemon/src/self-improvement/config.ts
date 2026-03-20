@@ -137,6 +137,9 @@ export function getSelfImprovementConfig(): SelfImprovementConfig {
         DEFAULTS.transcript_review.max_learnings_per_review,
     },
     correction_trigger: {
+      // TODO: correction_trigger.enabled is a placeholder — the config key exists but has no
+      // implementation reading it. The correction-detector.sh hook runs independently of this
+      // flag. Future work: gate the hook on this config value.
       enabled: raw.correction_trigger?.enabled ?? DEFAULTS.correction_trigger.enabled,
     },
     pre_task_injection: {
@@ -156,7 +159,9 @@ export function getSelfImprovementConfig(): SelfImprovementConfig {
       consolidation_threshold:
         raw.lifecycle?.consolidation_threshold ?? DEFAULTS.lifecycle.consolidation_threshold,
       category_cap: raw.lifecycle?.category_cap ?? DEFAULTS.lifecycle.category_cap,
-      decay: raw.lifecycle?.decay ?? DEFAULTS.lifecycle.decay,
+      // Merge decay field-by-field so partial user config (e.g. only 'short: 3d')
+      // doesn't drop the other policy defaults.
+      decay: { ...DEFAULTS.lifecycle.decay, ...(raw.lifecycle?.decay ?? {}) },
     },
   };
 }

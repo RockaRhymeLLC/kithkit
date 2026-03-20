@@ -37,15 +37,18 @@ if ! curl -sf "$DAEMON_URL/health" > /dev/null 2>&1; then
   exit 0
 fi
 
-# ── Read agent name from config ───────────────────────────────────────────
-AGENT_NAME="skippy"
-CONFIG_FILE="$BASE_DIR/kithkit.config.yaml"
-if [ -f "$CONFIG_FILE" ]; then
-  NAME_FROM_CONFIG=$(grep -A3 "^agent:" "$CONFIG_FILE" | grep "  name:" | sed 's/.*name: *//' | tr -d '[:space:]' | head -1)
-  if [ -n "$NAME_FROM_CONFIG" ]; then
-    AGENT_NAME="$NAME_FROM_CONFIG"
+# ── Read agent name from env var, config file, or fallback to 'unknown' ───────
+AGENT_NAME="${KITHKIT_AGENT_NAME:-}"
+if [ -z "$AGENT_NAME" ]; then
+  CONFIG_FILE="$BASE_DIR/kithkit.config.yaml"
+  if [ -f "$CONFIG_FILE" ]; then
+    NAME_FROM_CONFIG=$(grep -A3 "^agent:" "$CONFIG_FILE" | grep "  name:" | sed 's/.*name: *//' | tr -d '[:space:]' | head -1)
+    if [ -n "$NAME_FROM_CONFIG" ]; then
+      AGENT_NAME="$NAME_FROM_CONFIG"
+    fi
   fi
 fi
+AGENT_NAME="${AGENT_NAME:-unknown}"
 
 # ── Store learning via daemon API ─────────────────────────────────────────
 # Pass values as env vars to avoid shell quoting/injection issues

@@ -52,19 +52,18 @@ if ! curl -sf "$DAEMON_URL/health" > /dev/null 2>&1; then
   exit 0
 fi
 
-# Check self_improvement is enabled in config
-SI_ENABLED=$(curl -sf "$DAEMON_URL/health" 2>/dev/null | python3 -c "
+# Check self_improvement.enabled via stats endpoint — exit if disabled (kill switch)
+SI_ENABLED=$(curl -sf "$DAEMON_URL/api/self-improvement/stats" 2>/dev/null | python3 -c "
 import sys, json
 try:
     data = json.load(sys.stdin)
-    print('true')
+    print('true' if data.get('enabled') else 'false')
 except Exception:
     print('false')
 " 2>/dev/null)
 
 if [ "$SI_ENABLED" != "true" ]; then
-  # Daemon is up but we couldn't parse response — proceed anyway (daemon health confirmed above)
-  : # no-op, continue
+  exit 0
 fi
 
 # ── Extract transcript path from hook input ───────────────────────────────────
@@ -81,18 +80,30 @@ if [ -z "$TRANSCRIPT_PATH" ] || [ ! -f "$TRANSCRIPT_PATH" ]; then
   exit 0
 fi
 
-# ── Acquire lock (prevent concurrent runs) ────────────────────────────────────
-if [ -f "$LOCK_FILE" ]; then
-  LOCK_AGE=$(( $(date +%s) - $(stat -f %m "$LOCK_FILE") ))
+# ── Cross-platform file mtime ─────────────────────────────────────────────────
+get_mtime() {
+  local file="$1"
+  # macOS uses -f %m; Linux uses -c %Y
+  stat -f %m "$file" 2>/dev/null || stat -c %Y "$file" 2>/dev/null || echo 0
+}
+
+# ── Acquire lock atomically (prevent concurrent runs) ─────────────────────────
+# noclobber makes the redirect fail atomically if the file already exists
+if ! (set -o noclobber; echo $$ > "$LOCK_FILE") 2>/dev/null; then
+  # Lock exists — check if it's stale (older than 5 minutes)
+  LOCK_AGE=$(( $(date +%s) - $(get_mtime "$LOCK_FILE") ))
   if [ "$LOCK_AGE" -lt 300 ]; then
     exit 0
   fi
+  # Stale lock — remove and retry once
+  rm -f "$LOCK_FILE"
+  if ! (set -o noclobber; echo $$ > "$LOCK_FILE") 2>/dev/null; then
+    exit 0
+  fi
 fi
-
-touch "$LOCK_FILE"
 trap 'rm -f "$LOCK_FILE"' EXIT
 
-# ── Build prompt and spawn haiku review worker ────────────────────────────────
+# ── Build prompt and spawn review worker via daemon ───────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROMPT_TEMPLATE="$SCRIPT_DIR/transcript-review-prompt.md"
 
@@ -109,8 +120,30 @@ PROMPT_FILE=$(mktemp /tmp/kithkit-transcript-review-prompt.XXXXXX)
 } > "$PROMPT_FILE"
 trap 'rm -f "$LOCK_FILE" "$PROMPT_FILE"' EXIT
 
-# Spawn from /tmp to avoid loading project hooks recursively
-cd /tmp
-claude -p --model haiku --allowedTools "Read,Grep" < "$PROMPT_FILE" > /dev/null 2>&1
+# Spawn via daemon API (fire-and-forget — returns immediately, tracked in /api/agents)
+# This ensures cost accounting and respects max concurrent agent limits.
+PROMPT_CONTENT=$(cat "$PROMPT_FILE")
+PROMPT_CONTENT="$PROMPT_CONTENT" DAEMON_URL="$DAEMON_URL" python3 - <<'PYEOF'
+import json, subprocess, os
+
+prompt = os.environ.get('PROMPT_CONTENT', '')
+daemon = os.environ.get('DAEMON_URL', 'http://localhost:3847')
+
+body = json.dumps({
+    "profile": "retro",
+    "prompt": prompt,
+    "description": "Periodic transcript review (self-improvement)",
+})
+
+subprocess.run(
+    ["curl", "-sf", "-X", "POST",
+     f"{daemon}/api/agents/spawn",
+     "-H", "Content-Type: application/json",
+     "-d", body],
+    capture_output=True,
+    text=True,
+    timeout=5,
+)
+PYEOF
 
 exit 0

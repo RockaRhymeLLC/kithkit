@@ -38,7 +38,15 @@ interface Memory {
 
 const DEFAULT_MEMORY_CAP = 50;
 
-/** Get the per-category memory cap from config, falling back to the default. */
+/**
+ * Get the per-category memory cap from config, falling back to the default.
+ *
+ * NOTE: There are two config paths for this value:
+ *   - config.memory.category_cap  (read here, general memory config)
+ *   - config.self_improvement.lifecycle.category_cap  (used by memory-consolidation task)
+ * These are independent and may diverge if configured separately. Ideally they should be
+ * consolidated to a single source of truth in a future refactor.
+ */
 function getMemoryCap(): number {
   try {
     const config = loadConfig();

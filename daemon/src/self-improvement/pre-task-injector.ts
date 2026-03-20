@@ -74,6 +74,7 @@ export async function searchRelevantLearnings(
       `SELECT id, content, category, origin_agent, created_at, tags
        FROM memories
        WHERE category IN (${placeholders})
+         AND (expires_at IS NULL OR expires_at > datetime('now'))
        ORDER BY created_at DESC`,
     )
     .all(...SI_CATEGORIES);

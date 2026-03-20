@@ -82,6 +82,10 @@ const CONFLICT_THRESHOLD = 0.85;
  * Simple keyword overlap similarity between two strings.
  * Only considers words of 3+ characters.
  * Returns a score in [0, 1].
+ *
+ * NOTE (v1 limitation): This keyword-overlap approach can miss semantic duplicates
+ * (e.g. "restart the process" vs "reboot the service"). A future improvement would
+ * use vector embeddings (all-MiniLM-L6-v2) for conflict detection instead.
  */
 export function computeSimilarity(a: string, b: string): number {
   const toWords = (s: string): Set<string> =>
@@ -124,6 +128,13 @@ export async function syncToPeers(memory: Record<string, unknown>): Promise<void
   // Must be shareable (stored as 1 in DB, or true from caller)
   const shareable = memory.shareable;
   if (shareable === 0 || shareable === false || shareable === null) return;
+
+  // Never re-sync memories that arrived via sync — prevents relay loops in 3+ agent topologies
+  const triggerValue = (memory.trigger as string | null | undefined)?.toLowerCase() ?? '';
+  if (triggerValue === 'sync') {
+    log.debug('Skipping sync — memory trigger is "sync" to prevent relay amplification loops');
+    return;
+  }
 
   const config = loadConfig() as unknown as Record<string, unknown>;
   const agentConfig = config.agent as { name?: string } | undefined;
@@ -291,6 +302,10 @@ interface SinceResponse {
 /**
  * Pull memories from peers that were created after the last successful sync.
  * Updates last_sync_timestamp per peer on success.
+ *
+ * TODO: This function is implemented but not yet called or scheduled. It is
+ * intended as an offline catch-up mechanism for agents that rejoin after downtime.
+ * When ready, schedule it as a periodic daemon task (e.g. every 30 minutes).
  */
 export async function pullFromPeers(): Promise<void> {
   const cfg = getSelfImprovementConfig();
