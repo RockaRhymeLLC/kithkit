@@ -85,3 +85,34 @@ security:
   rate_limits:
     incoming_max_per_minute: 5
     outgoing_max_per_minute: 10
+
+self_improvement:
+  enabled: false
+  retro:
+    enabled: false
+    triggers:
+      on_error: true
+      on_correction: true
+      on_retry: true
+    max_learnings_per_retro: 5
+  transcript_review:
+    enabled: false
+    interval_actions: 25
+    interval_minutes: 30
+    max_learnings_per_review: 3
+  correction_trigger:
+    enabled: false
+  pre_task_injection:
+    enabled: false
+    max_memories_injected: 10
+    min_relevance_score: 0.4
+  memory_sync:
+    enabled: false
+    peers: []
+  lifecycle:
+    consolidation_threshold: 0.85
+    category_cap: 50
+    decay:
+      default: "30d"
+      short: "7d"
+      evergreen: "never"
