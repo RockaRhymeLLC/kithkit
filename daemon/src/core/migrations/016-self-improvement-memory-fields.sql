@@ -1,0 +1,9 @@
+-- Self-improvement loop: memory metadata extension
+-- origin_agent: which agent originally stored this memory
+-- trigger: what event or condition triggered storage
+-- shareable: whether this memory can be shared with peer agents (1=yes, 0=no)
+-- decay_policy: how/when this memory expires beyond the default TTL logic
+--safe-alter: memories ADD COLUMN origin_agent TEXT
+--safe-alter: memories ADD COLUMN trigger TEXT
+--safe-alter: memories ADD COLUMN shareable INTEGER DEFAULT 0
+--safe-alter: memories ADD COLUMN decay_policy TEXT DEFAULT 'default'

@@ -65,7 +65,7 @@ export async function handleAgentsRoute(
         return true;
       }
 
-      const result = spawnWorkerJob({
+      const result = await spawnWorkerJob({
         profile,
         prompt: body.prompt as string,
         cwd: typeof body.cwd === 'string' ? body.cwd : undefined,

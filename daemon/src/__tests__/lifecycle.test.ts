@@ -201,7 +201,7 @@ describe('Worker spawns via API and completes job (t-137)', () => {
   it('worker job transitions from running to completed', async () => {
     _setQueryFnForTesting(createSuccessQuery('Research complete.', 20));
 
-    const { jobId } = spawnWorkerJob({
+    const { jobId } = await spawnWorkerJob({
       profile: TEST_PROFILE,
       prompt: 'Do some research',
     });
@@ -223,7 +223,7 @@ describe('Worker spawns via API and completes job (t-137)', () => {
   it('worker_jobs record has tokens and cost after completion', async () => {
     _setQueryFnForTesting(createSuccessQuery());
 
-    const { jobId } = spawnWorkerJob({
+    const { jobId } = await spawnWorkerJob({
       profile: TEST_PROFILE,
       prompt: 'Quick task',
     });
@@ -240,7 +240,7 @@ describe('Worker spawns via API and completes job (t-137)', () => {
   it('agent record set to stopped after completion', async () => {
     _setQueryFnForTesting(createSuccessQuery());
 
-    const { jobId } = spawnWorkerJob({
+    const { jobId } = await spawnWorkerJob({
       profile: TEST_PROFILE,
       prompt: 'Quick task',
     });
@@ -260,7 +260,7 @@ describe('Worker timeout detected and enforced (t-138)', () => {
     _setQueryFnForTesting(createHangingQuery());
 
     // Use a very short timeout for testing
-    const { jobId } = spawnWorkerJob({
+    const { jobId } = await spawnWorkerJob({
       profile: TEST_PROFILE,
       prompt: 'Task that will hang',
       timeoutMs: 200, // 200ms timeout
@@ -290,9 +290,9 @@ describe('Max concurrent agents enforced with queuing (t-139)', () => {
     setMaxConcurrentAgents(2);
     _setQueryFnForTesting(createSlowQuery(2000));
 
-    const job1 = spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Task 1' });
-    const job2 = spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Task 2' });
-    const job3 = spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Task 3' });
+    const job1 = await spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Task 1' });
+    const job2 = await spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Task 2' });
+    const job3 = await spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Task 3' });
 
     assert.equal(job1.status, 'running');
     assert.equal(job2.status, 'running');
@@ -439,11 +439,11 @@ describe('Rate limit — worker queued when max concurrent agents reached (t-173
     );
 
     // Worker A gets the last slot (3 of 3)
-    const workerA = spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Worker A' });
+    const workerA = await spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Worker A' });
     assert.equal(workerA.status, 'running');
 
     // Worker B should be queued (no slots)
-    const workerB = spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Worker B' });
+    const workerB = await spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Worker B' });
     assert.equal(workerB.status, 'queued');
 
     // Wait for worker A to complete
@@ -519,7 +519,7 @@ describe('GET /api/agents lists all agents (t-137 supplement)', () => {
   it('returns agents after spawn', async () => {
     _setQueryFnForTesting(createSlowQuery(2000));
 
-    spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Task 1' });
+    await spawnWorkerJob({ profile: TEST_PROFILE, prompt: 'Task 1' });
 
     const res = await request('GET', '/api/agents');
     assert.equal(res.status, 200);
@@ -537,7 +537,7 @@ describe('GET /api/agents/:id/status returns job details (t-137 supplement)', ()
   it('returns job status for a spawned worker', async () => {
     _setQueryFnForTesting(createSlowQuery(2000));
 
-    const { jobId } = spawnWorkerJob({
+    const { jobId } = await spawnWorkerJob({
       profile: TEST_PROFILE,
       prompt: 'Some work',
     });

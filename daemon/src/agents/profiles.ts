@@ -27,6 +27,8 @@ export interface AgentProfile {
   effort: EffortLevel;
   /** Markdown body — becomes systemPrompt append content */
   body: string;
+  /** Override global pre_task_injection.max_memories_injected for this profile. */
+  max_memories_injected?: number;
 }
 
 export class ProfileValidationError extends Error {

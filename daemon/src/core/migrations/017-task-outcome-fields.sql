@@ -1,0 +1,5 @@
+-- Outcome tagging for orchestrator tasks (self-improvement loop Story 10).
+-- outcome: high-level result classification (success, partial, failed, unknown)
+-- outcome_notes: free-text explanation of what happened
+--safe-alter: orchestrator_tasks ADD COLUMN outcome TEXT
+--safe-alter: orchestrator_tasks ADD COLUMN outcome_notes TEXT

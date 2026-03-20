@@ -20,8 +20,9 @@ import {
 } from './sdk-adapter.js';
 import type { SpawnOptions as SdkSpawnOptions, WorkerState } from './sdk-adapter.js';
 import type { AgentProfile } from './profiles.js';
-import { get, update, query, exec } from '../core/db.js';
+import { get, update, query, exec, getDatabase } from '../core/db.js';
 import { resolveProjectPath } from '../core/config.js';
+import { injectLearnings } from '../self-improvement/pre-task-injector.js';
 
 // ── Autonomy Mode ────────────────────────────────────────────
 
@@ -84,6 +85,18 @@ export interface SpawnRequest {
   timeoutMs?: number;
   /** Which persistent agent spawned this worker ('comms' | 'orchestrator'). */
   spawned_by?: string;
+}
+
+// ── Callbacks ────────────────────────────────────────────────
+
+let onJobCompleteCallback: ((job: JobRecord) => void) | null = null;
+
+/**
+ * Register a callback to be invoked after a job reaches a terminal state.
+ * Pass null to remove the callback.
+ */
+export function setOnJobComplete(cb: ((job: JobRecord) => void) | null): void {
+  onJobCompleteCallback = cb;
 }
 
 // ── State ────────────────────────────────────────────────────
@@ -161,14 +174,25 @@ export function cleanupSessionDirs(maxAgeDays = 7): number {
 /**
  * Spawn a worker job. If at capacity, the job is queued.
  * Returns the job ID and initial status.
+ *
+ * @remarks Changed to async (was sync) to support pre-task memory injection.
+ * All callers within the daemon codebase have been updated to await this function.
  */
-export function spawnWorkerJob(req: SpawnRequest): { jobId: string; status: JobStatus } {
+export async function spawnWorkerJob(req: SpawnRequest): Promise<{ jobId: string; status: JobStatus }> {
   const jobId = randomUUID();
   const ts = now();
 
   // Create session directory for artifacts
   const sessionDir = createSessionDir(jobId);
   req.prompt = `Session directory (for artifacts if needed): ${sessionDir}\n\n${req.prompt}`;
+
+  // Pre-task memory injection (self-improvement) — augment prompt with past learnings.
+  // Wrapped in try/catch: injection failure must not prevent spawn.
+  try {
+    req.prompt = await injectLearnings(req.prompt, req.profile, getDatabase());
+  } catch {
+    // injection failure is non-fatal
+  }
 
   // Insert agent record
   exec(
@@ -308,6 +332,16 @@ function finishJob(
     finished_at: ts,
   });
 
+  // Invoke job-complete callback if registered
+  if (onJobCompleteCallback) {
+    try {
+      const job = get<JobRecord>('worker_jobs', jobId);
+      if (job) onJobCompleteCallback(job);
+    } catch {
+      // callback errors must not break the main flow
+    }
+  }
+
   // Process queue
   processQueue();
 }
@@ -432,6 +466,7 @@ export function _resetForTesting(): void {
   jobQueue.length = 0;
   queuedRequests.clear();
   maxConcurrentAgents = 3;
+  onJobCompleteCallback = null;
 }
 
 export function _getQueueLength(): number {
