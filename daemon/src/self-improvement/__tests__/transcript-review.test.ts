@@ -180,10 +180,10 @@ describe('transcript-review prompt template: required sections', () => {
     );
   });
 
-  it('specifies origin_agent: Skippy field', () => {
+  it('specifies origin_agent placeholder field', () => {
     assert.ok(
-      content.includes('origin_agent') && content.includes('Skippy'),
-      'Prompt template does not specify origin_agent=Skippy',
+      content.includes('origin_agent') && content.includes('{{AGENT_NAME}}'),
+      'Prompt template does not specify origin_agent={{AGENT_NAME}} placeholder',
     );
   });
 
