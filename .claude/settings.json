@@ -1,6 +1,8 @@
 {
   "permissions": {
-    "allow": [".*"],
+    "allow": [
+      ".*"
+    ],
     "deny": [],
     "defaultMode": "bypassPermissions"
   },
@@ -87,6 +89,15 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/correction-detector.sh",
+            "timeout": 5
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -105,6 +116,17 @@
             "type": "command",
             "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/github-rate-log.py",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Edit|Write|Read|Glob|Grep|WebSearch|WebFetch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/transcript-review.sh",
+            "async": true,
+            "timeout": 15
           }
         ]
       }

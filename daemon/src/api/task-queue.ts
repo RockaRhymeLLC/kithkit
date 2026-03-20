@@ -23,6 +23,13 @@ import { query, exec, get } from '../core/db.js';
 import { injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { storeMemoryInternal } from './memory.js';
+import { evaluateTask as _evaluateTask } from '../self-improvement/retro-evaluator.js';
+
+// Injectable for testing — allows tests to mock evaluateTask without spawning real workers
+let _evalFn: (taskId: string) => Promise<void> = _evaluateTask;
+export function _setEvaluateTaskFnForTesting(fn: ((taskId: string) => Promise<void>) | null): void {
+  _evalFn = fn ?? _evaluateTask;
+}
 
 const log = createLogger('task-queue');
 
@@ -30,6 +37,10 @@ const log = createLogger('task-queue');
 
 type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
 type ActivityType = 'progress' | 'note';
+
+type TaskOutcome = 'success' | 'partial' | 'failed' | 'unknown';
+
+const VALID_OUTCOMES: readonly TaskOutcome[] = ['success', 'partial', 'failed', 'unknown'];
 
 interface OrchestratorTask {
   id: string;
@@ -43,6 +54,8 @@ interface OrchestratorTask {
   retry_count: number;
   work_notes: string | null;
   timeout_seconds: number | null;
+  outcome: TaskOutcome | null;
+  outcome_notes: string | null;
   created_at: string;
   assigned_at: string | null;
   started_at: string | null;
@@ -539,6 +552,16 @@ export async function handleTaskQueueRoute(
           updates.work_notes = body.work_notes;
         }
       }
+      if (body.outcome !== undefined) {
+        if (body.outcome !== null && !VALID_OUTCOMES.includes(body.outcome as TaskOutcome)) {
+          json(res, 400, withTimestamp({ error: `outcome must be one of: ${VALID_OUTCOMES.join(', ')}` }));
+          return true;
+        }
+        updates.outcome = body.outcome ?? null;
+      }
+      if (body.outcome_notes !== undefined) {
+        updates.outcome_notes = typeof body.outcome_notes === 'string' ? body.outcome_notes : null;
+      }
 
       // Validate the final status/assignee combination
       const validationError = validateStatusAssignee(targetStatus, targetAssignee);
@@ -613,6 +636,11 @@ export async function handleTaskQueueRoute(
         } catch (err) {
           log.warn('Failed to auto-store task completion memory', { error: String(err) });
         }
+      }
+
+      // Non-blocking retro evaluation after terminal status
+      if (targetStatus === 'completed' || targetStatus === 'failed') {
+        _evalFn(taskId).catch(err => log.warn('Retro evaluation failed', { taskId, error: String(err) }));
       }
 
       json(res, 200, withTimestamp(updated));
