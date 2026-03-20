@@ -172,7 +172,8 @@ function mergeCluster(cluster: MergeCluster): MergeResult {
     return decayPriority(curr) > decayPriority(best) ? curr : best;
   }, members[0]!.decay_policy ?? 'default');
 
-  // Newest created_at
+  // Newest created_at: use the most recent provenance so the merged record
+  // reflects when the knowledge was last confirmed, not when it was first observed.
   const newest = members.reduce((a, b) => (a.created_at > b.created_at ? a : b));
 
   return {
@@ -383,6 +384,10 @@ function enforceCategoryCap(cap: number): number {
 async function run(): Promise<void> {
   const config = getSelfImprovementConfig();
   const { lifecycle } = config;
+
+  // TODO: decay_policy enforcement handles the built-in policies ('default', 'short', 'evergreen').
+  // Support for custom policy names beyond these three is deferred — the decay_policy column
+  // is schema prep for future work.
 
   // 1. Decay enforcement (runs regardless of vector search)
   const archivedByDecay = enforceDecay(lifecycle.decay);

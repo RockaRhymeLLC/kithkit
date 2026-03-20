@@ -34,6 +34,9 @@ const SI_TRIGGERS = ['retro', 'transcript', 'correction', 'sync', 'manual'];
 
 // ── Stats query ──────────────────────────────────────────────
 
+// TODO: This function uses 9 sequential DB queries. Performance can be improved by
+// consolidating into fewer queries using CASE WHEN grouping or CTEs. Deferred for now
+// since stats are infrequently requested.
 export async function getSelfImprovementStats(db: Database.Database): Promise<SelfImprovementStats> {
   const config = getSelfImprovementConfig();
 
