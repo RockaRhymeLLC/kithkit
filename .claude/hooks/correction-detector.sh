@@ -62,13 +62,13 @@ if len(prompt) > 500:
     prompt = prompt[:497] + "..."
 
 body = json.dumps({
-    "content": prompt,
+    "content": "[auto-detected correction - needs review] " + prompt,
     "category": "behavioral",
     "tags": ["correction", "human-sourced"],
     "trigger": "correction",
     "decay_policy": "evergreen",
     "importance": 1,
-    "shareable": True,
+    "shareable": False,
     "origin_agent": agent,
     "dedup": True,
 })

@@ -16,7 +16,6 @@ import {
   computeSimilarity,
   CONFLICT_THRESHOLD,
   _setSendA2AFnForTesting,
-  getSyncStateFile,
 } from '../memory-sync.js';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -506,8 +505,7 @@ describe('pullFromPeers pulls memories newer than last_sync_timestamp', () => {
     _resetDbForTesting();
     fs.rmSync(tmpDir, { recursive: true, force: true });
 
-    // Clean up sync state file
-    try { fs.unlinkSync(getSyncStateFile()); } catch { /* ok */ }
+    // Sync timestamps are now stored in feature_state DB table — cleaned up by _resetDbForTesting()
   });
 
   it('logs that catch-up would be attempted when peer is reachable (mock via fetch override)', async () => {
@@ -564,7 +562,7 @@ describe('pullFromPeers updates last_sync_timestamp after successful pull', () =
     _resetConfigForTesting();
     _resetDbForTesting();
     fs.rmSync(tmpDir, { recursive: true, force: true });
-    try { fs.unlinkSync(getSyncStateFile()); } catch { /* ok */ }
+    // Sync timestamps are now stored in feature_state DB table — cleaned up by _resetDbForTesting()
   });
 
   it('runs successfully with empty peers list (no-op)', async () => {

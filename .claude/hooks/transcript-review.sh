@@ -111,6 +111,6 @@ trap 'rm -f "$LOCK_FILE" "$PROMPT_FILE"' EXIT
 
 # Spawn from /tmp to avoid loading project hooks recursively
 cd /tmp
-claude -p --model haiku --allowedTools "Read,Grep,Bash" < "$PROMPT_FILE" > /dev/null 2>&1
+claude -p --model haiku --allowedTools "Read,Grep" < "$PROMPT_FILE" > /dev/null 2>&1
 
 exit 0

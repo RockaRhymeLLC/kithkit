@@ -174,6 +174,9 @@ export function cleanupSessionDirs(maxAgeDays = 7): number {
 /**
  * Spawn a worker job. If at capacity, the job is queued.
  * Returns the job ID and initial status.
+ *
+ * @remarks Changed to async (was sync) to support pre-task memory injection.
+ * All callers within the daemon codebase have been updated to await this function.
  */
 export async function spawnWorkerJob(req: SpawnRequest): Promise<{ jobId: string; status: JobStatus }> {
   const jobId = randomUUID();

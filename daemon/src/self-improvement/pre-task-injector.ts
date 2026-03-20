@@ -33,10 +33,10 @@ function formatAge(createdAt: string): string {
 /**
  * Compute a keyword relevance score (0–1) for a memory against a task description.
  * Score = fraction of non-trivial task words found in the memory content.
- * Returns 0.5 if the task description has no qualifying words (length ≥ 3).
+ * Returns 0.0 if the task description has no qualifying words (length ≥ 3) — no signal means no injection.
  */
 function computeScore(taskWords: string[], content: string): number {
-  if (taskWords.length === 0) return 0.5;
+  if (taskWords.length === 0) return 0.0;
   const lower = content.toLowerCase();
   const matched = taskWords.filter(w => lower.includes(w)).length;
   return matched / taskWords.length;
