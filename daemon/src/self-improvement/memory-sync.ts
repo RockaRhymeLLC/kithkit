@@ -7,9 +7,6 @@
  *   pullFromPeers — offline catch-up: pull memories newer than last sync timestamp
  */
 
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
 import { getDatabase } from '../core/db.js';
 import { loadConfig } from '../core/config.js';
 import { getSelfImprovementConfig } from './config.js';
@@ -46,17 +43,18 @@ async function sendA2A(body: Record<string, unknown>): Promise<void> {
   }
 }
 
-// ── Sync timestamp state ─────────────────────────────────────
+// ── Sync timestamp state (stored in feature_state DB table) ──
 
-function getSyncStateFile(): string {
-  const home = os.homedir();
-  return path.join(home, '.kithkit', 'memory-sync-state.json');
-}
+const SYNC_STATE_FEATURE = 'memory-sync-timestamps';
 
 function loadSyncTimestamps(): Record<string, string> {
   try {
-    const data = fs.readFileSync(getSyncStateFile(), 'utf8');
-    return JSON.parse(data) as Record<string, string>;
+    const db = getDatabase();
+    const row = db
+      .prepare(`SELECT state FROM feature_state WHERE feature = ?`)
+      .get(SYNC_STATE_FEATURE) as { state: string } | undefined;
+    if (!row) return {};
+    return JSON.parse(row.state) as Record<string, string>;
   } catch {
     return {};
   }
@@ -64,9 +62,13 @@ function loadSyncTimestamps(): Record<string, string> {
 
 function saveSyncTimestamps(timestamps: Record<string, string>): void {
   try {
-    const stateFile = getSyncStateFile();
-    fs.mkdirSync(path.dirname(stateFile), { recursive: true });
-    fs.writeFileSync(stateFile, JSON.stringify(timestamps, null, 2));
+    const db = getDatabase();
+    const now = new Date().toISOString();
+    db.prepare(
+      `INSERT INTO feature_state (feature, state, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(feature) DO UPDATE SET state = excluded.state, updated_at = excluded.updated_at`,
+    ).run(SYNC_STATE_FEATURE, JSON.stringify(timestamps), now);
   } catch (err) {
     log.warn('Failed to save sync timestamps', { error: String(err) });
   }
@@ -340,4 +342,4 @@ export async function pullFromPeers(): Promise<void> {
 // ── Exports for testing ───────────────────────────────────────
 
 export { CONFLICT_THRESHOLD };
-export { getSyncStateFile, loadSyncTimestamps, saveSyncTimestamps };
+export { loadSyncTimestamps, saveSyncTimestamps };

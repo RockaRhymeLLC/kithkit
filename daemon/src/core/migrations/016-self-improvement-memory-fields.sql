@@ -5,5 +5,5 @@
 -- decay_policy: how/when this memory expires beyond the default TTL logic
 --safe-alter: memories ADD COLUMN origin_agent TEXT
 --safe-alter: memories ADD COLUMN trigger TEXT
---safe-alter: memories ADD COLUMN shareable INTEGER DEFAULT 1
+--safe-alter: memories ADD COLUMN shareable INTEGER DEFAULT 0
 --safe-alter: memories ADD COLUMN decay_policy TEXT DEFAULT 'default'
