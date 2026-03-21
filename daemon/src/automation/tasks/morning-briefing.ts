@@ -238,12 +238,40 @@ async function gatherWeather(location: string): Promise<string> {
   }
 
   try {
-    const loc = location.replace(/\s+/g, '+');
-    const current = await execCommand('/usr/bin/curl', [
+    const loc = encodeURIComponent(location);
+    const raw = await execCommand('/usr/bin/curl', [
       '-s', '--max-time', '8',
-      `${loadConfig().weather?.wttr_base_url ?? 'https://wttr.in'}/${loc}?format=%c+%t+|+Humidity:+%h+|+Wind:+%w`,
+      `${loadConfig().weather?.wttr_base_url ?? 'https://wttr.in'}/${loc}?format=j1`,
     ]);
-    return current.trim() || 'Weather unavailable.';
+    const wj = JSON.parse(raw.trim());
+    const cc = wj.current_condition?.[0];
+    if (!cc) throw new Error('No current_condition in wttr.in response');
+
+    const desc = cc.weatherDesc?.[0]?.value ?? 'Unknown';
+    const current = cc.temp_F != null ? `${cc.temp_F}°F` : '?°F';
+    const feelsLike = cc.FeelsLikeF != null ? ` (feels ${cc.FeelsLikeF}°)` : '';
+    const humidity = cc.humidity ?? '?';
+    const wind = cc.windspeedMiles != null ? `${cc.windspeedMiles} mph` : '?';
+
+    const currentLine = `${desc} ${current}${feelsLike} · Humidity ${humidity}% · Wind ${wind}`;
+
+    const forecastLines: string[] = [];
+    const dayNames = ['Today', 'Tomorrow'];
+    const days: Array<{ maxtempF: string; mintempF: string; hourly?: Array<{ chanceofrain: string }> }> =
+      wj.weather ?? [];
+    for (let i = 0; i < Math.min(days.length, 3); i++) {
+      const label = dayNames[i] ?? `Day ${i + 1}`;
+      const hi = days[i].maxtempF ?? '?';
+      const lo = days[i].mintempF ?? '?';
+      const hourly = days[i].hourly ?? [];
+      const maxRain = hourly.reduce((m: number, h) => Math.max(m, parseInt(h.chanceofrain ?? '0', 10)), 0);
+      const precipStr = maxRain > 10 ? ` · ${maxRain}% precip` : '';
+      forecastLines.push(`  ${label}: ${hi}°/${lo}°F${precipStr}`);
+    }
+
+    return forecastLines.length > 0
+      ? `${currentLine}\n${forecastLines.join('\n')}`
+      : currentLine;
   } catch (err) {
     log.warn('wttr.in also failed', { error: errMsg(err) });
     return 'Weather unavailable.';
