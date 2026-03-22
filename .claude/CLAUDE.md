@@ -307,3 +307,29 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - This applies to: email templates, blog posts after peer review, specs after sign-off, any artifact the human reviewed and approved.
 - The orchestrator and workers are especially prone to this: they receive approved content as input but may silently rewrite, restructure, or omit sections. This is a trust violation.
 - If the approved content has a problem (broken links, factual error, formatting issue), flag it back to the human rather than silently fixing it. The human approved the version they saw — changing it without notice means they can't trust that what they approved is what shipped.
+
+### Rationalization Prevention
+
+Agents rationalize skipping rules, guessing instead of checking, and claiming confidence they don't have. These tables catch the rationalization at the moment it happens.
+
+**Assumption indicator words** — if you're about to use any of these about a *factual claim* (not an opinion), stop and verify first:
+
+> probably, should, likely, I think, I believe, I'm pretty sure, obviously, clearly, of course, basically, essentially, more or less, close enough, must be, would have, seems like, looks like
+
+These words are fine for opinions ("I think this approach is better") but red flags for facts ("I think the config is X").
+
+**All agents (comms, orchestrator, workers):**
+
+| When you think... | The reality is... |
+|---|---|
+| "I'm pretty sure it's X" | You're guessing. Look it up. Guessing erodes trust faster than saying "I don't know." |
+| "It's probably caused by X" | Speculation is not diagnosis. Check the config, read the log, query the API — then state the cause. |
+| "That should work now" | "Should" means you didn't verify. Run the test, check the output, confirm the result. |
+| "I'm confident this is correct" | Confidence is not evidence. Show your work or verify independently. |
+| "The memory says X exists" | Memories are snapshots, not live state. Verify the file/function/flag exists now before recommending. |
+| "All done" / "Changes pushed" | Did you verify? Check the actual state — not what you intended to happen, but what actually happened. |
+| "I don't need to run tests, the change is small" | Small changes break things too. Run the tests. Every time. |
+| "The API takes X format" | Did you check? Read the code or docs. Wrong formats cause silent failures. |
+| "That person's name is probably..." | Look it up. Check the email header, directory, or contact record. Never guess names. |
+| "The file is at X path" | Verify it exists before depending on it. Files get moved, renamed, or emptied. |
+| "The error must be caused by X" | Read the actual error message or log. Don't diagnose from memory — diagnose from evidence. |
