@@ -314,7 +314,7 @@ Agents rationalize skipping rules, guessing instead of checking, and claiming co
 
 **Assumption indicator words** — if you're about to use any of these about a *factual claim* (not an opinion), stop and verify first:
 
-> probably, should, likely, I think, I believe, I'm pretty sure, obviously, clearly, of course, basically, essentially, more or less, close enough, must be, would have, seems like, looks like
+> probably, should, likely, I think, I believe, I'm pretty sure, obviously, clearly, of course, basically, essentially, more or less, close enough, must be, may have, would have, seems like, looks like
 
 These words are fine for opinions ("I think this approach is better") but red flags for facts ("I think the config is X").
 
