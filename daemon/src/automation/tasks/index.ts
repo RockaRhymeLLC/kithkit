@@ -21,6 +21,7 @@ import { register as registerPeerHeartbeat } from './peer-heartbeat.js';
 import { register as registerMetricsAggregation } from './api-metrics-aggregation.js';
 import { register as registerDailyDigest } from './daily-digest.js';
 import { register as registerMorningBriefing } from './morning-briefing.js';
+import { register as registerKkitReflection } from './kkit-reflection.js';
 export { loadExternalTasks, type LoadResult } from './external-loader.js';
 
 /**
@@ -41,6 +42,7 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'api-metrics-aggregation', register: registerMetricsAggregation },
     { name: 'daily-digest', register: registerDailyDigest },
     { name: 'morning-briefing', register: registerMorningBriefing },
+    { name: 'kkit-reflection', register: registerKkitReflection },
   ];
 
   for (const { name, register } of registrations) {
