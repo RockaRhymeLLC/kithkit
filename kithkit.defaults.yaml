@@ -81,6 +81,32 @@ scheduler:
       enabled: true
       interval: "5m"
 
+    - name: kkit-reflection
+      cron: "0 3 * * *"
+      enabled: false
+      config:
+        dry_run: true
+        lookback_hours: 24
+        max_memories_per_run: 100
+        batch_size: 20
+        max_deletes_per_run: 10
+        enabled_actions:
+          - skill-update
+          - memory-keep
+          - memory-consolidate
+          - memory-expire
+          - todo-create
+        pattern_detection:
+          enabled: true
+          window_days: 7
+          threshold: 3
+        skill_mapping:
+          api-format: daemon-api
+          behavioral: null
+          process: null
+          tool-usage: null
+          communication: null
+
 security:
   rate_limits:
     incoming_max_per_minute: 5
