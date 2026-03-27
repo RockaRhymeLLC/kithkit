@@ -48,6 +48,7 @@ interface A2ANetworkClient {
     queued: string[];
     failed: string[];
   }>;
+  getGroups(): Promise<Array<{ groupId: string; name: string }>>;
 }
 
 export interface RouterDeps {
@@ -158,6 +159,32 @@ export class UnifiedA2ARouter {
     return { peer, qualified };
   }
 
+  // ── Group Mismatch Check ─────────────────────────────────────
+
+  /**
+   * Check if a DM target name matches a known group name.
+   * Returns a helpful error message if so, or null if no mismatch.
+   * Used to catch the common mistake of using `to: "group-name"` instead of `group: "group-name"`.
+   */
+  private async checkGroupMismatch(name: string): Promise<string | null> {
+    const network = this.deps.getNetworkClient();
+    if (!network) return null;
+
+    try {
+      const groups = await network.getGroups();
+      const match = groups.find(
+        (g) => g.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (match) {
+        return `'${name}' is a group, not a peer. Use the 'group' field instead of 'to' to send to groups.`;
+      }
+    } catch {
+      // Don't fail the send if group lookup fails — just skip the hint
+    }
+
+    return null;
+  }
+
   // ── Send (main orchestration) ────────────────────────────────
 
   async send(body: unknown): Promise<A2ASendResponse | A2AGroupSendResponse | A2ASendError> {
@@ -194,6 +221,17 @@ export class UnifiedA2ARouter {
     const target = request.to!;
     const route = request.route ?? 'auto';
     const { peer, qualified } = this.resolvePeer(target);
+
+    // Check if the caller accidentally put a group name in 'to' instead of 'group'
+    const groupMismatch = await this.checkGroupMismatch(target);
+    if (groupMismatch) {
+      return {
+        ok: false,
+        error: groupMismatch,
+        code: A2A_ERROR_CODES.PEER_NOT_FOUND,
+        timestamp: new Date().toISOString(),
+      };
+    }
 
     // Forced LAN
     if (route === 'lan') {
