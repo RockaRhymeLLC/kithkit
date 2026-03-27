@@ -239,7 +239,7 @@ const server = http.createServer((req, res) => {
 
 // ── Start ────────────────────────────────────────────────────
 
-const HOST = config.daemon.bind_host ?? '0.0.0.0'; // default: all interfaces for A2A
+const HOST = config.daemon.bind_host ?? '127.0.0.1';
 
 const MAX_BIND_RETRIES = 3;
 const BIND_RETRY_DELAY_MS = 1000;

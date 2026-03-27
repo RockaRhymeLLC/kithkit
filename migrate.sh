@@ -184,6 +184,9 @@ if $ROLLBACK; then
       if ! $DRY_RUN; then
         sed -i.bak 's|\.kithkit/hooks/|.claude/hooks/|g' "$kithkit_settings"
         rm -f "${kithkit_settings}.bak"
+        # Sync updated settings.json back to .claude/ so hooks point at existing paths
+        cp "$kithkit_settings" "$PROJECT_DIR/.claude/settings.json"
+        log "Synced updated settings.json to .claude/settings.json"
       fi
     fi
   fi
@@ -298,7 +301,9 @@ for f in \
   context-usage-orch.json \
   safe-senders.json \
   system-prompt.txt \
-  calendar.md; do
+  calendar.md \
+  browser-contexts.json \
+  browser-session.json; do
   move_file "$state_src/$f" "$state_dst/$f"
 done
 

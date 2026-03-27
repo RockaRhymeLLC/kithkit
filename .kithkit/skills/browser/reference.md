@@ -71,7 +71,7 @@ POST /session/start { "contextName": "chase" }  — Reuse or auto-create
 DELETE /contexts/verizon          — Delete a context
 ```
 
-Context names map to Browserbase context IDs in `.claude/state/browser-contexts.json`.
+Context names map to Browserbase context IDs in `.kithkit/state/browser-contexts.json`.
 
 ## Session & Hand-Off Timeouts
 
@@ -410,8 +410,8 @@ Stored in macOS Keychain:
 | `browser-sidecar/src/session-manager.ts` | Provider boundary — all Browserbase SDK calls |
 | `browser-sidecar/src/context-store.ts` | Context manifest (name→ID mapping) |
 | `daemon/src/browser/browser-sidecar.ts` | Sidecar process lifecycle management |
-| `.claude/state/browser-contexts.json` | Context manifest data |
-| `.claude/state/browser-session.json` | Crash recovery state (transient) |
+| `.kithkit/state/browser-contexts.json` | Context manifest data |
+| `.kithkit/state/browser-session.json` | Crash recovery state (transient) |
 
 ## Implementation Notes
 
