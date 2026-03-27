@@ -12,6 +12,10 @@ import type http from 'node:http';
 import { insert, get, remove, query, getDatabase } from '../core/db.js';
 import { generateEmbedding, embeddingToBuffer } from '../memory/embeddings.js';
 import { initVectorSearch, indexEmbedding, vectorSearch, hybridSearch, backfillEmbeddings } from '../memory/vector-search.js';
+import { createLogger } from '../core/logger.js';
+import { loadConfig } from '../core/config.js';
+
+const log = createLogger('memory-api');
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -26,6 +30,30 @@ interface Memory {
   created_at: string;
   updated_at: string;
   last_accessed: string | null;
+  origin_agent: string | null;
+  trigger: string | null;
+  shareable: number; // 1=yes, 0=no; default 1
+  decay_policy: string | null; // default 'default'
+}
+
+const DEFAULT_MEMORY_CAP = 50;
+
+/**
+ * Get the per-category memory cap from config, falling back to the default.
+ *
+ * NOTE: There are two config paths for this value:
+ *   - config.memory.category_cap  (read here, general memory config)
+ *   - config.self_improvement.lifecycle.category_cap  (used by memory-consolidation task)
+ * These are independent and may diverge if configured separately. Ideally they should be
+ * consolidated to a single source of truth in a future refactor.
+ */
+function getMemoryCap(): number {
+  try {
+    const config = loadConfig();
+    return (config as unknown as Record<string, unknown> & { memory?: { category_cap?: number } }).memory?.category_cap ?? DEFAULT_MEMORY_CAP;
+  } catch {
+    return DEFAULT_MEMORY_CAP;
+  }
 }
 
 /** Similarity threshold for vector dedup (0-1, higher = stricter).
@@ -72,6 +100,7 @@ export function _resetVectorForTesting(): void {
 // ── Helpers ──────────────────────────────────────────────────
 
 import { json, withTimestamp, parseBody } from './helpers.js';
+import { syncToPeers } from '../self-improvement/memory-sync.js';
 
 function extractId(pathname: string, prefix: string): string | null {
   if (!pathname.startsWith(prefix + '/')) return null;
@@ -92,6 +121,10 @@ function formatMemory(m: Memory): Record<string, unknown> {
     created_at: m.created_at,
     updated_at: m.updated_at,
     last_accessed: m.last_accessed,
+    origin_agent: m.origin_agent ?? null,
+    trigger: m.trigger ?? null,
+    shareable: m.shareable ?? 1,
+    decay_policy: m.decay_policy ?? 'default',
   };
 }
 
@@ -175,6 +208,61 @@ function searchMemories(filters: SearchFilters): Record<string, unknown>[] {
   return rows.map(formatMemory);
 }
 
+// ── Internal store function ───────────────────────────────────
+
+/**
+ * Store a memory directly (no HTTP round-trip). Safe to call from other API
+ * handlers — failures are non-fatal by convention; callers should wrap in
+ * try/catch if they don't want to propagate errors.
+ *
+ * The `dedup` option uses a simple time-based check (same source + first 50
+ * chars of content stored within the last 5 minutes) rather than vector
+ * similarity, so it works even when vector search is disabled.
+ */
+export async function storeMemoryInternal(opts: {
+  content: string;
+  category?: string;
+  tags?: string[];
+  source?: string;
+  importance?: number;
+  dedup?: boolean;
+}): Promise<void> {
+  const { content, category, tags, source, importance, dedup } = opts;
+
+  // Simple time-based dedup: skip if an identical (or near-identical) memory
+  // with the same source was stored in the last 5 minutes.
+  if (dedup && source) {
+    const prefix = content.slice(0, 50);
+    const existing = query<{ id: number }>(
+      `SELECT id FROM memories WHERE source = ? AND content LIKE ? AND created_at >= datetime('now', '-5 minutes') LIMIT 1`,
+      source,
+      `${prefix}%`,
+    );
+    if (existing.length > 0) return;
+  }
+
+  const data: Record<string, unknown> = { content };
+  if (category) data.category = category;
+  if (tags) data.tags = JSON.stringify(tags);
+  if (source) data.source = source;
+  if (importance != null) data.importance = importance;
+
+  const memory = insert<Memory>('memories', data);
+
+  // Auto-generate embedding if vector search is available (non-fatal on failure)
+  try {
+    if (_vectorEnabled) {
+      const embedding = await generateEmbedding(content);
+      const buf = embeddingToBuffer(embedding);
+      const db = getDatabase();
+      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(buf, memory.id);
+      indexEmbedding(memory.id, embedding);
+    }
+  } catch {
+    // Embedding failure is non-fatal
+  }
+}
+
 // ── Route handler ────────────────────────────────────────────
 
 export async function handleMemoryRoute(
@@ -185,6 +273,23 @@ export async function handleMemoryRoute(
   const method = req.method ?? 'GET';
 
   try {
+    // GET /memory/since/:timestamp — return shareable memories created after a timestamp
+    // Used by peers for offline catch-up
+    if (pathname.startsWith('/api/memory/since/') && method === 'GET') {
+      const rawTs = pathname.slice('/api/memory/since/'.length);
+      const ts = decodeURIComponent(rawTs);
+      if (!ts) {
+        json(res, 400, withTimestamp({ error: 'timestamp is required' }));
+        return true;
+      }
+      const memories = query<Memory>(
+        `SELECT * FROM memories WHERE shareable = 1 AND created_at > ? ORDER BY created_at ASC`,
+        ts,
+      );
+      json(res, 200, withTimestamp({ memories: memories.map(formatMemory) }));
+      return true;
+    }
+
     // POST /memory/backfill — generate embeddings for memories missing them
     if (pathname === '/api/memory/backfill' && method === 'POST') {
       if (!_vectorEnabled) {
@@ -243,13 +348,38 @@ export async function handleMemoryRoute(
         }
       }
 
+      // Soft cap: if a category is specified, count active (non-expiring) memories
+      // in that category. If at or over the cap, skip storage and warn.
+      if (body.category && typeof body.category === 'string') {
+        const cap = getMemoryCap();
+        const countRow = query<{ n: number }>(
+          `SELECT COUNT(*) as n FROM memories WHERE category = ? AND expires_at IS NULL`,
+          body.category,
+        );
+        const current = countRow[0]?.n ?? 0;
+        if (current >= cap) {
+          log.warn(`Memory cap reached for category '${body.category}' (${current}/${cap}) — skipping store`);
+          json(res, 200, withTimestamp({
+            skipped: true,
+            reason: `Category '${body.category}' has reached the memory cap (${cap})`,
+          }));
+          return true;
+        }
+      }
+
       const data: Record<string, unknown> = {
         content: body.content,
       };
-      if (body.type) data.type = body.type;
+      // Note: `type` field is accepted for API compatibility but not stored
+      // (the `type` column was removed in migration 010)
       if (body.category) data.category = body.category;
       if (body.tags) data.tags = JSON.stringify(body.tags);
       if (body.source) data.source = body.source;
+      if (body.importance != null) data.importance = body.importance;
+      if (body.origin_agent != null) data.origin_agent = body.origin_agent;
+      if (body.trigger != null) data.trigger = body.trigger;
+      if (body.shareable != null) data.shareable = body.shareable ? 1 : 0;
+      if (body.decay_policy != null) data.decay_policy = body.decay_policy;
 
       const memory = insert<Memory>('memories', data);
 
@@ -264,6 +394,13 @@ export async function handleMemoryRoute(
         }
       } catch {
         // Embedding generation failure is non-fatal — memory is still stored
+      }
+
+      // Async outbound sync to peers (non-blocking, fire-and-forget)
+      if (memory.shareable !== 0) {
+        syncToPeers(memory as unknown as Record<string, unknown>).catch((err) =>
+          log.warn('Memory sync to peers failed', { error: String(err) }),
+        );
       }
 
       json(res, 201, withTimestamp(formatMemory(memory)));

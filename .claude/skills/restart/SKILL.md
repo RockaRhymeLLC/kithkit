@@ -1,11 +1,11 @@
 ---
 name: restart
-description: Restart kithkit session gracefully. Use when MCP servers change, settings update, or context is full.
+description: Restart Claude Code session gracefully. Use when MCP servers change, settings update, or context is full.
 ---
 
 # Restart Session
 
-Restart your kithkit session. Use this when:
+Restart your Claude Code session. Use this when:
 - New MCP servers were added and need to load
 - Settings were changed that require restart
 - Context is full and you need a fresh start
@@ -13,8 +13,8 @@ Restart your kithkit session. Use this when:
 ## Workflow
 
 1. **Save current state** - Run `/save-state` to capture what you're working on
-2. **Notify user** - Let them know restart is happening via the active channel
-3. **Create restart flag** - Write to `.claude/state/restart-requested`
+2. **Create restart flag** - Write to `.claude/state/restart-requested`
+3. **Notify user** - Let them know restart is happening
 4. **Exit** - The restart-watcher service will detect the flag and restart the session
 
 ## Steps
@@ -22,27 +22,19 @@ Restart your kithkit session. Use this when:
 ```bash
 # 1. Save state (call the save-state skill first)
 
-# 2. Notify user via active channel (if not silent)
-CHANNEL=$(cat .claude/state/channel.txt 2>/dev/null | tr -d '[:space:]')
-if [ -n "$CHANNEL" ] && [ "$CHANNEL" != "silent" ]; then
-  # Send restart notification via the active channel
-  echo "Restarting now — be right back!"
-fi
-
-# 3. Create restart flag
+# 2. Create restart flag
 touch .claude/state/restart-requested
 
-# 4. Tell user (terminal)
+# 3. Tell user
 echo "Restart requested. Session will restart in ~5 seconds."
-echo "Attach after restart with: tmux attach -t <your-session-name>"
+echo "Attach after restart with: tmux attach -t assistant"
 ```
 
 ## Important
 
 - Always save state before restarting so context is preserved
-- The restart-watcher service must be running (managed by the daemon or launchd)
+- The restart-watcher service must be running (launchd)
 - After restart, the auto-prompt will trigger and you'll resume from saved state
-- The session-start hook sends a "back online" notification via the configured channel
 
 ## Manual Alternative
 

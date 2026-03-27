@@ -167,6 +167,19 @@ scheduler:
       enabled: true
 ```
 
+**Context watchdog dependency**: The `context-watchdog` task reads JSON state files written by the statusline script on every Claude turn. For it to work, add this to `.claude/settings.json`:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/context-monitor-statusline.sh"
+  }
+}
+```
+
+Without this, the watchdog silently no-ops — it has no context data to read. After 3 consecutive misses (~9 minutes), the daemon logs a warning to help diagnose the misconfiguration.
+
 Hot-reload the config without restarting the daemon:
 
 ```bash
@@ -262,6 +275,47 @@ The `scripts/` directory provides common operational commands:
 | `dashboard.sh` | Ops dashboard (tasks, usage, memory) |
 | `backup.sh` | Manual backup of state and database |
 | `repo-audit.sh` | Audit repository for uncommitted changes |
+
+## Auto-Start with launchd (macOS)
+
+To have your agent start automatically at login and restart on crash, install the three launchd services using the provided install script:
+
+```bash
+./scripts/install-service.sh
+```
+
+This renders the templates in `templates/launchd/` with your real paths and installs them to `~/Library/LaunchAgents/`. It will prompt you to load the services immediately.
+
+The three services are:
+
+| Service | Plist | Purpose |
+|---------|-------|---------|
+| Daemon | `com.assistant.daemon` | Node.js daemon — restarts automatically on crash (KeepAlive) |
+| Comms agent | `com.assistant.comms` | Starts the comms tmux session at login |
+| Restart watcher | `com.assistant.restart-watcher` | Monitors for the restart flag, handles `/restart` skill |
+
+**Important notes:**
+
+- The comms tmux session name **must be `comms1`**. Set this in your config:
+  ```yaml
+  tmux:
+    session: comms1
+  ```
+  If omitted, the daemon defaults to `comms1`. Using a different session name will break message delivery and the `/restart` skill.
+
+- The `restart-watcher` service is required for the `/restart` slash command to work. Without it, `/restart` writes a flag file but nothing acts on it — the session will not relaunch automatically.
+
+- Use `--dry-run` to preview what the script would do before running it:
+  ```bash
+  ./scripts/install-service.sh --dry-run
+  ```
+
+- To uninstall all three services:
+  ```bash
+  ./scripts/install-service.sh --uninstall
+  ```
+
+See [Daemon Restart SOP](daemon-restart-sop.md) for manual restart procedures and service management commands.
 
 ## Next Steps
 

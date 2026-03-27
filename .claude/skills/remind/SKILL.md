@@ -1,12 +1,12 @@
 ---
 name: remind
-description: Sets timed reminders delivered via the active notification channel. Use when the user asks to be reminded of something, set an alarm, get a notification at a specific time, or schedule a reminder for later.
+description: Set timed reminders delivered via Telegram. Creates self-cleaning launchd jobs. Use when the user asks to be reminded of something at a specific time.
 argument-hint: ["message" at <time> on <date>] | [list] | [cancel <id>]
 ---
 
 # Timed Reminders
 
-Set reminders that fire at a specific date/time via the active notification channel, even when you're not in an active session. Uses launchd one-shot jobs that self-clean after delivery.
+Set reminders that fire at a specific date/time via Telegram, even when you're not in an active session. Uses launchd one-shot jobs that self-clean after delivery.
 
 ## Commands
 
@@ -28,8 +28,8 @@ Parse $ARGUMENTS to determine the action:
 ## How It Works
 
 Each reminder creates two files:
-1. **Script**: `scripts/reminders/remind-<id>.sh` — sends the notification, then deletes itself and its plist
-2. **Plist**: `~/Library/LaunchAgents/com.kithkit.reminder.<id>.plist` — launchd job that fires at the scheduled time
+1. **Script**: `scripts/reminders/remind-<id>.sh` — sends the Telegram message, then deletes itself and its plist
+2. **Plist**: `~/Library/LaunchAgents/com.assistant.reminder.<id>.plist` — launchd job that fires at the scheduled time
 
 The `<id>` is derived from the date/time: `YYYYMMDD-HHMM` (e.g., `20260131-1030`).
 
@@ -40,7 +40,8 @@ The `<id>` is derived from the date/time: `YYYYMMDD-HHMM` (e.g., `20260131-1030`
 1. **Parse the request**: Extract message, date, and time from arguments
 2. **Resolve relative dates**: "tomorrow", "Friday", "tonight", etc. into absolute dates
 3. **Validate**: Ensure the date/time is in the future
-4. **Create the script**:
+4. **Get chat ID**: Look up the user's Telegram chat ID from memory or kithkit.config.yaml
+5. **Create the script**:
 
 ```bash
 #!/bin/bash
@@ -51,16 +52,16 @@ The `<id>` is derived from the date/time: `YYYYMMDD-HHMM` (e.g., `20260131-1030`
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:$PATH"
 BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-"$BASE_DIR/scripts/notify.sh" "REMINDER_MESSAGE"
+"$BASE_DIR/scripts/telegram-send.sh" "CHAT_ID" "REMINDER_MESSAGE"
 
 # Clean up
-launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.kithkit.reminder.ID.plist 2>/dev/null
-rm -f ~/Library/LaunchAgents/com.kithkit.reminder.ID.plist
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.assistant.reminder.ID.plist 2>/dev/null
+rm -f ~/Library/LaunchAgents/com.assistant.reminder.ID.plist
 rm -f "$0"
 ```
 
-5. **Make executable**: `chmod +x` the script
-6. **Create the plist**:
+6. **Make executable**: `chmod +x` the script
+7. **Create the plist**:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -69,7 +70,7 @@ rm -f "$0"
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>com.kithkit.reminder.ID</string>
+    <string>com.assistant.reminder.ID</string>
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
@@ -94,20 +95,20 @@ rm -f "$0"
 </plist>
 ```
 
-7. **Load the plist**: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.kithkit.reminder.ID.plist`
-8. **Verify**: `launchctl list | grep reminder.ID`
-9. **Confirm**: Tell the user when the reminder will fire
+8. **Load the plist**: `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.assistant.reminder.ID.plist`
+9. **Verify**: `launchctl list | grep reminder.ID`
+10. **Confirm**: Tell the user when the reminder will fire
 
 ### Listing Reminders
 
-1. Glob for `~/Library/LaunchAgents/com.kithkit.reminder.*.plist`
+1. Glob for `~/Library/LaunchAgents/com.assistant.reminder.*.plist`
 2. For each, read the matching script in `scripts/reminders/` to extract the message
 3. Display: ID, scheduled time, message
 
 ### Canceling a Reminder
 
-1. Unload: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.kithkit.reminder.ID.plist`
-2. Delete plist: `rm ~/Library/LaunchAgents/com.kithkit.reminder.ID.plist`
+1. Unload: `launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.assistant.reminder.ID.plist`
+2. Delete plist: `rm ~/Library/LaunchAgents/com.assistant.reminder.ID.plist`
 3. Delete script: `rm scripts/reminders/remind-ID.sh`
 4. Confirm cancellation
 
@@ -125,13 +126,7 @@ Resolve natural language to absolute dates:
 | `2026-02-01` | Specific date |
 | `5pm`, `17:00`, `5:30 PM` | Specific time |
 
-If no time given and no natural-language time keyword (`morning`, `tonight`), default to **9:00 AM**.
-
-## Notification Delivery
-
-Reminders fire via `scripts/notify.sh`, which routes to the active notification channel (Telegram, desktop notification, etc.). Because reminders fire outside of active sessions — when the transcript stream is not running — `notify.sh` must deliver directly, not via the session transcript.
-
-The `notify.sh` script should be implemented to match whichever channels are configured in `kithkit.config.yaml`. For a Telegram-enabled setup, this would call the Telegram send script directly. For other setups, it might use macOS notifications or another channel.
+If no time given, default to **9:00 AM**.
 
 ## Output Format
 
@@ -141,7 +136,7 @@ Reminder set!
 - Message: "Time to leave for the game"
 - When: Saturday Jan 31, 2026 at 10:30 AM
 - ID: 20260131-1030
-- Delivery: active channel (notify.sh)
+- Delivery: Telegram
 ```
 
 ### List Output
@@ -152,7 +147,7 @@ Reminder set!
   "Time to leave for the game"
 
 [20260205-0900] Wed Feb 5 at 9:00 AM
-  "Follow up on project setup"
+  "Follow up on CC4Me setup"
 ```
 
 ### Cancel Confirmation
@@ -166,14 +161,14 @@ Reminder canceled: 20260131-1030
 | What | Where |
 |------|-------|
 | Reminder scripts | `scripts/reminders/remind-<id>.sh` |
-| launchd plists | `~/Library/LaunchAgents/com.kithkit.reminder.<id>.plist` |
+| launchd plists | `~/Library/LaunchAgents/com.assistant.reminder.<id>.plist` |
 | Logs | `logs/reminder-<id>.log` |
-| Notification script | `scripts/notify.sh` |
 
 ## Notes
 
 - Reminders fire even when you're not in an active Claude Code session
 - Each reminder is one-shot and self-cleaning (deletes its own script + plist after firing)
 - If the Mac is asleep when a reminder is due, launchd fires it on next wake
-- Always use `scripts/notify.sh` for reminders (not the transcript stream) since reminders fire outside sessions
+- Get chat ID from `kithkit.config.yaml` (channels.telegram.owner) or memory. Override by specifying a different recipient.
+- Always use `telegram-send.sh` for reminders (not the transcript stream) since reminders fire outside sessions
 - Ensure `scripts/reminders/` directory exists before creating scripts

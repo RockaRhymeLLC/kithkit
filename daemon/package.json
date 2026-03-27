@@ -6,10 +6,10 @@
   "description": "Kithkit daemon — HTTP API, SQLite state, agent lifecycle, message routing.",
   "main": "dist/main.js",
   "scripts": {
-    "build": "tsc && cp -r src/core/migrations dist/core/",
+    "build": "rm -rf dist && tsc && cp -r src/core/migrations dist/core/",
     "start": "node dist/main.js",
     "dev": "tsc --watch",
-    "test": "node --test --test-concurrency=1 dist/__tests__/*.test.js dist/__tests__/integration/*.test.js",
+    "test": "node --test --test-concurrency=1 dist/__tests__/*.test.js dist/__tests__/integration/*.test.js dist/self-improvement/__tests__/*.test.js dist/api/__tests__/*.test.js",
     "clean": "rm -rf dist"
   },
   "engines": {
@@ -20,12 +20,14 @@
     "@anthropic-ai/claude-agent-sdk": "^0.2.50",
     "@huggingface/transformers": "^3.8.1",
     "better-sqlite3": "^12.6.2",
-    "cron-parser": "^5.5.0",
+"cron-parser": "^5.5.0",
     "js-yaml": "^4.1.1",
-    "sqlite-vec": "^0.1.7-alpha.2"
+    "sqlite-vec": "^0.1.7-alpha.2",
+    "ws": "^8.19.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
-    "@types/js-yaml": "^4.0.9"
+    "@types/js-yaml": "^4.0.9",
+    "@types/ws": "^8.18.1"
   }
 }

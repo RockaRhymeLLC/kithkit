@@ -5,9 +5,10 @@
  */
 
 import http from 'node:http';
+import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, type KithkitConfig } from './core/config.js';
-import { openDatabase, closeDatabase } from './core/db.js';
+import { openDatabase, closeDatabase, resolveDbPath, migrateDbIfNeeded } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
@@ -15,16 +16,19 @@ import { handleMemoryRoute } from './api/memory.js';
 import { handleAgentsRoute, setProfilesDir } from './api/agents.js';
 import { configure as configureTmux } from './agents/tmux.js';
 import { recoverFromRestart } from './agents/recovery.js';
+import { cleanupOrphanedResources } from './core/orphan-cleanup.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
-import { handleConfigRoute } from './api/config.js';
+import { handleConfigRoute, setConfigWatcher, setCurrentDbPath, setConfigFilePath } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
-import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleSelftestRoute } from './api/selftest.js';
 import { handleSyncClaudeRoute } from './api/sync-claude.js';
 import { handleTaskQueueRoute } from './api/task-queue.js';
 import { handleContactsRoute } from './api/contacts.js';
+import { handleTimerRoute, initTimers } from './api/timer.js';
+import { handleMetricsRoute, logRequest } from './api/metrics.js';
+import { handleSelfImprovementRoute } from './api/self-improvement.js';
 import {
   getExtension,
   isDegraded,
@@ -51,6 +55,7 @@ import {
   type CheckResult,
   type HealthCheckFn,
 } from './core/extended-status.js';
+import { createConfigWatcher } from './core/config-watcher.js';
 
 export const VERSION = '0.1.0';
 
@@ -97,12 +102,37 @@ const log = createLogger('main');
 
 // ── Database ─────────────────────────────────────────────────
 
-openDatabase(projectDir);
+// Resolve DB path from config (or platform default), then migrate if needed.
+// Migration MUST run before openDatabase() to avoid WAL lock on the source.
+const resolvedDbPath = resolveDbPath(projectDir, config.daemon.db_path);
+await migrateDbIfNeeded(projectDir, resolvedDbPath, log);
+openDatabase(projectDir, resolvedDbPath);
+log.info('Database opened', { path: resolvedDbPath });
 
 // Reload persisted timers (must run after openDatabase)
 initTimers();
 
-// Wire up agent profiles directory (.kithkit/agents/ is authoritative; synced back to .claude/agents/)
+// Clean up orphaned resources from previous daemon run (dead timers, stuck
+// tasks, zombie worker records). Runs after DB is open and timers are loaded
+// so that stale timer records are visible, but before the scheduler starts.
+const orphanReport = cleanupOrphanedResources();
+if (orphanReport.timersExpired > 0 || orphanReport.tasksFailedOrphaned > 0 || orphanReport.jobsFailedOrphaned > 0) {
+  log.info('Orphan cleanup summary', {
+    timersExpired: orphanReport.timersExpired,
+    tasksFailedOrphaned: orphanReport.tasksFailedOrphaned,
+    jobsFailedOrphaned: orphanReport.jobsFailedOrphaned,
+  });
+}
+// Wire up config hot-reload watcher
+const configPath = path.resolve(projectDir, 'kithkit.config.yaml');
+const configWatcher = createConfigWatcher(configPath, config);
+setConfigWatcher(configWatcher);
+setCurrentDbPath(resolvedDbPath);
+setConfigFilePath(configPath);
+configWatcher.start();
+log.info('Config watcher started', { path: configPath });
+
+// Wire up agent profiles directory
 setProfilesDir(path.resolve(projectDir, '.kithkit', 'agents'));
 
 // Configure tmux session management
@@ -133,21 +163,58 @@ function addTimestamp(res: http.ServerResponse): void {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://localhost:${config.daemon.port}`);
+  const requestStartMs = Date.now();
+
+  // Capture status code for metrics logging
+  let capturedStatusCode = 200;
+  const origWriteHead = res.writeHead.bind(res);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  res.writeHead = function metricsWriteHead(statusCode: number, ...args: any[]) {
+    capturedStatusCode = statusCode;
+    return origWriteHead(statusCode, ...args);
+  } as typeof res.writeHead;
 
   addTimestamp(res);
+
+  // CORS preflight for /health (needed by network status dashboard)
+  if (req.method === 'OPTIONS' && url.pathname === '/health') {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return;
+  }
 
   // Health endpoint
   if (req.method === 'GET' && url.pathname === '/health') {
     const health = getHealth(VERSION);
-    const extRoutes = getRegisteredRoutes();
     const ext = getExtension();
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({
+
+    // Detect if request is from localhost or external (via tunnel/proxy)
+    const remoteAddr = req.socket.remoteAddress ?? '';
+    const cfIp = req.headers['cf-connecting-ip'] as string | undefined;
+    const isLocal = !cfIp && (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1');
+
+    const response: Record<string, unknown> = {
       ...health,
       degraded: isDegraded(),
       extension: ext ? ext.name : null,
-      extensionRoutes: extRoutes,
-    }));
+    };
+
+    // Only include sensitive details for localhost requests
+    if (isLocal) {
+      response.extensionRoutes = getRegisteredRoutes();
+      response.db_path = resolvedDbPath;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    });
+    res.end(JSON.stringify(response));
     return;
   }
 
@@ -192,7 +259,6 @@ const server = http.createServer((req, res) => {
       const handlers = [
         () => handleAgentsRoute(req, res, url.pathname),
         () => handleOrchestratorRoute(req, res, url.pathname),
-        () => handleTimerRoute(req, res, url.pathname),
         () => handleTaskQueueRoute(req, res, url.pathname, url.searchParams),
         () => handleContactsRoute(req, res, url.pathname, url.searchParams),
         () => handleSendRoute(req, res, url.pathname),
@@ -203,6 +269,9 @@ const server = http.createServer((req, res) => {
         () => handleConfigRoute(req, res, url.pathname),
         () => handleSyncClaudeRoute(req, res, url.pathname),
         () => handleSelftestRoute(req, res, url.pathname),
+        () => handleMetricsRoute(req, res, url.pathname, url.searchParams),
+        () => handleTimerRoute(req, res, url.pathname),
+        () => handleSelfImprovementRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {
         const handled = await handler();
@@ -223,13 +292,80 @@ const server = http.createServer((req, res) => {
       if (handled) return;
     }
 
+    // Static file serving from daemon/public/
+    if (req.method === 'GET') {
+      const safePath = path.normalize(url.pathname).replace(/^(\.\.[/\\])+/, '');
+      const filePath = path.join(projectDir, 'daemon', 'public', safePath === '/' ? 'index.html' : safePath);
+      if (filePath.startsWith(path.join(projectDir, 'daemon', 'public'))) {
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.isFile()) {
+            const extname = path.extname(filePath).toLowerCase();
+            const mimeTypes: Record<string, string> = {
+              '.html': 'text/html',
+              '.css': 'text/css',
+              '.js': 'application/javascript',
+              '.json': 'application/json',
+              '.png': 'image/png',
+              '.svg': 'image/svg+xml',
+              '.ico': 'image/x-icon',
+            };
+            const contentType = mimeTypes[extname] ?? 'application/octet-stream';
+            const content = fs.readFileSync(filePath);
+            res.writeHead(200, { 'Content-Type': contentType });
+            res.end(content);
+            return;
+          }
+        } catch {
+          // File not found — fall through to 404
+        }
+      }
+    }
+
     // 404 fallback
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
   };
 
-  handleRoutes().catch((err) => {
-    log.error('Request error', { path: url.pathname, error: String(err) });
+  // Buffer the full request body before dispatching routes.
+  // This ensures parseBody() can read it even for handlers that are checked
+  // later in the loop (after awaits have given the event loop time to flush
+  // the stream through the metrics listener).
+  const bodyChunks: Buffer[] = [];
+  req.on('data', (chunk: Buffer) => bodyChunks.push(chunk));
+  req.on('end', () => {
+    const rawBody = Buffer.concat(bodyChunks);
+    (req as unknown as Record<string, unknown>)._rawBody = rawBody;
+
+    // Wire up metrics finish logger now that we have the buffered body
+    res.on('finish', () => {
+      const latencyMs = Date.now() - requestStartMs;
+      let capturedBodyFields: string[] | null = null;
+      if (capturedStatusCode >= 400 && capturedStatusCode < 500 && rawBody.length > 0) {
+        try {
+          const body = JSON.parse(rawBody.toString());
+          if (body && typeof body === 'object') {
+            capturedBodyFields = Object.keys(body as object);
+          }
+        } catch {
+          // Not JSON — ignore
+        }
+      }
+      if (url.pathname !== '/api/metrics') {
+        logRequest(req, capturedStatusCode, latencyMs, capturedBodyFields);
+      }
+    });
+
+    handleRoutes().catch((err) => {
+      log.error('Request error', { path: url.pathname, error: String(err) });
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal server error', timestamp: new Date().toISOString() }));
+      }
+    });
+  });
+  req.on('error', (err) => {
+    log.error('Request stream error', { path: url.pathname, error: String(err) });
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Internal server error', timestamp: new Date().toISOString() }));
@@ -239,7 +375,7 @@ const server = http.createServer((req, res) => {
 
 // ── Start ────────────────────────────────────────────────────
 
-const HOST = config.daemon.bind_host ?? '127.0.0.1';
+const HOST = config.daemon.bind_host ?? '127.0.0.1'; // default: localhost only (security boundary)
 
 const MAX_BIND_RETRIES = 3;
 const BIND_RETRY_DELAY_MS = 1000;
@@ -282,6 +418,108 @@ server.on('error', (err: NodeJS.ErrnoException) => {
 
 tryListen();
 
+// ── Optional LAN listener (A2A only) ─────────────────────────
+let lanServer: http.Server | null = null;
+
+if (config.daemon.lan?.enabled) {
+  const lanConfig = config.daemon.lan;
+  const lanLog = createLogger('lan');
+
+  lanServer = http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', `http://localhost:${lanConfig.port}`);
+    const requestStartMs = Date.now();
+
+    let capturedStatusCode = 200;
+    const origWriteHead = res.writeHead.bind(res);
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    res.writeHead = function metricsWriteHead(statusCode: number, ...args: any[]) {
+      capturedStatusCode = statusCode;
+      return origWriteHead(statusCode, ...args);
+    } as typeof res.writeHead;
+
+    res.on('finish', () => {
+      const latencyMs = Date.now() - requestStartMs;
+      logRequest(req, capturedStatusCode, latencyMs, null);
+    });
+
+    addTimestamp(res);
+
+    // CORS preflight for /health
+    if (req.method === 'OPTIONS' && url.pathname === '/health') {
+      res.writeHead(204, {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'GET, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+        'Access-Control-Max-Age': '86400',
+      });
+      res.end();
+      return;
+    }
+
+    // Health endpoint
+    if (req.method === 'GET' && url.pathname === '/health') {
+      const health = getHealth(VERSION);
+      const ext = getExtension();
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(JSON.stringify({
+        ...health,
+        degraded: isDegraded(),
+        extension: ext ? ext.name : null,
+        listener: 'lan',
+      }));
+      return;
+    }
+
+    // A2A routes only — delegate to extension route registry
+    if (url.pathname.startsWith('/agent/')) {
+      const handleLanRoute = async (): Promise<void> => {
+        if (!isDegraded()) {
+          const routeHandled = await matchRoute(req, res, url.pathname, url.searchParams);
+          if (routeHandled) return;
+        }
+
+        // Extension direct onRoute fallback
+        const ext = getExtension();
+        if (ext?.onRoute && !isDegraded()) {
+          const handled = await ext.onRoute(req, res, url.pathname, url.searchParams);
+          if (handled) return;
+        }
+
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
+      };
+
+      handleLanRoute().catch((err) => {
+        lanLog.error('LAN request error', { path: url.pathname, error: String(err) });
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Internal server error', timestamp: new Date().toISOString() }));
+        }
+      });
+      return;
+    }
+
+    // Block everything else
+    res.writeHead(403, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      error: 'LAN listener only serves A2A endpoints',
+      timestamp: new Date().toISOString(),
+    }));
+  });
+
+  lanServer.on('error', (err: NodeJS.ErrnoException) => {
+    lanLog.error(`LAN server error: ${err.message}`);
+    // Don't exit the process — LAN listener is optional
+  });
+
+  lanServer.listen(lanConfig.port, lanConfig.bind_host, () => {
+    lanLog.info(`LAN server listening on ${lanConfig.bind_host}:${lanConfig.port} (A2A routes only)`);
+  });
+}
+
 // ── Graceful shutdown ────────────────────────────────────────
 
 async function shutdown(signal: string): Promise<void> {
@@ -300,14 +538,21 @@ async function shutdown(signal: string): Promise<void> {
     }
   }
 
+  if (lanServer) {
+    lanServer.close();
+    log.info('LAN server stopped');
+  }
+
+  configWatcher.stop();
   closeDatabase();
   log.info('Database closed');
 
+  const forceExitHandle = setTimeout(() => process.exit(1), 5000);
   server.close(() => {
+    clearTimeout(forceExitHandle);
     log.info('Daemon stopped');
     process.exit(0);
   });
-  setTimeout(() => process.exit(1), 5000);
 }
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));

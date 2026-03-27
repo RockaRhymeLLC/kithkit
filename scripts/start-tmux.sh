@@ -10,6 +10,7 @@
 #   ./start-tmux.sh                    # Start new session or attach to existing
 #   ./start-tmux.sh --detach           # Start detached (for launchd)
 #   ./start-tmux.sh --skip-permissions # Skip Claude's permission prompts
+#   Config: set claude.skip_permissions=true in kithkit.config.yaml (preferred, survives reboots)
 
 set -e
 
@@ -46,7 +47,7 @@ if session_exists; then
     else
         # Session exists but claude is dead — kill stale session and recreate
         echo "Session '$SESSION_NAME' exists but claude is not running — restarting"
-        $TMUX_CMD kill-session -t "$SESSION_NAME" 2>/dev/null
+        $TMUX_CMD kill-session -t "=$SESSION_NAME" 2>/dev/null
     fi
 fi
 

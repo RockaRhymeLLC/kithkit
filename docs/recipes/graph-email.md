@@ -149,7 +149,7 @@ export interface EmailProvider {
 ### Graph provider implementation
 
 ```typescript
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "util";
 import type { EmailProvider, EmailMessage, SendOptions } from "./types.js";
 
@@ -228,7 +228,7 @@ export class GraphEmailProvider implements EmailProvider {
   isConfigured(): boolean {
     // Lightweight check — just verifies keychain entries exist
     try {
-      execFile("security", ["find-generic-password", "-s", this.keychainClientId]);
+      execFileSync("security", ["find-generic-password", "-s", this.keychainClientId], { stdio: "pipe" });
       return true;
     } catch {
       return false;

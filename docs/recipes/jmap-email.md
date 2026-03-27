@@ -197,7 +197,7 @@ async function discoverSession(
 ### JMAP provider implementation
 
 ```typescript
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "util";
 import type { EmailProvider, EmailMessage, SendOptions } from "./types.js";
 
@@ -219,7 +219,6 @@ export class JmapEmailProvider implements EmailProvider {
 
   isConfigured(): boolean {
     try {
-      const { execFileSync } = require("child_process");
       execFileSync("security", [
         "find-generic-password",
         "-s", this.keychainToken,

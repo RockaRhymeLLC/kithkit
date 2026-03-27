@@ -5,15 +5,31 @@
 agent:
   name: Assistant
 
+claude:
+  skip_permissions: false    # Set true to always pass --dangerously-skip-permissions
+
 daemon:
   port: 3847
+  bind_host: "127.0.0.1"
   log_level: info
   log_dir: logs
+  # db_path: "~/Library/Application Support/kithkit/kithkit.db"
+  # Database file location. If omitted, uses the platform default:
+  #   macOS  → ~/Library/Application Support/kithkit/kithkit.db
+  #   Linux  → $XDG_DATA_HOME/kithkit/kithkit.db  (fallback: ~/.local/share/kithkit/kithkit.db)
+  #   Other  → ~/.kithkit/data/kithkit.db
+  # Supports ~ expansion. Relative paths resolve from projectDir (not recommended).
+  # Changing db_path requires a daemon restart — hot-reload is rejected.
+  lan:
+    enabled: false
+    bind_host: "127.0.0.1"
+    port: 3848
   log_rotation:
     max_size_mb: 10
     max_files: 5
 
 scheduler:
+  tasks_dirs: []          # Additional directories to scan for external task handler files
   tasks:
     - name: context-watchdog
       interval: "3m"
@@ -51,7 +67,78 @@ scheduler:
       config:
         requires_session: true
 
+    - name: api-metrics-aggregation
+      interval: "1h"
+      enabled: true
+      config:
+        requires_session: false
+
+    - name: "comms-heartbeat"
+      enabled: true
+      interval: "60s"
+
+    - name: "orch-stale-task-recovery"
+      enabled: true
+      interval: "5m"
+
+    - name: kkit-reflection
+      cron: "0 3 * * *"
+      enabled: false
+      config:
+        dry_run: true
+        lookback_hours: 24
+        max_memories_per_run: 100
+        batch_size: 20
+        max_deletes_per_run: 10
+        enabled_actions:
+          - skill-update
+          - memory-keep
+          - memory-consolidate
+          - memory-expire
+          - todo-create
+        pattern_detection:
+          enabled: true
+          window_days: 7
+          threshold: 3
+        skill_mapping:
+          api-format: daemon-api
+          behavioral: null
+          process: null
+          tool-usage: null
+          communication: null
+
 security:
   rate_limits:
     incoming_max_per_minute: 5
     outgoing_max_per_minute: 10
+
+self_improvement:
+  enabled: false
+  retro:
+    enabled: false
+    triggers:
+      on_error: true
+      on_correction: true
+      on_retry: true
+    max_learnings_per_retro: 5
+  transcript_review:
+    enabled: false
+    interval_actions: 25
+    interval_minutes: 30
+    max_learnings_per_review: 3
+  correction_trigger:
+    enabled: false
+  pre_task_injection:
+    enabled: false
+    max_memories_injected: 10
+    min_relevance_score: 0.4
+  memory_sync:
+    enabled: false
+    peers: []
+  lifecycle:
+    consolidation_threshold: 0.85
+    category_cap: 50
+    decay:
+      default: "30d"
+      short: "7d"
+      evergreen: "never"

@@ -1,7 +1,8 @@
 /**
  * Task Queue API — structured task management for orchestrator work.
  *
- * State machine: pending → assigned → in_progress → completed/failed
+ * State machine: pending → assigned → in_progress → completed/failed/cancelled
+ * Retry: failed → pending (increments retry_count)
  *
  * Routes:
  *   POST   /api/orchestrator/tasks              — Create a task
@@ -11,6 +12,8 @@
  *   POST   /api/orchestrator/tasks/:id/activity — Post activity entry
  *   GET    /api/orchestrator/tasks/:id/activity — Get activity log (paginated)
  *   POST   /api/orchestrator/tasks/:id/workers  — Assign worker to task
+ *   POST   /api/orchestrator/tasks/:id/retry    — Retry a failed task
+ *   POST   /api/orchestrator/tasks/:id/cancel   — Cancel a pending/in_progress task
  */
 
 import type http from 'node:http';
@@ -19,13 +22,25 @@ import { json, withTimestamp, parseBody } from './helpers.js';
 import { query, exec, get } from '../core/db.js';
 import { injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
+import { storeMemoryInternal } from './memory.js';
+import { evaluateTask as _evaluateTask } from '../self-improvement/retro-evaluator.js';
+
+// Injectable for testing — allows tests to mock evaluateTask without spawning real workers
+let _evalFn: (taskId: string) => Promise<void> = _evaluateTask;
+export function _setEvaluateTaskFnForTesting(fn: ((taskId: string) => Promise<void>) | null): void {
+  _evalFn = fn ?? _evaluateTask;
+}
 
 const log = createLogger('task-queue');
 
 // ── Types ────────────────────────────────────────────────────
 
-type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed';
+type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
 type ActivityType = 'progress' | 'note';
+
+type TaskOutcome = 'success' | 'partial' | 'failed' | 'unknown';
+
+const VALID_OUTCOMES: readonly TaskOutcome[] = ['success', 'partial', 'failed', 'unknown'];
 
 interface OrchestratorTask {
   id: string;
@@ -36,7 +51,11 @@ interface OrchestratorTask {
   priority: number;
   result: string | null;
   error: string | null;
+  retry_count: number;
+  work_notes: string | null;
   timeout_seconds: number | null;
+  outcome: TaskOutcome | null;
+  outcome_notes: string | null;
   created_at: string;
   assigned_at: string | null;
   started_at: string | null;
@@ -63,19 +82,20 @@ interface TaskActivity {
 
 // ── Constants ────────────────────────────────────────────────
 
-const VALID_STATUSES: readonly TaskStatus[] = ['pending', 'assigned', 'in_progress', 'completed', 'failed'];
-const TERMINAL_STATUSES: readonly TaskStatus[] = ['completed', 'failed'];
+const VALID_STATUSES: readonly TaskStatus[] = ['pending', 'assigned', 'in_progress', 'completed', 'failed', 'cancelled'];
+const TERMINAL_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'cancelled'];
 const VALID_ACTIVITY_TYPES: readonly ActivityType[] = ['progress', 'note'];
 
 /**
  * Valid status transitions. Key = current status, value = allowed next statuses.
  */
 const VALID_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
-  pending: ['assigned', 'failed'],
-  assigned: ['in_progress', 'failed', 'pending'],
-  in_progress: ['completed', 'failed'],
+  pending: ['assigned', 'failed', 'cancelled'],
+  assigned: ['in_progress', 'failed', 'pending', 'cancelled'],
+  in_progress: ['completed', 'failed', 'cancelled'],
   completed: [],
-  failed: [],
+  failed: ['pending'],  // retry: failed → pending
+  cancelled: [],
 };
 
 // ── Validation ───────────────────────────────────────────────
@@ -167,12 +187,13 @@ export async function handleTaskQueueRoute(
       const ts = now();
 
       exec(
-        `INSERT INTO orchestrator_tasks (id, title, description, status, priority, timeout_seconds, created_at, updated_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
+        `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, timeout_seconds, created_at, updated_at)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
         id,
         body.title,
         typeof body.description === 'string' ? body.description : null,
         priority,
+        typeof body.work_notes === 'string' ? body.work_notes : null,
         typeof body.timeout_seconds === 'number' ? body.timeout_seconds : null,
         ts,
         ts,
@@ -203,7 +224,7 @@ export async function handleTaskQueueRoute(
         );
       } else {
         tasks = query<OrchestratorTask>(
-          'SELECT * FROM orchestrator_tasks ORDER BY priority DESC, created_at ASC',
+          "SELECT * FROM orchestrator_tasks WHERE status != 'cancelled' ORDER BY priority DESC, created_at ASC",
         );
       }
 
@@ -336,6 +357,95 @@ export async function handleTaskQueueRoute(
       return true;
     }
 
+
+    // POST /api/orchestrator/tasks/:id/retry — retry a failed task
+    if (subpath === '/retry' && method === 'POST') {
+      const task = getTask(taskId);
+      if (!task) {
+        json(res, 404, withTimestamp({ error: 'Task not found' }));
+        return true;
+      }
+
+      if (task.status !== 'failed') {
+        json(res, 409, withTimestamp({ error: `Can only retry failed tasks, current status: ${task.status}` }));
+        return true;
+      }
+
+      const ts = now();
+      const newRetryCount = (task.retry_count ?? 0) + 1;
+
+      exec(
+        `UPDATE orchestrator_tasks SET status = 'pending', assignee = NULL, error = NULL, result = NULL, retry_count = ?, completed_at = NULL, updated_at = ? WHERE id = ?`,
+        newRetryCount, ts, taskId,
+      );
+
+      // Log retry activity
+      exec(
+        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+         VALUES (?, 'daemon', 'note', 'retry', ?, ?)`,
+        taskId, `Task retried (attempt ${newRetryCount + 1})`, ts,
+      );
+
+      // Alert comms after 2 consecutive failures
+      if (newRetryCount >= 2) {
+        injectMessage('comms', `[task alert] "${task.title}" has failed ${newRetryCount} times and is being retried (attempt ${newRetryCount + 1})`);
+      }
+
+      const updated = getTask(taskId)!;
+      log.info('Task retried', { id: taskId, retry_count: newRetryCount });
+      json(res, 200, withTimestamp(updated));
+      return true;
+    }
+
+    // POST /api/orchestrator/tasks/:id/cancel — cancel a task
+    if (subpath === '/cancel' && method === 'POST') {
+      const task = getTask(taskId);
+      if (!task) {
+        json(res, 404, withTimestamp({ error: 'Task not found' }));
+        return true;
+      }
+
+      if (TERMINAL_STATUSES.includes(task.status as TaskStatus)) {
+        json(res, 409, withTimestamp({ error: `Cannot cancel ${task.status} task` }));
+        return true;
+      }
+
+      const ts = now();
+
+      // If in_progress, kill assigned workers first
+      if (task.status === 'in_progress') {
+        const workers = getTaskWorkers(taskId);
+        for (const w of workers) {
+          try {
+            // Mark worker job as cancelled in DB
+            exec(
+              `UPDATE worker_jobs SET status = 'failed', error = 'parent task cancelled', finished_at = ? WHERE id = ? AND status IN ('queued', 'running')`,
+              ts, w.worker_id,
+            );
+          } catch {
+            // Worker may not exist or already finished
+          }
+        }
+      }
+
+      exec(
+        `UPDATE orchestrator_tasks SET status = 'cancelled', completed_at = ?, updated_at = ? WHERE id = ?`,
+        ts, ts, taskId,
+      );
+
+      // Log cancellation activity
+      exec(
+        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+         VALUES (?, 'daemon', 'note', 'cancelled', 'Task cancelled', ?)`,
+        taskId, ts,
+      );
+
+      const updated = getTask(taskId)!;
+      log.info('Task cancelled', { id: taskId, previous_status: task.status });
+      json(res, 200, withTimestamp(updated));
+      return true;
+    }
+
     // GET /api/orchestrator/tasks/:id — get task detail
     if (!subpath && method === 'GET') {
       const task = getTask(taskId);
@@ -429,6 +539,29 @@ export async function handleTaskQueueRoute(
       if (body.error !== undefined) {
         updates.error = body.error;
       }
+      if (body.work_notes !== undefined) {
+        if (body.append_work_notes && task.work_notes) {
+          // Append to existing notes with timestamp separator
+          const ts_note = new Date().toISOString().slice(0, 19).replace('T', ' ');
+          updates.work_notes = `${task.work_notes}\n\n[${ts_note}] ${body.work_notes}`;
+        } else if (body.append_work_notes && !task.work_notes) {
+          // First note — no separator needed
+          const ts_note = new Date().toISOString().slice(0, 19).replace('T', ' ');
+          updates.work_notes = `[${ts_note}] ${body.work_notes}`;
+        } else {
+          updates.work_notes = body.work_notes;
+        }
+      }
+      if (body.outcome !== undefined) {
+        if (body.outcome !== null && !VALID_OUTCOMES.includes(body.outcome as TaskOutcome)) {
+          json(res, 400, withTimestamp({ error: `outcome must be one of: ${VALID_OUTCOMES.join(', ')}` }));
+          return true;
+        }
+        updates.outcome = body.outcome ?? null;
+      }
+      if (body.outcome_notes !== undefined) {
+        updates.outcome_notes = typeof body.outcome_notes === 'string' ? body.outcome_notes : null;
+      }
 
       // Validate the final status/assignee combination
       const validationError = validateStatusAssignee(targetStatus, targetAssignee);
@@ -445,8 +578,71 @@ export async function handleTaskQueueRoute(
         ...values, taskId,
       );
 
+      // Fix 4: Auto-log activity on status change
+      if (updates.status) {
+        const activityMessage = updates.status === 'completed'
+          ? `Status → completed. Result: ${(updates.result as string)?.slice(0, 200) ?? '(none)'}`
+          : updates.status === 'failed'
+            ? `Status → failed. Error: ${(updates.error as string)?.slice(0, 200) ?? '(none)'}`
+            : `Status → ${updates.status}`;
+
+        exec(
+          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+           VALUES (?, 'daemon', 'note', 'status_change', ?, ?)`,
+          taskId, activityMessage, ts,
+        );
+      }
+
       const updated = getTask(taskId)!;
       log.info('Task updated', { id: taskId, status: updated.status, assignee: updated.assignee });
+
+      // Auto-notify comms on task completion/failure/cancellation
+      if (updates.status && TERMINAL_STATUSES.includes(updates.status as TaskStatus)) {
+        const msgBody = updates.status === 'completed'
+          ? `Task completed: ${updated.title}\n\nResult: ${updated.result ?? '(no result provided)'}`
+          : updates.status === 'cancelled'
+            ? `Task cancelled: ${updated.title}`
+            : `Task failed: ${updated.title}\n\nError: ${updated.error ?? '(no error details)'}`;
+
+        try {
+          exec(
+            `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+             VALUES ('daemon', 'comms', 'result', ?, ?)`,
+            msgBody, new Date().toISOString(),
+          );
+          log.info('Auto-notified comms of task completion', { taskId, status: updates.status });
+        } catch (err) {
+          log.warn('Failed to auto-notify comms', { taskId, error: String(err) });
+        }
+
+        // Also inject directly into comms tmux session for immediate visibility
+        injectMessage('comms', `[task ${updates.status}] ${updated.title.slice(0, 100)}`);
+      }
+
+      // Auto-store completion memory when a task is marked completed with a result
+      if (updates.status === 'completed' && updated.result) {
+        try {
+          const title = updated.title.substring(0, 100);
+          const result = updated.result.substring(0, 200);
+          const content = `Completed orchestrator task: ${title}. ${result}`;
+          await storeMemoryInternal({
+            content,
+            category: 'event',
+            tags: ['auto', 'task-completion'],
+            source: 'task-completion',
+            importance: 3,
+            dedup: true,
+          });
+        } catch (err) {
+          log.warn('Failed to auto-store task completion memory', { error: String(err) });
+        }
+      }
+
+      // Non-blocking retro evaluation after terminal status
+      if (targetStatus === 'completed' || targetStatus === 'failed') {
+        _evalFn(taskId).catch(err => log.warn('Retro evaluation failed', { taskId, error: String(err) }));
+      }
+
       json(res, 200, withTimestamp(updated));
       return true;
     }

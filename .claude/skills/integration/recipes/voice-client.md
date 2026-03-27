@@ -381,7 +381,7 @@ Use this when the built-in wake words are not suitable. Training runs in Google 
 5. Download the .tflite, place at ~/.kithkit/models/wake/<phrase>.tflite
 6. Update config:
      wake_word:
-       model: /Users/bmo/.kithkit/models/wake/hey_bmo.tflite
+       model: ~/.kithkit/models/wake/hey_bmo.tflite
        threshold: 0.6   # start lower for custom models
 ```
 
@@ -430,8 +430,8 @@ Wrap the client in a proper .app bundle so it can be added to Login Items and ap
 #!/usr/bin/env bash
 # KithkitVoice.app/Contents/MacOS/launcher
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-VENV_PYTHON="/Users/bmo/.kithkit/voice-venv/bin/python3"
-CLIENT_SCRIPT="/Users/bmo/.kithkit/voice-client/client.py"
+VENV_PYTHON="~/.kithkit/voice-venv/bin/python3"
+CLIENT_SCRIPT="~/.kithkit/voice-client/client.py"
 
 exec "$VENV_PYTHON" "$CLIENT_SCRIPT" >> /tmp/kithkit-voice.log 2>&1
 ```

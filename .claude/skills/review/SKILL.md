@@ -1,12 +1,12 @@
 ---
 name: review
-description: Reviews specs and plans before building using Bob (devil's advocate sub-agent) and peer agent review. Catches overcomplexity, missed edge cases, and simpler alternatives. Use between planning and building.
+description: Review specs and plans with a critical eye before building. Catches overcomplexity, missed edge cases, and simpler alternatives. Use between planning and building.
 argument-hint: [spec-file, plan-file, or "all"]
 ---
 
 # /review - Pre-Build Sanity Check
 
-Challenge assumptions, catch overcomplexity, and find simpler paths before writing code. Uses **Bob** (a devil's advocate sub-agent) for independent review, plus **peer agent review** for shared work.
+Challenge assumptions, catch overcomplexity, and find simpler paths before writing code. Uses **Bob** (a devil's advocate sub-agent) for independent review, plus **peer review** for shared work.
 
 ## Purpose
 
@@ -14,15 +14,15 @@ Two layers of review to catch what you can't see in your own work:
 
 1. **Bob** (automatic) — A devil's advocate sub-agent with clean context reviews your spec/plan independently. It only sees the documents, not your conversation history or assumptions. Catches lazy overengineering, scope creep, and obvious gaps.
 
-2. **Peer Agent Review** (selective) — For shared work (skills, daemon features, anything that gets upstreamed), send to a peer agent for genuine peer review. A different agent brings different experience and context.
+2. **Peer Review** (selective) — For shared work (skills, daemon features, anything that gets upstreamed), send to a peer agent for review. A second perspective catches what you miss.
 
 ## Usage
 
 ```bash
-/review                                                                # Review most recent spec+plan
-/review projects/feature/20260204-feature.spec.md                     # Review a specific spec
-/review projects/feature/20260204-feature.plan.md                     # Review a specific plan
-/review all                                                            # Review all unbuilt plans
+/review                                    # Review most recent spec+plan
+/review specs/20260204-feature.spec.md     # Review a specific spec
+/review plans/20260204-feature.plan.md     # Review a specific plan
+/review all                                # Review all unbuilt plans
 ```
 
 ## When to Use
@@ -39,9 +39,9 @@ Two layers of review to catch what you can't see in your own work:
 Read the target files:
 - If given a spec: read the spec
 - If given a plan: read the plan AND its referenced spec
-- If given neither: find the most recent plan in `projects/` and its spec
+- If given neither: find the most recent plan in `plans/` and its spec
 
-Also read any referenced story files (`projects/<feature-name>/stories/s-*.json`) and test files (`projects/<feature-name>/tests/t-*.json`).
+Also read any referenced story files (`plans/stories/s-*.json`) and test files (`plans/tests/t-*.json`).
 
 ### Step 2: Bob (Devil's Advocate)
 
@@ -57,15 +57,15 @@ Use the Task tool with subagent_type="general-purpose" and include:
 
 The sub-agent's clean context is the whole point — it sees the plan as a stranger would, not as the person who wrote it.
 
-### Step 3: Peer Agent Review (When Applicable)
+### Step 3: Peer Review (When Applicable)
 
-After the sub-agent review, determine if peer agent review is needed. See "Peer Review Protocol" below for the criteria.
+After the sub-agent review, determine if peer review is needed. See "Peer Review Protocol" below for the criteria.
 
-If needed, send your peer agent the spec/plan via agent-comms with a summary of what you're building and what kind of feedback you want.
+If needed, send the peer agent the spec/plan via agent-comms with a summary of what you're building and what kind of feedback you want.
 
 ### Step 4: Synthesize and Format
 
-Combine the sub-agent findings with your own assessment (and peer feedback if received) into the output format below.
+Combine the sub-agent findings with your own assessment (and R2's feedback if received) into the output format below.
 
 ### Review Dimensions
 
@@ -155,8 +155,8 @@ Evaluate across these dimensions, thinking like a senior engineer doing a design
 2. [Second priority]
 3. [Nice to have]
 
-### The "User Question"
-[If the user were looking at this right now, what would they say?
+### The Operator Question
+[If your operator were looking at this right now, what would they say?
 Usually something like "do we really need X?" or "what's the
 simplest version of this that actually works?"]
 ```
@@ -166,15 +166,6 @@ simplest version of this that actually works?"]
 - **SHIP IT** — Design is solid, complexity is justified, risks are managed. Build away.
 - **CONCERNS** — Mostly good but has specific issues worth addressing first. List them clearly.
 - **RETHINK** — Fundamental approach needs reconsideration. Too complex, wrong abstraction, or missing the point.
-
-### After a RETHINK Verdict
-
-If the review returns RETHINK:
-1. **Don't build.** A RETHINK means the current approach has fundamental issues
-2. **Identify the root cause** — is it the spec (wrong requirements) or the plan (wrong approach to right requirements)?
-3. **If spec issue**: Go back to `/spec` and revise requirements before re-planning
-4. **If plan issue**: Revise the plan with the review feedback and re-run `/review`
-5. **Re-review**: Always re-run `/review` after making changes — don't assume fixes are sufficient
 
 ## Scoring Guide (Complexity & Scope)
 
@@ -200,29 +191,29 @@ Lower is better. Aim for 1-2.
 
 ## Peer Review Protocol
 
-### When to Request Peer Agent Review
+### When to Request Peer Review
 
 **Always request peer review for:**
-- New skills or skill upgrades (peer agents will use them too)
+- New skills or skill upgrades (they'll use them too)
 - Daemon features (shared codebase)
 - Changes to upstream pipeline or shared workflows
 - Anything touching agent-comms (affects both sides)
 - Self-improvement work (new capabilities, core behavior changes)
 
 **Skip peer review for:**
-- Personal tasks (research, emails, calendar for the user)
-- Instance-specific config or personality tweaks
+- Personal tasks (research, emails, calendar for the operator)
+- Agent-specific config or personality tweaks
 - Quick bugfixes to your own stuff
 - Simple todo items that are just "do the thing"
 
 ### How to Request
 
-Send via agent-comms to your configured peer agent:
+Send via agent-comms:
 ```
-/agent-comms send <peer-agent-name> "Peer review request: [feature name]. [1-2 sentence summary of approach]. Spec/plan attached below: [paste key sections or file paths]. Looking for feedback on [specific concern]. No rush if you're busy."
+/agent-comms send [peer-agent] "Peer review request: [feature name]. [1-2 sentence summary of approach]. Spec/plan attached below: [paste key sections or file paths]. Looking for feedback on [specific concern]. No rush if you're busy."
 ```
 
-A peer agent's review carries real weight — if they say RETHINK, stop and reconsider before building.
+Peer review carries real weight — if your reviewer says RETHINK, stop and reconsider before building.
 
 ## Integration
 
@@ -231,4 +222,4 @@ A peer agent's review carries real weight — if they say RETHINK, stop and reco
 - Review findings can feed back into spec updates via `/spec`
 - The `/validate` skill handles structural alignment; `/review` handles design quality
 - Bob (devil's advocate sub-agent) runs automatically on every review
-- Peer agent review is triggered selectively based on the protocol above
+- Peer review is triggered selectively based on the protocol above

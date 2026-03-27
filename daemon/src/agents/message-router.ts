@@ -10,7 +10,10 @@
 
 import { insert, query, exec } from '../core/db.js';
 import { injectMessage } from './tmux.js';
-import { notifyNewMessage } from '../automation/tasks/message-delivery.js';
+import { notifyNewMessage, recordDirectInjection } from '../automation/tasks/message-delivery.js';
+import { createLogger } from '../core/logger.js';
+
+const log = createLogger('message-router');
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -73,8 +76,12 @@ function defaultTmuxInjector(agentId: string, text: string): boolean {
 
 /**
  * Send a message between agents. Logs to DB and routes to target.
+ *
+ * Always returns a result if the message was stored locally.
+ * Relay/forwarding failures are non-fatal: the message is stored and a
+ * `warning` field is included in the result instead of throwing.
  */
-export function sendMessage(req: SendMessageRequest): { messageId: number; delivered: boolean } {
+export function sendMessage(req: SendMessageRequest): { messageId: number; delivered: boolean; warning?: string } {
   // Validate type
   if (!VALID_MESSAGE_TYPES.includes(req.type)) {
     throw new MessageValidationError(`Invalid message type: ${req.type}`);
@@ -107,31 +114,83 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
   // Record for deduplication
   _recentMessages.set(dedupKey, { messageId: message.id, timestamp: Date.now() });
 
-  // Route to target
-  if (isPersistentAgent(req.to)) {
-    // Direct channel: bypass scheduler and inject immediately
-    if (req.direct) {
-      const formatted = formatForTmux(req);
-      const injected = tmuxInjector(req.to, formatted);
-      if (injected) {
-        // Mark as processed — deliver-once, no re-notification
-        exec(
-          'UPDATE messages SET processed_at = ? WHERE id = ?',
-          new Date().toISOString(), message.id,
+  // Auto-complete orchestrator task when orchestrator sends a result message.
+  // Only completes if metadata.task_id is present and matches an active task.
+  // No fallback — a missing or unmatched task_id is logged as a warning only.
+  if (req.from === 'orchestrator' && req.type === 'result') {
+    try {
+      if (!req.metadata?.task_id || typeof req.metadata.task_id !== 'string') {
+        log.warn('Orchestrator result message missing task_id — no task auto-completed. Message delivered to comms.');
+      } else {
+        const exact = query<{ id: string }>(
+          `SELECT id FROM orchestrator_tasks
+           WHERE id = ? AND status IN ('assigned', 'in_progress', 'pending')`,
+          req.metadata.task_id,
         );
-        return { messageId: message.id, delivered: true };
+        if (exact.length > 0) {
+          const taskId = exact[0]!.id;
+          const now = new Date().toISOString();
+          exec(
+            `UPDATE orchestrator_tasks SET status = 'completed', result = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+            req.body.slice(0, 5000), now, now, taskId,
+          );
+          log.info('Auto-completed orchestrator task on result message', { taskId });
+        } else {
+          log.warn('Orchestrator result message task_id not found or not active — no task auto-completed. Message delivered to comms.', {
+            task_id: req.metadata.task_id,
+          });
+        }
       }
-      // Injection failed (session not alive) — fall through to normal delivery
+    } catch (err) {
+      log.warn('Failed to auto-complete orchestrator task', {
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-
-    // Queue for delivery — the message-delivery scheduler task handles tmux injection.
-    // Trigger the task immediately so delivery doesn't wait for the next interval tick.
-    notifyNewMessage();
-    return { messageId: message.id, delivered: false };
   }
-  // Workers pull their own messages — no active delivery needed
 
-  return { messageId: message.id, delivered: true };
+  // Route to target — non-fatal: message is already stored locally.
+  // Relay/P2P forwarding errors are caught and returned as a warning.
+  try {
+    if (isPersistentAgent(req.to)) {
+      // Direct channel: bypass scheduler and inject immediately.
+      // Use body as-is — callers that set direct=true (agent-comms, sdk-bridge)
+      // have already formatted the display text (e.g. "[Agent] R2d2: message").
+      // Applying formatForTmux on top would double-wrap the prefix.
+      if (req.direct) {
+        const injected = tmuxInjector(req.to, req.body);
+        if (injected) {
+          // Mark as processed, read, AND notified — the full content was already
+          // displayed in the tmux session. No follow-up notification needed.
+          const now = new Date().toISOString();
+          exec(
+            'UPDATE messages SET processed_at = ?, read_at = ?, notified_at = ? WHERE id = ?',
+            now, now, now, message.id,
+          );
+          // Tell the heartbeat dedup that comms was just notified, so it
+          // doesn't fire a redundant "[heartbeat] N unread messages" nudge.
+          recordDirectInjection(req.to);
+          return { messageId: message.id, delivered: true };
+        }
+        // Injection failed (session not alive) — fall through to normal delivery
+      }
+
+      // Queue for delivery — the message-delivery scheduler task handles tmux injection.
+      // Trigger the task immediately so delivery doesn't wait for the next interval tick.
+      notifyNewMessage();
+      return { messageId: message.id, delivered: false };
+    }
+    // Workers pull their own messages — no active delivery needed
+    return { messageId: message.id, delivered: true };
+  } catch (err) {
+    // Forwarding/routing failed after local storage — non-fatal.
+    // Log and return success with a warning so callers don't receive a 500.
+    const warning = err instanceof Error ? err.message : String(err);
+    log.warn('Message relay/forwarding failed (message stored locally)', {
+      messageId: message.id,
+      error: warning,
+    });
+    return { messageId: message.id, delivered: false, warning };
+  }
 }
 
 /**

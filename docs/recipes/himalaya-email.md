@@ -195,7 +195,7 @@ export interface EmailProvider {
 ### Himalaya provider implementation
 
 ```typescript
-import { execFile } from "child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "util";
 import type { EmailProvider, EmailMessage, SendOptions } from "./types.js";
 
@@ -233,7 +233,6 @@ export class HimalayaEmailProvider implements EmailProvider {
   isConfigured(): boolean {
     try {
       // Synchronous check — just see if himalaya is in PATH
-      const { execFileSync } = require("child_process");
       execFileSync("himalaya", ["account", "list"], { stdio: "pipe" });
       return true;
     } catch {

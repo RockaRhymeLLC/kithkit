@@ -24,8 +24,18 @@ const MAX_BODY_SIZE = 1024 * 1024; // 1MB
 
 /**
  * Parse a JSON request body with a 1MB size limit.
+ *
+ * If the body was pre-buffered by the metrics middleware (stored as
+ * req._rawBody), parses synchronously from that buffer instead of
+ * attaching new stream listeners (which would miss already-emitted events).
  */
 export function parseBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  const pre = (req as unknown as Record<string, unknown>)._rawBody;
+  if (pre instanceof Buffer) {
+    if (pre.length === 0) return Promise.resolve({});
+    try { return Promise.resolve(JSON.parse(pre.toString()) as Record<string, unknown>); }
+    catch { return Promise.reject(new Error('Invalid JSON')); }
+  }
   return new Promise((resolve, reject) => {
     let body = '';
     let size = 0;

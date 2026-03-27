@@ -23,8 +23,8 @@ Execute the plan by:
 /build <plan-file-path>
 ```
 Examples:
-- `/build projects/auth-system/20260128-auth-system.plan.md`
-- `/build projects/api-integration/20260128-api-integration.plan.md`
+- `/build plans/20260128-auth-system.plan.md`
+- `/build plans/20260128-api-integration.plan.md`
 
 ### Resume Build
 ```bash
@@ -35,15 +35,13 @@ Continues from the active plan's in-progress story.
 ## Workflow
 
 1. **Pre-build checks** (via hook)
-   - First, create the flag file so the hook knows we're in a build context:
-     `echo "<plan-file-path>" > /tmp/kithkit-build-active`
-   - The pre-build hook will then verify plan file exists and verify spec file exists
-   - Without the flag file, the hook exits immediately (avoids overhead on every Bash command)
+   - Verify plan file exists
+   - Verify spec file exists
 
 2. **Load plan context**
    - Read plan.md
-   - Load all stories from `projects/<feature-name>/stories/`
-   - Load all tests from `projects/<feature-name>/tests/`
+   - Load all stories from `plans/stories/`
+   - Load all tests from `plans/tests/`
 
 3. **For each story (by priority):**
 
@@ -80,7 +78,7 @@ Continues from the active plan's in-progress story.
 
 ### Reading a Story
 
-Load from `projects/<feature-name>/stories/s-{id}.json`:
+Load from `plans/stories/s-{id}.json`:
 - Check `status` - is it pending or blocked?
 - Check `blockedBy` - are dependencies complete?
 - Read `acceptanceCriteria` - what defines done?
@@ -110,7 +108,7 @@ pending → in-progress → completed
 
 ### Verifying a Test
 
-Load from `projects/<feature-name>/tests/t-{id}.json`:
+Load from `plans/tests/t-{id}.json`:
 1. Read each step in order
 2. Perform the `action`
 3. Verify the `expected` result
@@ -282,14 +280,10 @@ If you encounter a blocker:
 
 ## Integration
 
-- **Stories**: `projects/<feature-name>/stories/s-{id}.json` - work units
-- **Tests**: `projects/<feature-name>/tests/t-{id}.json` - verification criteria
+- **Stories**: `plans/stories/s-{id}.json` - work units
+- **Tests**: `plans/tests/t-{id}.json` - verification criteria
 - **To-Dos**: Parent to-do gets updated when plan completes
 - **Validation**: /validate runs automatically post-build
 - **Git**: Commit offered after successful build
 
 See `reference.md` for detailed schemas.
-
-## References
-
-- [reference.md](reference.md) — Detailed instructions for test-driven implementation and build workflow management
