@@ -13,17 +13,19 @@
 
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { query, update } from '../../core/db.js';
-import { resolveProjectPath } from '../../core/config.js';
+import { query, exec, update } from '../../core/db.js';
+import { resolveProjectPath, loadConfig } from '../../core/config.js';
 import {
   isOrchestratorAlive as _isOrchestratorAlive,
   killOrchestratorSession as _killOrchestratorSession,
   injectMessage as _injectMessage,
+  spawnOrchestratorSession as _spawnOrchestratorSession,
   _getOrchestratorSession,
   TMUX_BIN,
   TMUX_SOCKET,
 } from '../../agents/tmux.js';
 import { cleanupSessionDirs as _cleanupSessionDirs } from '../../agents/lifecycle.js';
+import { sendMessage } from '../../agents/message-router.js';
 import { createLogger } from '../../core/logger.js';
 import { logActivity, getActivity } from '../../api/activity.js';
 import type { Scheduler } from '../scheduler.js';
@@ -35,6 +37,7 @@ const log = createLogger('orchestrator-idle');
 let isOrchestratorAlive = _isOrchestratorAlive;
 let killOrchestratorSession = _killOrchestratorSession;
 let injectMessage = _injectMessage;
+let spawnOrchestratorSession = _spawnOrchestratorSession;
 let cleanupSessionDirs = _cleanupSessionDirs;
 
 /**
@@ -73,20 +76,36 @@ const CONTEXT_STALE_SECONDS = 600; // Ignore context data older than 10 min
 const GRACE_PERIOD_MS = 60 * 1000; // 60 seconds to exit after nudge
 
 /**
- * Check if the Claude process is actively running in the orchestrator's tmux session.
- * Uses `tmux list-panes -t <session> -F '#{pane_current_command}'` to see the foreground process.
- * If the pane is running 'claude' (or a child of it), the orchestrator is still working.
+ * Check if Claude is actively processing in the orchestrator's tmux session.
+ *
+ * With --agent, Claude IS the tmux pane process. To distinguish "actively processing"
+ * from "idle at the input prompt," we check whether Claude has child processes
+ * (tool execution spawns children like bash, node, etc.).
  */
 function isClaudeProcessRunning(): boolean {
   try {
     const session = _getOrchestratorSession();
-    const output = execFileSync(TMUX_BIN, [
+
+    const panePid = execFileSync(TMUX_BIN, [
       '-S', TMUX_SOCKET,
-      'list-panes', '-t', session, '-F', '#{pane_current_command}',
+      'display-message',
+      '-t', `${session}:`,
+      '-p', '#{pane_pid}',
     ], { encoding: 'utf8', timeout: 5000 }).trim();
-    // The pane's foreground command should be 'claude' (or 'node' running claude)
-    // If it's 'zsh' or 'bash' with no child, Claude has exited
-    return output.includes('claude') || output.includes('node');
+
+    if (!panePid || !/^\d+$/.test(panePid)) {
+      return false;
+    }
+
+    // Check if the pane process has child processes (tools running = actively working)
+    try {
+      execFileSync('/usr/bin/pgrep', ['-P', panePid], {
+        timeout: 5000,
+      });
+      return true; // Has children → actively processing
+    } catch {
+      return false; // No children → idle at input prompt
+    }
   } catch {
     return false;
   }
@@ -101,11 +120,186 @@ function buildShutdownPrompt(reason: string): string {
     `Shutdown requested: ${reason}`,
     'Please wrap up gracefully:',
     '1. If you have any unsent findings or context, send a final result to comms now:',
-    '   curl -s -X POST http://localhost:3847/api/messages -H "Content-Type: application/json" -d \'{"from":"orchestrator","to":"comms","type":"result","body":"<any final notes>"}\'',
+    `   curl -s -X POST http://localhost:${loadConfig().daemon.port}/api/messages -H "Content-Type: application/json" -d '{"from":"orchestrator","to":"comms","type":"result","body":"<any final notes>"}'`,
     '2. Then exit by running: exit',
     '',
     'If you are actively working on something, say so — the daemon will check again later.',
   ].join('\n');
+}
+
+/**
+ * Mark all in_progress and assigned tasks as failed when the orchestrator dies.
+ * Returns count of zombie tasks cleaned up.
+ */
+function cleanupZombieTasks(): number {
+  const ts = new Date().toISOString();
+  const zombies = query<{ id: string; status: string }>(
+    `SELECT id, status FROM orchestrator_tasks WHERE status IN ('in_progress', 'assigned')`,
+  );
+  for (const task of zombies) {
+    exec(
+      `UPDATE orchestrator_tasks SET status = 'failed', error = 'orchestrator_died', completed_at = ?, updated_at = ? WHERE id = ?`,
+      ts, ts, task.id,
+    );
+    // Auto-log activity for each zombie task
+    exec(
+      `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+       VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
+      task.id, `Task failed: orchestrator died while task was ${task.status}`, ts,
+    );
+  }
+  if (zombies.length > 0) {
+    log.warn('Cleaned up zombie tasks after orchestrator death', { count: zombies.length, taskIds: zombies.map(t => t.id) });
+  }
+  return zombies.length;
+}
+
+/**
+ * Detect tasks orphaned by a previous orchestrator instance.
+ * When a new orchestrator spawns (e.g., via task escalation) while the old one's
+ * tasks are still in_progress/assigned, those tasks belong to the dead instance.
+ * We detect this by comparing task timestamps against the current orchestrator's started_at.
+ * Returns count of orphaned tasks cleaned up.
+ */
+function cleanupOrphanedTasks(): number {
+  // Get the current orchestrator's started_at
+  const orchRows = query<{ started_at: string | null }>(
+    "SELECT started_at FROM agents WHERE id = 'orchestrator'",
+  );
+  const orchStartedAt = orchRows[0]?.started_at;
+  if (!orchStartedAt) return 0;
+
+  const ts = new Date().toISOString();
+
+  // Find tasks that are in_progress or assigned but whose relevant timestamp
+  // predates the current orchestrator's started_at.
+  // For in_progress: use started_at (when it transitioned to in_progress), fall back to created_at.
+  // For assigned: use assigned_at, fall back to created_at.
+  const orphans = query<{ id: string; status: string }>(
+    `SELECT id, status FROM orchestrator_tasks
+     WHERE status IN ('in_progress', 'assigned')
+     AND (
+       (status = 'in_progress' AND COALESCE(started_at, created_at) < ?)
+       OR
+       (status = 'assigned' AND COALESCE(assigned_at, created_at) < ?)
+     )`,
+    orchStartedAt, orchStartedAt,
+  );
+
+  for (const task of orphans) {
+    exec(
+      `UPDATE orchestrator_tasks SET status = 'failed', error = 'orchestrator_restarted', completed_at = ?, updated_at = ? WHERE id = ?`,
+      ts, ts, task.id,
+    );
+    exec(
+      `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+       VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
+      task.id, `Task failed: orchestrator restarted while task was ${task.status}`, ts,
+    );
+  }
+  if (orphans.length > 0) {
+    log.info('Cleaned up orphaned tasks from previous orchestrator instance', {
+      count: orphans.length,
+      taskIds: orphans.map(t => t.id),
+    });
+  }
+  return orphans.length;
+}
+
+/**
+ * Spawn a fresh orchestrator session to process pending tasks.
+ * Called by the idle monitor when the orchestrator is dead but pending tasks exist.
+ */
+function respawnForPendingTasks(taskId: string, taskTitle: string, taskDesc: string, pendingCount: number): void {
+  try {
+    const session = spawnOrchestratorSession();
+    if (!session) {
+      log.error('Failed to respawn orchestrator for pending tasks');
+      return;
+    }
+
+    // Register/update in agents table
+    const ts = new Date().toISOString();
+    try {
+      exec(
+        `INSERT INTO agents (id, type, profile, status, tmux_session, started_at, created_at, updated_at)
+         VALUES ('orchestrator', 'orchestrator', 'orchestrator', 'running', ?, ?, ?, ?)`,
+        session, ts, ts, ts,
+      );
+    } catch {
+      // Already exists — update
+      update('agents', 'orchestrator', {
+        status: 'running',
+        tmux_session: session,
+        started_at: ts,
+        updated_at: ts,
+      });
+    }
+
+    logActivity({
+      agent_id: 'orchestrator',
+      session_id: session,
+      event_type: 'session_start',
+      details: `Respawned by idle monitor for ${pendingCount} pending task(s): ${taskTitle.slice(0, 100)}`,
+    });
+
+    // Send the task as a message so it appears in the orchestrator's message history
+    sendMessage({
+      from: 'daemon',
+      to: 'orchestrator',
+      type: 'task',
+      body: JSON.stringify({ task: taskTitle, context: taskDesc, task_id: taskId }),
+    });
+
+    log.info('Orchestrator respawned for pending tasks', { session, pendingCount, taskId });
+  } catch (err) {
+    log.error('Failed to respawn orchestrator', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+const PENDING_TIMEOUT_MS = 5 * 60 * 1000;   // 5 minutes
+const STALE_WORK_NOTES_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Warn about tasks that are stale in the queue or have no recent activity.
+ * Runs even when the orchestrator is dead — helps detect zombie tasks.
+ */
+function checkTaskTimeouts(): void {
+  const now = Date.now();
+
+  // Check pending/assigned tasks older than 5 minutes
+  const stalePending = query<{ id: string; title: string; status: string; created_at: string; assigned_at: string | null }>(
+    `SELECT id, title, status, created_at, assigned_at FROM orchestrator_tasks WHERE status IN ('pending', 'assigned')`,
+  );
+  for (const task of stalePending) {
+    const refTime = task.assigned_at ?? task.created_at;
+    const ageMs = now - new Date(refTime).getTime();
+    if (ageMs > PENDING_TIMEOUT_MS) {
+      log.warn('Task stale in queue', {
+        taskId: task.id,
+        title: task.title.slice(0, 80),
+        status: task.status,
+        ageMinutes: Math.round(ageMs / 60000),
+      });
+    }
+  }
+
+  // Check in_progress tasks with no recent updates
+  const activeTaskRows = query<{ id: string; title: string; updated_at: string }>(
+    `SELECT id, title, updated_at FROM orchestrator_tasks WHERE status = 'in_progress'`,
+  );
+  for (const task of activeTaskRows) {
+    const lastUpdate = new Date(task.updated_at).getTime();
+    if (now - lastUpdate > STALE_WORK_NOTES_MS) {
+      log.warn('In-progress task with no recent updates', {
+        taskId: task.id,
+        title: task.title.slice(0, 80),
+        lastUpdateMinutes: Math.round((now - lastUpdate) / 60000),
+      });
+    }
+  }
 }
 
 /**
@@ -134,6 +328,15 @@ async function run(config: Record<string, unknown>): Promise<void> {
     log.warn('Session dir cleanup failed', { error: String(err) });
   }
 
+  // Check task timeouts on every tick — runs even when orchestrator is dead.
+  // This catches stale/zombie tasks from a dead orchestrator early.
+  checkTaskTimeouts();
+
+  // Detect orphaned tasks from a previous orchestrator instance.
+  // Runs unconditionally — even when the orchestrator IS alive — because the new
+  // orchestrator's liveness masks the dead one's abandoned tasks.
+  cleanupOrphanedTasks();
+
   // If we previously nudged, check the outcome BEFORE the alive check.
   // The orchestrator may have exited gracefully in response to our nudge —
   // if we check alive first and reset nudge state, we'd never log the graceful exit.
@@ -146,6 +349,8 @@ async function run(config: Record<string, unknown>): Promise<void> {
         event_type: 'session_end',
         details: `Graceful exit after nudge: ${shutdownReason}`,
       });
+      // Clean up any tasks that were left in-progress or assigned
+      cleanupZombieTasks();
       shutdownNudgedAt = null;
       shutdownReason = null;
       return;
@@ -170,6 +375,8 @@ async function run(config: Record<string, unknown>): Promise<void> {
         event_type: 'session_end',
         details: `Force-killed: grace period expired (${shutdownReason})`,
       });
+      // Clean up any tasks that were left in-progress or assigned
+      cleanupZombieTasks();
       shutdownNudgedAt = null;
       shutdownReason = null;
       return;
@@ -179,8 +386,46 @@ async function run(config: Record<string, unknown>): Promise<void> {
     return;
   }
 
-  // Not alive and no pending nudge — nothing to do
+  // Not alive and no pending nudge — check for zombie tasks, then respawn if pending work exists
   if (!isOrchestratorAlive()) {
+    cleanupZombieTasks();
+
+    // Ensure DB status reflects reality — the wrapper cleanup may have failed to update
+    // (e.g. PUT /api/agents/orchestrator returned 404 before the fix).
+    try {
+      const agentRows = query<{ status: string }>(
+        "SELECT status FROM agents WHERE id = 'orchestrator'",
+      );
+      if (agentRows[0] && agentRows[0].status !== 'stopped' && agentRows[0].status !== 'crashed') {
+        log.warn('Orchestrator tmux session gone but DB status was stale — correcting', {
+          oldStatus: agentRows[0].status,
+        });
+        update('agents', 'orchestrator', {
+          status: 'stopped',
+          updated_at: new Date().toISOString(),
+        });
+        logActivity({
+          agent_id: 'orchestrator',
+          event_type: 'session_end',
+          details: 'Session gone — DB status corrected from stale state by idle monitor',
+        });
+      }
+    } catch {
+      // Non-fatal — the respawn below will handle registration
+    }
+
+    // Check for pending tasks that need a fresh orchestrator
+    const pendingForRespawn = query<{ count: number; id: string; title: string; description: string }>(
+      `SELECT COUNT(*) as count, MIN(id) as id, MIN(title) as title, MIN(description) as description
+       FROM orchestrator_tasks WHERE status = 'pending'`,
+    );
+    const pendingCount = pendingForRespawn[0]?.count ?? 0;
+    if (pendingCount > 0) {
+      log.info('Orchestrator dead but pending tasks exist — spawning fresh orchestrator', { pendingCount });
+      const firstTask = pendingForRespawn[0]!;
+      respawnForPendingTasks(firstTask.id, firstTask.title, firstTask.description ?? firstTask.title, pendingCount);
+    }
+
     return;
   }
 
@@ -201,6 +446,22 @@ async function run(config: Record<string, unknown>): Promise<void> {
       last_activity: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
+
+    // Even while Claude is active, check for pending tasks that arrived since it
+    // started. Claude won't pick these up on its own — inject a soft nudge so it
+    // knows to check the queue when its current work is done.
+    const pendingWhileActive = query<{ count: number }>(
+      `SELECT COUNT(*) as count FROM orchestrator_tasks WHERE status = 'pending'`,
+    );
+    const pendingWhileActiveCount = pendingWhileActive[0]?.count ?? 0;
+    if (pendingWhileActiveCount > 0) {
+      log.debug('Pending tasks queued while Claude is active — injecting soft nudge', { pendingWhileActiveCount });
+      injectMessage(
+        'orchestrator',
+        `[System] ${pendingWhileActiveCount} pending task(s) in queue. Check GET /api/orchestrator/tasks?status=pending when your current work is done.`,
+      );
+    }
+
     return;
   }
 
@@ -266,6 +527,38 @@ async function run(config: Record<string, unknown>): Promise<void> {
   if (idleMs < idleTimeoutMs) {
     log.debug('Not idle long enough', { idleMinutes: Math.round(idleMs / 60000), thresholdMinutes: Math.round(idleTimeoutMs / 60000) });
     return; // Not idle long enough
+  }
+
+  // --- Check 3: Pending tasks ---
+  // Before nudging shutdown, check if there are tasks waiting in the queue.
+  // If so, wake the orchestrator with a task notification instead of shutting it down.
+  // This covers the case where a task arrived while Claude was active and the
+  // orchestrator went idle before the message-delivery cycle injected it.
+  const pendingTaskRows = query<{ count: number; title: string }>(
+    `SELECT COUNT(*) as count, MIN(title) as title FROM orchestrator_tasks
+     WHERE status = 'pending'`,
+  );
+  const pendingTaskCount = pendingTaskRows[0]?.count ?? 0;
+  if (pendingTaskCount > 0) {
+    const taskTitle = pendingTaskRows[0]?.title ?? 'unknown';
+    const wakeMsg = pendingTaskCount === 1
+      ? `You have 1 pending task: "${taskTitle}" — check GET /api/orchestrator/tasks?status=pending`
+      : `You have ${pendingTaskCount} pending tasks — check GET /api/orchestrator/tasks?status=pending`;
+    log.info('Orchestrator idle but has pending tasks — waking instead of shutdown', { pendingTaskCount });
+    const injected = injectMessage('orchestrator', wakeMsg);
+    if (injected) {
+      // Touch last_activity so we don't immediately re-trigger
+      update('agents', 'orchestrator', {
+        last_activity: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      logActivity({
+        agent_id: 'orchestrator',
+        event_type: 'task_received',
+        details: `Woken for ${pendingTaskCount} pending task(s): ${taskTitle}`,
+      });
+    }
+    return;
   }
 
   const reason = `idle for ${Math.round(idleMs / 60000)} minutes — Claude process not running, no pending work`;
@@ -340,17 +633,20 @@ export function _setDepsForTesting(deps: {
   isOrchestratorAlive?: () => boolean;
   killOrchestratorSession?: () => boolean;
   injectMessage?: (target: string, text: string) => boolean;
+  spawnOrchestratorSession?: () => string | null;
   cleanupSessionDirs?: (maxAgeDays?: number) => number;
 } | null): void {
   if (deps === null) {
     isOrchestratorAlive = _isOrchestratorAlive;
     killOrchestratorSession = _killOrchestratorSession;
     injectMessage = _injectMessage;
+    spawnOrchestratorSession = _spawnOrchestratorSession;
     cleanupSessionDirs = _cleanupSessionDirs;
     return;
   }
   if (deps.isOrchestratorAlive) isOrchestratorAlive = deps.isOrchestratorAlive;
   if (deps.killOrchestratorSession) killOrchestratorSession = deps.killOrchestratorSession;
   if (deps.injectMessage) injectMessage = deps.injectMessage;
+  if (deps.spawnOrchestratorSession) spawnOrchestratorSession = deps.spawnOrchestratorSession;
   if (deps.cleanupSessionDirs) cleanupSessionDirs = deps.cleanupSessionDirs;
 }

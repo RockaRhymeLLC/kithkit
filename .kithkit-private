@@ -1,0 +1,43 @@
+# .kithkit-private — R2D2 instance manifest
+#
+# Files listed here are specific to this agent instance and must NEVER
+# sync upstream to the public kithkit repository. The CI/CD sync pipeline
+# uses this manifest to exclude instance-specific files from upstream merges.
+#
+# Glob patterns follow .gitignore syntax.
+
+# ── Identity & Config ─────────────────────────────────────────
+identity.md
+kithkit.config.yaml
+.github/workflows/notify-instances.yml
+
+# ── Database ──────────────────────────────────────────────────
+kithkit.db
+kithkit.db-shm
+kithkit.db-wal
+
+# ── Instance-specific extension code ─────────────────────────
+daemon/src/extensions/instance/*
+
+# ── Agent profiles (may contain instance-specific profiles) ──
+.claude/agents/*
+
+# ── State & sessions (runtime data) ──────────────────────────
+.claude/state/*
+.claude/sessions/*
+
+# ── Instance-specific scripts ────────────────────────────────
+scripts/import-cc4me-memories.py
+scripts/import-flat-memories.py
+scripts/telegram-send.sh
+scripts/email/*
+scripts/reminders/*
+
+# ── Claude Code memory (instance-specific context) ───────────
+.claude/projects/*/memory/*
+
+# ── Worktrees (ephemeral, never sync) ────────────────────────
+.claude/worktrees/*
+
+# ── LaunchDaemon plists (macOS-specific) ─────────────────────
+*.plist

@@ -5,7 +5,7 @@
  */
 
 import type http from 'node:http';
-import { routeMessage } from '../comms/channel-router.js';
+import { routeMessage, listAdapters } from '../comms/channel-router.js';
 import { sendMessage } from '../agents/message-router.js';
 import { createLogger } from '../core/logger.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
@@ -30,17 +30,76 @@ export async function handleSendRoute(
         return true;
       }
 
-      const channels = Array.isArray(body.channels)
+      // Accept either channels (array) or channel (singular string) — both documented.
+      // Previously, a singular 'channel' field was silently ignored causing broadcast to all adapters.
+      const channels: string[] | undefined = Array.isArray(body.channels)
         ? body.channels.filter((c: unknown) => typeof c === 'string') as string[]
-        : undefined;
+        : typeof body.channel === 'string'
+          ? [body.channel]
+          : undefined;
+
+      // Validate requested channels exist — return 400 for unknown channels rather
+      // than silently falling through with empty results (addresses kithkit #60).
+      if (channels && channels.length > 0) {
+        const registered = new Set(listAdapters());
+        const unknown = channels.filter(c => !registered.has(c));
+        if (unknown.length > 0) {
+          json(res, 400, withTimestamp({
+            error: `Unknown channel(s): ${unknown.join(', ')}. Registered: ${[...registered].join(', ') || 'none'}`,
+          }));
+          return true;
+        }
+      }
+
+      // Merge top-level chat_id into metadata so the Telegram adapter receives it.
+      // Explicit metadata.chatId from the caller takes precedence over top-level chat_id.
+      const metadata: Record<string, unknown> = {
+        ...(body.metadata as Record<string, unknown> | undefined),
+      };
+      if (typeof body.chat_id === 'string' && !metadata.chatId) {
+        metadata.chatId = body.chat_id;
+      }
 
       const results = await routeMessage(
-        { text: body.message as string, metadata: body.metadata as Record<string, unknown> | undefined },
+        { text: body.message as string, metadata },
         channels,
       );
 
-      // Notify comms about successful external deliveries so it has context when Dave replies
-      notifyCommsOfExternalSend(results, body.message as string);
+      // Success = silent (comms already knows it sent). Failure = notify comms.
+      const failed = Object.entries(results).filter(([, ok]) => !ok).map(([ch]) => ch);
+      const delivered = Object.entries(results).filter(([, ok]) => ok).map(([ch]) => ch);
+
+      if (delivered.length > 0) {
+        log.debug('Delivered to channels', { channels: delivered });
+      }
+
+      if (failed.length > 0) {
+        const channelList = failed.join(', ');
+        const preview = (body.message as string).length > 120
+          ? (body.message as string).slice(0, 120) + '…'
+          : body.message as string;
+        try {
+          sendMessage({
+            from: 'daemon',
+            to: 'comms',
+            type: 'error',
+            body: `[delivery failed: ${channelList}] ${preview}`,
+          });
+        } catch (notifyErr) {
+          log.warn('Failed to notify comms of delivery failure', {
+            error: notifyErr instanceof Error ? notifyErr.message : String(notifyErr),
+          });
+        }
+      }
+
+      // Return 502 only when every channel attempted delivery and all failed.
+      // Partial success (some channels delivered) still returns 200.
+      const resultValues = Object.values(results);
+      const allFailed = resultValues.length > 0 && resultValues.every(v => v === false);
+      if (allFailed) {
+        json(res, 502, withTimestamp({ error: 'All delivery channels failed', results }));
+        return true;
+      }
 
       json(res, 200, withTimestamp({ results }));
       return true;
@@ -62,38 +121,3 @@ export async function handleSendRoute(
   }
 }
 
-// ── Comms notification ──────────────────────────────────────
-
-const MAX_PREVIEW_LENGTH = 120;
-
-/**
- * After a successful external channel delivery, post a brief status message
- * to comms so it has context when Dave replies about the content.
- */
-function notifyCommsOfExternalSend(results: Record<string, boolean>, message: string): void {
-  const delivered = Object.entries(results)
-    .filter(([, ok]) => ok)
-    .map(([ch]) => ch);
-
-  if (delivered.length === 0) return;
-
-  const preview = message.length > MAX_PREVIEW_LENGTH
-    ? message.slice(0, MAX_PREVIEW_LENGTH) + '…'
-    : message;
-
-  const channelList = delivered.join(', ');
-  const body = `[daemon sent to ${channelList}] ${preview}`;
-
-  try {
-    sendMessage({
-      from: 'daemon',
-      to: 'comms',
-      type: 'status',
-      body,
-    });
-  } catch (err) {
-    log.warn('Failed to notify comms of external send', {
-      error: err instanceof Error ? err.message : String(err),
-    });
-  }
-}

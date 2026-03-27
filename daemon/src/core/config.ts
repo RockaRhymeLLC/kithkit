@@ -14,16 +14,26 @@ export interface AgentConfig {
   identity_file?: string;
 }
 
+export interface LanConfig {
+  enabled: boolean;
+  bind_host: string;
+  port: number;
+}
+
 export interface DaemonConfig {
   port: number;
   bind_host?: string;
   log_level: 'debug' | 'info' | 'warn' | 'error';
   log_dir: string;
   log_rotation: { max_size_mb: number; max_files: number };
+  lan?: LanConfig;
+  db_path?: string;  // Optional override for database file location
 }
 
 export interface SchedulerConfig {
   tasks: TaskScheduleConfig[];
+  /** Additional directories to scan for external task handler files at boot. */
+  tasks_dirs?: string[];
 }
 
 export interface TaskScheduleConfig {
@@ -42,12 +52,69 @@ export interface TmuxConfig {
   session?: string;
 }
 
+export interface ToolsConfig {
+  tmux_path: string;
+  himalaya_path: string;
+  ffmpeg_path: string;
+  whisper_cli_path: string;
+}
+
+export interface TimerConfig {
+  nag_interval_ms: number;
+  max_nag_duration_ms: number;
+  default_snooze_seconds: number;
+}
+
+export interface VoiceConfig {
+  max_audio_bytes: number;
+  max_tts_chars: number;
+  response_timeout_ms: number;
+  audio_convert_timeout_ms: number;
+  transcription_timeout_ms: number;
+  client_stale_timeout_ms: number;
+  client_prune_interval_ms: number;
+}
+
+export interface TaskRunnerConfig {
+  default_timeout_ms: number;
+  max_buffer_bytes: number;
+  max_output_chars: number;
+}
+
+export interface WeatherConfig {
+  geocoding_api_url: string;
+  forecast_api_url: string;
+  wttr_base_url: string;
+}
+
+export interface EmailConfig {
+  fastmail_jmap_session_url: string;
+}
+
+export interface CalDAVConfig {
+  url: string;
+  username: string;
+  password: string;       // Plain text or "keychain:<label>" for Keychain lookup
+}
+
+export interface CalendarConfig {
+  caldav?: CalDAVConfig;
+}
+
 export interface KithkitConfig {
   agent: AgentConfig;
   tmux?: TmuxConfig;
   daemon: DaemonConfig;
   scheduler: SchedulerConfig;
   security: SecurityConfig;
+  tools?: ToolsConfig;
+  timers?: TimerConfig;
+  voice?: VoiceConfig;
+  task_runner?: TaskRunnerConfig;
+  weather?: WeatherConfig;
+  email?: EmailConfig;
+  calendar?: CalendarConfig;
+  self_improvement?: Record<string, unknown>;
 }
 
 // ── Defaults ─────────────────────────────────────────────────
@@ -63,6 +130,23 @@ const DEFAULTS: KithkitConfig = {
   scheduler: { tasks: [] },
   security: {
     rate_limits: { incoming_max_per_minute: 5, outgoing_max_per_minute: 10 },
+  },
+  tools: {
+    tmux_path: '/opt/homebrew/bin/tmux',
+    himalaya_path: '/opt/homebrew/bin/himalaya',
+    ffmpeg_path: '/opt/homebrew/bin/ffmpeg',
+    whisper_cli_path: '/opt/homebrew/bin/whisper-cli',
+  },
+  timers: { nag_interval_ms: 30_000, max_nag_duration_ms: 600_000, default_snooze_seconds: 300 },
+  voice: { max_audio_bytes: 10 * 1024 * 1024, max_tts_chars: 500, response_timeout_ms: 30_000, audio_convert_timeout_ms: 15_000, transcription_timeout_ms: 30_000, client_stale_timeout_ms: 60_000, client_prune_interval_ms: 15_000 },
+  task_runner: { default_timeout_ms: 300_000, max_buffer_bytes: 1024 * 1024, max_output_chars: 50_000 },
+  weather: {
+    geocoding_api_url: 'https://geocoding-api.open-meteo.com/v1/search',
+    forecast_api_url: 'https://api.open-meteo.com/v1/forecast',
+    wttr_base_url: 'https://wttr.in',
+  },
+  email: {
+    fastmail_jmap_session_url: 'https://api.fastmail.com/.well-known/jmap',
   },
 };
 

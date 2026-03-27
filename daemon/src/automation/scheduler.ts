@@ -9,7 +9,9 @@
 import { CronExpressionParser } from 'cron-parser';
 import { parseInterval, type TaskScheduleConfig } from '../core/config.js';
 import { runTask, type TaskResult } from './task-runner.js';
-import { registerCoreTasks } from './tasks/index.js';
+import { registerCoreTasks, loadExternalTasks, type LoadResult } from './tasks/index.js';
+import { createLogger } from '../core/logger.js';
+import { exec as dbExec, query } from '../core/db.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -28,7 +30,7 @@ export interface ScheduledTask {
 }
 
 /** Handler function for in-process tasks (registered via registerHandler). */
-export type TaskHandler = (context: TaskHandlerContext) => Promise<void>;
+export type TaskHandler = (context: TaskHandlerContext) => Promise<string | void>;
 
 /** Context passed to in-process task handlers. */
 export interface TaskHandlerContext {
@@ -59,6 +61,7 @@ export class Scheduler {
   private _getLastHumanActivity?: () => Date | null;
   private _sessionExists?: () => boolean;
   private _started = false;
+  private _sleepUntil = new Map<string, Date>();
 
   constructor(options: SchedulerOptions) {
     this._tickIntervalMs = options.tickIntervalMs ?? 1000;
@@ -159,6 +162,19 @@ export class Scheduler {
   }
 
   /**
+   * Load external task handlers from the specified directories.
+   *
+   * Scans each directory for .js files that export a `register(scheduler)` function.
+   * Invalid files and missing directories are logged and skipped gracefully.
+   *
+   * @param dirs Array of directory paths to scan for task files.
+   * @returns Array of load results, one per directory.
+   */
+  async loadExternalTasks(dirs: string[]): Promise<LoadResult[]> {
+    return loadExternalTasks(dirs, this);
+  }
+
+  /**
    * Reload tasks from new config. Adds new tasks, removes deleted ones,
    * updates changed ones. Running tasks are not interrupted.
    */
@@ -193,6 +209,41 @@ export class Scheduler {
    */
   isRunning(): boolean {
     return this._started;
+  }
+
+  /**
+   * Put a task to sleep for N hours (in-memory, resets on restart).
+   * Returns the wake-up time.
+   */
+  sleepTask(name: string, hours: number): Date {
+    const task = this._tasks.get(name);
+    if (!task) throw new Error(`Task not found: ${name}`);
+    const wakeAt = new Date(Date.now() + hours * 3_600_000);
+    this._sleepUntil.set(name, wakeAt);
+    return wakeAt;
+  }
+
+  /**
+   * Cancel a task's sleep (wake it up immediately).
+   */
+  wakeTask(name: string): void {
+    const task = this._tasks.get(name);
+    if (!task) throw new Error(`Task not found: ${name}`);
+    this._sleepUntil.delete(name);
+  }
+
+  /**
+   * Get the sleep state for a task, or null if not sleeping.
+   */
+  getTaskSleep(name: string): { sleeping_until: string } | null {
+    const wakeAt = this._sleepUntil.get(name);
+    if (!wakeAt) return null;
+    // Auto-expire stale entries
+    if (Date.now() >= wakeAt.getTime()) {
+      this._sleepUntil.delete(name);
+      return null;
+    }
+    return { sleeping_until: wakeAt.toISOString() };
   }
 
   // ── Internals ──────────────────────────────────────────
@@ -279,6 +330,14 @@ export class Scheduler {
       if (!task.enabled || task.running || !task.nextRunAt) continue;
 
       if (now >= task.nextRunAt) {
+        // Skip tasks that are sleeping
+        const wakeAt = this._sleepUntil.get(task.name);
+        if (wakeAt) {
+          if (Date.now() < wakeAt.getTime()) continue;
+          // Sleep expired — clean up
+          this._sleepUntil.delete(task.name);
+        }
+
         // Skip idle-only tasks when agent is not idle
         if (task.idleOnly && !this._isIdle(task.idleAfterMs)) continue;
 
@@ -310,14 +369,32 @@ export class Scheduler {
 
       // Use in-process handler if registered, otherwise spawn subprocess
       const handler = this._handlers.get(task.name);
-      const result = handler
-        ? await this._runInProcess(task, handler)
-        : await runTask(task.name, {
-            command: task.command,
-            args: task.args,
-            timeoutMs: (task.config.timeout_ms as number) ?? 300_000,
-            cwd: task.config.cwd as string | undefined,
-          });
+      let result: TaskResult;
+      if (handler) {
+        result = await this._runInProcess(task, handler);
+      } else if (task.command) {
+        result = await runTask(task.name, {
+          command: task.command,
+          args: task.args,
+          timeoutMs: (task.config.timeout_ms as number) ?? 300_000,
+          cwd: task.config.cwd as string | undefined,
+        });
+      } else {
+        // No handler registered and no command configured — skip gracefully.
+        // This happens when an extension task is in the scheduler config but
+        // the extension hasn't loaded yet (e.g. peer-heartbeat before agent-comms loads).
+        const log = createLogger('scheduler');
+        log.debug(`Task "${task.name}" has no handler or command — skipping`);
+        result = {
+          id: 0,
+          task_name: task.name,
+          status: 'success',
+          output: 'Skipped: no handler registered and no command configured',
+          duration_ms: 0,
+          started_at: new Date().toISOString(),
+          finished_at: new Date().toISOString(),
+        };
+      }
 
       task.lastRunAt = new Date();
       task.nextRunAt = this._calculateNextRun(task);
@@ -339,28 +416,62 @@ export class Scheduler {
     const startedAt = new Date().toISOString();
     const start = Date.now();
 
+    const timeoutMs = (task.config.timeout_ms as number) ?? 300_000; // 5 min default
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error(`In-process handler timed out after ${timeoutMs}ms`)),
+        timeoutMs,
+      );
+      // Don't keep process alive just for the timeout
+      if (timer.unref) timer.unref();
+    });
+
     try {
-      await handler({ taskName: task.name, config: task.config });
+      const result = await Promise.race([handler({ taskName: task.name, config: task.config }), timeoutPromise]);
       const durationMs = Date.now() - start;
-      return {
+      const finishedAt = new Date().toISOString();
+      const output = typeof result === 'string' ? result : 'completed';
+
+      // Persist to DB (same pattern as runTask in task-runner.ts)
+      dbExec(
+        'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
+        task.name, 'success', output, durationMs, startedAt, finishedAt,
+      );
+      const rows = query<TaskResult>(
+        'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
+        task.name,
+      );
+      return rows[0] ?? {
         id: 0,
         task_name: task.name,
         status: 'success',
-        output: 'In-process handler completed',
+        output,
         duration_ms: durationMs,
         started_at: startedAt,
-        finished_at: new Date().toISOString(),
+        finished_at: finishedAt,
       };
     } catch (err) {
       const durationMs = Date.now() - start;
-      return {
+      const finishedAt = new Date().toISOString();
+      const output = err instanceof Error ? err.message : String(err);
+
+      // Persist to DB
+      dbExec(
+        'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
+        task.name, 'failure', output, durationMs, startedAt, finishedAt,
+      );
+      const rows = query<TaskResult>(
+        'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
+        task.name,
+      );
+      return rows[0] ?? {
         id: 0,
         task_name: task.name,
         status: 'failure',
-        output: err instanceof Error ? err.message : String(err),
+        output,
         duration_ms: durationMs,
         started_at: startedAt,
-        finished_at: new Date().toISOString(),
+        finished_at: finishedAt,
       };
     }
   }

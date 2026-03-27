@@ -3,6 +3,10 @@
  *
  * Queries the database for actionable todos and injects a reminder
  * into the session. Skips if all todos are blocked.
+ *
+ * Configurable via scheduler task config:
+ *   idle_nudge: string — text injected when no open todos exist.
+ *     Defaults to a generic "look for useful work" message.
  */
 
 import { query } from '../../core/db.js';
@@ -12,6 +16,9 @@ import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('todo-reminder');
 
+const DEFAULT_IDLE_NUDGE =
+  '[System] No open todos. Look for useful work: check for unread messages, review PRs, explore improvements, or check in with the team.';
+
 interface TodoRow {
   id: string;
   title: string;
@@ -19,7 +26,8 @@ interface TodoRow {
   priority: string | null;
 }
 
-async function run(): Promise<void> {
+async function run(config: Record<string, unknown> = {}): Promise<void> {
+  // Check if comms session is alive
   if (!sessionExists()) {
     log.debug('Skipping reminder: no tmux session');
     return;
@@ -35,7 +43,9 @@ async function run(): Promise<void> {
   );
 
   if (todos.length === 0) {
-    log.debug('No open todos');
+    log.info('No open todos — nudging agent to find useful work');
+    const nudge = (config.idle_nudge as string) ?? DEFAULT_IDLE_NUDGE;
+    injectText(nudge);
     return;
   }
 
@@ -64,10 +74,9 @@ async function run(): Promise<void> {
 
 /**
  * Register the todo-reminder task with the scheduler.
- * Handles its own session check (set requires_session: false in config).
  */
 export function register(scheduler: Scheduler): void {
-  scheduler.registerHandler('todo-reminder', async () => {
-    await run();
+  scheduler.registerHandler('todo-reminder', async (ctx) => {
+    await run(ctx.config);
   });
 }

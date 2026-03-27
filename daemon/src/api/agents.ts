@@ -19,6 +19,7 @@ import { loadProfiles } from '../agents/profiles.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { logActivity, getActivity } from './activity.js';
 import { update } from '../core/db.js';
+import { createRateLimiter } from './rate-limit.js';
 
 // ── Configuration ────────────────────────────────────────────
 
@@ -27,6 +28,8 @@ let profilesDir: string = '';
 export function setProfilesDir(dir: string): void {
   profilesDir = dir;
 }
+
+const spawnLimiter = createRateLimiter('spawn', 10);
 
 // ── Route handler ────────────────────────────────────────────
 
@@ -40,6 +43,8 @@ export async function handleAgentsRoute(
   try {
     // POST /api/agents/spawn
     if (pathname === '/api/agents/spawn' && method === 'POST') {
+      if (!spawnLimiter(req, res)) return true;
+
       const body = await parseBody(req);
 
       // Validate required fields
@@ -60,12 +65,12 @@ export async function handleAgentsRoute(
         return true;
       }
 
-      const result = spawnWorkerJob({
+      const result = await spawnWorkerJob({
         profile,
         prompt: body.prompt as string,
         cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
         timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
-        maxBudgetUsd: typeof body.maxBudgetUsd === 'number' ? body.maxBudgetUsd : undefined,
+        spawned_by: typeof body.spawned_by === 'string' ? body.spawned_by : 'comms',
       });
 
       json(res, 202, withTimestamp({ jobId: result.jobId, status: result.status }));
@@ -115,6 +120,25 @@ export async function handleAgentsRoute(
           return true;
         }
         json(res, 200, withTimestamp(agent));
+        return true;
+      }
+
+      // PUT /api/agents/:id — update agent status (used by orchestrator wrapper cleanup)
+      if (suffix === '' && method === 'PUT') {
+        const body = await parseBody(req);
+        const agent = getAgentStatus(agentId);
+        if (!agent) {
+          json(res, 404, withTimestamp({ error: 'Not found' }));
+          return true;
+        }
+
+        const updates: Record<string, string> = { updated_at: new Date().toISOString() };
+        if (typeof body.status === 'string') {
+          updates.status = body.status as string;
+        }
+
+        update('agents', agentId, updates);
+        json(res, 200, withTimestamp({ status: 'updated', id: agentId }));
         return true;
       }
 

@@ -1,10 +1,11 @@
 /**
  * Messages API — HTTP endpoints for inter-agent messaging.
  *
- * POST /api/messages          — Send a message between agents
- * GET  /api/messages          — Get message history (filter by agent, type)
- * PUT  /api/messages/:id/read — Mark a single message as read
- * PUT  /api/messages/read-all — Mark all messages for an agent as read
+ * POST /api/messages              — Send a message between agents
+ * GET  /api/messages              — Get message history (filter by agent, type)
+ * GET  /api/messages/unread-summary — Unread count per agent
+ * PUT  /api/messages/:id/read     — Mark a single message as read
+ * PUT  /api/messages/read-all     — Mark all messages for an agent as read
  */
 
 import type http from 'node:http';
@@ -18,6 +19,7 @@ import {
   WorkerRestrictionError,
 } from '../agents/message-router.js';
 import type { MessageType } from '../agents/message-router.js';
+import { query } from '../core/db.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
 
 const VALID_MESSAGE_TYPES: readonly string[] = ['text', 'task', 'result', 'error', 'status'];
@@ -76,6 +78,7 @@ export async function handleMessagesRoute(
         json(res, 200, withTimestamp({
           messageId: result.messageId,
           delivered: result.delivered,
+          ...(result.warning !== undefined ? { warning: result.warning } : {}),
         }));
       } catch (err) {
         if (err instanceof WorkerRestrictionError) {
@@ -88,6 +91,19 @@ export async function handleMessagesRoute(
         }
         throw err;
       }
+      return true;
+    }
+
+    // GET /api/messages/unread-summary — unread count per agent
+    if (pathname === '/api/messages/unread-summary' && method === 'GET') {
+      const rows = query<{ to_agent: string; unread_count: number }>(
+        `SELECT to_agent, COUNT(*) as unread_count FROM messages
+         WHERE read_at IS NULL
+           AND processed_at IS NOT NULL
+         GROUP BY to_agent
+         ORDER BY to_agent ASC`,
+      );
+      json(res, 200, withTimestamp({ data: rows }));
       return true;
     }
 

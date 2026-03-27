@@ -1,0 +1,59 @@
+# Notify Instances — dispatches sync events to personal repos after main updates.
+# Each personal repo has an upstream-sync workflow that listens for these events.
+name: Notify Instances
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  notify-downstream:
+    runs-on: ubuntu-latest
+    # Only dispatch on actual pushes, not PR merges that re-trigger
+    if: github.event_name == 'push'
+
+    steps:
+      - name: Notify KKit-BMO
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+          repository: RockaRhymeLLC/KKit-BMO
+          event-type: upstream-sync
+          client-payload: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "repository": "${{ github.repository }}",
+              "sender": "${{ github.actor }}"
+            }
+
+      - name: Notify KKit-R2
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+          repository: RockaRhymeLLC/KKit-R2
+          event-type: upstream-sync
+          client-payload: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "repository": "${{ github.repository }}",
+              "sender": "${{ github.actor }}"
+            }
+
+      - name: Notify KKit-Skippy
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.INSTANCE_SYNC_TOKEN }}
+          repository: RockaRhymeLLC/KKit-Skippy
+          event-type: upstream-sync
+          client-payload: |
+            {
+              "ref": "${{ github.ref }}",
+              "sha": "${{ github.sha }}",
+              "repository": "${{ github.repository }}",
+              "sender": "${{ github.actor }}"
+            }

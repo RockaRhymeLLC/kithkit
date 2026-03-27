@@ -44,7 +44,15 @@ jspm_packages/
 # Snowpack dependency directory (https://snowpack.dev/)
 web_modules/
 
-# TypeScript cache
+# TypeScript build artifacts (in-source, from stale tsc runs)
+daemon/src/**/*.js
+daemon/src/**/*.js.map
+daemon/src/**/*.d.ts
+daemon/src/**/*.d.ts.map
+cli/src/**/*.js
+cli/src/**/*.js.map
+cli/src/**/*.d.ts
+cli/src/**/*.d.ts.map
 *.tsbuildinfo
 
 # Optional npm cache directory
@@ -174,3 +182,28 @@ models/
 
 # Migration artifacts
 migrate-rollback.manifest
+# Instance-specific extensions (never commit to public repo)
+daemon/src/extensions/instance/
+
+# Python virtual environments
+.venv/
+*/.venv/
+**/.venv/
+
+# Session data
+.claude/sessions/
+
+# Python cache
+__pycache__/
+
+# IDE
+.vscode/
+.idea/
+
+# Editor swap/temp
+*.swp
+*.swo
+*~
+Thumbs.db
+scripts/calendar-events
+scripts/reminders

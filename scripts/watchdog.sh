@@ -13,6 +13,12 @@
 # Usage:
 #   ./watchdog.sh [start.sh arguments...]
 
+# Clear Claude Code nesting guard — the tmux session is a separate instance,
+# not a nested one. Without this, launching from an existing Claude session
+# (e.g., restart triggered by comms) fails with "cannot launch inside another
+# Claude Code session".
+unset CLAUDECODE
+
 # Source shared config
 source "$(dirname "${BASH_SOURCE[0]}")/lib/config.sh"
 

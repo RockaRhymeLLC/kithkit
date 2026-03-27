@@ -15,9 +15,10 @@
 import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
-import { injectMessage } from '../agents/tmux.js';
+import { injectMessage, isSessionAlive } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { insert, update, query } from '../core/db.js';
+import { loadConfig } from '../core/config.js';
 
 const log = createLogger('timer-api');
 
@@ -36,9 +37,12 @@ function normalizeAgentId(agent: string): string {
 
 // ── Constants ────────────────────────────────────────────────
 
-const NAG_INTERVAL_MS = 30_000;      // 30 seconds between nags
-const MAX_NAG_DURATION_MS = 600_000; // 10 minutes before auto-expire
-const DEFAULT_SNOOZE_S = 300;        // 5 minutes default snooze
+const NAG_INTERVAL_MS = loadConfig().timers?.nag_interval_ms ?? 30_000;
+const MAX_NAG_DURATION_MS = loadConfig().timers?.max_nag_duration_ms ?? 600_000;
+const DEFAULT_SNOOZE_S = loadConfig().timers?.default_snooze_seconds ?? 300;
+
+/** Number of consecutive injection failures before auto-expiring a timer (circuit breaker). */
+const MAX_CONSECUTIVE_FAILURES = 3;
 
 // ── Timer state ──────────────────────────────────────────────
 
@@ -112,9 +116,25 @@ function complete(entry: TimerEntry, status: TimerStatus): void {
   log.info('Timer completed', { id: entry.id, status });
 }
 
-/** Start the nag cycle for a fired timer. `firedAt` is the epoch ms when it first fired. */
+/**
+ * Start the nag cycle for a fired timer. `firedAt` is the epoch ms when it first fired.
+ *
+ * Fix 4 — Circuit breaker: after MAX_CONSECUTIVE_FAILURES consecutive injection
+ * failures (session dead/gone), auto-expire the timer rather than nagging forever.
+ */
 function startNagCycle(entry: TimerEntry, firedAt: number): void {
+  let consecutiveFailures = 0;
+
   entry.nagHandle = setInterval(() => {
+    // Guard: stop if timer was acked/cancelled/expired since last nag
+    if (entry.status !== 'fired') {
+      if (entry.nagHandle !== undefined) {
+        clearInterval(entry.nagHandle);
+        entry.nagHandle = undefined;
+      }
+      return;
+    }
+
     const elapsed = Math.floor((Date.now() - firedAt) / 1000);
 
     if (elapsed >= MAX_NAG_DURATION_MS / 1000) {
@@ -126,8 +146,18 @@ function startNagCycle(entry: TimerEntry, firedAt: number): void {
     const nagText = `[timer] ${entry.message} (${elapsed}s ago, unacknowledged)`;
     const nagOk = injectMessage(entry.session, nagText);
     if (!nagOk) {
-      log.warn('Nag injection failed', { id: entry.id, elapsed });
+      consecutiveFailures++;
+      log.warn('Nag injection failed', { id: entry.id, elapsed, consecutiveFailures });
+
+      // Circuit breaker: auto-expire after too many consecutive failures
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        log.warn('Circuit breaker: auto-expiring timer after consecutive injection failures', {
+          id: entry.id, session: entry.session, consecutiveFailures,
+        });
+        complete(entry, 'expired');
+      }
     } else {
+      consecutiveFailures = 0; // reset on success
       log.info('Timer nag sent', { id: entry.id, elapsed });
     }
   }, NAG_INTERVAL_MS);
@@ -155,6 +185,11 @@ function fireTimer(entry: TimerEntry): void {
 /**
  * Reload active timers from the database on daemon startup.
  * Re-schedules pending/snoozed timers and restarts nag cycles for fired ones.
+ *
+ * Fix 2 — Session validation: before resuming a nag cycle for a fired timer,
+ * verify the target tmux session is alive. If the session is dead (e.g. orchestrator
+ * shut down while daemon was restarting), mark the timer expired instead of
+ * resurrecting orphaned nag cycles.
  */
 export function initTimers(): void {
   const rows = query<DbTimerRow>(
@@ -186,6 +221,12 @@ export function initTimers(): void {
         // Expired while daemon was down — mark it now
         complete(entry, 'expired');
         log.info('Timer expired during restart', { id: entry.id });
+      } else if (!isSessionAlive(row.session)) {
+        // Fix 2: target session is dead — don't resurrect orphaned nag cycles
+        complete(entry, 'expired');
+        log.info('Timer expired on restart — target session dead', {
+          id: entry.id, session: row.session,
+        });
       } else {
         startNagCycle(entry, firedAt);
         log.info('Timer nag cycle resumed', { id: entry.id });
@@ -199,6 +240,30 @@ export function initTimers(): void {
   }
 
   log.info('Timers reloaded from DB', { count: rows.length });
+}
+
+// ── Bulk cancellation ─────────────────────────────────────────
+
+/**
+ * Cancel all active timers for a given session (agent ID).
+ * Clears in-memory handles, updates DB status to 'cancelled', removes from Map.
+ * Returns the number of timers cancelled.
+ *
+ * Fix 3 — Called by orchestrator shutdown to clean up its timers.
+ */
+export function cancelSessionTimers(sessionId: string): number {
+  let count = 0;
+  for (const [id, entry] of timers) {
+    if (entry.session === sessionId && (entry.status === 'pending' || entry.status === 'fired' || entry.status === 'snoozed')) {
+      complete(entry, 'cancelled');
+      timers.delete(id);
+      count++;
+    }
+  }
+  if (count > 0) {
+    log.info('Cancelled timers for session', { sessionId, count });
+  }
+  return count;
 }
 
 // ── Route handler ────────────────────────────────────────────
@@ -245,15 +310,25 @@ export async function handleTimerRoute(
 
     insert('timers', { id, session, message, fires_at, created_at, status: 'pending' });
 
-    log.info('Timer scheduled', { id, session, delay, fires_at });
+    log.info('Timer scheduled', { id, agentId: session, delay, fires_at });
     json(res, 201, withTimestamp({ id, fires_at, message, status: 'pending' }));
     return true;
   }
 
-  // GET /api/timers — list all timers
+  // GET /api/timers — list all timers (from DB so completed/expired survive restart)
   if (pathname === '/api/timers' && method === 'GET') {
-    const list = [...timers.values()].map(({ id, session, message, fires_at, created_at, status, fired_at, completed_at }) => ({
-      id, session, message, fires_at, created_at, status, fired_at, completed_at,
+    const rows = query<DbTimerRow>(
+      `SELECT id, session, message, fires_at, created_at, status, fired_at, completed_at FROM timers ORDER BY created_at DESC`,
+    );
+    const list = rows.map(r => ({
+      id: r.id,
+      session: r.session,
+      message: r.message,
+      fires_at: r.fires_at,
+      created_at: r.created_at,
+      status: r.status,
+      fired_at: r.fired_at ?? undefined,
+      completed_at: r.completed_at ?? undefined,
     }));
     json(res, 200, withTimestamp({ timers: list, count: list.length }));
     return true;
@@ -269,13 +344,31 @@ export async function handleTimerRoute(
   // DELETE /api/timer/:id — cancel a timer
   if (!subpath && method === 'DELETE') {
     const entry = timers.get(id);
-    if (!entry) {
+    if (entry) {
+      complete(entry, 'cancelled');
+      timers.delete(id);
+      log.info('Timer cancelled', { id });
+      json(res, 200, withTimestamp({ id, cancelled: true }));
+      return true;
+    }
+
+    // Fix 1: not in memory — fall back to DB in case daemon restarted
+    const rows = query<DbTimerRow>(`SELECT * FROM timers WHERE id = ?`, id);
+    if (rows.length === 0) {
       json(res, 404, withTimestamp({ error: 'Timer not found' }));
       return true;
     }
-    complete(entry, 'cancelled');
-    timers.delete(id);
-    log.info('Timer cancelled', { id });
+    const row = rows[0];
+    // Only update if the timer isn't already in a terminal state
+    if (row.status === 'pending' || row.status === 'fired' || row.status === 'snoozed') {
+      update('timers', id, {
+        status: 'cancelled',
+        completed_at: new Date().toISOString(),
+      });
+      log.info('Timer cancelled via DB fallback', { id, was: row.status });
+    } else {
+      log.info('Timer already in terminal state — no-op cancel', { id, status: row.status });
+    }
     json(res, 200, withTimestamp({ id, cancelled: true }));
     return true;
   }

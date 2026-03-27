@@ -20,15 +20,11 @@ For quick one-liner replies or casual messages, plain text is fine.
 
 ## Sending HTML Emails
 
-Use the configured email sending script or API for the active email integration. The exact command depends on how email is set up in `kithkit.config.yaml`. For HTML emails, pass the content with an HTML flag:
+Use the `--html` flag with `graph.js`:
 
 ```bash
-# Check your email skill or kithkit.config.yaml for the configured send command
-# Example pattern (actual command varies by integration):
-# your-email-script send "to@email.com" --subject "Subject" --html "<html>...</html>"
+node scripts/email/graph.js send "to@email.com" "Subject" "<html>...</html>" --html
 ```
-
-Check the email skill or `kithkit.config.yaml` for the specific sending mechanism configured on this instance.
 
 ## Core Rules
 
@@ -255,7 +251,7 @@ Callout variants:
 
 - 5-7 words, 40-50 characters
 - Front-load key info in first 25 characters
-- Be specific: "Meeting Notes for Team" beats "Check This Out!"
+- Be specific: "Camp Picks for Grant & Gabe" beats "Check This Out!"
 - No ALL CAPS, max one exclamation mark
 
 ## Accessibility
