@@ -600,6 +600,7 @@ function buildSummary(
   deletedMemories: DeletedMemory[],
   memoriesProcessed: number,
   dryRun: boolean,
+  patterns: Array<{ theme: string; count: number; recommendation: string }> = [],
 ): ReflectionSummary {
   const timestamp = new Date().toISOString();
   const actionCounts: Record<string, number> = {};
@@ -630,7 +631,7 @@ function buildSummary(
     ? `${skillUpdates.length} (${skillUpdates.join(', ')})`
     : '0';
 
-  const readable = [
+  const readableParts = [
     `Nightly reflection complete${dryRunLabel}:`,
     `  Memories processed: ${memoriesProcessed}`,
     `  Skill updates: ${skillLine}`,
@@ -639,7 +640,16 @@ function buildSummary(
     `  Consolidated: ${actionCounts['memory-consolidate'] ?? 0}`,
     `  Todos created: ${todosCreated.length}`,
     `  Errors: ${errors.length}`,
-  ].join('\n');
+  ];
+
+  if (patterns.length > 0) {
+    readableParts.push(`  Patterns detected: ${patterns.length}`);
+    for (const p of patterns) {
+      readableParts.push(`    - ${p.theme} (${p.count}x): ${p.recommendation}`);
+    }
+  }
+
+  const readable = readableParts.join('\n');
 
   return {
     timestamp,
@@ -652,6 +662,111 @@ function buildSummary(
     errors,
     readable,
   };
+}
+
+// ── Story 6: Pattern Detection ──────────────────────────────
+
+/**
+ * Scan a wider window of retro memories for recurring themes.
+ * Groups by tag and category; creates high-priority todos for any
+ * tag/category that meets or exceeds the threshold.
+ */
+function detectPatterns(
+  config: ReflectionConfig & typeof DEFAULTS,
+): { patterns: Array<{ theme: string; count: number; recommendation: string }>; todoActions: ReflectionAction[] } {
+  if (!config.pattern_detection.enabled) {
+    return { patterns: [], todoActions: [] };
+  }
+
+  const { window_days, threshold } = config.pattern_detection;
+  const windowStart = new Date(Date.now() - window_days * 24 * 3600_000).toISOString();
+
+  // Gather retro memories over the wider pattern window
+  const rows = query<MemoryRow>(
+    `SELECT id, content, category, tags, trigger, source, importance, created_at
+     FROM memories
+     WHERE created_at > ?
+     ORDER BY created_at ASC
+     LIMIT 1000`,
+    windowStart,
+  );
+
+  // Client-side filter: retro trigger OR self-improvement tag
+  const retro = rows.filter((m) => {
+    if (m.trigger === 'retro') return true;
+    if (m.tags) {
+      try {
+        const parsed = JSON.parse(m.tags);
+        if (Array.isArray(parsed) && parsed.includes('self-improvement')) return true;
+      } catch { /* ignore */ }
+    }
+    return false;
+  });
+
+  if (retro.length === 0) {
+    return { patterns: [], todoActions: [] };
+  }
+
+  // Count occurrences per tag
+  const tagMap = new Map<string, number[]>(); // tag → memory ids
+  for (const m of retro) {
+    const tags = parseTags(m.tags);
+    for (const tag of tags) {
+      const ids = tagMap.get(tag) ?? [];
+      ids.push(m.id);
+      tagMap.set(tag, ids);
+    }
+  }
+
+  // Count occurrences per category
+  const catMap = new Map<string, number[]>(); // category → memory ids
+  for (const m of retro) {
+    if (m.category) {
+      const ids = catMap.get(m.category) ?? [];
+      ids.push(m.id);
+      catMap.set(m.category, ids);
+    }
+  }
+
+  const patterns: Array<{ theme: string; count: number; recommendation: string }> = [];
+  const todoActions: ReflectionAction[] = [];
+
+  // Helper: emit pattern + todo for a given theme
+  function emitPattern(theme: string, ids: number[]): void {
+    const count = ids.length;
+    if (count < threshold) return;
+
+    const recommendation = `Review ${count} memories tagged "${theme}" — consider adding a skill reference or filing a fix`;
+    patterns.push({ theme, count, recommendation });
+
+    todoActions.push({
+      memory_id: 0, // synthetic — not tied to a specific memory
+      action: 'todo-create',
+      title: `Recurring issue: ${theme} (${count} occurrences in ${window_days} days)`,
+      description: `Pattern detected across ${count} retro memories. Source memory IDs: ${ids.join(', ')}`,
+      priority: 'high',
+      reason: `Pattern detection: ${count} >= threshold ${threshold}`,
+    });
+  }
+
+  for (const [tag, ids] of tagMap) {
+    emitPattern(tag, ids);
+  }
+  for (const [cat, ids] of catMap) {
+    // Avoid duplicate if a tag and category share the same name
+    if (!tagMap.has(cat)) {
+      emitPattern(cat, ids);
+    }
+  }
+
+  log.info('kkit-reflection: pattern detection complete', {
+    windowDays: window_days,
+    threshold,
+    retroCount: retro.length,
+    patternsFound: patterns.length,
+  });
+
+  return { patterns, todoActions };
 }
 
 // ── Main ────────────────────────────────────────────────────
@@ -707,9 +822,21 @@ async function run(rawConfig: Record<string, unknown>): Promise<string> {
     });
   }
 
+  // Detect recurring patterns across the wider window (Story 6)
+  const { patterns, todoActions } = detectPatterns(config);
+
+  // Merge pattern-triggered todos into categorization actions
+  const allActions = [...categorization.actions, ...todoActions];
+
+  if (patterns.length > 0) {
+    log.info(`kkit-reflection: ${patterns.length} recurring pattern(s) detected`, {
+      patterns: patterns.map(p => `${p.theme}(${p.count})`).join(', '),
+    });
+  }
+
   // Execute actions (Story 4)
   const execResult = await executeActions(
-    categorization.actions,
+    allActions,
     memories,
     config,
     projectRoot,
@@ -721,8 +848,8 @@ async function run(rawConfig: Record<string, unknown>): Promise<string> {
     deleted: execResult.deletedMemories.length,
   });
 
-  // Build summary (Story 5)
-  const summary = buildSummary(execResult.results, execResult.deletedMemories, memories.length, config.dry_run);
+  // Build summary (Story 5) — include detected patterns
+  const summary = buildSummary(execResult.results, execResult.deletedMemories, memories.length, config.dry_run, patterns);
 
   log.info('kkit-reflection: summary', { readable: summary.readable });
 
@@ -758,8 +885,6 @@ async function run(rawConfig: Record<string, unknown>): Promise<string> {
       body: summary.readable,
     }),
   }).catch(err => log.warn('kkit-reflection: failed to notify comms', { error: (err as Error).message }));
-
-  // TODO (Story 6): Pattern detection
 
   return summary.readable;
 }
