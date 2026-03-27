@@ -296,7 +296,7 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
 
   // Load previous orchestrator state if it exists (enables context continuity)
   try {
-    const stateFile = resolveProjectPath('.claude', 'state', 'orchestrator-state.md');
+    const stateFile = resolveProjectPath('.kithkit', 'state', 'orchestrator-state.md');
     if (fs.existsSync(stateFile)) {
       const stateContent = fs.readFileSync(stateFile, 'utf8').trim();
       if (stateContent) {
