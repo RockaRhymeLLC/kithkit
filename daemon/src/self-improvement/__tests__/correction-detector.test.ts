@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '../../../../');
-const HOOK_PATH = path.join(PROJECT_ROOT, '.claude/hooks/correction-detector.sh');
+const HOOK_PATH = path.join(PROJECT_ROOT, '.kithkit/hooks/correction-detector.sh');
 const SETTINGS_PATH = path.join(PROJECT_ROOT, '.claude/settings.json');
 
 /**

@@ -106,11 +106,11 @@ export function shouldTriggerRetro(task: OrchestratorTask & { workers?: WorkerJo
 export async function spawnRetro(
   task: OrchestratorTask & { workers?: WorkerJob[]; activity?: TaskActivity[] },
 ): Promise<string> {
-  const profilesDir = profilesDirOverride ?? resolveProjectPath('.claude', 'agents');
+  const profilesDir = profilesDirOverride ?? resolveProjectPath('.kithkit', 'agents');
   const profiles = loadProfiles(profilesDir);
   const profile = profiles.get('retro');
   if (!profile) {
-    throw new Error('retro agent profile not found in .claude/agents/retro.md');
+    throw new Error('retro agent profile not found in .kithkit/agents/retro.md');
   }
 
   const activityLog = (task.activity ?? [])

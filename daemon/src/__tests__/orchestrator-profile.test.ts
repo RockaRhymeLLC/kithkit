@@ -98,9 +98,9 @@ scheduler:
     cleanupTestEnv(tmpDir);
   });
 
-  it('orchestrator.md in .claude/agents/ lists all 4 worker profiles', () => {
+  it('orchestrator.md in .kithkit/agents/ lists all 4 worker profiles', () => {
     const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..');
-    const orchPath = path.join(repoRoot, '.claude', 'agents', 'orchestrator.md');
+    const orchPath = path.join(repoRoot, '.kithkit', 'agents', 'orchestrator.md');
 
     if (!fs.existsSync(orchPath)) {
       // Skip if not in the expected location (e.g. CI without project files)
