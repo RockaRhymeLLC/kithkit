@@ -408,12 +408,259 @@ function categorizeMemories(memories: MemoryRow[], config: ReflectionConfig & ty
   return { actions, patterns: [], summary };
 }
 
+// ── Story 4: Action Execution Engine ────────────────────────
+
+interface ActionResult {
+  memory_id: number;
+  action: ActionType;
+  status: 'success' | 'skipped' | 'failed';
+  detail?: string;
+}
+
+interface DeletedMemory {
+  id: number;
+  content: string;
+  tags: string | null;
+  category: string | null;
+}
+
+async function executeActions(
+  actions: ReflectionAction[],
+  memories: MemoryRow[],
+  config: ReflectionConfig & typeof DEFAULTS,
+  projectRoot: string,
+  dryRun: boolean,
+): Promise<{ results: ActionResult[]; deletedMemories: DeletedMemory[] }> {
+  const results: ActionResult[] = [];
+  const deletedMemories: DeletedMemory[] = [];
+  const today = new Date().toISOString().slice(0, 10);
+  let deleteCount = 0;
+
+  const memoryIndex = new Map<number, MemoryRow>(memories.map(m => [m.id, m]));
+
+  for (const action of actions) {
+    // Skip action types not in enabled_actions
+    if (!config.enabled_actions.includes(action.action)) {
+      results.push({ memory_id: action.memory_id, action: action.action, status: 'skipped', detail: 'action type not enabled' });
+      continue;
+    }
+
+    try {
+      switch (action.action) {
+        case 'skill-update': {
+          const targetSkill = action.target_skill ?? 'learned-patterns';
+          const content = action.content ?? '';
+          const validPath = validateSkillWritePath(targetSkill, projectRoot);
+          if (!validPath) {
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'failed', detail: `invalid skill path for: ${targetSkill}` });
+            break;
+          }
+          if (dryRun) {
+            log.info(`[DRY RUN] skill-update: would append to ${validPath}`, { memory_id: action.memory_id });
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'success', detail: `dry-run: would update ${targetSkill}` });
+          } else {
+            const ok = appendToSkillReference(validPath, content, today);
+            results.push({
+              memory_id: action.memory_id,
+              action: action.action,
+              status: ok ? 'success' : 'failed',
+              detail: ok ? targetSkill : `write failed for ${targetSkill}`,
+            });
+          }
+          break;
+        }
+
+        case 'memory-keep': {
+          results.push({ memory_id: action.memory_id, action: action.action, status: 'success' });
+          break;
+        }
+
+        case 'memory-consolidate': {
+          // reason contains "Near-duplicate of memory <id> (keeping newer)"
+          const keepIdMatch = action.reason.match(/memory (\d+)/);
+          const keepId = keepIdMatch ? parseInt(keepIdMatch[1], 10) : null;
+          const oldMemory = memoryIndex.get(action.memory_id);
+
+          if (!oldMemory) {
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'failed', detail: 'source memory not found in batch' });
+            break;
+          }
+
+          if (deleteCount >= config.max_deletes_per_run) {
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'skipped', detail: 'max deletes reached' });
+            break;
+          }
+
+          // Merge tags from old memory into the keeper
+          if (keepId !== null) {
+            const keepMemory = memoryIndex.get(keepId);
+            if (keepMemory) {
+              const oldTags = parseTags(oldMemory.tags);
+              const keepTags = parseTags(keepMemory.tags);
+              const merged = [...new Set([...keepTags, ...oldTags])];
+              if (!dryRun && merged.length > keepTags.length) {
+                exec('UPDATE memories SET tags = ? WHERE id = ?', JSON.stringify(merged), keepId);
+              }
+            }
+          }
+
+          if (dryRun) {
+            log.info(`[DRY RUN] memory-consolidate: would delete memory ${action.memory_id}`, { keep: keepId });
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'success', detail: `dry-run: would consolidate into ${keepId}` });
+          } else {
+            deletedMemories.push({ id: oldMemory.id, content: oldMemory.content, tags: oldMemory.tags, category: oldMemory.category });
+            exec('DELETE FROM memories WHERE id = ?', action.memory_id);
+            deleteCount++;
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'success', detail: `consolidated into ${keepId}` });
+          }
+          break;
+        }
+
+        case 'memory-expire': {
+          const expireMemory = memoryIndex.get(action.memory_id);
+
+          if (!expireMemory) {
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'failed', detail: 'memory not found in batch' });
+            break;
+          }
+
+          if (deleteCount >= config.max_deletes_per_run) {
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'skipped', detail: 'max deletes reached' });
+            break;
+          }
+
+          if (dryRun) {
+            log.info(`[DRY RUN] memory-expire: would delete memory ${action.memory_id}`);
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'success', detail: 'dry-run: would expire' });
+          } else {
+            deletedMemories.push({ id: expireMemory.id, content: expireMemory.content, tags: expireMemory.tags, category: expireMemory.category });
+            exec('DELETE FROM memories WHERE id = ?', action.memory_id);
+            deleteCount++;
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'success' });
+          }
+          break;
+        }
+
+        case 'todo-create': {
+          const title = action.title ?? 'Action from kkit-reflection';
+          const description = action.description ?? action.reason;
+          const priority = action.priority ?? 'medium';
+
+          if (dryRun) {
+            log.info(`[DRY RUN] todo-create: would create todo "${title}"`);
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'success', detail: `dry-run: would create "${title}"` });
+          } else {
+            exec(
+              'INSERT INTO todos (title, description, priority, status) VALUES (?, ?, ?, ?)',
+              title,
+              description,
+              priority,
+              'pending',
+            );
+            results.push({ memory_id: action.memory_id, action: action.action, status: 'success', detail: title });
+          }
+          break;
+        }
+
+        case 'no-action': {
+          results.push({ memory_id: action.memory_id, action: action.action, status: 'success' });
+          break;
+        }
+
+        default: {
+          results.push({ memory_id: action.memory_id, action: action.action, status: 'skipped', detail: 'unknown action type' });
+        }
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      log.warn('kkit-reflection: action execution error', { memory_id: action.memory_id, action: action.action, error: errorMsg });
+      results.push({ memory_id: action.memory_id, action: action.action, status: 'failed', detail: errorMsg });
+    }
+  }
+
+  return { results, deletedMemories };
+}
+
+// ── Story 5: Summary Generation + Delivery ───────────────────
+
+interface ReflectionSummary {
+  timestamp: string;
+  dry_run: boolean;
+  memories_processed: number;
+  action_counts: Record<string, number>;
+  skill_updates: string[];
+  deleted_memories: DeletedMemory[];
+  todos_created: string[];
+  errors: string[];
+  readable: string;
+}
+
+function buildSummary(
+  results: ActionResult[],
+  deletedMemories: DeletedMemory[],
+  memoriesProcessed: number,
+  dryRun: boolean,
+): ReflectionSummary {
+  const timestamp = new Date().toISOString();
+  const actionCounts: Record<string, number> = {};
+  const skillUpdates: string[] = [];
+  const todosCreated: string[] = [];
+  const errors: string[] = [];
+
+  for (const r of results) {
+    actionCounts[r.action] = (actionCounts[r.action] ?? 0) + 1;
+
+    if (r.action === 'skill-update' && r.status === 'success' && r.detail) {
+      // detail is the skill name (or dry-run prefix)
+      const skillName = r.detail.startsWith('dry-run:') ? r.detail.replace('dry-run: would update ', '') : r.detail;
+      if (!skillUpdates.includes(skillName)) skillUpdates.push(skillName);
+    }
+
+    if (r.action === 'todo-create' && r.status === 'success' && r.detail) {
+      todosCreated.push(r.detail.startsWith('dry-run:') ? r.detail.replace('dry-run: would create ', '') : r.detail);
+    }
+
+    if (r.status === 'failed') {
+      errors.push(`memory ${r.memory_id} (${r.action}): ${r.detail ?? 'unknown error'}`);
+    }
+  }
+
+  const dryRunLabel = dryRun ? ' (DRY RUN)' : '';
+  const skillLine = skillUpdates.length > 0
+    ? `${skillUpdates.length} (${skillUpdates.join(', ')})`
+    : '0';
+
+  const readable = [
+    `Nightly reflection complete${dryRunLabel}:`,
+    `  Memories processed: ${memoriesProcessed}`,
+    `  Skill updates: ${skillLine}`,
+    `  Kept: ${actionCounts['memory-keep'] ?? 0}`,
+    `  Expired: ${actionCounts['memory-expire'] ?? 0}`,
+    `  Consolidated: ${actionCounts['memory-consolidate'] ?? 0}`,
+    `  Todos created: ${todosCreated.length}`,
+    `  Errors: ${errors.length}`,
+  ].join('\n');
+
+  return {
+    timestamp,
+    dry_run: dryRun,
+    memories_processed: memoriesProcessed,
+    action_counts: actionCounts,
+    skill_updates: skillUpdates,
+    deleted_memories: deletedMemories,
+    todos_created: todosCreated,
+    errors,
+    readable,
+  };
+}
+
 // ── Main ────────────────────────────────────────────────────
 
 async function run(rawConfig: Record<string, unknown>): Promise<string> {
   const config = resolveConfig(rawConfig);
   const startedAt = new Date().toISOString();
   const dryRunLabel = config.dry_run ? ' [DRY RUN]' : '';
+  const projectRoot = process.cwd();
 
   log.info(`kkit-reflection: starting${dryRunLabel}`, {
     dry_run: config.dry_run,
@@ -436,9 +683,9 @@ async function run(rawConfig: Record<string, unknown>): Promise<string> {
 
   if (memories.length === 0) {
     log.info('kkit-reflection: no retro memories to process');
-    const summary = 'No retro memories found in lookback window.';
-    recordRun('success', summary, startedAt);
-    return summary;
+    const emptyMsg = 'No retro memories found in lookback window.';
+    recordRun('success', emptyMsg, startedAt);
+    return emptyMsg;
   }
 
   log.info(`kkit-reflection: found ${memories.length} retro memor${memories.length === 1 ? 'y' : 'ies'} to process`);
@@ -460,13 +707,61 @@ async function run(rawConfig: Record<string, unknown>): Promise<string> {
     });
   }
 
-  // TODO (Story 4): Execute actions using categorization.actions
-  // TODO (Story 5): Generate summary + deliver to comms
+  // Execute actions (Story 4)
+  const execResult = await executeActions(
+    categorization.actions,
+    memories,
+    config,
+    projectRoot,
+    config.dry_run,
+  );
+
+  log.info('kkit-reflection: actions complete', {
+    total: execResult.results.length,
+    deleted: execResult.deletedMemories.length,
+  });
+
+  // Build summary (Story 5)
+  const summary = buildSummary(execResult.results, execResult.deletedMemories, memories.length, config.dry_run);
+
+  log.info('kkit-reflection: summary', { readable: summary.readable });
+
+  // Store as no-decay memory for recovery
+  const recoveryContent = execResult.deletedMemories.length > 0
+    ? `${summary.readable}\n\nDeleted memories (for recovery):\n${execResult.deletedMemories.map(d => `  [${d.id}] ${d.content}`).join('\n')}`
+    : summary.readable;
+
+  try {
+    exec(
+      `INSERT INTO memories (content, category, tags, trigger, importance, decay_policy, created_at)
+       VALUES (?, 'reflection-summary', '["reflection","self-improvement","nightly"]', 'reflection', 1, 'never', ?)`,
+      recoveryContent,
+      summary.timestamp,
+    );
+  } catch (err) {
+    log.warn('kkit-reflection: failed to store summary memory', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
+  // Record run in task_results
+  recordRun('success', summary.readable, startedAt);
+
+  // Notify comms agent
+  fetch('http://localhost:3847/api/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: 'reflection',
+      to: 'comms',
+      type: 'result',
+      body: summary.readable,
+    }),
+  }).catch(err => log.warn('kkit-reflection: failed to notify comms', { error: (err as Error).message }));
+
   // TODO (Story 6): Pattern detection
 
-  const summary = `${dryRunLabel.trim()} ${categorization.summary} (action execution pending — Stories 2+3 only).`;
-  recordRun('success', summary, startedAt);
-  return summary;
+  return summary.readable;
 }
 
 // ── Register ────────────────────────────────────────────────
