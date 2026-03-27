@@ -99,7 +99,7 @@ else
 fi
 
 # Standard directories
-STATE_DIR="$BASE_DIR/.claude/state"
+STATE_DIR="$BASE_DIR/.kithkit/state"
 LOG_DIR="$BASE_DIR/logs"
 
 # Check if the Kithkit tmux session exists

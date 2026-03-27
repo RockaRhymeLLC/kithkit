@@ -31,7 +31,7 @@ import { resolveProjectPath } from '../core/config.js';
  */
 function getCurrentAutonomyMode(): string {
   try {
-    const stateFile = resolveProjectPath('.claude', 'state', 'autonomy.json');
+    const stateFile = resolveProjectPath('.kithkit', 'state', 'autonomy.json');
     const data = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as { mode?: string };
     return data.mode || 'confident';
   } catch {

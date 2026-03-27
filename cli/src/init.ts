@@ -250,15 +250,15 @@ export async function runInit(opts: InitOptions = {}): Promise<InitResult> {
     }
 
     // Step 5b: Set default autonomy mode
-    const autonomyPath = path.join(projectDir, '.claude', 'state', 'autonomy.json');
+    const autonomyPath = path.join(projectDir, '.kithkit', 'state', 'autonomy.json');
     if (!fs.existsSync(autonomyPath)) {
-      fs.mkdirSync(path.join(projectDir, '.claude', 'state'), { recursive: true });
+      fs.mkdirSync(path.join(projectDir, '.kithkit', 'state'), { recursive: true });
       fs.writeFileSync(autonomyPath, JSON.stringify({ mode: 'confident' }, null, 2));
       console.log('  Set default autonomy mode: confident');
     }
 
-    // Step 6: Create .claude/agents/ with built-in profiles
-    const profilesDir = path.join(projectDir, '.claude', 'agents');
+    // Step 6: Create .kithkit/agents/ with built-in profiles
+    const profilesDir = path.join(projectDir, '.kithkit', 'agents');
     if (!fs.existsSync(profilesDir)) {
       fs.mkdirSync(profilesDir, { recursive: true });
     }
@@ -277,7 +277,7 @@ export async function runInit(opts: InitOptions = {}): Promise<InitResult> {
           copied++;
         }
       }
-      console.log(`  Copied ${copied} agent profiles to .claude/agents/`);
+      console.log(`  Copied ${copied} agent profiles to .kithkit/agents/`);
     }
 
     // Step 7 + 8: Daemon start and agent intro are handled by the caller

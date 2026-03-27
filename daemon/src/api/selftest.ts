@@ -138,9 +138,9 @@ async function checkIdentity(): Promise<CheckOutcome> {
   return { status: 'pass', message: `Found: ${resolved}` };
 }
 
-/** 6. claude-md — check that .claude/CLAUDE.md exists. */
+/** 6. claude-md — check that .kithkit/CLAUDE.md exists. */
 async function checkClaudeMd(): Promise<CheckOutcome> {
-  const resolved = resolveProjectPath('.claude', 'CLAUDE.md');
+  const resolved = resolveProjectPath('.kithkit', 'CLAUDE.md');
   if (!fs.existsSync(resolved)) {
     return { status: 'fail', message: `Not found: ${resolved}` };
   }
