@@ -22,9 +22,6 @@ import {
   handleAgentMessage,
   sendAgentMessage,
   getAgentStatus,
-  sendViaLAN,
-  logCommsEntry,
-  setRouter,
 } from './agent-comms.js';
 import {
   initNetworkSDK,
@@ -33,10 +30,6 @@ import {
   getNetworkClient,
 } from './network/sdk-bridge.js';
 import { handleNetworkRoute } from './network/api.js';
-import { UnifiedA2ARouter } from '../../a2a/router.js';
-import { handleA2ARoute, setA2ARouter } from '../../a2a/handler.js';
-import { readKeychain } from '../../core/keychain.js';
-import { sendMessage } from '../../agents/message-router.js';
 
 
 const log = createLogger('skippy-extension');
@@ -144,21 +137,6 @@ export const skippyExtension: Extension = {
     registerRoute('/agent/send', handleAgentSendRoute as RouteHandler);
     registerRoute('/agent/status', handleAgentStatusRoute as RouteHandler);
     log.info('Agent comms routes registered');
-
-    // ── Unified A2A Router ─────────────────────────────────
-    const router = new UnifiedA2ARouter({
-      config: config as unknown as Record<string, unknown>,
-      sendViaLAN,
-      getNetworkClient,
-      getAgentCommsSecret: () => readKeychain('credential-agent-comms-secret'),
-      logCommsEntry,
-      sendMessage: sendMessage as (req: { from: string; to: string; type: string; body: string; metadata?: Record<string, unknown> }) => { messageId: number; delivered: boolean },
-    });
-    setA2ARouter(router);
-    setRouter(router);
-    registerRoute('/api/a2a/*', handleA2ARoute as RouteHandler);
-    log.info('Unified A2A route registered');
-
 
     // ── A2A Network SDK ─────────────────────────────────────
     try {
