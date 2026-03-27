@@ -384,6 +384,24 @@ else
   log_dry "rsync -a --delete .kithkit/skills/ → .claude/skills/"
 fi
 
+# ── Step 8: Restart restart-watcher (state path changed) ─────
+
+log "Checking for running restart-watcher process..."
+if ! $DRY_RUN; then
+  # Find any restart-watcher.sh processes and kill them so they restart
+  # with the new STATE_DIR pointing to .kithkit/state/
+  watcher_pids="$(pgrep -f "restart-watcher.sh" 2>/dev/null || true)"
+  if [ -n "$watcher_pids" ]; then
+    echo "$watcher_pids" | while read -r pid; do
+      kill "$pid" 2>/dev/null && log "Stopped restart-watcher (PID $pid) — restart it to pick up new state path"
+    done
+  else
+    log "No running restart-watcher found (nothing to kill)"
+  fi
+else
+  log_dry "kill \$(pgrep -f restart-watcher.sh) — restart watcher polls .kithkit/state/ after migration"
+fi
+
 # ── Done ─────────────────────────────────────────────────────
 
 log ""
@@ -394,10 +412,12 @@ if ! $DRY_RUN; then
   log ""
   log "Next steps:"
   log "  1. Restart the comms session to pick up the new hook paths."
-  log "  2. Verify .kithkit/state/ and .kithkit/hooks/ have the expected files."
-  log "  3. Send a test message and confirm channel.txt appears in .kithkit/state/"
+  log "  2. Restart restart-watcher.sh if you run it (it was stopped above)."
+  log "     It now reads .kithkit/state/restart-requested (via scripts/lib/config.sh)."
+  log "  3. Verify .kithkit/state/ and .kithkit/hooks/ have the expected files."
+  log "  4. Send a test message and confirm channel.txt appears in .kithkit/state/"
   log "     with no permission prompt."
-  log "  4. Run 'POST /api/sync/claude' to keep .claude/ in sync."
+  log "  5. Run 'POST /api/sync/claude' to keep .claude/ in sync."
   log "     (or type /kkitclaudesync in your agent session)"
   log ""
   log "Note: .claude/ hooks and state are now stale — the new locations are"
