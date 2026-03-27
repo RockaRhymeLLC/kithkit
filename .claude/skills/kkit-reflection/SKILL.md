@@ -20,8 +20,9 @@ Trigger a full reflection cycle immediately:
 
 1. Gather retro memories from the last 24h (or since last successful run)
 2. Categorize each memory into an action type
-3. Execute actions (skill updates, memory cleanup, todo creation)
-4. Generate and deliver a summary
+3. Detect recurring patterns across a 7-day window
+4. Execute actions (skill updates, memory cleanup, todo creation)
+5. Generate and deliver a summary
 
 ```bash
 curl -s -X POST 'http://localhost:3847/api/tasks/kkit-reflection/run'
@@ -39,13 +40,39 @@ curl -s -X POST 'http://localhost:3847/api/tasks/kkit-reflection/run' \
 
 ### status
 
-Show the last reflection run summary and timestamp:
+Show the last reflection run result and timestamp:
 
 ```bash
-curl -s 'http://localhost:3847/api/tasks/kkit-reflection/status'
+curl -s 'http://localhost:3847/api/tasks' | python3 -m json.tool
 ```
 
-Or query the task_results table directly for recent runs.
+Or query the task_results table directly for recent runs:
+
+```bash
+sqlite3 kithkit.db "SELECT task_name, status, output, started_at FROM task_results WHERE task_name='kkit-reflection' ORDER BY started_at DESC LIMIT 5;"
+```
+
+## Pattern Detection
+
+After categorizing per-memory actions, the reflection scans a wider 7-day window for recurring themes. Any tag or category that appears in 3 or more retro memories within the window is flagged as a pattern.
+
+For each detected pattern, a high-priority todo is created:
+
+```
+Recurring issue: <theme> (N occurrences in 7 days)
+Pattern detected across N retro memories. Source memory IDs: ...
+```
+
+Configuration (under `kithkit.config.yaml` → `scheduler.tasks` → `kkit-reflection`):
+
+```yaml
+pattern_detection:
+  enabled: true       # set false to disable
+  window_days: 7      # how far back to scan
+  threshold: 3        # minimum occurrences to flag
+```
+
+Patterns appear in the run summary under "Patterns detected".
 
 ## Categorization Guide
 
@@ -96,7 +123,51 @@ Controlled via `kithkit.config.yaml` under `scheduler.tasks` → `kkit-reflectio
 - `max_deletes_per_run` (default: 10)
 - `enabled_actions` — list of action types to execute
 - `skill_mapping` — map memory categories to skill directories
-- `pattern_detection` — recurring theme detection config
+- `pattern_detection` — recurring theme detection (see above)
+
+## Recovering Deleted Memories
+
+When memories are expired or consolidated, their content is preserved in the reflection summary memory. To recover:
+
+1. Find the relevant reflection summary:
+   ```bash
+   sqlite3 kithkit.db "SELECT id, content FROM memories WHERE category='reflection-summary' ORDER BY created_at DESC LIMIT 5;"
+   ```
+
+2. The summary includes a "Deleted memories (for recovery)" section listing each deleted memory's ID and content:
+   ```
+   Deleted memories (for recovery):
+     [42] Use payload.text not body for A2A messages
+     [43] Tried SSH to peer, connection refused
+   ```
+
+3. Re-insert any memory you want to restore via `POST /api/memory/store`.
+
+## Troubleshooting
+
+**Task not running on schedule**
+- Check it is enabled: `curl -s 'http://localhost:3847/api/tasks'` — confirm `kkit-reflection` shows `enabled: true`
+- Check cron expression in `kithkit.config.yaml` — default is `0 3 * * *` (3 AM daily)
+- Trigger manually: `curl -s -X POST 'http://localhost:3847/api/tasks/kkit-reflection/run'`
+
+**No memories processed (returns "No retro memories found")**
+- Memories must have `trigger='retro'` OR include `'self-improvement'` in their tags
+- Check with: `sqlite3 kithkit.db "SELECT id, trigger, tags FROM memories ORDER BY created_at DESC LIMIT 20;"`
+- The lookback window is since last successful run, or 24h if no previous run
+
+**Pattern todos not appearing**
+- Confirm `pattern_detection.enabled` is true in config
+- Threshold default is 3 — need 3+ memories sharing a tag/category within 7 days
+- Pattern detection runs against the full 7-day window, independent of the 24h lookback
+
+**Skill reference writes failing**
+- Skill names must be lowercase alphanumeric + hyphens only (e.g. `daemon-api`, `agent-comms`)
+- Target directory must not be a symlink
+- Check daemon logs: `tail -f logs/daemon.log | grep kkit-reflection`
+
+**dry_run is true but I want live actions**
+- Default is `dry_run: true` for safety
+- To enable: set `dry_run: false` in `kithkit.config.yaml` under the task config, then `POST /api/config/reload`
 
 ## Notes
 
