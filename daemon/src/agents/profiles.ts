@@ -3,7 +3,7 @@
  *
  * Profiles are .md files with YAML frontmatter defining 7 core fields.
  * The markdown body becomes the systemPrompt append content.
- * Profiles are loaded from a configurable directory (default: .claude/agents/).
+ * Profiles are loaded from a configurable directory (default: .kithkit/agents/).
  * Built-in profiles ship in profiles/ and are copied during init.
  */
 
