@@ -26,7 +26,7 @@ import { resolveProjectPath } from '../core/config.js';
 // ── Autonomy Mode ────────────────────────────────────────────
 
 /**
- * Read the current autonomy mode from .claude/state/autonomy.json.
+ * Read the current autonomy mode from .kithkit/state/autonomy.json.
  * Falls back to 'confident' if the file is missing or unreadable.
  */
 function getCurrentAutonomyMode(): string {
