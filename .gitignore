@@ -158,6 +158,10 @@ identity.md
 .claude/state/
 models/
 
+# .kithkit/ — framework files (committed); instance-specific subdirs are ignored
+.kithkit/state/
+.kithkit/sessions/
+
 # Instance-specific extensions (never commit to public repo)
 daemon/src/extensions/instance/
 

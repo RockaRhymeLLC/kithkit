@@ -13,8 +13,8 @@ import { spawnSync } from 'node:child_process';
 
 // Project root is four levels up from daemon/dist/self-improvement/__tests__/
 const PROJECT_ROOT = path.resolve(import.meta.dirname, '../../../../');
-const HOOK_SCRIPT = path.join(PROJECT_ROOT, '.claude/hooks/transcript-review.sh');
-const PROMPT_TEMPLATE = path.join(PROJECT_ROOT, '.claude/hooks/transcript-review-prompt.md');
+const HOOK_SCRIPT = path.join(PROJECT_ROOT, '.kithkit/hooks/transcript-review.sh');
+const PROMPT_TEMPLATE = path.join(PROJECT_ROOT, '.kithkit/hooks/transcript-review-prompt.md');
 const SETTINGS_FILE = path.join(PROJECT_ROOT, '.claude/settings.json');
 
 const COUNTER_FILE = '/tmp/kithkit-transcript-review-counter';
