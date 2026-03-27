@@ -22,6 +22,7 @@ import { handleConfigRoute } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
 import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleSelftestRoute } from './api/selftest.js';
+import { handleSyncClaudeRoute } from './api/sync-claude.js';
 import { handleTaskQueueRoute } from './api/task-queue.js';
 import { handleContactsRoute } from './api/contacts.js';
 import {
@@ -101,8 +102,8 @@ openDatabase(projectDir);
 // Reload persisted timers (must run after openDatabase)
 initTimers();
 
-// Wire up agent profiles directory
-setProfilesDir(path.resolve(projectDir, '.claude', 'agents'));
+// Wire up agent profiles directory (.kithkit/agents/ is authoritative; synced back to .claude/agents/)
+setProfilesDir(path.resolve(projectDir, '.kithkit', 'agents'));
 
 // Configure tmux session management
 configureTmux({ projectDir });
@@ -200,6 +201,7 @@ const server = http.createServer((req, res) => {
         () => handleMemoryRoute(req, res, url.pathname),
         () => handleTasksRoute(req, res, url.pathname),
         () => handleConfigRoute(req, res, url.pathname),
+        () => handleSyncClaudeRoute(req, res, url.pathname),
         () => handleSelftestRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {

@@ -237,11 +237,11 @@ describe('Selftest route handler', { concurrency: 1 }, () => {
     assert.equal(identityCheck.status, 'pass', 'identity check should pass when file exists');
   });
 
-  it('CLAUDE.md check passes when .claude/CLAUDE.md exists in project dir', async () => {
-    // Create the .claude directory and CLAUDE.md
-    const claudeDir = path.join(tmpDir, '.claude');
-    fs.mkdirSync(claudeDir, { recursive: true });
-    fs.writeFileSync(path.join(claudeDir, 'CLAUDE.md'), '# CLAUDE\nProject instructions.\n');
+  it('CLAUDE.md check passes when .kithkit/CLAUDE.md exists in project dir', async () => {
+    // Create the .kithkit directory and CLAUDE.md
+    const kithkitDir = path.join(tmpDir, '.kithkit');
+    fs.mkdirSync(kithkitDir, { recursive: true });
+    fs.writeFileSync(path.join(kithkitDir, 'CLAUDE.md'), '# CLAUDE\nProject instructions.\n');
 
     const req = createMockReq('GET', '/api/selftest');
     const res = createMockRes();
@@ -250,7 +250,7 @@ describe('Selftest route handler', { concurrency: 1 }, () => {
     const body = JSON.parse(res._body);
     const claudeCheck = body.checks.find((c: { name: string }) => c.name === 'claude-md');
     assert.ok(claudeCheck, 'claude-md check should be present');
-    assert.equal(claudeCheck.status, 'pass', 'claude-md check should pass when .claude/CLAUDE.md exists');
+    assert.equal(claudeCheck.status, 'pass', 'claude-md check should pass when .kithkit/CLAUDE.md exists');
   });
 
   it('CLAUDE.md check fails or skips when .claude/CLAUDE.md does not exist', async () => {

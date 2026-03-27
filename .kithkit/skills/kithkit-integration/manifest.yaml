@@ -1,0 +1,44 @@
+name: kithkit-integration
+version: 1.0.0
+description: Build integrations on the Kithkit agent framework — extensions, daemon API, scheduler, channels, and memory
+author:
+  name: RockaRhyme LLC
+  github: RockaRhymeLLC
+capabilities:
+  required:
+    - bash
+    - file_read
+    - file_write
+  optional:
+    - web_fetch
+    - keychain_read
+    - keychain_write
+    - email_read
+    - email_send
+    - voice_input
+    - voice_output
+    - browser
+    - notification
+    - memory_read
+    - memory_write
+    - github
+config:
+  - key: daemon_port
+    type: number
+    required: false
+    default: 3847
+    description: Port the Kithkit daemon listens on (localhost only)
+tags:
+  - kithkit
+  - integration
+  - framework
+  - daemon
+  - extensions
+  - email
+  - telegram
+  - voice
+  - browser
+category: framework
+frameworks:
+  tested:
+    - claude-code

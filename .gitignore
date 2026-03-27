@@ -149,3 +149,28 @@ kithkit.config.yaml
 identity.md
 .claude/state/
 models/
+
+# .kithkit/ — transient state (do not commit)
+# Committed: .kithkit/hooks/, .kithkit/settings.json, .kithkit/CLAUDE.md,
+#            .kithkit/state/identity.json, .kithkit/state/autonomy.json
+.kithkit/state/channel.txt
+.kithkit/state/telegram-media/
+.kithkit/state/reply-chat-id.txt
+.kithkit/state/network-cache/
+.kithkit/state/context-usage.json
+.kithkit/state/context-usage-orch.json
+.kithkit/state/safe-senders.json
+.kithkit/state/assistant-state-backups/
+.kithkit/state/memory/
+.kithkit/state/3rd-party-senders.json
+.kithkit/state/orchestrator-state.md
+.kithkit/state/assistant-state.md
+.kithkit/state/skip-permissions.json
+.kithkit/state/browser-contexts.json
+.kithkit/state/browser-session.json
+.kithkit/state/system-prompt.txt
+.kithkit/state/restart-requested
+.kithkit/state/calendar.md
+
+# Migration artifacts
+migrate-rollback.manifest

@@ -24,7 +24,7 @@ fi
 cd "$BASE_DIR"
 
 # System prompt file location
-SYSTEM_PROMPT_FILE=".claude/state/system-prompt.txt"
+SYSTEM_PROMPT_FILE=".kithkit/state/system-prompt.txt"
 
 # Build arguments array
 ARGS=()
