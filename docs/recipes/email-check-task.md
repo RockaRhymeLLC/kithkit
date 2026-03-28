@@ -376,7 +376,7 @@ scheduler:
 **Double-notifications for the same message**
 
 - The task deduplicates by message ID within a single run, but if the provider returns a message as unread across multiple runs (e.g., mark-as-read failed), it may surface twice
-- Implement a seen-IDs set persisted to `.claude/state/email-seen-ids.json` and skip messages already processed:
+- Implement a seen-IDs set persisted to `.kithkit/state/email-seen-ids.json` and skip messages already processed:
   ```typescript
   const seenIds = loadSeenIds(); // Set<string>
   const fresh = allUnread.filter(m => !seenIds.has(m.id));
