@@ -725,7 +725,7 @@ describe('SC8: Second user can init with no help (t-171)', () => {
 
     // 3. Agent profiles
     const profilesSrc = path.join(kithkitRoot, 'profiles');
-    const profilesDst = path.join(tmpDir, '.claude', 'agents');
+    const profilesDst = path.join(tmpDir, '.kithkit', 'agents');
     fs.mkdirSync(profilesDst, { recursive: true });
     if (fs.existsSync(profilesSrc)) {
       for (const f of fs.readdirSync(profilesSrc)) {
@@ -734,8 +734,9 @@ describe('SC8: Second user can init with no help (t-171)', () => {
     }
 
     // 4. CLAUDE.md
-    const claudeMdSrc = path.join(kithkitRoot, '.claude', 'CLAUDE.md');
-    const claudeMdDst = path.join(tmpDir, '.claude', 'CLAUDE.md');
+    const claudeMdSrc = path.join(kithkitRoot, '.kithkit', 'CLAUDE.md');
+    const claudeMdDst = path.join(tmpDir, '.kithkit', 'CLAUDE.md');
+    fs.mkdirSync(path.join(tmpDir, '.kithkit'), { recursive: true });
     if (fs.existsSync(claudeMdSrc)) {
       fs.copyFileSync(claudeMdSrc, claudeMdDst);
     }

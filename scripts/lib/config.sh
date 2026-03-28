@@ -13,7 +13,7 @@
 #   SESSION_NAME       - tmux session name
 #   TMUX_BIN           - Path to tmux binary
 #   TMUX_CMD           - Full tmux command (with socket if needed)
-#   STATE_DIR          - .claude/state directory
+#   STATE_DIR          - .kithkit/state directory
 #   LOG_DIR            - logs directory
 #   read_config()      - Read a value from kithkit.config.yaml
 #   get_session_name() - Get the tmux session name
@@ -99,7 +99,7 @@ else
 fi
 
 # Standard directories
-STATE_DIR="$BASE_DIR/.claude/state"
+STATE_DIR="$BASE_DIR/.kithkit/state"
 LOG_DIR="$BASE_DIR/logs"
 
 # Check if the Kithkit tmux session exists

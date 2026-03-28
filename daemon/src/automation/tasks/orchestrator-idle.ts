@@ -306,7 +306,7 @@ function checkTaskTimeouts(): void {
  * Read the orchestrator's context usage from its separate state file.
  */
 function getOrchestratorContextUsage(): number | null {
-  const stateFile = resolveProjectPath('.claude', 'state', 'context-usage-orch.json');
+  const stateFile = resolveProjectPath('.kithkit', 'state', 'context-usage-orch.json');
   try {
     if (!fs.existsSync(stateFile)) return null;
     const stats = fs.statSync(stateFile);

@@ -23,6 +23,7 @@ import { handleTasksRoute } from './api/tasks.js';
 import { handleConfigRoute, setConfigWatcher, setCurrentDbPath, setConfigFilePath } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
 import { handleSelftestRoute } from './api/selftest.js';
+import { handleSyncClaudeRoute } from './api/sync-claude.js';
 import { handleTaskQueueRoute } from './api/task-queue.js';
 import { handleContactsRoute } from './api/contacts.js';
 import { handleTimerRoute, initTimers } from './api/timer.js';
@@ -132,7 +133,7 @@ configWatcher.start();
 log.info('Config watcher started', { path: configPath });
 
 // Wire up agent profiles directory
-setProfilesDir(path.resolve(projectDir, '.claude', 'agents'));
+setProfilesDir(path.resolve(projectDir, '.kithkit', 'agents'));
 
 // Configure tmux session management
 configureTmux({ projectDir });
@@ -266,6 +267,7 @@ const server = http.createServer((req, res) => {
         () => handleMemoryRoute(req, res, url.pathname),
         () => handleTasksRoute(req, res, url.pathname),
         () => handleConfigRoute(req, res, url.pathname),
+        () => handleSyncClaudeRoute(req, res, url.pathname),
         () => handleSelftestRoute(req, res, url.pathname),
         () => handleMetricsRoute(req, res, url.pathname, url.searchParams),
         () => handleTimerRoute(req, res, url.pathname),

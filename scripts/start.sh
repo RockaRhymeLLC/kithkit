@@ -27,7 +27,7 @@ cd "$BASE_DIR"
 IDENTITY_FILE="$(read_config '.agent.identity_file' '')"
 if [ -z "$IDENTITY_FILE" ]; then
     # Legacy fallback for older installations
-    IDENTITY_FILE=".claude/state/system-prompt.txt"
+    IDENTITY_FILE=".kithkit/state/system-prompt.txt"
 fi
 
 # Build arguments array

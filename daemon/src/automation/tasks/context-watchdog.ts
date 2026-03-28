@@ -70,7 +70,7 @@ const ORCH_TIERS: Tier[] = [
   {
     threshold: 70,
     message: (used, remaining) =>
-      `[System] Context at ${used}% used (${remaining}% remaining). Save state NOW: write .claude/state/orchestrator-state.md with your task, completed steps, in-progress work, next steps, files modified, and key context. Then send a progress summary to comms and exit cleanly.`,
+      `[System] Context at ${used}% used (${remaining}% remaining). Save state NOW: write .kithkit/state/orchestrator-state.md with your task, completed steps, in-progress work, next steps, files modified, and key context. Then send a progress summary to comms and exit cleanly.`,
   },
 ];
 
@@ -117,7 +117,7 @@ function readContextFile(filePath: string): ContextData | null {
  * Monitor comms agent context usage.
  */
 function monitorComms(): void {
-  const stateFile = resolveProjectPath('.claude', 'state', 'context-usage.json');
+  const stateFile = resolveProjectPath('.kithkit', 'state', 'context-usage.json');
   const data = readContextFile(stateFile);
   if (!data) {
     commsFileMissCount++;
@@ -174,7 +174,7 @@ function monitorOrchestrator(): void {
     return;
   }
 
-  const stateFile = resolveProjectPath('.claude', 'state', 'context-usage-orch.json');
+  const stateFile = resolveProjectPath('.kithkit', 'state', 'context-usage-orch.json');
   const data = readContextFile(stateFile);
   if (!data) {
     orchFileMissCount++;

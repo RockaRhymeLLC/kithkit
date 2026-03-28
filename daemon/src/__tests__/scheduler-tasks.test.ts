@@ -208,7 +208,7 @@ describe('Scheduler tasks use session bridge (t-221)', () => {
     const config = loadConfig(tmpDir);
 
     // Create context-usage.json at 55% used
-    const stateDir = path.join(tmpDir, '.claude', 'state');
+    const stateDir = path.join(tmpDir, '.kithkit', 'state');
     fs.mkdirSync(stateDir, { recursive: true });
     fs.writeFileSync(
       path.join(stateDir, 'context-usage.json'),
@@ -234,7 +234,7 @@ describe('Scheduler tasks use session bridge (t-221)', () => {
     tmpDir = makeTmpDir();
     const config = loadConfig(tmpDir);
 
-    // Create a todo file
+    // Create a todo file (not used by todo-reminder which reads from DB, but kept for context)
     const todosDir = path.join(tmpDir, '.claude', 'state', 'todos');
     fs.mkdirSync(todosDir, { recursive: true });
     fs.writeFileSync(

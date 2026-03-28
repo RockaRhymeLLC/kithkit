@@ -7,11 +7,11 @@
 # Outputs a status line shown at the bottom of the Claude Code UI.
 #
 # Files written:
-#   .claude/state/context-usage.json           — comms agent (default)
-#   .claude/state/context-usage-orch.json      — orchestrator
-#   .claude/state/context-usage-other.json     — workers / unknown sessions
+#   .kithkit/state/context-usage.json           — comms agent (default)
+#   .kithkit/state/context-usage-orch.json      — orchestrator
+#   .kithkit/state/context-usage-other.json     — workers / unknown sessions
 #
-# Configuration: Add to .claude/settings.json:
+# Configuration: Add to .kithkit/settings.json:
 #   "statusLine": { "type": "command", "command": "\"$CLAUDE_PROJECT_DIR\"/scripts/context-monitor-statusline.sh" }
 
 input=$(cat)
