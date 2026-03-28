@@ -32,14 +32,22 @@ DRY_RUN=false
 
 ROLLBACK=false
 YES=false
+FORCE=false
 for arg in "$@"; do
   case "$arg" in
     --rollback) ROLLBACK=true ;;
     --dry-run)  DRY_RUN=true ;;
     --yes)      YES=true ;;
+    --force)    FORCE=true ;;
     *) echo "Unknown argument: $arg" >&2; exit 1 ;;
   esac
 done
+
+# ── Exit trap for partial failure ────────────────────────────
+
+trap 'if [ $? -ne 0 ] && ! $ROLLBACK; then
+  echo "[migrate] FAILED mid-migration. Run: ./migrate.sh --rollback --yes" >&2
+fi' EXIT
 
 # ── Helpers ───────────────────────────────────────────────────
 
@@ -156,6 +164,10 @@ if $ROLLBACK; then
     if [[ "$src" == */ ]]; then
       src="${src%/}"
       dst="${dst%/}"
+      if $DRY_RUN; then
+        log "Would restore: $dst/ → $src/"
+        continue
+      fi
       if [ ! -d "$dst" ]; then
         log_skip "rollback dir $dst (does not exist)"
         continue
@@ -165,6 +177,10 @@ if $ROLLBACK; then
       rm -rf "$dst"
       log "Restored dir: $dst/ → $src/"
     else
+      if $DRY_RUN; then
+        log "Would restore: $dst → $src"
+        continue
+      fi
       if [ ! -e "$dst" ]; then
         log_skip "rollback $dst (does not exist)"
         continue
@@ -233,6 +249,20 @@ if ! $YES && ! $DRY_RUN; then
   esac
 fi
 
+# ── Double-run guard ────────────────────────────────────────
+if ! $DRY_RUN && ! $FORCE; then
+  if [ -f "$MANIFEST" ]; then
+    echo "[migrate] ERROR: Manifest already exists at $MANIFEST" >&2
+    echo "[migrate] Migration may have already run. Use --rollback to undo first, or --force to override." >&2
+    exit 1
+  fi
+  if [ -d "$PROJECT_DIR/.kithkit/hooks" ] && [ "$(ls -A "$PROJECT_DIR/.kithkit/hooks" 2>/dev/null)" ]; then
+    echo "[migrate] ERROR: .kithkit/hooks/ already contains files. Migration may have already run." >&2
+    echo "[migrate] Use --rollback first, or --force to override." >&2
+    exit 1
+  fi
+fi
+
 # Initialize manifest
 if ! $DRY_RUN; then
   > "$MANIFEST"
@@ -254,6 +284,18 @@ else
   log_dry "mkdir -p .kithkit/hooks .kithkit/state .kithkit/agents .kithkit/skills"
 fi
 log "Directory structure created."
+
+# ── Stop daemon before file operations ──────────────────────
+log "Stopping daemon to prevent race conditions during file moves..."
+if ! $DRY_RUN; then
+  if pgrep -f "node.*daemon" > /dev/null 2>&1; then
+    pkill -f "node.*daemon" 2>/dev/null || true
+    sleep 2
+    log "Daemon stopped."
+  else
+    log "Daemon not running — skipping stop."
+  fi
+fi
 
 # ── Step 2: Move hook scripts ─────────────────────────────────
 
@@ -411,13 +453,14 @@ if ! $DRY_RUN; then
   log "Rollback manifest written to: $MANIFEST"
   log ""
   log "Next steps:"
-  log "  1. Restart the comms session to pick up the new hook paths."
-  log "  2. Restart restart-watcher.sh if you run it (it was stopped above)."
+  log "  1. Restart the daemon (it was stopped before file moves)."
+  log "  2. Restart the comms session to pick up the new hook paths."
+  log "  3. Restart restart-watcher.sh if you run it (it was stopped above)."
   log "     It now reads .kithkit/state/restart-requested (via scripts/lib/config.sh)."
-  log "  3. Verify .kithkit/state/ and .kithkit/hooks/ have the expected files."
-  log "  4. Send a test message and confirm channel.txt appears in .kithkit/state/"
+  log "  4. Verify .kithkit/state/ and .kithkit/hooks/ have the expected files."
+  log "  5. Send a test message and confirm channel.txt appears in .kithkit/state/"
   log "     with no permission prompt."
-  log "  5. Run 'POST /api/sync/claude' to keep .claude/ in sync."
+  log "  6. Run 'POST /api/sync/claude' to keep .claude/ in sync."
   log "     (or type /kkitclaudesync in your agent session)"
   log ""
   log "Note: .claude/ hooks and state are now stale — the new locations are"
