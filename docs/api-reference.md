@@ -15,6 +15,7 @@ The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It bin
 - [Channel Delivery](#channel-delivery)
 - [Memory](#memory)
 - [Config & State](#config--state)
+- [Sync](#sync)
 - [Scheduler / Tasks](#scheduler--tasks)
 - [Usage & Metrics](#usage--metrics)
 - [Orchestrator](#orchestrator)
@@ -1466,6 +1467,58 @@ curl -X POST http://localhost:3847/api/config/reload
 | 200 | `{ "message": "Config reloaded successfully", "timestamp": "..." }` |
 | 400 | `{ "error": "Config reload failed", "detail": "..." }` |
 | 503 | Config watcher not initialized |
+
+---
+
+### POST /api/sync/claude
+
+One-directional sync from `.kithkit/` to `.claude/`.
+
+**What it syncs:**
+- `.kithkit/settings.json` → `.claude/settings.json` (JSON merge — preserves destination-only keys like `permissions`)
+- `.kithkit/CLAUDE.md` → `.claude/CLAUDE.md` (full overwrite)
+- `.kithkit/agents/` → `.claude/agents/` (rsync --delete)
+- `.kithkit/skills/` → `.claude/skills/` (rsync --delete)
+
+```bash
+curl -X POST http://localhost:3847/api/sync/claude
+```
+
+```json
+// Response 200
+{
+  "files": [
+    {"file": ".kithkit/settings.json", "status": "synced", "bytes": 1234, "had_drift": true},
+    {"file": ".kithkit/CLAUDE.md", "status": "synced", "bytes": 5678},
+    {"file": ".kithkit/agents/", "status": "synced"},
+    {"file": ".kithkit/skills/", "status": "synced"}
+  ],
+  "synced": 4,
+  "skipped": 0,
+  "errors": 0,
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+```json
+// Response 207 (partial success — some errors occurred)
+{
+  "files": [
+    {"file": ".kithkit/settings.json", "status": "synced", "bytes": 1234},
+    {"file": ".kithkit/agents/", "status": "error", "error": "rsync failed"}
+  ],
+  "synced": 1,
+  "skipped": 0,
+  "errors": 1,
+  "timestamp": "2026-02-22T09:00:00.000Z"
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | Sync summary with all files synced |
+| 207 | Partial success — `errors` count > 0, individual file statuses in `files` array |
+| 500 | Sync failed entirely |
 
 ---
 

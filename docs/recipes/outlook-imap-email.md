@@ -116,7 +116,7 @@ channels:
         keychain:
           client_id: "credential-outlook-client-id"
         # Path to the token cache file (relative to project root or absolute)
-        token_cache_path: ".claude/state/outlook-token-cache.json"
+        token_cache_path: ".kithkit/state/outlook-token-cache.json"
         # Path to the Python adapter script
         script_path: "scripts/email/outlook-imap.py"
         # Python interpreter (use venv path if applicable)
@@ -316,7 +316,7 @@ SCOPE = ["https://outlook.office365.com/IMAP.AccessAsUser.All", "offline_access"
 AUTHORITY = "https://login.microsoftonline.com/common"
 
 TOKEN_CACHE_PATH = Path(
-    os.environ.get("OUTLOOK_TOKEN_CACHE", ".claude/state/outlook-token-cache.json")
+    os.environ.get("OUTLOOK_TOKEN_CACHE", ".kithkit/state/outlook-token-cache.json")
 )
 
 # ── Auth helpers ───────────────────────────────────────────────────────────────
@@ -546,7 +546,7 @@ This integration requires its own Azure AD app. Do not use the same client ID as
 If you used the wrong client ID and authenticated, delete the token cache and re-auth with the correct app:
 
 ```bash
-rm .claude/state/outlook-token-cache.json
+rm .kithkit/state/outlook-token-cache.json
 python3 scripts/email/outlook-imap.py --auth
 ```
 
@@ -596,7 +596,7 @@ The Outlook IMAP provider intentionally does not support sending. Configure the 
 The token cache contains sensitive OAuth2 credentials. Restrict permissions after first auth:
 
 ```bash
-chmod 600 .claude/state/outlook-token-cache.json
+chmod 600 .kithkit/state/outlook-token-cache.json
 ```
 
 Do not commit this file to version control — add it to `.gitignore`.

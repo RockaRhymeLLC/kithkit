@@ -1,6 +1,8 @@
 # Agent Profiles
 
-Agent profiles define capabilities and constraints for worker agents. They live in `.claude/agents/*.md` and use YAML frontmatter for structured fields.
+Agent profiles define capabilities and constraints for worker agents. They live in `.kithkit/agents/*.md` and use YAML frontmatter for structured fields.
+
+> **Note**: `.claude/agents/` is a synced copy maintained by the daemon via `POST /api/sync/claude`. Edit files in `.kithkit/agents/`, then sync to `.claude/`. Never edit `.claude/agents/` directly — changes will be overwritten on next sync.
 
 ## Profile Format
 
@@ -49,7 +51,7 @@ The markdown body (everything after the `---` frontmatter closing) becomes the w
 
 ## Built-in Profiles
 
-Kithkit ships 6 built-in worker profiles in the `profiles/` directory. They're copied to `.claude/agents/` during `kithkit init`. Two additional system profiles (`orchestrator` and `memory-worker`) are created in `.claude/agents/` for internal use.
+Kithkit ships 6 built-in worker profiles in the `profiles/` directory. They're copied to `.kithkit/agents/` during `kithkit init` and synced to `.claude/agents/`. Two additional system profiles (`orchestrator` and `memory-worker`) are created in `.kithkit/agents/` for internal use.
 
 ### research
 
@@ -107,7 +109,7 @@ Challenges plans and designs to find weaknesses and simpler alternatives.
 
 ### System Profiles
 
-These are created in `.claude/agents/` and used internally by the daemon.
+These are created in `.kithkit/agents/` and used internally by the daemon.
 
 #### orchestrator
 
@@ -128,7 +130,7 @@ Memory consolidation and cleanup worker.
 
 ## Creating Custom Profiles
 
-Create a new `.md` file in `.claude/agents/` with the frontmatter format above. The profile name must be unique. Example:
+Create a new `.md` file in `.kithkit/agents/` with the frontmatter format above. The profile name must be unique. After creating the file, sync it to `.claude/agents/` via `POST /api/sync/claude` or the `/kkitclaudesync` skill. Example:
 
 ```markdown
 ---
@@ -165,4 +167,4 @@ curl -X POST http://localhost:3847/api/agents/spawn \
   -d '{"profile": "research", "prompt": "Find the top 3 TypeScript testing frameworks"}'
 ```
 
-The daemon loads the profile from `.claude/agents/research.md`, applies its tool permissions and system prompt, and spawns the worker via the Agent SDK.
+The daemon loads the profile from `.kithkit/agents/research.md` (falling back to `.claude/agents/research.md`), applies its tool permissions and system prompt, and spawns the worker via the Agent SDK.
