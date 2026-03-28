@@ -16,8 +16,20 @@ import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('todo-reminder');
 
+const SLEEP_HINT =
+  '\n\n_To snooze reminders, POST /api/tasks/todo-reminder/sleep with {"hours": N, "reason": "written justification"}. Max 4h. Reason is required and logged._';
+
 const DEFAULT_IDLE_NUDGE =
-  '[System] No open todos. Look for useful work: check for unread messages, review PRs, explore improvements, or check in with the team.';
+  `If not actively working — do the following NOW:
+
+1. Run /todo list and review every open todo. For each unblocked one: escalate it to the orchestrator or do it directly.
+2. Check your GitHub repos for unassigned issues, failed CI, or stale PRs you can act on.
+3. Check daemon logs and system health for errors worth fixing or filing.
+4. Check recent git activity for anything needing follow-up.
+
+If after doing ALL of that you have ZERO work you can do, list what you checked and why every item is blocked. Then you may snooze — max 4 hours, with a written justification.
+
+Do not rationalize. Do not snooze first. Do the work.`;
 
 interface TodoRow {
   id: string;
@@ -45,7 +57,7 @@ async function run(config: Record<string, unknown> = {}): Promise<void> {
   if (todos.length === 0) {
     log.info('No open todos — nudging agent to find useful work');
     const nudge = (config.idle_nudge as string) ?? DEFAULT_IDLE_NUDGE;
-    injectText(nudge);
+    injectText(`${nudge}${SLEEP_HINT}`);
     return;
   }
 
