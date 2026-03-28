@@ -136,7 +136,7 @@ channels:
     webhook_path: "/telegram"
     # mode defaults to "webhook" when webhook_path is set
     typing_indicator: true
-    media_save_path: ".claude/state/telegram-media/"
+    media_save_path: ".kithkit/state/telegram-media/"
     channel_modes:
       - name: telegram          # Standard: forward transcript to Telegram
       - name: telegram-verbose  # Include tool outputs and intermediate steps
@@ -152,7 +152,7 @@ channels:
     mode: polling
     poll_interval_ms: 2000
     typing_indicator: true
-    media_save_path: ".claude/state/telegram-media/"
+    media_save_path: ".kithkit/state/telegram-media/"
 ```
 
 ---
@@ -303,12 +303,12 @@ export function startTypingIndicator(
 
 ### Sender classification
 
-Sender authorization is driven by `kithkit.config.yaml`. The `owner` and `allowed_users` fields under `channels.telegram` define trusted senders. Third-party approved senders live in `.claude/state/3rd-party-senders.json`.
+Sender authorization is driven by `kithkit.config.yaml`. The `owner` and `allowed_users` fields under `channels.telegram` define trusted senders. Third-party approved senders live in `.kithkit/state/3rd-party-senders.json`.
 
 ```typescript
 // Classification is handled by registerAgentTiers() in the Telegram adapter.
 // Safe senders come from config (channels.telegram.owner + allowed_users).
-// Third-party approved senders come from .claude/state/3rd-party-senders.json.
+// Third-party approved senders come from .kithkit/state/3rd-party-senders.json.
 // To add a new trusted sender: update kithkit.config.yaml and POST /api/config/reload.
 ```
 
@@ -318,7 +318,7 @@ Sender authorization is driven by `kithkit.config.yaml`. The `owner` and `allowe
 import fs from "fs/promises";
 import path from "path";
 
-const MEDIA_DIR = ".claude/state/telegram-media";
+const MEDIA_DIR = ".kithkit/state/telegram-media";
 
 export async function saveMedia(
   photos: any[],
@@ -374,12 +374,12 @@ export async function saveMedia(
 
 **3rd party messages not tagged correctly**
 
-- Confirm the sender is in `3rd-party-senders.json` (for third-party approved senders), or add their chat ID to `kithkit.config.yaml` (for trusted users)
+- Confirm the sender is in `.kithkit/state/3rd-party-senders.json` (for third-party approved senders), or add their chat ID to `kithkit.config.yaml` (for trusted users)
 - The `[3rdParty]` prefix is what triggers restricted capability mode in the agent
 
 **Media not saving**
 
-- Confirm `telegram-media/` directory exists and is writable: `ls -la .claude/state/telegram-media/`
+- Confirm `telegram-media/` directory exists and is writable: `ls -la .kithkit/state/telegram-media/`
 - Check the bot token has not expired (BotFather lets you revoke/regenerate tokens)
 
 **Polling mode conflicts with webhook**

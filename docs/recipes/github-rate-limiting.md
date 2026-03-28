@@ -9,7 +9,7 @@ Prevent accidental bulk GitHub write operations — PR creation, issue filing, c
 - Claude Code hooks support (see [hooks documentation](https://code.claude.com/docs/en/hooks))
 - Python 3.8+ (`python3 --version`)
 - `gh` CLI installed and authenticated (`gh auth status`)
-- Kithkit project with `.claude/` directory at the repo root
+- Kithkit project with `.kithkit/` directory at the repo root
 
 ---
 
@@ -18,28 +18,28 @@ Prevent accidental bulk GitHub write operations — PR creation, issue filing, c
 ### 1. Create the hook scripts directory
 
 ```bash
-mkdir -p .claude/hooks
+mkdir -p .kithkit/hooks
 ```
 
 ### 2. Create the PreToolUse rate-check script
 
-Copy the reference code below into `.claude/hooks/github-rate-check.py` and make it executable:
+Copy the reference code below into `.kithkit/hooks/github-rate-check.py` and make it executable:
 
 ```bash
-chmod +x .claude/hooks/github-rate-check.py
+chmod +x .kithkit/hooks/github-rate-check.py
 ```
 
 ### 3. Create the PostToolUse rate-log script
 
-Copy the reference code below into `.claude/hooks/github-rate-log.py` and make it executable:
+Copy the reference code below into `.kithkit/hooks/github-rate-log.py` and make it executable:
 
 ```bash
-chmod +x .claude/hooks/github-rate-log.py
+chmod +x .kithkit/hooks/github-rate-log.py
 ```
 
-### 4. Register hooks in `.claude/settings.json`
+### 4. Register hooks in `.kithkit/settings.json`
 
-See the Hook Registration snippet below. If `settings.json` does not exist, create it — Claude Code reads it automatically.
+See the Hook Registration snippet below. Edit `.kithkit/settings.json` — this is the authoritative copy. Kithkit syncs it to `.claude/settings.json` automatically so Claude Code picks it up.
 
 ### 5. Configure your org allowlist
 
@@ -52,8 +52,8 @@ OUR_ORGS = {'my-org', 'my-other-org'}
 ### 6. Initialize the ledger file
 
 ```bash
-mkdir -p .claude/state
-echo '{"entries":[]}' > .claude/state/github-rate-ledger.json
+mkdir -p .kithkit/state
+echo '{"entries":[]}' > .kithkit/state/github-rate-ledger.json
 ```
 
 ---
@@ -77,7 +77,7 @@ import re
 
 MAX_WRITES_PER_HOUR = 3
 
-STATE_DIR = os.environ.get('STATE_DIR', '.claude/state')
+STATE_DIR = os.environ.get('STATE_DIR', '.kithkit/state')
 LEDGER_PATH = os.path.join(STATE_DIR, 'github-rate-ledger.json')
 
 # GitHub orgs you own — repos under these are exempt from the rate limit.
@@ -188,7 +188,7 @@ import os
 import time
 import re
 
-STATE_DIR = os.environ.get('STATE_DIR', '.claude/state')
+STATE_DIR = os.environ.get('STATE_DIR', '.kithkit/state')
 LEDGER_PATH = os.path.join(STATE_DIR, 'github-rate-ledger.json')
 AGENT_NAME = os.environ.get('AGENT_NAME', 'assistant')
 
@@ -267,7 +267,7 @@ if __name__ == '__main__':
 
 ### Ledger Format
 
-The ledger file lives at `.claude/state/github-rate-ledger.json` and is maintained automatically by the PostToolUse hook. Each entry records one write operation:
+The ledger file lives at `.kithkit/state/github-rate-ledger.json` and is maintained automatically by the PostToolUse hook. Each entry records one write operation:
 
 ```json
 {
@@ -297,7 +297,7 @@ Entries older than 24 hours are pruned automatically on each write.
 
 ### Hook Registration
 
-Add or merge this into `.claude/settings.json`:
+Add or merge this into `.kithkit/settings.json` (the authoritative copy — Kithkit syncs it to `.claude/settings.json` automatically):
 
 ```json
 {
@@ -308,7 +308,7 @@ Add or merge this into `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/github-rate-check.py"
+            "command": "python3 .kithkit/hooks/github-rate-check.py"
           }
         ]
       }
@@ -319,7 +319,7 @@ Add or merge this into `.claude/settings.json`:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/github-rate-log.py"
+            "command": "python3 .kithkit/hooks/github-rate-log.py"
           }
         ]
       }
@@ -372,10 +372,10 @@ The override is logged in the `additionalContext` output so you have an audit tr
 
 **Hook not firing at all**
 
-- Confirm `.claude/settings.json` exists and is valid JSON: `python3 -m json.tool .claude/settings.json`
+- Confirm `.kithkit/settings.json` exists and is valid JSON: `python3 -m json.tool .kithkit/settings.json`
 - The `matcher` field must be `"Bash"` (capital B) — it matches the tool name exactly
 - Restart Claude Code after editing `settings.json`
-- Check that both hook scripts are executable: `ls -l .claude/hooks/`
+- Check that both hook scripts are executable: `ls -l .kithkit/hooks/`
 
 **False positives (legitimate commands being blocked)**
 
@@ -385,12 +385,12 @@ The override is logged in the `additionalContext` output so you have an audit tr
 
 **Ledger not persisting between sessions**
 
-- Confirm `STATE_DIR` resolves to a writable path. The default is `.claude/state` relative to cwd — if Claude Code changes directory, the path may differ
+- Confirm `STATE_DIR` resolves to a writable path. The default is `.kithkit/state` relative to cwd — if Claude Code changes directory, the path may differ
 - Set `STATE_DIR` as an absolute path in your shell profile or launchd plist:
   ```bash
-  export STATE_DIR="/absolute/path/to/your/project/.claude/state"
+  export STATE_DIR="/absolute/path/to/your/project/.kithkit/state"
   ```
-- Check write permissions: `ls -la .claude/state/`
+- Check write permissions: `ls -la .kithkit/state/`
 
 **Peer agent coordination**
 
@@ -399,4 +399,4 @@ In multi-agent setups, each agent maintains its own ledger. To enforce a shared 
 **PostToolUse hook not logging**
 
 - Confirm the `gh` command actually succeeded — the log hook checks `exitCode == 0` and skips failed commands
-- Test manually by piping a sample payload: `echo '{"tool_name":"Bash","tool_input":{"command":"gh pr create"},"tool_response":{"exitCode":0}}' | python3 .claude/hooks/github-rate-log.py`
+- Test manually by piping a sample payload: `echo '{"tool_name":"Bash","tool_input":{"command":"gh pr create"},"tool_response":{"exitCode":0}}' | python3 .kithkit/hooks/github-rate-log.py`
