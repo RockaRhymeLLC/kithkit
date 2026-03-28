@@ -56,10 +56,10 @@ cli/
 **`npx kithkit init`** runs the wizard, prompts for agent name and personality template, and writes:
 - `kithkit.config.yaml` — user config (merged over defaults)
 - `identity.md` — agent personality and system prompt
-- `.claude/agents/` — built-in worker profiles (copied from `profiles/`)
-- `.claude/CLAUDE.md` — framework manual
+- `.kithkit/agents/` — built-in worker profiles (copied from `profiles/`)
+- `.kithkit/CLAUDE.md` — framework manual
 
-**`npx kithkit install <package>`** fetches skills from the Kithkit catalog and installs them into `.claude/skills/`.
+**`npx kithkit install <package>`** fetches skills from the Kithkit catalog and installs them into `.kithkit/skills/`.
 
 ---
 
@@ -133,7 +133,7 @@ Worker lifecycle management.
 
 | File | Purpose |
 |------|---------|
-| `profiles.ts` | Load and validate `.claude/agents/*.md` (YAML frontmatter + body) |
+| `profiles.ts` | Load and validate `.kithkit/agents/*.md` (YAML frontmatter + body) |
 | `lifecycle.ts` | Spawn workers via the Claude Code Agent SDK |
 | `sdk-adapter.ts` | Translate daemon spawn requests to SDK calls |
 | `identity.ts` | Load and apply agent identity from `identity.md` |
@@ -195,43 +195,57 @@ Extensions add more tasks by registering handlers — see [Extensions](extension
 
 ---
 
-## Layer 3: Claude Code Layer (`.claude/`)
+## Layer 3: Claude Code Layer (`.kithkit/` and `.claude/`)
 
-The Claude Code layer defines the agent's identity, skills, and behavioral hooks.
+The Claude Code layer defines the agent's identity, skills, and behavioral hooks. It uses a **two-directory model**:
+
+- **`.kithkit/`** — the authoritative source. Humans and agents edit files here.
+- **`.claude/`** — a synced read-only copy that Claude Code reads from. Maintained by `POST /api/sync/claude`.
 
 ```
-.claude/
-├── CLAUDE.md            # Framework manual (loaded as project instructions)
-├── settings.json        # Claude Code settings (tools, permissions, hooks)
-├── agents/              # Worker profiles (loaded by daemon/agents/profiles.ts)
+.kithkit/                        # Authoritative source (edit here)
+├── CLAUDE.md                    # Framework manual
+├── settings.json                # Claude Code settings (tools, permissions, hooks)
+├── agents/                      # Worker profiles (loaded by daemon/agents/profiles.ts)
 │   ├── research.md
 │   ├── coding.md
 │   └── ...
-├── skills/              # Installed skills (each has a SKILL.md)
+├── skills/                      # Installed skills (each has a SKILL.md)
 │   └── <skill-name>/
-│       ├── SKILL.md     # Skill instructions (autoContext frontmatter)
+│       ├── SKILL.md             # Skill instructions (autoContext frontmatter)
 │       └── ...
-├── hooks/               # Event hooks (bash scripts)
+├── hooks/                       # Event hooks (bash scripts)
 │   ├── session-start.sh
 │   ├── pre-build.sh
 │   └── ...
-└── state/               # Persistent agent state (not committed)
+└── state/                       # Persistent agent state (not committed)
     ├── identity.json
     ├── autonomy.json
     ├── todos/
     ├── memory/
     └── calendar.md
+
+.claude/                         # Synced copy (Claude Code reads from here)
+├── CLAUDE.md                    # Synced from .kithkit/ — full overwrite
+├── settings.json                # Synced from .kithkit/ — JSON merge
+├── agents/                      # Synced from .kithkit/agents/ — rsync --delete
+├── skills/                      # Synced from .kithkit/skills/ — rsync --delete
+├── projects/                    # Claude Code internals — not synced
+├── worktrees/                   # Claude Code internals — not synced
+└── state/                       # Symlinked or shared with .kithkit/state/
 ```
+
+**Sync**: The daemon's `POST /api/sync/claude` endpoint copies from `.kithkit/` to `.claude/`. Use the `/kkitclaudesync` skill to trigger a sync after editing `.kithkit/` files. Never edit `.claude/` directly — changes will be overwritten on next sync.
 
 ### Skills
 
-Skills live in `.claude/skills/<name>/SKILL.md`. The YAML frontmatter can include `autoContext` rules that tell Claude Code when to load the skill automatically (e.g., when the user mentions a keyword).
+Skills live in `.kithkit/skills/<name>/SKILL.md`. The YAML frontmatter can include `autoContext` rules that tell Claude Code when to load the skill automatically (e.g., when the user mentions a keyword).
 
 Skills are invoked by the comms agent (either automatically via autoContext, or explicitly via `/command`). They can call daemon API endpoints, spawn workers, and interact with external services.
 
 ### Hooks
 
-Hooks are bash scripts in `.claude/hooks/` that run at specific points in the Claude Code lifecycle:
+Hooks are bash scripts in `.kithkit/hooks/` that run at specific points in the Claude Code lifecycle:
 
 | Hook | When it runs |
 |------|-------------|
@@ -240,7 +254,7 @@ Hooks are bash scripts in `.claude/hooks/` that run at specific points in the Cl
 | `pre-compact.sh` | Before context compaction — saves work state |
 | `set-channel.sh` | On user prompt submit — configures the active communication channel |
 
-Hooks are configured in `.claude/settings.json`.
+Hooks are configured in `.kithkit/settings.json` (synced to `.claude/settings.json`).
 
 ### State Files
 
@@ -258,7 +272,7 @@ Kithkit uses two layers of state persistence:
 | `config` / `feature_state` | Runtime config overrides and per-feature state |
 | `task_results` | Scheduler task execution history |
 
-**File state** (in `.claude/state/`, persists across sessions):
+**File state** (in `.kithkit/state/`, persists across sessions):
 
 | File/Dir | Purpose |
 |----------|---------|

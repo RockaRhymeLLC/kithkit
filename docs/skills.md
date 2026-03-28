@@ -1,6 +1,6 @@
 # Skills Reference
 
-Kithkit ships with 21 built-in skills. Skills are Claude Code slash commands (or auto-loaded reference docs) that give your agent structured capabilities. Each skill's full documentation lives in `.claude/skills/<name>/SKILL.md`.
+Kithkit ships with 21 built-in skills. Skills are Claude Code slash commands (or auto-loaded reference docs) that give your agent structured capabilities. Each skill's full documentation lives in `.kithkit/skills/<name>/SKILL.md` (synced to `.claude/skills/<name>/SKILL.md`).
 
 ## User-Invocable Skills
 
@@ -35,6 +35,7 @@ These are triggered via `/command` in the Claude Code session.
 | remind | `/remind` | Set timed reminders delivered via the active notification channel |
 | playwright-cli | `/playwright-cli` | Browser automation for web testing, form filling, screenshots, and data extraction |
 | kithkit | `/kithkit` | Discover, install, and manage skills from the Kithkit catalog |
+| kkitclaudesync | `/kkitclaudesync` | Sync `.kithkit/` files to `.claude/` (triggers `POST /api/sync/claude`) |
 
 ## Reference Skills
 
@@ -51,7 +52,7 @@ These are loaded automatically when the agent's current task matches the skill's
 
 ## Adding Your Own Skills
 
-Create a new skill directory in `.claude/skills/` with a `SKILL.md` file. Use `/skill-create` for a guided walkthrough, or see the [Claude Code skills documentation](https://code.claude.com/docs/en/skills) for the format specification.
+Create a new skill directory in `.kithkit/skills/` with a `SKILL.md` file. Use `/skill-create` for a guided walkthrough, or see the [Claude Code skills documentation](https://code.claude.com/docs/en/skills) for the format specification. After creating the skill, sync it to `.claude/skills/` via `/kkitclaudesync` or `POST /api/sync/claude`.
 
 Agent-specific skills (skills that reference your agent's integrations, personality, or personal data) should live in your agent extension repo, not in the kithkit framework.
 
