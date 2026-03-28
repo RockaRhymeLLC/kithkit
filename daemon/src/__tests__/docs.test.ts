@@ -21,7 +21,7 @@ function readDoc(relativePath: string): string {
 
 describe('Documentation completeness (t-174)', () => {
   it('CLAUDE.md has all 4 required sections and no identity/personality content', () => {
-    const content = readDoc('.claude/CLAUDE.md');
+    const content = readDoc('.kithkit/CLAUDE.md');
 
     // Required sections
     assert.ok(content.includes('## Platform Usage'), 'must have Platform Usage section');
