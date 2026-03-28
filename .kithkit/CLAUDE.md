@@ -81,7 +81,7 @@ Config changes take effect after `POST /api/config/reload` or daemon restart.
 
 ### Agent Profiles
 
-Worker agents are scoped by profiles in `.claude/agents/*.md`. Each profile uses YAML frontmatter to define capabilities:
+Worker agents are scoped by profiles in `.kithkit/agents/*.md`. After migration, the authoritative copies live in `.kithkit/agents/` and are synced to `.claude/agents/` by the daemon via `POST /api/sync/claude`. Each profile uses YAML frontmatter to define capabilities:
 
 ```yaml
 ---

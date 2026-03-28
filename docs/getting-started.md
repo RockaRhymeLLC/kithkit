@@ -167,7 +167,7 @@ scheduler:
       enabled: true
 ```
 
-**Context watchdog dependency**: The `context-watchdog` task reads JSON state files written by the statusline script on every Claude turn. For it to work, add this to `.claude/settings.json`:
+**Context watchdog dependency**: The `context-watchdog` task reads JSON state files written by the statusline script on every Claude turn. For it to work, add this to `.kithkit/settings.json` (the authoritative copy; `.claude/settings.json` is the synced copy that Claude Code reads):
 
 ```json
 {
@@ -209,11 +209,11 @@ Always cite your sources. Prefer structured output. Be direct.
 
 ### Worker Profiles
 
-Worker profiles live in `.claude/agents/`. Add a new `.md` file with YAML frontmatter to create a custom worker type. See [Agent Profiles](agent-profiles.md) for the full format.
+Worker profiles live in `.kithkit/agents/`. Add a new `.md` file with YAML frontmatter to create a custom worker type, then sync to `.claude/agents/` via `/kkitclaudesync`. See [Agent Profiles](agent-profiles.md) for the full format.
 
 ### Skills
 
-Kithkit ships with 21 built-in skills your agent can use immediately — no installation needed. These are Claude Code slash commands that live in `.claude/skills/`:
+Kithkit ships with 21 built-in skills your agent can use immediately — no installation needed. These are Claude Code slash commands that live in `.kithkit/skills/` (synced to `.claude/skills/`):
 
 | Category | Skills |
 |----------|--------|
