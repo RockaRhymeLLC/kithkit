@@ -43,6 +43,10 @@ for arg in "$@"; do
   esac
 done
 
+if $FORCE && ! $DRY_RUN; then
+  echo "[migrate] WARNING: --force flag set — skipping double-run guard." >&2
+fi
+
 # ── Exit trap for partial failure ────────────────────────────
 
 trap 'if [ $? -ne 0 ] && ! $ROLLBACK; then
@@ -165,7 +169,7 @@ if $ROLLBACK; then
       src="${src%/}"
       dst="${dst%/}"
       if $DRY_RUN; then
-        log "Would restore: $dst/ → $src/"
+        log_dry "restore dir: $dst/ → $src/"
         continue
       fi
       if [ ! -d "$dst" ]; then
@@ -178,7 +182,7 @@ if $ROLLBACK; then
       log "Restored dir: $dst/ → $src/"
     else
       if $DRY_RUN; then
-        log "Would restore: $dst → $src"
+        log_dry "restore: $dst → $src"
         continue
       fi
       if [ ! -e "$dst" ]; then
@@ -200,10 +204,13 @@ if $ROLLBACK; then
       if ! $DRY_RUN; then
         sed -i.bak 's|\.kithkit/hooks/|.claude/hooks/|g' "$kithkit_settings"
         rm -f "${kithkit_settings}.bak"
-        # Sync updated settings.json back to .claude/ so hooks point at existing paths
-        cp "$kithkit_settings" "$PROJECT_DIR/.claude/settings.json"
-        log "Synced updated settings.json to .claude/settings.json"
+        log "Hook paths restored in .kithkit/settings.json"
       fi
+    fi
+    # Unconditionally sync settings.json back to .claude/ so it reflects the restored state
+    if ! $DRY_RUN; then
+      cp "$kithkit_settings" "$PROJECT_DIR/.claude/settings.json"
+      log "Synced .kithkit/settings.json → .claude/settings.json"
     fi
   fi
 
@@ -285,16 +292,14 @@ else
 fi
 log "Directory structure created."
 
-# ── Stop daemon before file operations ──────────────────────
-log "Stopping daemon to prevent race conditions during file moves..."
+# ── Daemon running check ─────────────────────────────────────
 if ! $DRY_RUN; then
-  if pgrep -f "node.*daemon" > /dev/null 2>&1; then
-    pkill -f "node.*daemon" 2>/dev/null || true
-    sleep 2
-    log "Daemon stopped."
-  else
-    log "Daemon not running — skipping stop."
+  if curl -s --max-time 2 http://localhost:3847/health > /dev/null 2>&1; then
+    echo "[migrate] ERROR: Daemon is running. Stop it first before running migration." >&2
+    echo "[migrate]   launchctl stop com.assistant.daemon" >&2
+    exit 1
   fi
+  log "Daemon not running — safe to proceed."
 fi
 
 # ── Step 2: Move hook scripts ─────────────────────────────────
