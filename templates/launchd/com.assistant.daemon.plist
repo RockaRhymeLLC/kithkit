@@ -6,9 +6,8 @@
     <string>com.assistant.daemon</string>
     <key>ProgramArguments</key>
     <array>
-        <string>{{NODE_PATH}}</string>
-        <string>{{PROJECT_DIR}}/daemon/dist/bootstrap.js</string>
-        <string>{{PROJECT_DIR}}</string>
+        <string>/bin/bash</string>
+        <string>{{PROJECT_DIR}}/scripts/start-daemon.sh</string>
     </array>
     <key>WorkingDirectory</key>
     <string>{{PROJECT_DIR}}</string>
