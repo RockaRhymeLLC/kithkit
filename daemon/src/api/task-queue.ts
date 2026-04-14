@@ -2,24 +2,28 @@
  * Task Queue API — structured task management for orchestrator work.
  *
  * State machine: pending → assigned → in_progress → completed/failed/cancelled
+ *                                    in_progress → awaiting_approval → in_progress (approved/rejected)
  * Retry: failed → pending (increments retry_count)
  *
  * Routes:
- *   POST   /api/orchestrator/tasks              — Create a task
- *   GET    /api/orchestrator/tasks              — List tasks (filterable by status)
- *   GET    /api/orchestrator/tasks/:id          — Get task detail (+ workers + activity)
- *   PUT    /api/orchestrator/tasks/:id          — Update task (status, assignee, result)
- *   POST   /api/orchestrator/tasks/:id/activity — Post activity entry
- *   GET    /api/orchestrator/tasks/:id/activity — Get activity log (paginated)
- *   POST   /api/orchestrator/tasks/:id/workers  — Assign worker to task
- *   POST   /api/orchestrator/tasks/:id/retry    — Retry a failed task
- *   POST   /api/orchestrator/tasks/:id/cancel   — Cancel a pending/in_progress task
+ *   POST   /api/orchestrator/tasks                       — Create a task
+ *   GET    /api/orchestrator/tasks                       — List tasks (filterable by status)
+ *   GET    /api/orchestrator/tasks/:id                   — Get task detail (+ workers + activity)
+ *   PUT    /api/orchestrator/tasks/:id                   — Update task (status, assignee, result)
+ *   POST   /api/orchestrator/tasks/:id/activity          — Post activity entry
+ *   GET    /api/orchestrator/tasks/:id/activity          — Get activity log (paginated)
+ *   POST   /api/orchestrator/tasks/:id/workers           — Assign worker to task
+ *   POST   /api/orchestrator/tasks/:id/retry             — Retry a failed task
+ *   POST   /api/orchestrator/tasks/:id/cancel            — Cancel a pending/in_progress task
+ *   POST   /api/orchestrator/tasks/:id/submit-plan       — Submit plan for human approval
+ *   POST   /api/orchestrator/tasks/:id/approve-plan      — Approve a submitted plan
+ *   POST   /api/orchestrator/tasks/:id/reject-plan       — Reject a submitted plan
  */
 
 import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
-import { query, exec, get } from '../core/db.js';
+import { query, exec, get, getDatabase } from '../core/db.js';
 import { injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { storeMemoryInternal } from './memory.js';
@@ -35,7 +39,7 @@ const log = createLogger('task-queue');
 
 // ── Types ────────────────────────────────────────────────────
 
-type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'completed' | 'failed' | 'cancelled';
+type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'awaiting_approval' | 'completed' | 'failed' | 'cancelled';
 type ActivityType = 'progress' | 'note';
 
 type TaskOutcome = 'success' | 'partial' | 'failed' | 'unknown';
@@ -56,6 +60,11 @@ interface OrchestratorTask {
   timeout_seconds: number | null;
   outcome: TaskOutcome | null;
   outcome_notes: string | null;
+  plan: string | null;
+  plan_status: 'submitted' | 'approved' | 'rejected' | null;
+  plan_submitted_at: string | null;
+  plan_approved_at: string | null;
+  plan_rejected_reason: string | null;
   created_at: string;
   assigned_at: string | null;
   started_at: string | null;
@@ -82,7 +91,7 @@ interface TaskActivity {
 
 // ── Constants ────────────────────────────────────────────────
 
-const VALID_STATUSES: readonly TaskStatus[] = ['pending', 'assigned', 'in_progress', 'completed', 'failed', 'cancelled'];
+const VALID_STATUSES: readonly TaskStatus[] = ['pending', 'assigned', 'in_progress', 'awaiting_approval', 'completed', 'failed', 'cancelled'];
 const TERMINAL_STATUSES: readonly TaskStatus[] = ['completed', 'failed', 'cancelled'];
 const VALID_ACTIVITY_TYPES: readonly ActivityType[] = ['progress', 'note'];
 
@@ -92,7 +101,8 @@ const VALID_ACTIVITY_TYPES: readonly ActivityType[] = ['progress', 'note'];
 const VALID_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   pending: ['assigned', 'failed', 'cancelled'],
   assigned: ['in_progress', 'failed', 'pending', 'cancelled'],
-  in_progress: ['completed', 'failed', 'cancelled'],
+  in_progress: ['completed', 'failed', 'cancelled', 'awaiting_approval'],
+  awaiting_approval: ['in_progress', 'cancelled'],
   completed: [],
   failed: ['pending'],  // retry: failed → pending
   cancelled: [],
@@ -111,6 +121,7 @@ function validateStatusAssignee(status: TaskStatus, assignee: string | null): st
   if (status === 'assigned' && !assignee) {
     return 'assigned tasks require a non-null assignee';
   }
+  // awaiting_approval keeps its assignee (like in_progress) — no validation needed
   return null;
 }
 
@@ -446,6 +457,184 @@ export async function handleTaskQueueRoute(
       return true;
     }
 
+    // POST /api/orchestrator/tasks/:id/submit-plan — submit plan for human approval
+    if (subpath === '/submit-plan' && method === 'POST') {
+      const task = getTask(taskId);
+      if (!task) {
+        json(res, 404, withTimestamp({ error: 'Task not found' }));
+        return true;
+      }
+
+      if (task.status !== 'in_progress') {
+        json(res, 409, withTimestamp({ error: `Can only submit a plan for in_progress tasks, current status: ${task.status}` }));
+        return true;
+      }
+
+      const body = await parseBody(req);
+
+      if (!body.plan || typeof body.plan !== 'string') {
+        json(res, 400, withTimestamp({ error: 'plan is required and must be a string' }));
+        return true;
+      }
+
+      const ts = now();
+
+      getDatabase().transaction(() => {
+        exec(
+          `UPDATE orchestrator_tasks SET plan = ?, plan_status = 'submitted', plan_submitted_at = ?, status = 'awaiting_approval', updated_at = ? WHERE id = ?`,
+          body.plan, ts, ts, taskId,
+        );
+
+        exec(
+          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+           VALUES (?, 'orchestrator', 'note', 'plan_submitted', 'Plan submitted for human approval', ?)`,
+          taskId, ts,
+        );
+      })();
+
+      // Notify comms via DB message
+      const planPreview = (body.plan as string).slice(0, 500);
+      const notifyBody = `[plan approval needed] Task "${task.title.slice(0, 80)}" has submitted a plan for review.\n\nPlan:\n${planPreview}${(body.plan as string).length > 500 ? '\n...(truncated)' : ''}\n\nApprove: curl -s -X POST 'http://localhost:3847/api/orchestrator/tasks/${taskId}/approve-plan' -H 'Content-Type: application/json' -d '{}'\nReject: curl -s -X POST 'http://localhost:3847/api/orchestrator/tasks/${taskId}/reject-plan' -H 'Content-Type: application/json' -d '{"reason":"..."}'`;
+
+      try {
+        exec(
+          `INSERT INTO messages (from_agent, to_agent, type, body, created_at) VALUES ('daemon', 'comms', 'task', ?, ?)`,
+          notifyBody, ts,
+        );
+      } catch (err) {
+        log.warn('Failed to insert plan approval message to comms', { taskId, error: String(err) });
+      }
+
+      // Also inject directly into comms tmux session for immediate visibility
+      try {
+        injectMessage('comms', notifyBody);
+      } catch (e) {
+        log.warn('Failed to inject plan submission notification to comms', { taskId, error: String(e) });
+      }
+
+      const updated = getTask(taskId)!;
+      log.info('Plan submitted for approval', { taskId, title: task.title });
+      json(res, 200, withTimestamp(updated));
+      return true;
+    }
+
+    // POST /api/orchestrator/tasks/:id/approve-plan — approve a submitted plan
+    if (subpath === '/approve-plan' && method === 'POST') {
+      const task = getTask(taskId);
+      if (!task) {
+        json(res, 404, withTimestamp({ error: 'Task not found' }));
+        return true;
+      }
+
+      if (task.status !== 'awaiting_approval') {
+        json(res, 409, withTimestamp({ error: `Can only approve plans for awaiting_approval tasks, current status: ${task.status}` }));
+        return true;
+      }
+
+      if (task.plan_status !== 'submitted') {
+        json(res, 409, withTimestamp({ error: `Can only approve tasks with plan_status=submitted, current plan_status: ${task.plan_status}` }));
+        return true;
+      }
+
+      const ts = now();
+
+      getDatabase().transaction(() => {
+        exec(
+          `UPDATE orchestrator_tasks SET plan_status = 'approved', plan_approved_at = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
+          ts, ts, taskId,
+        );
+
+        exec(
+          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+           VALUES (?, 'daemon', 'note', 'plan_approved', 'Plan approved — resuming execution', ?)`,
+          taskId, ts,
+        );
+      })();
+
+      // Notify orchestrator
+      const approveMsg = `[System] Plan approved for task ${taskId}. Resume execution.`;
+      try {
+        exec(
+          `INSERT INTO messages (from_agent, to_agent, type, body, created_at) VALUES ('daemon', 'orchestrator', 'task', ?, ?)`,
+          approveMsg, ts,
+        );
+      } catch (err) {
+        log.warn('Failed to insert plan approval notification to orchestrator', { taskId, error: String(err) });
+      }
+
+      try {
+        injectMessage('orchestrator', approveMsg);
+      } catch (e) {
+        log.warn('Failed to inject plan approval notification to orchestrator', { taskId, error: String(e) });
+      }
+
+      const updated = getTask(taskId)!;
+      log.info('Plan approved', { taskId, title: task.title });
+      json(res, 200, withTimestamp(updated));
+      return true;
+    }
+
+    // POST /api/orchestrator/tasks/:id/reject-plan — reject a submitted plan
+    if (subpath === '/reject-plan' && method === 'POST') {
+      const task = getTask(taskId);
+      if (!task) {
+        json(res, 404, withTimestamp({ error: 'Task not found' }));
+        return true;
+      }
+
+      if (task.status !== 'awaiting_approval') {
+        json(res, 409, withTimestamp({ error: `Can only reject plans for awaiting_approval tasks, current status: ${task.status}` }));
+        return true;
+      }
+
+      if (task.plan_status !== 'submitted') {
+        json(res, 409, withTimestamp({ error: `Can only reject tasks with plan_status=submitted, current plan_status: ${task.plan_status}` }));
+        return true;
+      }
+
+      const body = await parseBody(req);
+      const reason = typeof body.reason === 'string' && body.reason.trim()
+        ? body.reason.trim()
+        : 'No reason provided';
+
+      const ts = now();
+
+      getDatabase().transaction(() => {
+        exec(
+          `UPDATE orchestrator_tasks SET plan_status = 'rejected', plan_rejected_reason = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
+          reason, ts, taskId,
+        );
+
+        exec(
+          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+           VALUES (?, 'daemon', 'note', 'plan_rejected', ?, ?)`,
+          taskId, `Plan rejected. Reason: ${reason}`, ts,
+        );
+      })();
+
+      // Notify orchestrator
+      const rejectMsg = `[System] Plan rejected for task ${taskId}. Reason: ${reason}. Revise and resubmit.`;
+      try {
+        exec(
+          `INSERT INTO messages (from_agent, to_agent, type, body, created_at) VALUES ('daemon', 'orchestrator', 'task', ?, ?)`,
+          rejectMsg, ts,
+        );
+      } catch (err) {
+        log.warn('Failed to insert plan rejection notification to orchestrator', { taskId, error: String(err) });
+      }
+
+      try {
+        injectMessage('orchestrator', rejectMsg);
+      } catch (e) {
+        log.warn('Failed to inject plan rejection notification to orchestrator', { taskId, error: String(e) });
+      }
+
+      const updated = getTask(taskId)!;
+      log.info('Plan rejected', { taskId, title: task.title, reason });
+      json(res, 200, withTimestamp(updated));
+      return true;
+    }
+
     // GET /api/orchestrator/tasks/:id — get task detail
     if (!subpath && method === 'GET') {
       const task = getTask(taskId);
@@ -474,6 +663,7 @@ export async function handleTaskQueueRoute(
         return true;
       }
 
+      // awaiting_approval is not terminal — it can transition back to in_progress
       if (TERMINAL_STATUSES.includes(task.status as TaskStatus)) {
         json(res, 409, withTimestamp({ error: `Cannot update ${task.status} task` }));
         return true;
@@ -561,6 +751,14 @@ export async function handleTaskQueueRoute(
       }
       if (body.outcome_notes !== undefined) {
         updates.outcome_notes = typeof body.outcome_notes === 'string' ? body.outcome_notes : null;
+      }
+      if (body.plan !== undefined) {
+        // Block plan mutation while awaiting approval — what was approved must match what executes
+        if (task.plan_status === 'submitted') {
+          json(res, 409, withTimestamp({ error: 'Cannot modify plan while awaiting approval. Reject the current plan first.' }));
+          return true;
+        }
+        updates.plan = typeof body.plan === 'string' ? body.plan : null;
       }
 
       // Validate the final status/assignee combination

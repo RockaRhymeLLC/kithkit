@@ -1,0 +1,7 @@
+-- Plan approval workflow for orchestrator tasks.
+-- Allows orchestrators to submit plans for human approval before executing work.
+--safe-alter: orchestrator_tasks ADD COLUMN plan TEXT
+--safe-alter: orchestrator_tasks ADD COLUMN plan_status TEXT DEFAULT NULL
+--safe-alter: orchestrator_tasks ADD COLUMN plan_submitted_at TEXT
+--safe-alter: orchestrator_tasks ADD COLUMN plan_approved_at TEXT
+--safe-alter: orchestrator_tasks ADD COLUMN plan_rejected_reason TEXT
