@@ -71,6 +71,11 @@ function writePostMortem(reason: string): void {
 }
 
 const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const DEFAULT_SLA_MINUTES = 30;
+const SLA_NOTIFY_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes between nudges per task
+
+// Track last SLA notification time per task ID (in-memory; resets on daemon restart, which is acceptable)
+const slaLastNotifiedAt = new Map<string, number>();
 const CONTEXT_THRESHOLD_PCT = 65; // Daemon backstop — orchestrator self-restarts at 50%
 const CONTEXT_STALE_SECONDS = 600; // Ignore context data older than 10 min
 const GRACE_PERIOD_MS = 60 * 1000; // 60 seconds to exit after nudge
@@ -332,6 +337,44 @@ async function run(config: Record<string, unknown>): Promise<void> {
   // This catches stale/zombie tasks from a dead orchestrator early.
   checkTaskTimeouts();
 
+  // Check for stale plan approvals
+  const fullConfig = loadConfig();
+  const rawSla = (fullConfig as unknown as Record<string, Record<string, unknown>>)?.orchestrator?.plan_review_sla_minutes;
+  const slaMinutes = typeof rawSla === 'number' ? rawSla : DEFAULT_SLA_MINUTES;
+  const slaThreshold = new Date(Date.now() - slaMinutes * 60 * 1000).toISOString();
+  const stalePlans = query<{ id: string; title: string; plan_submitted_at: string }>(
+    `SELECT id, title, plan_submitted_at FROM orchestrator_tasks
+     WHERE status = 'awaiting_approval' AND plan_status = 'submitted'
+     AND plan_submitted_at < ?`,
+    slaThreshold,
+  );
+
+  if (stalePlans.length > 0) {
+    const now = Date.now();
+    let nudgeCount = 0;
+    for (const plan of stalePlans) {
+      const lastNotified = slaLastNotifiedAt.get(plan.id) ?? 0;
+      if (now - lastNotified < SLA_NOTIFY_COOLDOWN_MS) {
+        log.debug('Skipping SLA nudge — within cooldown', { taskId: plan.id, cooldownMs: SLA_NOTIFY_COOLDOWN_MS });
+        continue;
+      }
+      const waitMinutes = Math.round((now - new Date(plan.plan_submitted_at).getTime()) / 60000);
+      const nudgeMsg = `[plan review needed] Task "${plan.title.slice(0, 80)}" has a plan waiting ${waitMinutes}m for approval (SLA: ${slaMinutes}m).\n` +
+        `Approve: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/approve-plan' -H 'Content-Type: application/json' -d '{}'\n` +
+        `Reject: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/reject-plan' -H 'Content-Type: application/json' -d '{"reason":"..."}'`;
+      try {
+        injectMessage('comms', nudgeMsg);
+      } catch (e) {
+        log.warn('Failed to inject SLA notification to comms', { taskId: plan.id, error: String(e) });
+      }
+      slaLastNotifiedAt.set(plan.id, now);
+      nudgeCount++;
+    }
+    if (nudgeCount > 0) {
+      log.info('Nudged comms about stale plan approvals', { count: nudgeCount });
+    }
+  }
+
   // Detect orphaned tasks from a previous orchestrator instance.
   // Runs unconditionally — even when the orchestrator IS alive — because the new
   // orchestrator's liveness masks the dead one's abandoned tasks.
@@ -456,10 +499,14 @@ async function run(config: Record<string, unknown>): Promise<void> {
     const pendingWhileActiveCount = pendingWhileActive[0]?.count ?? 0;
     if (pendingWhileActiveCount > 0) {
       log.debug('Pending tasks queued while Claude is active — injecting soft nudge', { pendingWhileActiveCount });
-      injectMessage(
-        'orchestrator',
-        `[System] ${pendingWhileActiveCount} pending task(s) in queue. Check GET /api/orchestrator/tasks?status=pending when your current work is done.`,
-      );
+      try {
+        injectMessage(
+          'orchestrator',
+          `[System] ${pendingWhileActiveCount} pending task(s) in queue. Check GET /api/orchestrator/tasks?status=pending when your current work is done.`,
+        );
+      } catch (e) {
+        log.warn('Failed to inject pending-tasks nudge to orchestrator', { error: String(e) });
+      }
     }
 
     return;
@@ -481,7 +528,12 @@ async function run(config: Record<string, unknown>): Promise<void> {
   if (contextUsed !== null && contextUsed >= CONTEXT_THRESHOLD_PCT) {
     const reason = `context at ${contextUsed}% — save any pending work state to the daemon (POST /api/messages) and exit. The daemon will respawn you with that context.`;
     log.warn('Orchestrator context backstop triggered', { contextUsed });
-    const injected = injectMessage('orchestrator', buildShutdownPrompt(reason));
+    let injected = false;
+    try {
+      injected = injectMessage('orchestrator', buildShutdownPrompt(reason));
+    } catch (e) {
+      log.warn('Failed to inject context shutdown nudge to orchestrator', { error: String(e) });
+    }
     if (injected) {
       shutdownNudgedAt = Date.now();
       shutdownReason = `context exhaustion (${contextUsed}%)`;
@@ -545,7 +597,12 @@ async function run(config: Record<string, unknown>): Promise<void> {
       ? `You have 1 pending task: "${taskTitle}" — check GET /api/orchestrator/tasks?status=pending`
       : `You have ${pendingTaskCount} pending tasks — check GET /api/orchestrator/tasks?status=pending`;
     log.info('Orchestrator idle but has pending tasks — waking instead of shutdown', { pendingTaskCount });
-    const injected = injectMessage('orchestrator', wakeMsg);
+    let injected = false;
+    try {
+      injected = injectMessage('orchestrator', wakeMsg);
+    } catch (e) {
+      log.warn('Failed to inject pending task wake to orchestrator', { error: String(e) });
+    }
     if (injected) {
       // Touch last_activity so we don't immediately re-trigger
       update('agents', 'orchestrator', {
@@ -563,7 +620,12 @@ async function run(config: Record<string, unknown>): Promise<void> {
 
   const reason = `idle for ${Math.round(idleMs / 60000)} minutes — Claude process not running, no pending work`;
   log.info('Orchestrator idle — sending shutdown nudge', { idleMinutes: Math.round(idleMs / 60000) });
-  const injected = injectMessage('orchestrator', buildShutdownPrompt(reason));
+  let injected = false;
+  try {
+    injected = injectMessage('orchestrator', buildShutdownPrompt(reason));
+  } catch (e) {
+    log.warn('Failed to inject idle shutdown nudge to orchestrator', { error: String(e) });
+  }
 
   if (injected) {
     shutdownNudgedAt = Date.now();

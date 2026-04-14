@@ -51,6 +51,9 @@ scheduler:
       config:
         requires_session: true
 
+orchestrator:
+  plan_review_sla_minutes: 10
+
 security:
   rate_limits:
     incoming_max_per_minute: 5
