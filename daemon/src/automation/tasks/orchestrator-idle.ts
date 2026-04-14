@@ -362,7 +362,11 @@ async function run(config: Record<string, unknown>): Promise<void> {
       const nudgeMsg = `[plan review needed] Task "${plan.title.slice(0, 80)}" has a plan waiting ${waitMinutes}m for approval (SLA: ${slaMinutes}m).\n` +
         `Approve: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/approve-plan' -H 'Content-Type: application/json' -d '{}'\n` +
         `Reject: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/reject-plan' -H 'Content-Type: application/json' -d '{"reason":"..."}'`;
-      injectMessage('comms', nudgeMsg);
+      try {
+        injectMessage('comms', nudgeMsg);
+      } catch (e) {
+        log.warn('Failed to inject SLA notification to comms', { taskId: plan.id, error: String(e) });
+      }
       slaLastNotifiedAt.set(plan.id, now);
       nudgeCount++;
     }
