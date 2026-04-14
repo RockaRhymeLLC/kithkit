@@ -236,6 +236,34 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - Workers can only message the orchestrator that spawned them
 - The comms agent is the only agent that talks to humans
 
+### 10-4 Acknowledgment Rule
+
+Every message between agents must be explicitly acknowledged. When you receive a task, instruction, or informational message from another agent (peer A2A, orchestrator, or worker), respond with a brief acknowledgment confirming:
+
+1. **You received it** — "10-4" or "Acknowledged" (proves delivery)
+2. **You understood it** — one sentence summarizing what you'll do (proves comprehension)
+3. **You'll act on it** — when you expect to start or complete it (proves commitment)
+
+**Examples:**
+- "10-4 — will wrap the injectMessage calls in try/catch across all three handlers. Starting now."
+- "Acknowledged — spec review for the ack protocol. I'll have feedback within 10 minutes."
+- "10-4 — passing the build results to comms. Done."
+
+**What requires a 10-4:**
+- Task assignments from the orchestrator
+- A2A DMs from peer agents
+- Result messages from workers (orchestrator must ack)
+- Escalation confirmations (orchestrator → comms)
+
+**What does NOT require a 10-4:**
+- Ack messages themselves (no ack-of-ack)
+- Status broadcasts to groups (unless they contain a direct ask)
+- System notifications from the daemon
+
+**Failure mode:** If you receive a message and don't 10-4 within 60 seconds, the sender should assume delivery failed and retry. If two retries get no ack, escalate to the human.
+
+This is a behavioral protocol — agents follow it by convention today. Infrastructure support (automatic ack tracking, timeout detection) is planned separately.
+
 ### Channel Delivery
 
 - Use `POST /api/send` to deliver messages to the human
