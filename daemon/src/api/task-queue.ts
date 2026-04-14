@@ -23,7 +23,7 @@
 import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
-import { query, exec, get } from '../core/db.js';
+import { query, exec, get, getDatabase } from '../core/db.js';
 import { injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { storeMemoryInternal } from './memory.js';
@@ -479,16 +479,18 @@ export async function handleTaskQueueRoute(
 
       const ts = now();
 
-      exec(
-        `UPDATE orchestrator_tasks SET plan = ?, plan_status = 'submitted', plan_submitted_at = ?, status = 'awaiting_approval', updated_at = ? WHERE id = ?`,
-        body.plan, ts, ts, taskId,
-      );
+      getDatabase().transaction(() => {
+        exec(
+          `UPDATE orchestrator_tasks SET plan = ?, plan_status = 'submitted', plan_submitted_at = ?, status = 'awaiting_approval', updated_at = ? WHERE id = ?`,
+          body.plan, ts, ts, taskId,
+        );
 
-      exec(
-        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
-         VALUES (?, 'orchestrator', 'note', 'plan_submitted', 'Plan submitted for human approval', ?)`,
-        taskId, ts,
-      );
+        exec(
+          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+           VALUES (?, 'orchestrator', 'note', 'plan_submitted', 'Plan submitted for human approval', ?)`,
+          taskId, ts,
+        );
+      })();
 
       // Notify comms via DB message
       const planPreview = (body.plan as string).slice(0, 500);
@@ -504,7 +506,11 @@ export async function handleTaskQueueRoute(
       }
 
       // Also inject directly into comms tmux session for immediate visibility
-      injectMessage('comms', notifyBody);
+      try {
+        injectMessage('comms', notifyBody);
+      } catch (e) {
+        log.warn('Failed to inject plan submission notification to comms', { taskId, error: String(e) });
+      }
 
       const updated = getTask(taskId)!;
       log.info('Plan submitted for approval', { taskId, title: task.title });
@@ -532,16 +538,18 @@ export async function handleTaskQueueRoute(
 
       const ts = now();
 
-      exec(
-        `UPDATE orchestrator_tasks SET plan_status = 'approved', plan_approved_at = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
-        ts, ts, taskId,
-      );
+      getDatabase().transaction(() => {
+        exec(
+          `UPDATE orchestrator_tasks SET plan_status = 'approved', plan_approved_at = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
+          ts, ts, taskId,
+        );
 
-      exec(
-        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
-         VALUES (?, 'daemon', 'note', 'plan_approved', 'Plan approved — resuming execution', ?)`,
-        taskId, ts,
-      );
+        exec(
+          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+           VALUES (?, 'daemon', 'note', 'plan_approved', 'Plan approved — resuming execution', ?)`,
+          taskId, ts,
+        );
+      })();
 
       // Notify orchestrator
       const approveMsg = `[System] Plan approved for task ${taskId}. Resume execution.`;
@@ -554,7 +562,11 @@ export async function handleTaskQueueRoute(
         log.warn('Failed to insert plan approval notification to orchestrator', { taskId, error: String(err) });
       }
 
-      injectMessage('orchestrator', approveMsg);
+      try {
+        injectMessage('orchestrator', approveMsg);
+      } catch (e) {
+        log.warn('Failed to inject plan approval notification to orchestrator', { taskId, error: String(e) });
+      }
 
       const updated = getTask(taskId)!;
       log.info('Plan approved', { taskId, title: task.title });
@@ -587,16 +599,18 @@ export async function handleTaskQueueRoute(
 
       const ts = now();
 
-      exec(
-        `UPDATE orchestrator_tasks SET plan_status = 'rejected', plan_rejected_reason = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
-        reason, ts, taskId,
-      );
+      getDatabase().transaction(() => {
+        exec(
+          `UPDATE orchestrator_tasks SET plan_status = 'rejected', plan_rejected_reason = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
+          reason, ts, taskId,
+        );
 
-      exec(
-        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
-         VALUES (?, 'daemon', 'note', 'plan_rejected', ?, ?)`,
-        taskId, `Plan rejected. Reason: ${reason}`, ts,
-      );
+        exec(
+          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+           VALUES (?, 'daemon', 'note', 'plan_rejected', ?, ?)`,
+          taskId, `Plan rejected. Reason: ${reason}`, ts,
+        );
+      })();
 
       // Notify orchestrator
       const rejectMsg = `[System] Plan rejected for task ${taskId}. Reason: ${reason}. Revise and resubmit.`;
@@ -609,7 +623,11 @@ export async function handleTaskQueueRoute(
         log.warn('Failed to insert plan rejection notification to orchestrator', { taskId, error: String(err) });
       }
 
-      injectMessage('orchestrator', rejectMsg);
+      try {
+        injectMessage('orchestrator', rejectMsg);
+      } catch (e) {
+        log.warn('Failed to inject plan rejection notification to orchestrator', { taskId, error: String(e) });
+      }
 
       const updated = getTask(taskId)!;
       log.info('Plan rejected', { taskId, title: task.title, reason });
@@ -735,6 +753,11 @@ export async function handleTaskQueueRoute(
         updates.outcome_notes = typeof body.outcome_notes === 'string' ? body.outcome_notes : null;
       }
       if (body.plan !== undefined) {
+        // Block plan mutation while awaiting approval — what was approved must match what executes
+        if (task.plan_status === 'submitted') {
+          json(res, 409, withTimestamp({ error: 'Cannot modify plan while awaiting approval. Reject the current plan first.' }));
+          return true;
+        }
         updates.plan = typeof body.plan === 'string' ? body.plan : null;
       }
 

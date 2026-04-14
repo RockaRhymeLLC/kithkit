@@ -71,6 +71,11 @@ function writePostMortem(reason: string): void {
 }
 
 const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const DEFAULT_SLA_MINUTES = 30;
+const SLA_NOTIFY_COOLDOWN_MS = 15 * 60 * 1000; // 15 minutes between nudges per task
+
+// Track last SLA notification time per task ID (in-memory; resets on daemon restart, which is acceptable)
+const slaLastNotifiedAt = new Map<string, number>();
 const CONTEXT_THRESHOLD_PCT = 65; // Daemon backstop — orchestrator self-restarts at 50%
 const CONTEXT_STALE_SECONDS = 600; // Ignore context data older than 10 min
 const GRACE_PERIOD_MS = 60 * 1000; // 60 seconds to exit after nudge
@@ -334,7 +339,8 @@ async function run(config: Record<string, unknown>): Promise<void> {
 
   // Check for stale plan approvals
   const fullConfig = loadConfig();
-  const slaMinutes = (fullConfig as unknown as Record<string, Record<string, unknown>>)?.orchestrator?.plan_review_sla_minutes as number ?? 10;
+  const rawSla = (fullConfig as unknown as Record<string, Record<string, unknown>>)?.orchestrator?.plan_review_sla_minutes;
+  const slaMinutes = typeof rawSla === 'number' ? rawSla : DEFAULT_SLA_MINUTES;
   const slaThreshold = new Date(Date.now() - slaMinutes * 60 * 1000).toISOString();
   const stalePlans = query<{ id: string; title: string; plan_submitted_at: string }>(
     `SELECT id, title, plan_submitted_at FROM orchestrator_tasks
@@ -344,14 +350,25 @@ async function run(config: Record<string, unknown>): Promise<void> {
   );
 
   if (stalePlans.length > 0) {
+    const now = Date.now();
+    let nudgeCount = 0;
     for (const plan of stalePlans) {
-      const waitMinutes = Math.round((Date.now() - new Date(plan.plan_submitted_at).getTime()) / 60000);
+      const lastNotified = slaLastNotifiedAt.get(plan.id) ?? 0;
+      if (now - lastNotified < SLA_NOTIFY_COOLDOWN_MS) {
+        log.debug('Skipping SLA nudge — within cooldown', { taskId: plan.id, cooldownMs: SLA_NOTIFY_COOLDOWN_MS });
+        continue;
+      }
+      const waitMinutes = Math.round((now - new Date(plan.plan_submitted_at).getTime()) / 60000);
       const nudgeMsg = `[plan review needed] Task "${plan.title.slice(0, 80)}" has a plan waiting ${waitMinutes}m for approval (SLA: ${slaMinutes}m).\n` +
         `Approve: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/approve-plan' -H 'Content-Type: application/json' -d '{}'\n` +
         `Reject: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/reject-plan' -H 'Content-Type: application/json' -d '{"reason":"..."}'`;
       injectMessage('comms', nudgeMsg);
+      slaLastNotifiedAt.set(plan.id, now);
+      nudgeCount++;
     }
-    log.info('Nudged comms about stale plan approvals', { count: stalePlans.length });
+    if (nudgeCount > 0) {
+      log.info('Nudged comms about stale plan approvals', { count: nudgeCount });
+    }
   }
 
   // Detect orphaned tasks from a previous orchestrator instance.
