@@ -332,6 +332,28 @@ async function run(config: Record<string, unknown>): Promise<void> {
   // This catches stale/zombie tasks from a dead orchestrator early.
   checkTaskTimeouts();
 
+  // Check for stale plan approvals
+  const fullConfig = loadConfig();
+  const slaMinutes = (fullConfig as unknown as Record<string, Record<string, unknown>>)?.orchestrator?.plan_review_sla_minutes as number ?? 10;
+  const slaThreshold = new Date(Date.now() - slaMinutes * 60 * 1000).toISOString();
+  const stalePlans = query<{ id: string; title: string; plan_submitted_at: string }>(
+    `SELECT id, title, plan_submitted_at FROM orchestrator_tasks
+     WHERE status = 'awaiting_approval' AND plan_status = 'submitted'
+     AND plan_submitted_at < ?`,
+    slaThreshold,
+  );
+
+  if (stalePlans.length > 0) {
+    for (const plan of stalePlans) {
+      const waitMinutes = Math.round((Date.now() - new Date(plan.plan_submitted_at).getTime()) / 60000);
+      const nudgeMsg = `[plan review needed] Task "${plan.title.slice(0, 80)}" has a plan waiting ${waitMinutes}m for approval (SLA: ${slaMinutes}m).\n` +
+        `Approve: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/approve-plan' -H 'Content-Type: application/json' -d '{}'\n` +
+        `Reject: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/reject-plan' -H 'Content-Type: application/json' -d '{"reason":"..."}'`;
+      injectMessage('comms', nudgeMsg);
+    }
+    log.info('Nudged comms about stale plan approvals', { count: stalePlans.length });
+  }
+
   // Detect orphaned tasks from a previous orchestrator instance.
   // Runs unconditionally — even when the orchestrator IS alive — because the new
   // orchestrator's liveness masks the dead one's abandoned tasks.
