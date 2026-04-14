@@ -499,10 +499,14 @@ async function run(config: Record<string, unknown>): Promise<void> {
     const pendingWhileActiveCount = pendingWhileActive[0]?.count ?? 0;
     if (pendingWhileActiveCount > 0) {
       log.debug('Pending tasks queued while Claude is active — injecting soft nudge', { pendingWhileActiveCount });
-      injectMessage(
-        'orchestrator',
-        `[System] ${pendingWhileActiveCount} pending task(s) in queue. Check GET /api/orchestrator/tasks?status=pending when your current work is done.`,
-      );
+      try {
+        injectMessage(
+          'orchestrator',
+          `[System] ${pendingWhileActiveCount} pending task(s) in queue. Check GET /api/orchestrator/tasks?status=pending when your current work is done.`,
+        );
+      } catch (e) {
+        log.warn('Failed to inject pending-tasks nudge to orchestrator', { error: String(e) });
+      }
     }
 
     return;
