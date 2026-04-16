@@ -56,22 +56,24 @@ my-agent/
 ├── kithkit.defaults.yaml    # Framework defaults (do not edit)
 ├── identity.md              # Personality and communication style
 ├── kithkit.db               # SQLite database (created on first run)
-├── .claude/
-│   ├── CLAUDE.md            # Framework manual (auto-generated)
+├── .kithkit/
+│   ├── CLAUDE.md            # Framework manual (synced to .claude/)
 │   ├── skills/              # 21 built-in skills (slash commands)
 │   │   ├── build/           #   /build — implement features from stories
 │   │   ├── todo/            #   /todo — persistent cross-session tasks
 │   │   ├── memory/          #   /memory — store and retrieve facts
 │   │   ├── ...              #   (18 more — see docs/skills.md)
-│   └── agents/              # Worker profiles (6 built-in)
-│       ├── research.md
-│       ├── coding.md
-│       ├── testing.md
-│       ├── email.md
-│       ├── review.md
-│       └── devils-advocate.md
-├── scripts/                 # Session and ops scripts
-└── logs/                    # Daemon logs (created on first run)
+│   ├── agents/              # Worker profiles (6 built-in)
+│   │   ├── research.md
+│   │   ├── coding.md
+│   │   ├── testing.md
+│   │   ├── email.md
+│   │   ├── review.md
+│   │   └── devils-advocate.md
+│   └── state/               # Runtime state files
+├── .claude/                  # Claude Code reads from here (synced from .kithkit/)
+├── scripts/                  # Session and ops scripts
+└── logs/                     # Daemon logs (created on first run)
 ```
 
 ## First Run

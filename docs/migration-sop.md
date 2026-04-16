@@ -218,9 +218,9 @@ You need 3 plists. Copy from the old ones and update all paths.
     <key>ProcessType</key>
     <string>Interactive</string>
     <key>StandardOutPath</key>
-    <string>/Users/<user>/.claude/logs/assistant.log</string>
+    <string>/Users/<user>/KKit-<AGENT>/logs/assistant.log</string>
     <key>StandardErrorPath</key>
-    <string>/Users/<user>/.claude/logs/assistant.error.log</string>
+    <string>/Users/<user>/KKit-<AGENT>/logs/assistant.error.log</string>
 </dict>
 </plist>
 ```
