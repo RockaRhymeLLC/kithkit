@@ -8,7 +8,7 @@
 #   C:33%          (only comms)
 #   ctx:--         (no data or stale)
 
-STATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.claude/state"
+STATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.kithkit/state"
 STALE_SECONDS=300  # Consider data stale after 5 minutes
 
 now=$(date +%s)
