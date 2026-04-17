@@ -116,7 +116,7 @@ The following projects are referenced in [integration recipes](docs/recipes/) (n
 
 The semantic memory feature uses the [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) model (Apache-2.0) via Hugging Face Transformers.js.
 
-See individual project repositories for full license details.
+See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) for full license details.
 
 ## License
 
