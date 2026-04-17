@@ -35,9 +35,9 @@ import { markdownToTelegramHtml, hasMarkdownPatterns, hasHtmlTags } from './tele
 
 const log = createLogger('telegram');
 
-const MEDIA_DIR_REL = '.claude/state/telegram-media';
-const REPLY_CHAT_ID_REL = '.claude/state/reply-chat-id.txt';
-const CHANNEL_FILE_REL = '.claude/state/channel.txt';
+const MEDIA_DIR_REL = '.kithkit/state/telegram-media';
+const REPLY_CHAT_ID_REL = '.kithkit/state/reply-chat-id.txt';
+const CHANNEL_FILE_REL = '.kithkit/state/channel.txt';
 
 // ── Keychain helpers ─────────────────────────────────────────
 
@@ -592,7 +592,7 @@ function registerAgentTiers(): void {
   }
 
   // Load 3rd-party-senders.json for approved/pending third-party senders
-  const thirdParty = loadJsonFile<Array<{ id?: string; channels?: Record<string, unknown> }>>('.claude/state/3rd-party-senders.json') ?? [];
+  const thirdParty = loadJsonFile<Array<{ id?: string; channels?: Record<string, unknown> }>>('.kithkit/state/3rd-party-senders.json') ?? [];
 
   const approvedIds = new Set<string>();
   const pendingIds = new Set<string>();

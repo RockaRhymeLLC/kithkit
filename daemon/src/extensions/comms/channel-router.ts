@@ -37,7 +37,7 @@ let _telegramAdapter: (ChannelAdapter & { startTyping?(): Promise<void>; stopTyp
 let _voicePendingCallback: MessageHandler | null = null;
 let _responseHook: MessageHandler | null = null;
 
-const CHANNEL_FILE_REL = '.claude/state/channel.txt';
+const CHANNEL_FILE_REL = '.kithkit/state/channel.txt';
 
 // ── Channel file management ──────────────────────────────────
 

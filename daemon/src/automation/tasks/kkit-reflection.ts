@@ -18,7 +18,7 @@ import type { Scheduler } from '../scheduler.js';
 const log = createLogger('kkit-reflection');
 
 /** Base path for skill reference files, relative to project root. */
-export const SKILLS_REL_PATH = '.claude/skills';
+export const SKILLS_REL_PATH = '.kithkit/skills';
 
 // ── Config ──────────────────────────────────────────────────
 

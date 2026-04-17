@@ -82,7 +82,7 @@ export async function initNetworkSDK(config: Record<string, unknown>): Promise<b
       username: agentName,
       privateKey: privateKeyBuffer,
       endpoint: networkConfig.endpoint,
-      dataDir: '.claude/state/network-cache',
+      dataDir: '.kithkit/state/network-cache',
       heartbeatInterval: networkConfig.heartbeat_interval ?? 300_000,
     };
 
