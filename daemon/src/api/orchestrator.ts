@@ -39,6 +39,24 @@ let pendingShutdownTimer: ReturnType<typeof setTimeout> | null = null;
 
 const escalateLimiter = createRateLimiter('escalate', 20);
 
+/**
+ * Build task title and description from escalate fields, preserving all content.
+ *
+ * - titleText: first non-empty line of task, trimmed and capped at 200 chars
+ * - descriptionText: full task body, with context appended as a delimited section if provided
+ */
+export function buildTaskFields(
+  task: string,
+  context?: string,
+): { titleText: string; descriptionText: string } {
+  const firstLine = task.split('\n').find(l => l.trim().length > 0) ?? '';
+  const titleText = firstLine.trim().slice(0, 200) || task.slice(0, 200);
+  const descriptionText = context
+    ? `${task}\n\n---\n\n## Context\n${context}`
+    : task;
+  return { titleText, descriptionText };
+}
+
 // ── Route handler ────────────────────────────────────────────
 
 export async function handleOrchestratorRoute(
@@ -73,18 +91,19 @@ export async function handleOrchestratorRoute(
     const ts = new Date().toISOString();
     const priority = typeof body.priority === 'number' ? body.priority : 0;
     const workNotes = typeof body.work_notes === 'string' ? body.work_notes : null;
+    const { titleText, descriptionText } = buildTaskFields(task, context);
     exec(
       `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, created_at, updated_at)
        VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
       taskId,
-      task.slice(0, 200),
-      context ?? task,
+      titleText,
+      descriptionText,
       priority,
       workNotes,
       ts,
       ts,
     );
-    log.info('Created orchestrator task', { taskId, title: task.slice(0, 100) });
+    log.info('Created orchestrator task', { taskId, title: titleText });
 
     if (!alive) {
       // Cancel any pending shutdown timer — a new spawn supersedes a pending shutdown
