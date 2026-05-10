@@ -74,6 +74,15 @@ export class RateLimiter {
   }
 
   /**
+   * Update rate-limit parameters without resetting existing windows.
+   * Call after a config reload so new limits take effect immediately.
+   */
+  reload(maxRequests: number, windowMs: number): void {
+    this.maxRequests = maxRequests;
+    this.windowMs = windowMs;
+  }
+
+  /**
    * Stop cleanup and clear all entries.
    */
   stop(): void {
