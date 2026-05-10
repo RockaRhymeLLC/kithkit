@@ -309,8 +309,19 @@ async function loadInstanceExtensions(
 
 // ── Extension Implementation ────────────────────────────────
 
+function onConfigChange(config: KithkitConfig): void {
+  const inMax = config.security?.rate_limits?.incoming_max_per_minute;
+  if (typeof inMax === 'number') {
+    p2pRateLimiter.reload(inMax, 60_000);
+    log.info('P2P rate limiter reloaded', { incomingMaxPerMinute: inMax });
+  }
+}
+
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
   _config = asAgentConfig(config);
+
+  // Sync P2P rate limiter to configured incoming limit
+  onConfigChange(config);
 
   // Start P2P rate limiter cleanup
   p2pRateLimiter.startCleanup();
@@ -414,6 +425,7 @@ export const agentExtension: Extension = {
   name: 'agent',
   onInit,
   onShutdown,
+  onConfigChange,
 };
 
 // For testing

@@ -129,6 +129,14 @@ const configWatcher = createConfigWatcher(configPath, config);
 setConfigWatcher(configWatcher);
 setCurrentDbPath(resolvedDbPath);
 setConfigFilePath(configPath);
+configWatcher.onChange((newConfig) => {
+  const ext = getExtension();
+  if (ext?.onConfigChange) {
+    Promise.resolve(ext.onConfigChange(newConfig)).catch((err) => {
+      log.error('Extension config change handler failed', { error: String(err) });
+    });
+  }
+});
 configWatcher.start();
 log.info('Config watcher started', { path: configPath });
 
