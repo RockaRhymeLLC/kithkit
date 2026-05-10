@@ -113,7 +113,7 @@ export function injectMessage(agentId: string, text: string): boolean {
       timeout: 5000,
     });
   } catch {
-    log.warn('Tmux session not found for message injection', { agentId, session });
+    log.debug('Tmux session not found for message injection', { agentId, session }); // stale session ref expected during orch lifecycle; name-mismatch bug tracked separately
     return false;
   }
 
