@@ -1289,6 +1289,45 @@ curl -X POST http://localhost:3847/api/memory/backfill
 
 ---
 
+### GET /api/memory/stats
+
+Counts and boundary metadata for the memory store. Replaces the old per-category-cap heuristic that callers used to figure out how full things were. Counts ACTIVE memories (`expires_at IS NULL`) by default; the `archived` field surfaces decayed/cap-pruned rows separately.
+
+```bash
+curl http://localhost:3847/api/memory/stats
+```
+
+```json
+// Response 200
+{
+  "total": 1247,
+  "archived": 38,
+  "max_id": 1502,
+  "min_id": 1,
+  "newest_at": "2026-05-09 23:18:42",
+  "oldest_at": "2026-02-21 14:03:11",
+  "content_bytes": 1873441,
+  "by_category": [
+    { "category": "technical", "count": 412 },
+    { "category": "decision",  "count": 287 },
+    { "category": "event",     "count": 203 },
+    { "category": "(uncategorized)", "count": 41 }
+  ],
+  "timestamp": "2026-05-09 23:30:00"
+}
+```
+
+Notes:
+- `content_bytes` is `SUM(LENGTH(content))` over active memories — content only, doesn't include tags/embeddings/other columns. Cheap signal for "are we approaching disk pressure."
+- `by_category` is sorted by count DESC. NULL categories appear as `(uncategorized)`.
+- Per-category caps were removed in this release (todo #341). This endpoint is the replacement way to inspect distribution.
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ total, archived, max_id, min_id, newest_at, oldest_at, content_bytes, by_category[], timestamp }` |
+
+---
+
 ## Config & State
 
 ### GET /api/config/:key

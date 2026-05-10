@@ -8,6 +8,7 @@
  */
 
 import type http from 'node:http';
+import fs from 'node:fs';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import {
   spawnOrchestratorSession,
@@ -17,13 +18,15 @@ import {
   injectMessage,
 } from '../agents/tmux.js';
 import { sendMessage } from '../agents/message-router.js';
-import { loadConfig } from '../core/config.js';
+import { loadConfig, resolveProjectPath } from '../core/config.js';
 import { randomUUID } from 'node:crypto';
 import { exec, query, update } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
 import { logActivity } from './activity.js';
 import { createRateLimiter } from './rate-limit.js';
 import { cancelSessionTimers } from './timer.js';
+import { isVectorSearchEnabled } from './memory.js';
+import { hybridSearch } from '../memory/vector-search.js';
 
 const log = createLogger('orchestrator-api');
 

@@ -13,7 +13,6 @@ import { insert, get, remove, query, getDatabase } from '../core/db.js';
 import { generateEmbedding, embeddingToBuffer } from '../memory/embeddings.js';
 import { initVectorSearch, indexEmbedding, vectorSearch, hybridSearch, backfillEmbeddings } from '../memory/vector-search.js';
 import { createLogger } from '../core/logger.js';
-import { loadConfig } from '../core/config.js';
 
 const log = createLogger('memory-api');
 
@@ -34,26 +33,6 @@ interface Memory {
   trigger: string | null;
   shareable: number; // 1=yes, 0=no; default 1
   decay_policy: string | null; // default 'default'
-}
-
-const DEFAULT_MEMORY_CAP = 50;
-
-/**
- * Get the per-category memory cap from config, falling back to the default.
- *
- * NOTE: There are two config paths for this value:
- *   - config.memory.category_cap  (read here, general memory config)
- *   - config.self_improvement.lifecycle.category_cap  (used by memory-consolidation task)
- * These are independent and may diverge if configured separately. Ideally they should be
- * consolidated to a single source of truth in a future refactor.
- */
-function getMemoryCap(): number {
-  try {
-    const config = loadConfig();
-    return (config as unknown as Record<string, unknown> & { memory?: { category_cap?: number } }).memory?.category_cap ?? DEFAULT_MEMORY_CAP;
-  } catch {
-    return DEFAULT_MEMORY_CAP;
-  }
 }
 
 /** Similarity threshold for vector dedup (0-1, higher = stricter).
@@ -290,6 +269,56 @@ export async function handleMemoryRoute(
       return true;
     }
 
+    // GET /api/memory/stats — counts + boundary timestamps for the memory store.
+    // Replaces the old per-category-cap heuristic that callers used to figure
+    // out how full things were. Localhost-only same as the rest of the API.
+    if (pathname === '/api/memory/stats' && method === 'GET') {
+      const totalRow = query<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM memories WHERE expires_at IS NULL`,
+      );
+      const total = totalRow[0]?.n ?? 0;
+
+      const byCategory = query<{ category: string | null; n: number }>(
+        `SELECT COALESCE(category, '(uncategorized)') AS category, COUNT(*) AS n
+           FROM memories
+          WHERE expires_at IS NULL
+          GROUP BY category
+          ORDER BY n DESC`,
+      );
+
+      const idRow = query<{ max_id: number | null; min_id: number | null }>(
+        `SELECT MAX(id) AS max_id, MIN(id) AS min_id FROM memories WHERE expires_at IS NULL`,
+      );
+
+      const tsRow = query<{ newest: string | null; oldest: string | null }>(
+        `SELECT MAX(created_at) AS newest, MIN(created_at) AS oldest
+           FROM memories WHERE expires_at IS NULL`,
+      );
+
+      // Cheap byte total — SUM(LENGTH(content)). Doesn't include tags, embeddings,
+      // or other columns. Good enough as a "are we approaching disk pressure" signal.
+      const bytesRow = query<{ content_bytes: number | null }>(
+        `SELECT SUM(LENGTH(content)) AS content_bytes
+           FROM memories WHERE expires_at IS NULL`,
+      );
+
+      const archivedRow = query<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM memories WHERE expires_at IS NOT NULL`,
+      );
+
+      json(res, 200, withTimestamp({
+        total,
+        archived: archivedRow[0]?.n ?? 0,
+        max_id: idRow[0]?.max_id ?? null,
+        min_id: idRow[0]?.min_id ?? null,
+        newest_at: tsRow[0]?.newest ?? null,
+        oldest_at: tsRow[0]?.oldest ?? null,
+        content_bytes: bytesRow[0]?.content_bytes ?? 0,
+        by_category: byCategory.map(r => ({ category: r.category, count: r.n })),
+      }));
+      return true;
+    }
+
     // POST /memory/backfill — generate embeddings for memories missing them
     if (pathname === '/api/memory/backfill' && method === 'POST') {
       if (!_vectorEnabled) {
@@ -348,24 +377,12 @@ export async function handleMemoryRoute(
         }
       }
 
-      // Soft cap: if a category is specified, count active (non-expiring) memories
-      // in that category. If at or over the cap, skip storage and warn.
-      if (body.category && typeof body.category === 'string') {
-        const cap = getMemoryCap();
-        const countRow = query<{ n: number }>(
-          `SELECT COUNT(*) as n FROM memories WHERE category = ? AND expires_at IS NULL`,
-          body.category,
-        );
-        const current = countRow[0]?.n ?? 0;
-        if (current >= cap) {
-          log.warn(`Memory cap reached for category '${body.category}' (${current}/${cap}) — skipping store`);
-          json(res, 200, withTimestamp({
-            skipped: true,
-            reason: `Category '${body.category}' has reached the memory cap (${cap})`,
-          }));
-          return true;
-        }
-      }
+      // Memory category caps removed (todo #341, Dave directive 2026-05-09).
+      // Per-category caps were silently dropping new entries (e.g. technical
+      // category at 200 silently rejected SN class-mismatch lesson on 5/5).
+      // Memory store is now bounded by storage, not arbitrary per-category
+      // limits. Lifecycle pruning belongs in the consolidation task with a
+      // time/size policy, not a hard cap at write time.
 
       const data: Record<string, unknown> = {
         content: body.content,
