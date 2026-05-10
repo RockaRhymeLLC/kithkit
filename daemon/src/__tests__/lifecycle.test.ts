@@ -74,7 +74,6 @@ const TEST_PROFILE: AgentProfile = {
   permissionMode: 'bypassPermissions',
   maxTurns: 20,
   effort: 'high',
-  maxBudgetUsd: 1.0,
   body: 'You are a research assistant.',
 };
 

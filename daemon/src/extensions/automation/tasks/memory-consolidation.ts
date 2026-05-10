@@ -335,10 +335,19 @@ function enforceDecay(decayConfig: Record<string, string>): number {
 
 /**
  * Archive least-important memories when a category exceeds the cap.
+ *
+ * Disabled by default as of 2026-05-09 (todo #341, Dave directive). Per-category
+ * caps were silently dropping new entries. The function is preserved (not deleted)
+ * so callers + tests still resolve, but it is a no-op when cap <= 0. The
+ * consolidation task passes 0 to disable enforcement; setting a positive cap in
+ * config still works for legacy / opt-in use.
+ *
  * Archives by importance ASC (least important first), then created_at ASC (oldest first).
- * Returns count of archived memories.
+ * Returns count of archived memories (0 when disabled).
  */
 function enforceCategoryCap(cap: number): number {
+  if (!cap || cap <= 0) return 0;             // disabled
+
   const db = getDatabase();
   let capEnforced = 0;
 
@@ -392,8 +401,11 @@ async function run(): Promise<void> {
   // 1. Decay enforcement (runs regardless of vector search)
   const archivedByDecay = enforceDecay(lifecycle.decay);
 
-  // 2. Category cap pruning (runs regardless of vector search)
-  const capEnforced = enforceCategoryCap(lifecycle.category_cap);
+  // 2. Category cap pruning — disabled by default per todo #341 (5/9/2026).
+  // Pass 0 to make enforceCategoryCap a no-op. Keeping the call site (instead
+  // of deleting it) so config-driven opt-in still works for any deployment that
+  // explicitly wants per-category limits.
+  const capEnforced = enforceCategoryCap(0);
 
   if (!isVectorSearchEnabled()) {
     log.info('Vector search not available, skipping merge step');
