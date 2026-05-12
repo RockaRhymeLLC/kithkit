@@ -13,6 +13,7 @@ import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
 import { handleMemoryRoute } from './api/memory.js';
+import { handleCalibrationRoute } from './api/calibration.js';
 import { handleAgentsRoute, setProfilesDir } from './api/agents.js';
 import { configure as configureTmux } from './agents/tmux.js';
 import { recoverFromRestart } from './agents/recovery.js';
@@ -285,6 +286,7 @@ const server = http.createServer((req, res) => {
         () => handleMetricsRoute(req, res, url.pathname, url.searchParams),
         () => handleTimerRoute(req, res, url.pathname),
         () => handleSelfImprovementRoute(req, res, url.pathname),
+        () => handleCalibrationRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {
         const handled = await handler();

@@ -1333,6 +1333,135 @@ Notes:
 
 ---
 
+## Calibration
+
+Empirical time-estimation tracking for orchestrator tasks. Captures `estimated_minutes` (logged at escalate-time) vs. `actual_minutes` (computed from `started_at` → `completed_at` on terminal status). Drives a per-task-type multiplier hint that the orchestrator escalation route prepends to new task descriptions so the model self-corrects on time-budgeting.
+
+### POST /api/calibration/log
+
+Insert (or upsert by `orch_task_id`) a calibration row with the gut estimate. Comms calls this when escalating a task to the orchestrator.
+
+```bash
+curl -X POST http://localhost:3847/api/calibration/log \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "orch_task_id": "abc-123",
+    "estimated_minutes": 60,
+    "task_type": "framework",
+    "complexity": "M",
+    "estimation_method": "scoping",
+    "notes": "optional"
+  }'
+```
+
+```json
+// Response 201 (created)
+{ "id": 42, "status": "created", "message": "Calibration estimate logged", "timestamp": "..." }
+
+// Response 200 (idempotent update on existing orch_task_id)
+{ "id": 42, "status": "updated", "message": "Calibration estimate updated", "timestamp": "..." }
+```
+
+Fields:
+- `orch_task_id` (string, optional) — when present, second POST UPDATEs the existing row instead of creating a duplicate. `actual_minutes` is owned by the close hook (see below) and is never overwritten by this endpoint.
+- `estimated_minutes` (number, required) — positive integer minutes.
+- `task_type` (enum, default `other`) — `research | coding | data | report | docs | framework | comms | other | test`. Invalid values coerce to `other`.
+- `complexity` (enum, default `M`) — `S | M | L | XL`.
+- `estimation_method` (enum, default `gut`) — `gut | scoping | comparable | none`.
+- `notes` (string, optional) — free-text.
+
+| Status | Response |
+|--------|----------|
+| 201 | `{ id, status: "created", message }` |
+| 200 | `{ id, status: "updated", message }` (idempotent on `orch_task_id`) |
+| 400 | `{ error: "estimated_minutes is required (positive integer)" }` |
+
+### GET /api/calibration/log/:orch_task_id
+
+Debug retrieval — returns the calibration row for a specific orchestrator task.
+
+```bash
+curl http://localhost:3847/api/calibration/log/abc-123
+```
+
+```json
+// Response 200
+{
+  "row": {
+    "id": 42,
+    "orch_task_id": "abc-123",
+    "escalated_at": "2026-05-11T20:30:00Z",
+    "estimated_minutes": 60,
+    "actual_minutes": 14,
+    "task_type": "framework",
+    "complexity": "M",
+    "completion_status": "completed",
+    "estimation_method": "scoping",
+    "estimate_multiplier": 0.2333,
+    "notes": "..."
+  },
+  "timestamp": "..."
+}
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ row, timestamp }` |
+| 404 | `{ error: "No calibration row for this orch_task_id" }` |
+
+### Auto-actual hook
+
+The orchestrator-task PUT handler (`/api/orchestrator/tasks/:id`) automatically populates `actual_minutes`, `estimate_multiplier`, and `completion_status` on the matching calibration row when a task transitions to a terminal status (`completed | failed | cancelled`). Computed from `escalated_at` (preferred) or the task's `started_at` (fallback) → `completed_at`. Idempotent — won't overwrite an already-populated `actual_minutes`. Wrapped in a try/catch so calibration errors never block task close.
+
+### Feed-forward into orch spawn prompt
+
+`POST /api/orchestrator/escalate` accepts an optional `task_type` field (string, same enum as above). If absent, a keyword classifier infers the type from the task description. Either way, the route reads `orch_task_calibrations` for the matching cohort:
+
+- Type-specific cohort if ≥ 3 rows exist for that `task_type`
+- Falls back to overall mean if type-cohort is too small
+- Returns null if even the overall cohort has < 3 rows
+
+When a hint is computed, it is prepended to the orchestrator task description as:
+
+```
+## Calibration
+Calibration: similar framework tasks (n=12) ran at 0.18× of stated time budget. Adjust your work pacing accordingly.
+
+---
+
+<original task body>
+```
+
+The orchestrator model reads this as the first thing in its prompt and self-corrects time budgeting. Active behavior, not advisory — fully wired into the existing escalation flow.
+
+### Schema migration + back-fill
+
+Apply the schema once via the standalone migration:
+
+```bash
+DB="$HOME/Library/Application Support/kithkit/kithkit.db"
+sqlite3 "$DB" < scripts/migrations/calibration-log.sql
+```
+
+The migration is idempotent (`CREATE TABLE IF NOT EXISTS`).
+
+Back-fill historical orchestrator tasks (parses budget hints from descriptions, computes actuals from `started_at` → `completed_at`):
+
+```bash
+python3 scripts/calibration/back-fill.py --days 30
+```
+
+Read the calibration cheat-sheet:
+
+```bash
+python3 scripts/calibration/stats.py
+python3 scripts/calibration/stats.py --markdown --out /tmp/calibration-stats.md
+```
+
+See `scripts/calibration/README.md` for the full operations guide.
+
+---
+
 ## Config & State
 
 ### GET /api/config/:key

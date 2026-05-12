@@ -40,6 +40,7 @@ export function _setTmuxInjectorForTesting(fn: TmuxInjectorFn | null): void {
   _injectMessage = fn ?? defaultInjectMessage;
 }
 import { storeMemoryInternal } from './memory.js';
+import { recordCalibrationActual } from './calibration.js';
 import { evaluateTask as _evaluateTask } from '../self-improvement/retro-evaluator.js';
 import { normalizeStatusAlias } from '../core/task-state-machine.js';
 
@@ -1064,6 +1065,14 @@ export async function handleTaskQueueRoute(
       const updated = getTask(taskId)!;
       const mappedUpdated = taskToOrchestratorResponse(updated);
       log.info('Task updated', { id: taskId, status: updated.status, assignee: updated.assigned_to });
+
+      // Calibration auto-actual hook: when an orch task closes, populate
+      // orch_task_calibrations.actual_minutes from started_at -> completed_at.
+      // No-op if no calibration row exists for this task. Wrapped internally
+      // in try/catch so this never affects orch close.
+      if (updates.status && TERMINAL_STATUSES.includes(updates.status as TaskStatus) && updated.completed_at) {
+        recordCalibrationActual(taskId, updated.started_at ?? null, updated.completed_at, updated.status as string);
+      }
 
       // Auto-notify comms on task completion/failure/cancellation
       if (updates.status && TERMINAL_STATUSES.includes(updates.status as TaskStatus)) {

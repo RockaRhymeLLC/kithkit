@@ -28,6 +28,7 @@ import { createRateLimiter } from './rate-limit.js';
 import { cancelSessionTimers } from './timer.js';
 import { isVectorSearchEnabled } from './memory.js';
 import { hybridSearch } from '../memory/vector-search.js';
+import { getCalibrationHint, classifyTaskType } from '../agents/calibration-hint.js';
 
 const log = createLogger('orchestrator-api');
 
@@ -120,6 +121,13 @@ export async function handleOrchestratorRoute(
       }
     }
 
+    // Calibration feed-forward: prepend a one-line hint about how similar tasks
+    // have historically run vs estimate, so the orch model can pace itself.
+    // Explicit body.task_type wins; otherwise classify from description.
+    const explicitTaskType = typeof body.task_type === 'string' ? body.task_type : null;
+    const inferredTaskType = explicitTaskType ?? classifyTaskType(`${task}\n${context ?? ''}`);
+    const calibHint = getCalibrationHint(inferredTaskType);
+
     // Use getOrchestratorState() as the authoritative check — it verifies the tmux session
     // AND whether Claude is running inside it. If it returns 'dead', the session is truly gone
     // even if a prior isOrchestratorAlive() check cached a stale 'true'.
@@ -131,7 +139,12 @@ export async function handleOrchestratorRoute(
     const ts = new Date().toISOString();
     const priority = typeof body.priority === 'number' ? body.priority : 0;
     const workNotes = typeof body.work_notes === 'string' ? body.work_notes : null;
-    const { titleText, descriptionText } = buildTaskFields(task, context);
+    const built = buildTaskFields(task, context);
+    const titleText = built.titleText;
+    // Prepend calibration hint when available — first thing the model reads.
+    const descriptionText = calibHint
+      ? `## Calibration\n${calibHint.hint}\n\n---\n\n${built.descriptionText}`
+      : built.descriptionText;
     const source = requestingPeer ? 'peer' : 'human';
     exec(
       `INSERT INTO tasks (external_id, kind, title, description, status, priority, source, work_notes, requesting_peer, created_at, updated_at)
