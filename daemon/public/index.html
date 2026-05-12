@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marvbot — Status Dashboard</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
+    --text: #e1e4eb;
+    --muted: #8b8fa3;
+    --green: #22c55e;
+    --red: #ef4444;
+    --yellow: #eab308;
+    --blue: #3b82f6;
+    --purple: #a855f7;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+    min-height: 100vh;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 32px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 24px; font-weight: 600; letter-spacing: -0.5px; }
+  header h1 span { color: var(--blue); }
+  .meta { font-size: 13px; color: var(--muted); text-align: right; }
+  .meta .version { color: var(--purple); }
+  .section-title {
+    font-size: 14px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 1px; color: var(--muted); margin: 28px 0 14px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px; transition: border-color 0.2s;
+  }
+  .card:hover { border-color: #3a3d4a; }
+  .card.clickable { cursor: pointer; }
+  .card.clickable:hover { border-color: var(--blue); }
+  .card-header {
+    display: flex; align-items: center;
+    justify-content: space-between; margin-bottom: 16px;
+  }
+  .card-header h3 { font-size: 16px; font-weight: 600; }
+  .badge {
+    font-size: 11px; font-weight: 600; padding: 3px 10px;
+    border-radius: 99px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .badge-green { background: rgba(34,197,94,0.15); color: var(--green); }
+  .badge-red { background: rgba(239,68,68,0.15); color: var(--red); }
+  .badge-yellow { background: rgba(234,179,8,0.15); color: var(--yellow); }
+  .stat-row {
+    display: flex; justify-content: space-between;
+    align-items: center; padding: 6px 0; font-size: 14px;
+  }
+  .stat-label { color: var(--muted); }
+  .stat-value { font-weight: 500; font-variant-numeric: tabular-nums; }
+  .bar-wrap {
+    width: 100%; height: 6px; background: var(--border);
+    border-radius: 3px; margin-top: 4px; overflow: hidden;
+  }
+  .bar-fill { height: 100%; border-radius: 3px; transition: width 0.6s ease; }
+  .bar-green { background: var(--green); }
+  .bar-yellow { background: var(--yellow); }
+  .bar-red { background: var(--red); }
+  .host-desc { font-size: 12px; color: var(--muted); margin-top: -10px; margin-bottom: 14px; }
+  .selftest-grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px;
+  }
+  .check-item { display: flex; align-items: center; gap: 8px; font-size: 13px; padding: 6px 0; }
+  .check-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .dot-pass { background: var(--green); }
+  .dot-fail { background: var(--red); }
+  .dot-skip { background: var(--yellow); }
+  .refresh-btn {
+    background: var(--card); border: 1px solid var(--border);
+    color: var(--muted); padding: 6px 14px; border-radius: 8px;
+    cursor: pointer; font-size: 13px; transition: all 0.2s;
+  }
+  .refresh-btn:hover { border-color: var(--blue); color: var(--text); }
+  .spinner { animation: spin 1s linear infinite; display: inline-block; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #error-banner {
+    display: none; background: rgba(239,68,68,0.1);
+    border: 1px solid rgba(239,68,68,0.3); color: var(--red);
+    padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-size: 14px;
+  }
+  .last-updated { font-size: 12px; color: var(--muted); margin-top: 24px; text-align: center; }
+  .click-hint { font-size: 11px; color: var(--muted); margin-top: 8px; font-style: italic; }
+
+  /* Modal */
+  .modal-overlay {
+    display: none; position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7); z-index: 100; backdrop-filter: blur(4px);
+  }
+  .modal-overlay.active { display: flex; align-items: flex-start; justify-content: center; padding: 40px 20px; }
+  .modal {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 16px;
+    width: 100%; max-width: 900px; max-height: calc(100vh - 80px); overflow-y: auto;
+    padding: 28px;
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 24px; padding-bottom: 16px; border-bottom: 1px solid var(--border);
+  }
+  .modal-header h2 { font-size: 20px; font-weight: 600; }
+  .close-btn {
+    background: none; border: 1px solid var(--border); color: var(--muted);
+    width: 32px; height: 32px; border-radius: 8px; cursor: pointer;
+    font-size: 18px; display: flex; align-items: center; justify-content: center;
+  }
+  .close-btn:hover { border-color: var(--red); color: var(--red); }
+  .modal-stats {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 12px; margin-bottom: 24px;
+  }
+  .modal-stat {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px;
+  }
+  .modal-stat-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+  .modal-stat-value { font-size: 20px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+  /* Process table */
+  .proc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .proc-table th {
+    text-align: left; padding: 8px 12px; color: var(--muted);
+    font-weight: 600; font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.5px; border-bottom: 1px solid var(--border);
+    cursor: pointer; user-select: none;
+  }
+  .proc-table th:hover { color: var(--blue); }
+  .proc-table td {
+    padding: 6px 12px; border-bottom: 1px solid rgba(42,45,58,0.5);
+    font-variant-numeric: tabular-nums;
+  }
+  .proc-table tr:hover td { background: rgba(59,130,246,0.05); }
+  .proc-table .num { text-align: right; }
+  .proc-table .cmd { max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cpu-high { color: var(--red); font-weight: 600; }
+  .cpu-med { color: var(--yellow); }
+  .mem-high { color: var(--red); font-weight: 600; }
+  .sort-arrow { font-size: 10px; margin-left: 4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>marvbot</span> status</h1>
+  <div class="meta">
+    <div>Daemon <span class="version" id="version">-</span></div>
+    <button class="refresh-btn" onclick="refreshAll()">Refresh</button>
+  </div>
+</header>
+
+<div id="error-banner"></div>
+
+<div class="section-title">Daemon</div>
+<div class="grid" id="daemon-section">
+  <div class="card" id="daemon-card">
+    <div class="card-header">
+      <h3>Daemon</h3>
+      <span class="badge badge-green" id="daemon-badge">Loading</span>
+    </div>
+    <div id="daemon-stats"></div>
+  </div>
+  <div class="card" id="selftest-card">
+    <div class="card-header">
+      <h3>System Checks</h3>
+      <span class="badge" id="selftest-badge">-</span>
+    </div>
+    <div class="selftest-grid" id="selftest-checks"></div>
+  </div>
+</div>
+
+<div class="section-title">Infrastructure</div>
+<div class="grid" id="hosts-section">
+  <div class="card"><div class="card-header"><h3>Loading hosts...</h3></div></div>
+</div>
+
+<div class="last-updated">Last updated: <span id="last-updated">-</span></div>
+
+<!-- Process Detail Modal -->
+<div class="modal-overlay" id="modal-overlay" onclick="if(event.target===this)closeModal()">
+  <div class="modal">
+    <div class="modal-header">
+      <h2 id="modal-title">Host Detail</h2>
+      <button class="close-btn" onclick="closeModal()">&times;</button>
+    </div>
+    <div class="modal-stats" id="modal-stats"></div>
+    <div class="section-title">Top Processes</div>
+    <table class="proc-table">
+      <thead>
+        <tr>
+          <th onclick="sortProcs('pid')">PID <span class="sort-arrow" id="sort-pid"></span></th>
+          <th onclick="sortProcs('user')">User <span class="sort-arrow" id="sort-user"></span></th>
+          <th onclick="sortProcs('cpu')" class="num">CPU% <span class="sort-arrow" id="sort-cpu"></span></th>
+          <th onclick="sortProcs('mem')" class="num">MEM% <span class="sort-arrow" id="sort-mem"></span></th>
+          <th onclick="sortProcs('rss_kb')" class="num">RSS <span class="sort-arrow" id="sort-rss_kb"></span></th>
+          <th>Stat</th>
+          <th>Command</th>
+        </tr>
+      </thead>
+      <tbody id="proc-tbody"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const HOST_FILES = {
+  'Marvho-MacMini01': { file: 'Marvho-MacMini01', desc: 'Primary Mac Mini - macOS', ip: 'localhost' },
+  'hillkali01': { file: 'hillkali01', desc: 'Kali Linux - Raspberry Pi 5', ip: '10.0.2.7' },
+  'hillkali02p400': { file: 'hillkali02p400', desc: 'Kali Linux - Raspberry Pi 400', ip: '10.0.2.8' },
+  'hilldrlx01': { file: 'hilldrlx01', desc: 'Ubuntu 24.04 - Dell PowerEdge', ip: '10.0.2.2' },
+  'system76-popos': { file: 'system76-popos', desc: 'Pop!_OS 24.04 - System76', ip: '10.0.2.5' },
+  'gx10-hilldr': { file: 'gx10-hilldr', desc: 'NVIDIA DGX Spark (ARM64) - ASUS Ascent GX10', ip: '100.116.148.95' },
+};
+
+let currentProcs = [];
+let currentSort = { key: 'cpu', dir: 'desc' };
+
+function formatUptime(seconds) {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h ${m}m`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
+function formatBytes(kb) {
+  if (kb > 1048576) return (kb / 1048576).toFixed(1) + ' GB';
+  if (kb > 1024) return (kb / 1024).toFixed(1) + ' MB';
+  return kb + ' KB';
+}
+
+function barColor(pct) {
+  if (pct > 90) return 'bar-red';
+  if (pct > 70) return 'bar-yellow';
+  return 'bar-green';
+}
+
+function statRow(label, value) {
+  return `<div class="stat-row"><span class="stat-label">${label}</span><span class="stat-value">${value}</span></div>`;
+}
+
+function barRow(label, pct, detail) {
+  const p = Math.min(100, Math.max(0, pct));
+  return `
+    <div class="stat-row"><span class="stat-label">${label}</span><span class="stat-value">${detail || p + '%'}</span></div>
+    <div class="bar-wrap"><div class="bar-fill ${barColor(p)}" style="width:${p}%"></div></div>
+  `;
+}
+
+async function fetchJSON(url) {
+  const resp = await fetch(url);
+  if (!resp.ok) throw new Error(`${resp.status}`);
+  return resp.json();
+}
+
+async function loadDaemon() {
+  try {
+    const [health, selftest] = await Promise.all([
+      fetchJSON('/health'),
+      fetchJSON('/api/selftest'),
+    ]);
+    document.getElementById('version').textContent = 'v' + health.version;
+    const badge = document.getElementById('daemon-badge');
+    badge.textContent = health.status === 'ok' ? 'Healthy' : 'Degraded';
+    badge.className = 'badge ' + (health.status === 'ok' ? 'badge-green' : 'badge-yellow');
+    document.getElementById('daemon-stats').innerHTML =
+      statRow('Status', health.status) +
+      statRow('Uptime', formatUptime(health.uptime)) +
+      statRow('Extension', health.extension || '-') +
+      statRow('Database', health.db_path ? 'Connected' : 'N/A');
+    const stBadge = document.getElementById('selftest-badge');
+    const pass = selftest.summary?.pass || 0;
+    const total = selftest.summary?.total || 0;
+    const fail = selftest.summary?.fail || 0;
+    stBadge.textContent = `${pass}/${total} pass`;
+    stBadge.className = 'badge ' + (fail === 0 ? 'badge-green' : 'badge-yellow');
+    document.getElementById('selftest-checks').innerHTML = (selftest.checks || []).map(c =>
+      `<div class="check-item"><div class="check-dot dot-${c.status}"></div><span>${c.name}</span></div>`
+    ).join('');
+  } catch (err) {
+    showError('Failed to load daemon status: ' + err.message);
+  }
+}
+
+async function loadHosts() {
+  const section = document.getElementById('hosts-section');
+  let html = '';
+
+  for (const [name, info] of Object.entries(HOST_FILES)) {
+    let data = null;
+    try {
+      data = await fetchJSON(`/processes/${info.file}.json`);
+    } catch (e) { /* file not found */ }
+
+    const online = data?.online === true;
+    const badgeClass = online ? 'badge-green' : data ? 'badge-red' : 'badge-yellow';
+    const badgeText = online ? 'Online' : data ? 'Offline' : 'Unknown';
+
+    let stats = '';
+    if (online) {
+      const uptime = data.uptime_secs ? formatUptime(data.uptime_secs) : (data.uptime || '-');
+      const loadArr = Array.isArray(data.load) ? data.load.join(', ') : (data.load || '-');
+      stats += statRow('Uptime', uptime);
+      stats += statRow('Load', loadArr);
+      if (data.mem_pct !== undefined) {
+        const memDetail = `${data.mem_used_mb || '?'} / ${data.mem_total_mb || '?'} MB (${data.mem_pct}%)`;
+        stats += barRow('Memory', data.mem_pct, memDetail);
+      }
+      if (data.disk_pct !== undefined) {
+        const diskDetail = `${data.disk_used || '?'} / ${data.disk_total || '?'} (${data.disk_pct}%)`;
+        stats += barRow('Disk', data.disk_pct, diskDetail);
+      }
+      const procCount = data.processes?.length || 0;
+      stats += `<div class="click-hint">${procCount} processes - click to drill down</div>`;
+    } else {
+      stats = `<div class="stat-row"><span class="stat-label">${data ? 'Host unreachable' : 'No data collected'}</span></div>`;
+    }
+
+    const clickable = online ? 'clickable' : '';
+    const onclick = online ? `onclick="openModal('${name}')"` : '';
+
+    html += `
+      <div class="card ${clickable}" ${onclick}>
+        <div class="card-header">
+          <h3>${name}</h3>
+          <span class="badge ${badgeClass}">${badgeText}</span>
+        </div>
+        <div class="host-desc">${info.desc} - ${info.ip}</div>
+        ${stats}
+      </div>
+    `;
+  }
+  section.innerHTML = html;
+}
+
+async function openModal(hostName) {
+  const info = HOST_FILES[hostName];
+  if (!info) return;
+
+  let data;
+  try {
+    data = await fetchJSON(`/processes/${info.file}.json`);
+  } catch (e) {
+    showError('Failed to load process data');
+    return;
+  }
+
+  document.getElementById('modal-title').textContent = data.hostname || hostName;
+
+  // Stats cards
+  const uptime = data.uptime_secs ? formatUptime(data.uptime_secs) : (data.uptime || '-');
+  const loadArr = Array.isArray(data.load) ? data.load.join(' / ') : (data.load || '-');
+  const memPct = data.mem_pct ?? '-';
+  const diskPct = data.disk_pct ?? '-';
+  const collected = data.collected_at ? new Date(data.collected_at).toLocaleTimeString() : '-';
+
+  document.getElementById('modal-stats').innerHTML = `
+    <div class="modal-stat">
+      <div class="modal-stat-label">Uptime</div>
+      <div class="modal-stat-value">${uptime}</div>
+    </div>
+    <div class="modal-stat">
+      <div class="modal-stat-label">Load Average</div>
+      <div class="modal-stat-value">${loadArr}</div>
+    </div>
+    <div class="modal-stat">
+      <div class="modal-stat-label">Memory</div>
+      <div class="modal-stat-value">${memPct}%</div>
+    </div>
+    <div class="modal-stat">
+      <div class="modal-stat-label">Disk</div>
+      <div class="modal-stat-value">${diskPct}%</div>
+    </div>
+    ${data.ncpu ? `<div class="modal-stat"><div class="modal-stat-label">CPU Cores</div><div class="modal-stat-value">${data.ncpu}</div></div>` : ''}
+    <div class="modal-stat">
+      <div class="modal-stat-label">Collected</div>
+      <div class="modal-stat-value" style="font-size:14px">${collected}</div>
+    </div>
+  `;
+
+  currentProcs = data.processes || [];
+  currentSort = { key: 'cpu', dir: 'desc' };
+  renderProcs();
+
+  document.getElementById('modal-overlay').classList.add('active');
+  document.body.style.overflow = 'hidden';
+}
+
+function closeModal() {
+  document.getElementById('modal-overlay').classList.remove('active');
+  document.body.style.overflow = '';
+}
+
+function sortProcs(key) {
+  if (currentSort.key === key) {
+    currentSort.dir = currentSort.dir === 'desc' ? 'asc' : 'desc';
+  } else {
+    currentSort.key = key;
+    currentSort.dir = key === 'user' || key === 'command' ? 'asc' : 'desc';
+  }
+  renderProcs();
+}
+
+function renderProcs() {
+  const { key, dir } = currentSort;
+  const sorted = [...currentProcs].sort((a, b) => {
+    let va = a[key], vb = b[key];
+    if (typeof va === 'string') va = va.toLowerCase();
+    if (typeof vb === 'string') vb = vb.toLowerCase();
+    if (va < vb) return dir === 'asc' ? -1 : 1;
+    if (va > vb) return dir === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  // Update sort arrows
+  document.querySelectorAll('.sort-arrow').forEach(el => el.textContent = '');
+  const arrow = document.getElementById(`sort-${key}`);
+  if (arrow) arrow.textContent = dir === 'asc' ? ' \\u25B2' : ' \\u25BC';
+
+  const tbody = document.getElementById('proc-tbody');
+  tbody.innerHTML = sorted.map(p => {
+    const cpuClass = p.cpu > 50 ? 'cpu-high' : p.cpu > 10 ? 'cpu-med' : '';
+    const memClass = p.mem > 20 ? 'mem-high' : '';
+    const cmd = (p.command || '').length > 60 ? p.command.substring(0, 57) + '...' : (p.command || '');
+    return `<tr>
+      <td class="num">${p.pid}</td>
+      <td>${p.user || '-'}</td>
+      <td class="num ${cpuClass}">${p.cpu?.toFixed(1) ?? '-'}</td>
+      <td class="num ${memClass}">${p.mem?.toFixed(1) ?? '-'}</td>
+      <td class="num">${formatBytes(p.rss_kb || 0)}</td>
+      <td>${p.stat || '-'}</td>
+      <td class="cmd" title="${(p.command || '').replace(/"/g, '&quot;')}">${cmd}</td>
+    </tr>`;
+  }).join('');
+}
+
+function showError(msg) {
+  const banner = document.getElementById('error-banner');
+  banner.textContent = msg;
+  banner.style.display = 'block';
+  setTimeout(() => banner.style.display = 'none', 10000);
+}
+
+async function refreshAll() {
+  const btn = document.querySelector('.refresh-btn');
+  btn.innerHTML = '<span class="spinner">&#x21bb;</span>';
+  btn.disabled = true;
+  try {
+    await Promise.all([loadDaemon(), loadHosts()]);
+    document.getElementById('last-updated').textContent = new Date().toLocaleTimeString();
+  } catch (e) {
+    showError('Refresh failed: ' + e.message);
+  }
+  btn.innerHTML = 'Refresh';
+  btn.disabled = false;
+}
+
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+refreshAll();
+setInterval(refreshAll, 60000);
+</script>
+</body>
+</html>
