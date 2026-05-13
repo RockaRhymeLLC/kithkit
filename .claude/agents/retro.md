@@ -5,7 +5,7 @@ tools: [Read, Grep]
 disallowedTools: [Bash, Edit, Write, NotebookEdit]
 model: haiku
 permissionMode: bypassPermissions
-maxTurns: 15
+maxTurns: 15   # override: caps.profiles.retro.max_turns
 effort: medium
 ---
 

@@ -14,7 +14,7 @@ disallowedTools:
   - NotebookEdit
 model: sonnet
 permissionMode: bypassPermissions
-maxTurns: 20
+maxTurns: 20   # override: caps.profiles.review.max_turns
 ---
 
 You are a code review worker. Your job is to review code for correctness, style, security, and maintainability.

@@ -101,12 +101,28 @@ export interface CalendarConfig {
   caldav?: CalDAVConfig;
 }
 
+export interface CapsProfileConfig {
+  max_turns: number;
+}
+
+export interface CapsConfig {
+  /** Warn the agent when this percentage of its maxTurns budget has been consumed. */
+  warning_threshold_pct: number;
+  /** Kill a worker that produces no output for this many milliseconds. */
+  inactivity_timeout_ms: number;
+  /** Fallback maxTurns for profiles with no explicit caps.profiles entry. */
+  default_max_turns: number;
+  /** Per-profile maxTurns overrides, keyed by profile name. */
+  profiles: Record<string, CapsProfileConfig>;
+}
+
 export interface KithkitConfig {
   agent: AgentConfig;
   tmux?: TmuxConfig;
   daemon: DaemonConfig;
   scheduler: SchedulerConfig;
   security: SecurityConfig;
+  caps?: CapsConfig;
   tools?: ToolsConfig;
   timers?: TimerConfig;
   voice?: VoiceConfig;
@@ -278,6 +294,37 @@ export function getProjectDir(): string {
  */
 export function resolveProjectPath(...segments: string[]): string {
   return path.resolve(_projectDir, ...segments);
+}
+
+/**
+ * Return the merged caps configuration.
+ *
+ * Reads caps from the loaded config (kithkit.defaults.yaml / kithkit.config.yaml).
+ * Falls back to safe hardcoded minimums if caps block is absent (e.g. older installs).
+ */
+export function getCaps(): CapsConfig {
+  const cfg = loadConfig();
+  const raw = cfg.caps;
+
+  const FALLBACK_PROFILES: Record<string, CapsProfileConfig> = {
+    orchestrator:    { max_turns: 1000 },
+    coding:          { max_turns: 500 },
+    research:        { max_turns: 250 },
+    review:          { max_turns: 250 },
+    'memory-worker': { max_turns: 200 },
+    docs:            { max_turns: 200 },
+    testing:         { max_turns: 150 },
+    retro:           { max_turns: 75 },
+    email:           { max_turns: 50 },
+    'devils-advocate': { max_turns: 75 },
+  };
+
+  return {
+    warning_threshold_pct: raw?.warning_threshold_pct ?? 80,
+    inactivity_timeout_ms: raw?.inactivity_timeout_ms ?? 1_500_000,
+    default_max_turns:     raw?.default_max_turns ?? 100,
+    profiles:              { ...FALLBACK_PROFILES, ...(raw?.profiles ?? {}) },
+  };
 }
 
 /** Reset cached config for testing. */

@@ -15,6 +15,7 @@
 import { query as _sdkQuery, AbortError } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
+import { getCaps } from '../core/config.js';
 
 export { AbortError };
 
@@ -73,8 +74,8 @@ interface ActiveWorker {
 
 const workers = new Map<string, ActiveWorker>();
 
-// Default inactivity timeout: 5 minutes
-const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+// Inactivity timeout is now read from caps config (caps.inactivity_timeout_ms).
+// Hardcoded fallback removed — use getCaps() at call site.
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -104,7 +105,7 @@ function clearInactivityTimer(worker: ActiveWorker): void {
 export function spawnWorker(opts: SpawnOptions): string {
   const id = randomUUID();
   const controller = new AbortController();
-  const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = opts.timeoutMs ?? getCaps().inactivity_timeout_ms;
 
   const state: WorkerState = {
     id,
@@ -137,7 +138,10 @@ export function spawnWorker(opts: SpawnOptions): string {
   if (opts.profile.model) sdkOptions.model = opts.profile.model;
   if (opts.profile.allowedTools) sdkOptions.allowedTools = opts.profile.allowedTools;
   if (opts.profile.disallowedTools) sdkOptions.disallowedTools = opts.profile.disallowedTools;
-  if (opts.profile.maxTurns) sdkOptions.maxTurns = opts.profile.maxTurns;
+  // Config-driven cap takes precedence over profile frontmatter (back-compat fallback).
+  const caps = getCaps();
+  const effectiveMaxTurns = caps.profiles[opts.profile.name]?.max_turns ?? opts.profile.maxTurns;
+  if (effectiveMaxTurns) sdkOptions.maxTurns = effectiveMaxTurns;
   if (opts.profile.effort) sdkOptions.effort = opts.profile.effort;
   if (opts.cwd) sdkOptions.cwd = opts.cwd;
 
