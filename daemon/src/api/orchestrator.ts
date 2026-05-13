@@ -336,6 +336,11 @@ export async function handleOrchestratorRoute(
 // ── Helpers ──────────────────────────────────────────────────
 
 async function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: string): Promise<string> {
+  // Derive the comms agent's launchd label from config so the framework
+  // doesn't hard-code an instance-specific identifier. Falls back to
+  // 'comms' if agent.name is unset.
+  const commsLabel = `com.assistant.${(loadConfig().agent.name || 'comms').toLowerCase()}`;
+
   const parts = [
     'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality, no humor, no conversational style.',
     '',
@@ -368,8 +373,8 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '- The daemon enforces a hard backstop at 65% — if you reach it, the daemon will force a shutdown',
     '',
     'Service restart rules (CRITICAL):',
-    '- NEVER restart the comms agent (tmux session, com.assistant.bmo, or restart flag file)',
-    '- NEVER use launchctl for com.assistant.bmo — that kills the human\'s active session',
+    `- NEVER restart the comms agent (tmux session, ${commsLabel}, or restart flag file)`,
+    `- NEVER use launchctl for ${commsLabel} — that kills the human's active session`,
     '- Daemon restart IS allowed when needed: send results to comms first, wait 2s, then: launchctl kickstart -k gui/$(id -u)/com.assistant.daemon',
     '- After daemon restart, verify health (curl localhost:3847/health), then exit',
     '',
