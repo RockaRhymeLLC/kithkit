@@ -1561,6 +1561,35 @@ curl -X POST http://localhost:3847/api/sync/claude
 
 ---
 
+## Caps Configuration
+
+Caps are a hard-stop firewall against runaway agents — not an efficiency throttle. Configured in the `caps:` block of `kithkit.defaults.yaml` (overridable per-install in `kithkit.config.yaml`).
+
+```yaml
+caps:
+  warning_threshold_pct: 80      # Warn agent at this % of its maxTurns cap
+  inactivity_timeout_ms: 1500000 # Kill worker after this ms of no output (default: 1500000 = 25 min)
+  default_max_turns: 100         # Turn cap for profiles with no caps.profiles entry
+  profiles:
+    orchestrator: { max_turns: 1000 }
+    coding:       { max_turns: 500 }
+    research:     { max_turns: 250 }
+    review:       { max_turns: 250 }
+    memory-worker: { max_turns: 200 }
+    docs:         { max_turns: 200 }
+    testing:      { max_turns: 150 }
+    retro:        { max_turns: 75 }
+    email:        { max_turns: 50 }
+```
+
+**Warning mechanic**: At `warning_threshold_pct` of the assigned turn cap, the framework injects an in-band warning into the agent's context. The agent has the remaining turns to wrap up. At 100% the session is hard-stopped.
+
+**Precedence**: `caps.profiles.<name>.max_turns` overrides `maxTurns` in a profile's frontmatter at spawn time. Profile `maxTurns` is a back-compat fallback.
+
+Hot-reload caps changes with `POST /api/config/reload` — no daemon restart required.
+
+---
+
 ## Scheduler / Tasks
 
 ### GET /api/tasks
@@ -2067,7 +2096,8 @@ curl -X POST http://localhost:3847/api/orchestrator/tasks \
   "title": "Audit documentation",       // required
   "description": "Check all docs",     // optional
   "priority": 1,                        // optional — 0 (normal), 1 (high), 2 (urgent); default 0
-  "timeout_seconds": 300                // optional — task-level timeout
+  "timeout_seconds": 300,               // optional — task-level timeout
+  "source": "orchestrator"              // optional — 'human' | 'orchestrator'; null for legacy rows
 }
 ```
 
@@ -2083,6 +2113,19 @@ curl -X POST http://localhost:3847/api/orchestrator/tasks \
   "result": null,
   "error": null,
   "timeout_seconds": null,
+  "source": null,
+  "complexity": null,
+  "estimated_minutes": null,
+  "actual_minutes": null,
+  "task_type": null,
+  "completion_status": null,
+  "estimation_method": null,
+  "workers_used": null,
+  "generate_retro": null,
+  "acknowledged_at": null,
+  "comms_outcome": null,
+  "comms_corrections": null,
+  "canonical_task_external_id": null,
   "created_at": "2026-02-22T09:00:00.000Z",
   "assigned_at": null,
   "started_at": null,
@@ -2091,6 +2134,25 @@ curl -X POST http://localhost:3847/api/orchestrator/tasks \
   "timestamp": "2026-02-22T09:00:00.000Z"
 }
 ```
+
+**v2.1 field reference:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `source` | string\|null | How the task entered the system: `'human'` (via `/api/orchestrator/escalate`), `'orchestrator'` (orch-created), or `null` (legacy) |
+| `complexity` | string\|null | Task complexity: `S`, `M`, `L`, or `XL`. `null` for unclassified rows |
+| `estimated_minutes` | integer\|null | Pre-task time estimate |
+| `actual_minutes` | integer\|null | Actual elapsed minutes at completion |
+| `estimate_multiplier` | — | **Not stored.** Computed on read as `actual_minutes / estimated_minutes`. Guard against NULL division in the application layer |
+| `task_type` | string\|null | Free-form task category label |
+| `completion_status` | string\|null | Outcome label at completion |
+| `estimation_method` | string\|null | How the estimate was produced |
+| `workers_used` | integer\|null | Number of worker jobs spawned |
+| `generate_retro` | integer\|null | `1` = request a retro for this task; `null` = default (follow global config) |
+| `acknowledged_at` | string\|null | ISO timestamp when comms closes the loop with the human |
+| `comms_outcome` | string\|null | `accepted` \| `corrected` \| `redirected` \| `cancelled` |
+| `comms_corrections` | string\|null | JSON string with human feedback (if `comms_outcome` is `corrected` or `redirected`) |
+| `canonical_task_external_id` | string\|null | Hex UUID (no dashes) for cross-machine task correlation |
 
 | Status | Response |
 |--------|----------|
@@ -2128,6 +2190,19 @@ curl http://localhost:3847/api/orchestrator/tasks
       "result": null,
       "error": null,
       "timeout_seconds": null,
+      "source": null,
+      "complexity": null,
+      "estimated_minutes": null,
+      "actual_minutes": null,
+      "task_type": null,
+      "completion_status": null,
+      "estimation_method": null,
+      "workers_used": null,
+      "generate_retro": null,
+      "acknowledged_at": null,
+      "comms_outcome": null,
+      "comms_corrections": null,
+      "canonical_task_external_id": null,
       "created_at": "2026-02-22T09:00:00.000Z",
       "assigned_at": null,
       "started_at": null,
@@ -2165,6 +2240,19 @@ curl http://localhost:3847/api/orchestrator/tasks/uuid
   "result": null,
   "error": null,
   "timeout_seconds": null,
+  "source": "human",
+  "complexity": "M",
+  "estimated_minutes": null,
+  "actual_minutes": null,
+  "task_type": null,
+  "completion_status": null,
+  "estimation_method": null,
+  "workers_used": null,
+  "generate_retro": null,
+  "acknowledged_at": null,
+  "comms_outcome": null,
+  "comms_corrections": null,
+  "canonical_task_external_id": null,
   "created_at": "2026-02-22T09:00:00.000Z",
   "assigned_at": "2026-02-22T09:01:00.000Z",
   "started_at": "2026-02-22T09:01:30.000Z",
@@ -2217,9 +2305,26 @@ curl -X PUT "http://localhost:3847/api/orchestrator/tasks/$TASK_ID" \
   "status": "completed",                          // pending | assigned | in_progress | completed | failed
   "assignee": "orchestrator",                     // null clears assignee; required when status = "assigned"
   "result": "All docs updated successfully",     // store task result (typically set on completion)
-  "error": "Reason for failure"                   // store error detail (typically set on failure)
+  "error": "Reason for failure",                  // store error detail (typically set on failure)
+
+  // v2.1 calibration fields (typically set at completion):
+  "complexity": "M",                             // S | M | L | XL
+  "estimated_minutes": 30,
+  "actual_minutes": 45,
+  "task_type": "docs",
+  "completion_status": "success",
+  "estimation_method": "heuristic",
+  "workers_used": 2,
+  "generate_retro": 1,                           // 1 = request retro for this task
+
+  // v2.1 closure fields (set by comms when acknowledging with the human):
+  "acknowledged_at": "2026-02-22T10:05:00.000Z", // ISO timestamp; see guard note below
+  "comms_outcome": "accepted",                   // accepted | corrected | redirected | cancelled
+  "comms_corrections": "{\"note\": \"adjust scope\"}" // JSON string; used with corrected/redirected
 }
 ```
+
+> **Closure guard**: For tasks with `source: 'human'`, only comms may set `acknowledged_at`. Orchestrator PUT requests that attempt to set `acknowledged_at` on a `source='human'` task are rejected with `403`.
 
 ```json
 // Response 200 — updated task object (base fields only, no workers/activity)
@@ -2230,6 +2335,19 @@ curl -X PUT "http://localhost:3847/api/orchestrator/tasks/$TASK_ID" \
   "assignee": "orchestrator",
   "result": "All docs updated successfully",
   "error": null,
+  "source": "human",
+  "complexity": "M",
+  "estimated_minutes": 30,
+  "actual_minutes": 45,
+  "task_type": "docs",
+  "completion_status": "success",
+  "estimation_method": "heuristic",
+  "workers_used": 2,
+  "generate_retro": null,
+  "acknowledged_at": null,
+  "comms_outcome": null,
+  "comms_corrections": null,
+  "canonical_task_external_id": null,
   "completed_at": "2026-02-22T10:00:00.000Z",
   "updated_at": "2026-02-22T10:00:00.000Z",
   "timestamp": "2026-02-22T10:00:00.000Z"
@@ -2246,6 +2364,7 @@ On status change to `completed` or `failed`, the daemon automatically:
 | 400 | `{ "error": "invalid status: X" }` |
 | 400 | `{ "error": "pending tasks must have null assignee" }` |
 | 400 | `{ "error": "assigned tasks require a non-null assignee" }` |
+| 403 | `{ "error": "only comms may acknowledge human-sourced tasks" }` |
 | 404 | `{ "error": "Task not found" }` |
 | 409 | `{ "error": "Cannot update completed task" }` (terminal state) |
 | 409 | `{ "error": "cannot transition from X to Y", "allowed_transitions": [...] }` |

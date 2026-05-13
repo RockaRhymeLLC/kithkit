@@ -37,7 +37,9 @@ Everything after the frontmatter becomes the worker's system prompt.
 | `disallowedTools` | string[] | no | `[]` | Tools explicitly blocked |
 | `model` | string | no | `"sonnet"` | Claude model to use |
 | `permissionMode` | string | no | `"bypassPermissions"` | One of: `default`, `acceptEdits`, `bypassPermissions`, `plan` |
-| `maxTurns` | number | no | `20` | Maximum agentic turns before stopping |
+| `maxTurns` | number | no | `20` | Maximum agentic turns before stopping (back-compat fallback — see note below) |
+
+> **Caps precedence**: `maxTurns` in the profile frontmatter is a **back-compat fallback**. At spawn time, the daemon checks `caps.profiles.<name>.max_turns` in `kithkit.config.yaml` first. If a matching entry exists, it overrides `maxTurns`. If no entry exists, `maxTurns` is used; if neither is set, `caps.default_max_turns` applies. See the [Caps Configuration](api-reference.md#caps-configuration) section of the API reference for defaults and the warning mechanic.
 
 The markdown body (everything after the `---` frontmatter closing) becomes the worker's system prompt, appended to the base SDK configuration.
 
