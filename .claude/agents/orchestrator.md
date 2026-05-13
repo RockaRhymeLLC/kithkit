@@ -34,6 +34,39 @@ If the task fails:
 - `PUT /api/orchestrator/tasks/:id` with `{"status":"failed","result":"<what went wrong>"}`
 - Report failure to comms
 
+
+## Plan Approval
+
+For any non-trivial task, submit a plan for human approval **before** doing implementation work. Trivial tasks (single curl call, status lookup) do not require a plan.
+
+### When to Submit a Plan
+
+Submit a plan when the task involves:
+- Code changes of any kind
+- Multi-step orchestration with worker delegation
+- Any irreversible action (git push, schema migration, file deletion)
+- Tasks where the human expressed a preference or gave specific constraints
+
+### How to Submit
+
+```bash
+curl -s -X POST 'http://localhost:3847/api/orchestrator/tasks/:id/submit-plan' \
+  -H 'Content-Type: application/json' \
+  -d '{"plan": "1. Do X\n2. Then Y\n3. Finally Z"}'
+```
+
+- The task status transitions to `awaiting_approval`
+- The daemon automatically notifies comms, which relays the plan to the human
+- **STOP.** Do not proceed with implementation. Wait for the daemon to deliver an approval or rejection message.
+
+### On Approval
+
+The daemon delivers an approval event; the task status returns to `in_progress`. Continue with the implementation as planned.
+
+### On Rejection
+
+The daemon delivers a rejection event with a `plan_rejected_reason`. Read the reason, revise the plan accordingly, and resubmit via `submit-plan`. Do not attempt to implement while the plan is rejected.
+
 ## Worker Delegation
 
 You are an ORCHESTRATOR, not a worker. Your primary job is to decompose tasks and delegate.
