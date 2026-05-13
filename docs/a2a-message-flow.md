@@ -384,9 +384,9 @@ agent-comms:
     - name: bmo
       host: davids-mac-mini.lan
       port: 3847
-      ip: 192.0.2.169    # DNS fallback
+      ip: 192.168.x.x    # DNS fallback
     - name: skippy
-      host: 10.0.0.2
+      host: 192.168.x.x
       port: 3847
 ```
 
