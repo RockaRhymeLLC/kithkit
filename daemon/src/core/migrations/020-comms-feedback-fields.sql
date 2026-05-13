@@ -1,0 +1,20 @@
+-- Comms feedback fields for orchestrator tasks.
+-- Allows the comms agent to record its assessment of a completed task
+-- and revise that assessment later if new information surfaces.
+--
+-- comms_outcome: comms agent's verdict on the task result.
+--   Values: accepted | corrected | redirected | cancelled
+-- comms_corrections: JSON blob. When outcome=corrected/redirected, records
+--   what actually happened vs. what was planned. Supports revision history.
+-- acknowledged_at: ISO timestamp when comms first acknowledged this task.
+--   Set by comms after reviewing the result. NULL means not yet reviewed.
+--
+-- Revisability: PUT /api/orchestrator/tasks/:id allows comms to update
+-- comms_outcome + comms_corrections even after acknowledged_at is set,
+-- if the original assessment later proves incorrect.
+--
+-- Guard: acknowledged_at can only be set on terminal tasks (completed/failed/
+-- cancelled). The PUT handler rejects acknowledged_at on non-terminal tasks.
+--safe-alter: orchestrator_tasks ADD COLUMN comms_outcome TEXT
+--safe-alter: orchestrator_tasks ADD COLUMN comms_corrections TEXT
+--safe-alter: orchestrator_tasks ADD COLUMN acknowledged_at TEXT
