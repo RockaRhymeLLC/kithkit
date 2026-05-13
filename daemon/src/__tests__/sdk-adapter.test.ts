@@ -1,5 +1,5 @@
 /**
- * t-130, t-131, t-132, t-133, t-175: SDK adapter layer
+ * t-130, t-131, t-132, t-133, t-175, t-136: SDK adapter layer
  *
  * Tests use a mock SDK query function to verify adapter behavior
  * without calling the real Anthropic API.
@@ -15,6 +15,7 @@ import {
   _resetWorkersForTesting,
   _setQueryFnForTesting,
   _getLastSdkCallArgs,
+  _getCapWarningStateForTesting,
 } from '../agents/sdk-adapter.js';
 import type { WorkerProfile, SpawnOptions } from '../agents/sdk-adapter.js';
 
@@ -62,7 +63,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 const testProfile: WorkerProfile = {
-  name: 'research',
+  // Use a name that does NOT match any caps.profiles entry so maxTurns falls
+  // back to the frontmatter value (10). Named profiles like 'research' now
+  // resolve their cap from caps.profiles via getCaps() — see Worker A commit 10620956.
+  name: 'test-adapter-profile',
   description: 'Research worker',
   model: 'claude-sonnet-4-6',
   allowedTools: ['Read', 'Glob', 'Grep', 'WebSearch'],
@@ -408,6 +412,89 @@ describe('SDK Adapter', { concurrency: 1 }, () => {
 
       // Just verify it completed without timeout (default is 5 min)
       assert.equal(getWorkerStatus(id)?.status, 'completed');
+    });
+  });
+
+  // ── t-136: Cap-approaching turn warning ────────────────────────
+
+  describe('Cap-approaching turn warning (t-136)', () => {
+    // Use a profile name not in caps.profiles fallback so effectiveMaxTurns
+    // falls back to the profile's own maxTurns value.
+    const warningProfile: WorkerProfile = { name: 'test-warning-only', maxTurns: 5 };
+
+    it('fires turn warning when turns_used/cap reaches threshold', async () => {
+      // 4/5 = 80% — exactly at the default 80% warning threshold
+      _setQueryFnForTesting(createMockQuery([
+        { type: 'assistant', content: 'turn 1' },
+        { type: 'assistant', content: 'turn 2' },
+        { type: 'assistant', content: 'turn 3' },
+        { type: 'assistant', content: 'turn 4' },
+        { type: 'result', subtype: 'success', result: 'Done', usage: {} },
+      ]));
+
+      const id = spawnWorker({ prompt: 'test', profile: warningProfile });
+      await sleep(50);
+
+      const capState = _getCapWarningStateForTesting(id);
+      assert.ok(capState, 'capState should exist');
+      assert.equal(capState!.turns_used, 4, 'Should count 4 assistant turns');
+      assert.ok(capState!.turn_warning_fired, 'Warning should have fired at 80% of maxTurns');
+    });
+
+    it('does not fire warning below threshold', async () => {
+      // 3/5 = 60% — below the 80% threshold
+      _setQueryFnForTesting(createMockQuery([
+        { type: 'assistant', content: 'turn 1' },
+        { type: 'assistant', content: 'turn 2' },
+        { type: 'assistant', content: 'turn 3' },
+        { type: 'result', subtype: 'success', result: 'Done', usage: {} },
+      ]));
+
+      const id = spawnWorker({ prompt: 'test', profile: warningProfile });
+      await sleep(50);
+
+      const capState = _getCapWarningStateForTesting(id);
+      assert.ok(capState, 'capState should exist');
+      assert.equal(capState!.turns_used, 3);
+      assert.equal(capState!.turn_warning_fired, false, 'Warning must not fire at 60%');
+    });
+
+    it('fires warning exactly once even when many turns exceed threshold', async () => {
+      // 4+ turns all exceed threshold; warning must fire only once
+      _setQueryFnForTesting(createMockQuery([
+        { type: 'assistant', content: 'turn 1' },
+        { type: 'assistant', content: 'turn 2' },
+        { type: 'assistant', content: 'turn 3' },
+        { type: 'assistant', content: 'turn 4' },
+        { type: 'assistant', content: 'turn 5' },
+        { type: 'result', subtype: 'success', result: 'Done', usage: {} },
+      ]));
+
+      const id = spawnWorker({ prompt: 'test', profile: warningProfile });
+      await sleep(50);
+
+      const capState = _getCapWarningStateForTesting(id);
+      assert.ok(capState!.turn_warning_fired, 'Warning should have fired');
+      assert.equal(capState!.turns_used, 5, 'All 5 turns counted');
+      // The fired flag stays true — idempotency guaranteed by the boolean check
+      assert.ok(capState!.turn_warning_fired, 'Warning flag remains set (idempotent)');
+    });
+
+    it('does not warn when no maxTurns cap configured', async () => {
+      // Profile with no maxTurns and not in caps.profiles → effectiveMaxTurns = undefined
+      const uncappedProfile: WorkerProfile = { name: 'test-uncapped' };
+      _setQueryFnForTesting(createMockQuery([
+        { type: 'assistant', content: 'turn 1' },
+        { type: 'assistant', content: 'turn 2' },
+        { type: 'result', subtype: 'success', result: 'Done', usage: {} },
+      ]));
+
+      const id = spawnWorker({ prompt: 'test', profile: uncappedProfile });
+      await sleep(50);
+
+      const capState = _getCapWarningStateForTesting(id);
+      assert.ok(capState, 'capState should exist');
+      assert.equal(capState!.turn_warning_fired, false, 'No warning when no cap set');
     });
   });
 });

@@ -10,6 +10,7 @@
  * - Cost tracking
  * - Inactivity timeout (kills workers with no output for N minutes)
  * - Profile options → SDK options mapping
+ * - Cap-approaching warning injection (Worker B 2026-05-12)
  */
 
 import { query as _sdkQuery, AbortError } from '@anthropic-ai/claude-agent-sdk';
@@ -63,13 +64,84 @@ export interface WorkerState {
   finishedAt: string | null;
 }
 
+// ── Cap warning state ─────────────────────────────────────────
+
+/**
+ * Cap-approaching warning mechanic (Worker B 2026-05-12):
+ * - turns_used increments on each 'assistant' message; cap = caps.profiles[name]?.max_turns ?? frontmatter maxTurns
+ * - When turns_used/cap >= warning_threshold_pct/100 AND turn_warning_fired=false → inject system-reminder, mark fired
+ * - Inactivity warning fires at threshold%*timeoutMs via a parallel setTimeout; resets with inactivity timer
+ * - Injection uses Query.streamInput() (SDK control API); no-op if streamInput unavailable (test mocks, old SDK)
+ * - Per-job state { turn_warning_fired, inactivity_warning_fired, turns_used } lives on the ActiveWorker struct
+ */
+interface CapWarningState {
+  turn_warning_fired: boolean;
+  inactivity_warning_fired: boolean;
+  turns_used: number;
+}
+
+function buildCapWarningText(
+  kind: 'turns' | 'seconds of inactivity',
+  used: number,
+  cap: number,
+  ratio: number,
+): string {
+  const P = Math.round(ratio * 100);
+  return (
+    `[Cap warning] You have used ${used}/${cap} ${kind} (${P}%). ` +
+    `The cap is a firewall, not a target — wrap up gracefully now: ` +
+    `commit any work in progress, push, and report results to your spawner before the cap is hit.`
+  );
+}
+
+/**
+ * Inject a system-reminder into the SDK conversation via Query.streamInput().
+ * No-op if the query object does not expose streamInput (e.g. test mocks, older SDK).
+ * Fire-and-forget — never throws; errors are silently swallowed.
+ */
+function injectCapWarning(
+  q: AsyncGenerator<SDKMessage, void>,
+  text: string,
+): void {
+  // Cast to SDK Query interface — streamInput is only present on the real SDK Query,
+  // not on plain AsyncGenerator mocks used in tests.
+  const queryObj = q as unknown as {
+    streamInput?: (stream: AsyncIterable<unknown>) => Promise<void>;
+  };
+  if (typeof queryObj.streamInput !== 'function') return;
+
+  async function* warningStream() {
+    yield {
+      type: 'user' as const,
+      message: {
+        role: 'user' as const,
+        content: `<system-reminder>\n${text}\n</system-reminder>`,
+      },
+      parent_tool_use_id: null,
+      isSynthetic: true,
+      // shouldQuery: false → appended to transcript, merged into next user turn
+      // without forcing an immediate extra assistant response.
+      shouldQuery: false,
+    };
+  }
+
+  // Fire-and-forget; injection is best-effort and must not block the message loop.
+  queryObj.streamInput(warningStream()).catch(() => {});
+}
+
 // ── Internal state ───────────────────────────────────────────
 
 interface ActiveWorker {
   id: string;
   controller: AbortController;
   inactivityTimer: ReturnType<typeof setTimeout> | null;
+  /** Parallel timer that fires at warning_threshold_pct% of inactivity_timeout_ms. */
+  inactivityWarningTimer: ReturnType<typeof setTimeout> | null;
   state: WorkerState;
+  /** Per-job cap warning tracking. */
+  capState: CapWarningState;
+  /** Reference to the live SDK query — set in runWorker, used for warning injection. */
+  query: AsyncGenerator<SDKMessage, void> | null;
 }
 
 const workers = new Map<string, ActiveWorker>();
@@ -81,6 +153,28 @@ const workers = new Map<string, ActiveWorker>();
 
 function resetInactivityTimer(worker: ActiveWorker, timeoutMs: number): void {
   if (worker.inactivityTimer) clearTimeout(worker.inactivityTimer);
+  if (worker.inactivityWarningTimer) clearTimeout(worker.inactivityWarningTimer);
+
+  const caps = getCaps();
+  const warningMs = Math.floor(timeoutMs * caps.warning_threshold_pct / 100);
+
+  // Warning timer: fires at threshold% of inactivity budget.
+  worker.inactivityWarningTimer = setTimeout(() => {
+    if (!worker.capState.inactivity_warning_fired && worker.query) {
+      const usedSec = Math.round(warningMs / 1000);
+      const capSec = Math.round(timeoutMs / 1000);
+      const text = buildCapWarningText(
+        'seconds of inactivity',
+        usedSec,
+        capSec,
+        caps.warning_threshold_pct / 100,
+      );
+      worker.capState.inactivity_warning_fired = true;
+      injectCapWarning(worker.query, text);
+    }
+  }, warningMs);
+
+  // Kill timer: fires at 100% of inactivity budget.
   worker.inactivityTimer = setTimeout(() => {
     worker.state.status = 'timeout';
     worker.state.error = `Inactivity timeout after ${timeoutMs}ms`;
@@ -93,6 +187,10 @@ function clearInactivityTimer(worker: ActiveWorker): void {
   if (worker.inactivityTimer) {
     clearTimeout(worker.inactivityTimer);
     worker.inactivityTimer = null;
+  }
+  if (worker.inactivityWarningTimer) {
+    clearTimeout(worker.inactivityWarningTimer);
+    worker.inactivityWarningTimer = null;
   }
 }
 
@@ -121,7 +219,15 @@ export function spawnWorker(opts: SpawnOptions): string {
     finishedAt: null,
   };
 
-  const worker: ActiveWorker = { id, controller, inactivityTimer: null, state };
+  const worker: ActiveWorker = {
+    id,
+    controller,
+    inactivityTimer: null,
+    inactivityWarningTimer: null,
+    state,
+    capState: { turn_warning_fired: false, inactivity_warning_fired: false, turns_used: 0 },
+    query: null,
+  };
   workers.set(id, worker);
 
   // Build SDK options from profile
@@ -155,7 +261,7 @@ export function spawnWorker(opts: SpawnOptions): string {
   // Start the worker asynchronously
   resetInactivityTimer(worker, timeoutMs);
 
-  runWorker(worker, opts.prompt, sdkOptions, timeoutMs).catch(() => {
+  runWorker(worker, opts.prompt, sdkOptions, timeoutMs, effectiveMaxTurns).catch(() => {
     // Errors already captured in worker state
   });
 
@@ -171,14 +277,35 @@ async function runWorker(
   prompt: string,
   sdkOptions: Record<string, unknown>,
   timeoutMs: number,
+  effectiveMaxTurns: number | undefined,
 ): Promise<void> {
   try {
     _lastSdkCallArgs = { prompt, options: sdkOptions };
     const q = sdkQueryFn({ prompt, options: sdkOptions });
+    worker.query = q;
+
+    const caps = getCaps();
+    const warningThreshold = caps.warning_threshold_pct / 100;
 
     for await (const message of q) {
-      // Reset inactivity timer on any message
+      // Reset inactivity timers on any message
       resetInactivityTimer(worker, timeoutMs);
+
+      // Count assistant turns and check turn-based cap warning.
+      if (message.type === 'assistant') {
+        worker.capState.turns_used++;
+
+        if (
+          effectiveMaxTurns !== undefined &&
+          !worker.capState.turn_warning_fired &&
+          worker.capState.turns_used / effectiveMaxTurns >= warningThreshold
+        ) {
+          const ratio = worker.capState.turns_used / effectiveMaxTurns;
+          const text = buildCapWarningText('turns', worker.capState.turns_used, effectiveMaxTurns, ratio);
+          worker.capState.turn_warning_fired = true;
+          injectCapWarning(q, text);
+        }
+      }
 
       // Capture result message
       if (message.type === 'result') {
@@ -219,6 +346,7 @@ async function runWorker(
     }
   } finally {
     clearInactivityTimer(worker);
+    worker.query = null;
     worker.state.finishedAt ??= new Date().toISOString();
   }
 }
@@ -287,6 +415,11 @@ let _lastSdkCallArgs: { prompt: string; options: unknown } | null = null;
 /** Get the last SDK call args (for testing). */
 export function _getLastSdkCallArgs(): { prompt: string; options: unknown } | null {
   return _lastSdkCallArgs;
+}
+
+/** Get the cap warning state for a worker (for testing). */
+export function _getCapWarningStateForTesting(id: string): CapWarningState | null {
+  return workers.get(id)?.capState ?? null;
 }
 
 /** Expose internals for testing (allows mocking). */
