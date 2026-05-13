@@ -18,8 +18,18 @@ import {
 import { loadProfiles } from '../agents/profiles.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { logActivity, getActivity } from './activity.js';
-import { update } from '../core/db.js';
+import { update, query } from '../core/db.js';
 import { createRateLimiter } from './rate-limit.js';
+
+// ── Testing hooks ─────────────────────────────────────────────
+
+// Injectable spawn function for testing (allows capturing spawn args without real workers)
+type SpawnFn = typeof import('../agents/lifecycle.js').spawnWorkerJob;
+let _spawnFn: SpawnFn | null = null;
+
+export function _setSpawnFnForTesting(fn: SpawnFn | null): void {
+  _spawnFn = fn;
+}
 
 // ── Configuration ────────────────────────────────────────────
 
@@ -65,11 +75,27 @@ export async function handleAgentsRoute(
         return true;
       }
 
-      const result = await spawnWorkerJob({
+      // If the spawn is associated with an orchestrator_task, derive inactivity
+      // timeout from the task's timeout_seconds. Per-task value takes precedence
+      // over any explicit body.timeoutMs the caller may have included.
+      let resolvedTimeoutMs: number | undefined = typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined;
+      if (typeof body.task_id === 'string') {
+        const rows = query<{ timeout_seconds: number | null }>(
+          'SELECT timeout_seconds FROM orchestrator_tasks WHERE id = ?',
+          body.task_id,
+        );
+        const taskSeconds = rows[0]?.timeout_seconds;
+        if (typeof taskSeconds === 'number' && taskSeconds > 0 && Number.isFinite(taskSeconds)) {
+          resolvedTimeoutMs = taskSeconds * 1000;
+        }
+      }
+
+      const spawnFn = _spawnFn ?? spawnWorkerJob;
+      const result = await spawnFn({
         profile,
         prompt: body.prompt as string,
         cwd: typeof body.cwd === 'string' ? body.cwd : undefined,
-        timeoutMs: typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined,
+        timeoutMs: resolvedTimeoutMs,
         spawned_by: typeof body.spawned_by === 'string' ? body.spawned_by : 'comms',
       });
 
