@@ -1,0 +1,2 @@
+-- Migration 019: Add snooze_until column to todos
+--safe-alter: todos ADD COLUMN snooze_until TEXT
