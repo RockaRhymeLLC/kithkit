@@ -1579,6 +1579,7 @@ caps:
     docs:         { max_turns: 200 }
     testing:      { max_turns: 150 }
     retro:        { max_turns: 75 }
+    devils-advocate: { max_turns: 75 }
     email:        { max_turns: 50 }
 ```
 
