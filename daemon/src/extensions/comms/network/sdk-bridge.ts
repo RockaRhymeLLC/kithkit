@@ -66,8 +66,8 @@ export async function initNetworkSDK(config: Record<string, unknown>): Promise<b
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let CC4MeNetworkClass: any;
     try {
-      // @ts-ignore — kithkit-a2a-client is a local dev module, resolved at runtime
-      const sdk = await import('kithkit-a2a-client');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const sdk = await import('kithkit-a2a-client') as any; // kithkit-a2a-client is a local dev module, resolved at runtime
       CC4MeNetworkClass = sdk.A2ANetwork ?? sdk.CC4MeNetwork;
     } catch {
       log.warn('kithkit-a2a-client package not installed — P2P messaging unavailable. Install with: npm install kithkit-a2a-client');

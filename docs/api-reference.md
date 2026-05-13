@@ -647,6 +647,7 @@ curl http://localhost:3847/api/todos
       "status": "pending",
       "due_date": null,
       "tags": "[\"docs\",\"v1\"]",
+      "snooze_until": null,
       "created_at": "2026-02-22T00:00:00.000Z",
       "updated_at": "2026-02-22T00:00:00.000Z"
     }
@@ -658,6 +659,8 @@ curl http://localhost:3847/api/todos
 **Note**: `tags` is stored and returned as a JSON string (e.g. `"[\"docs\",\"v1\"]"`). Parse it with `JSON.parse()` if needed.
 
 Valid `status` values: `pending`, `in_progress`, `blocked`, `completed`, `cancelled`.
+
+`snooze_until`: ISO8601 datetime string. When set on an `in_progress` todo with a future timestamp, the todo-reminder task treats it as snoozed rather than actionable. Set to `null` to clear.
 
 ---
 
@@ -755,7 +758,8 @@ Update a todo. All fields are optional. Status and priority changes are automati
   "priority": "critical",
   "status": "in_progress",
   "due_date": "2026-03-15",
-  "tags": ["urgent"]
+  "tags": ["urgent"],
+  "snooze_until": "2026-05-10T16:00:00.000Z"  // optional — ISO8601 datetime; null to clear
 }
 ```
 
@@ -769,6 +773,7 @@ Update a todo. All fields are optional. Status and priority changes are automati
   "status": "in_progress",
   "due_date": "2026-03-15",
   "tags": "[\"urgent\"]",
+  "snooze_until": "2026-05-10T16:00:00.000Z",
   "created_at": "2026-02-22T09:00:00.000Z",
   "updated_at": "2026-02-22T10:00:00.000Z",
   "timestamp": "2026-02-22T10:00:00.000Z"
@@ -778,7 +783,7 @@ Update a todo. All fields are optional. Status and priority changes are automati
 | Status | Response |
 |--------|----------|
 | 200 | Full updated todo object |
-| 400 | Invalid priority or status |
+| 400 | Invalid priority, status, or snooze_until format |
 | 404 | `{ "error": "Not found" }` |
 
 ---

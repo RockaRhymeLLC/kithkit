@@ -32,6 +32,7 @@ interface Todo {
   status: string;
   due_date: string | null;
   tags: string; // JSON
+  snooze_until: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -202,12 +203,20 @@ export async function handleStateRoute(
           return true;
         }
 
+        if (body.snooze_until !== undefined && body.snooze_until !== null) {
+          if (isNaN(Date.parse(body.snooze_until as string))) {
+            json(res, 400, withTimestamp({ error: 'snooze_until must be a valid ISO8601 date string' }));
+            return true;
+          }
+        }
+
         const data: Record<string, unknown> = { updated_at: now() };
         if (body.title !== undefined) data.title = body.title;
         if (body.description !== undefined) data.description = body.description;
         if (body.priority !== undefined) data.priority = body.priority;
         if (body.due_date !== undefined) data.due_date = body.due_date;
         if (body.tags !== undefined) data.tags = JSON.stringify(body.tags);
+        if (body.snooze_until !== undefined) data.snooze_until = body.snooze_until;
         if (body.status !== undefined) {
           data.status = body.status;
           logTodoAction(existing.id, 'status_change', existing.status, body.status as string);
