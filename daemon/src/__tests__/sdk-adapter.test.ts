@@ -480,8 +480,10 @@ describe('SDK Adapter', { concurrency: 1 }, () => {
       assert.ok(capState!.turn_warning_fired, 'Warning flag remains set (idempotent)');
     });
 
-    it('does not warn when no maxTurns cap configured', async () => {
-      // Profile with no maxTurns and not in caps.profiles → effectiveMaxTurns = undefined
+    it('does not warn when turns are far below the default cap', async () => {
+      // Profile with no maxTurns and not in caps.profiles → falls back to
+      // caps.default_max_turns (100). With only 2 turns, 2/100 = 2% is well below
+      // the 80% warning threshold so the warning must not fire.
       const uncappedProfile: WorkerProfile = { name: 'test-uncapped' };
       _setQueryFnForTesting(createMockQuery([
         { type: 'assistant', content: 'turn 1' },
@@ -495,6 +497,94 @@ describe('SDK Adapter', { concurrency: 1 }, () => {
       const capState = _getCapWarningStateForTesting(id);
       assert.ok(capState, 'capState should exist');
       assert.equal(capState!.turn_warning_fired, false, 'No warning when no cap set');
+    });
+  });
+
+  // ── t-137: caps.default_max_turns fallback (P0 fix) ───────────
+
+  describe('caps.default_max_turns fallback (t-137)', () => {
+    it('uses caps.default_max_turns (100) when profile absent from caps.profiles and has no frontmatter maxTurns', async () => {
+      _setQueryFnForTesting(createMockQuery([
+        { type: 'result', subtype: 'success', result: 'Done', usage: {} },
+      ]));
+
+      // Profile name not in caps.profiles; no maxTurns on the object → must fall
+      // back to caps.default_max_turns (default: 100) so SDK always has a turn cap.
+      const bareProfile: WorkerProfile = { name: 'test-bare-no-turns' };
+      spawnWorker({ prompt: 'test', profile: bareProfile });
+      await sleep(50);
+
+      const args = _getLastSdkCallArgs();
+      assert.ok(args, 'SDK should have been called');
+      const opts = args!.options as Record<string, unknown>;
+      assert.equal(opts.maxTurns, 100, 'maxTurns must equal caps.default_max_turns (100) as final fallback');
+    });
+
+    it('caps.profiles entry still takes precedence over caps.default_max_turns', async () => {
+      // testProfile.name = 'test-adapter-profile' is not in real caps.profiles,
+      // so frontmatter maxTurns (10) takes precedence over default (100).
+      _setQueryFnForTesting(createMockQuery([
+        { type: 'result', subtype: 'success', result: 'Done', usage: {} },
+      ]));
+
+      spawnWorker({ prompt: 'test', profile: testProfile }); // maxTurns: 10
+      await sleep(50);
+
+      const args = _getLastSdkCallArgs();
+      const opts = args!.options as Record<string, unknown>;
+      assert.equal(opts.maxTurns, 10, 'profile frontmatter maxTurns (10) takes precedence over default (100)');
+    });
+  });
+
+  // ── t-138: inactivity_warning_fired resets on timer reset (P1 fix) ──
+
+  describe('inactivity_warning_fired resets across quiet periods (t-138)', () => {
+    it('clears inactivity_warning_fired when timer resets on incoming message', async () => {
+      // Scenario: worker goes quiet → warning fires → message arrives → timer
+      // resets → inactivity_warning_fired must be false so the warning can fire
+      // again during the next quiet period.
+      //
+      // Timeline with timeoutMs=500 (warningMs=400):
+      //   t=0:   worker starts, timers armed
+      //   t=420: we sample capState — warning should have fired at t=400
+      //   t=450: mock yields a message → resetInactivityTimer called
+      //   t=480: we sample capState — flag should be cleared
+      //   t=~500: worker completes
+
+      const timeoutMs = 500;
+
+      _setQueryFnForTesting(async function* () {
+        // Hang until warning has fired, then yield a message to trigger a reset.
+        await sleep(450);
+        yield { type: 'assistant', content: 'recovered' } as never;
+        yield { type: 'result', subtype: 'success', result: 'Done', usage: {} } as never;
+      });
+
+      const id = spawnWorker({
+        prompt: 'test',
+        profile: { name: 'test-inactivity-reset' },
+        timeoutMs,
+      });
+
+      // After 420ms: warning timer (400ms) should have fired.
+      await sleep(420);
+      const stateMid = _getCapWarningStateForTesting(id);
+      assert.ok(stateMid, 'capState should exist while running');
+      assert.ok(stateMid!.inactivity_warning_fired, 'inactivity warning should have fired at 80% of timeout');
+
+      // After another 80ms (total ~500ms): message arrived at 450ms, timer reset.
+      await sleep(80);
+      const stateAfterReset = _getCapWarningStateForTesting(id);
+      assert.ok(stateAfterReset, 'capState should still exist');
+      assert.equal(
+        stateAfterReset!.inactivity_warning_fired,
+        false,
+        'inactivity_warning_fired must be cleared after timer reset so warning can re-fire in next quiet period',
+      );
+
+      // Worker should complete cleanly.
+      await sleep(100);
+      assert.equal(getWorkerStatus(id)?.status, 'completed');
     });
   });
 });

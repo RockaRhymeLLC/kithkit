@@ -44,7 +44,7 @@ export interface SpawnOptions {
   prompt: string;
   profile: WorkerProfile;
   cwd?: string;
-  /** Inactivity timeout in ms (default: 300000 = 5 min) */
+  /** Inactivity timeout in ms (default: 1_500_000 = 25 min) */
   timeoutMs?: number;
 }
 
@@ -154,6 +154,9 @@ const workers = new Map<string, ActiveWorker>();
 function resetInactivityTimer(worker: ActiveWorker, timeoutMs: number): void {
   if (worker.inactivityTimer) clearTimeout(worker.inactivityTimer);
   if (worker.inactivityWarningTimer) clearTimeout(worker.inactivityWarningTimer);
+  // Each quiet period is a fresh countdown — clear the flag so the warning can
+  // fire again if the worker goes quiet a second time after recovering.
+  worker.capState.inactivity_warning_fired = false;
 
   const caps = getCaps();
   const warningMs = Math.floor(timeoutMs * caps.warning_threshold_pct / 100);
@@ -244,9 +247,13 @@ export function spawnWorker(opts: SpawnOptions): string {
   if (opts.profile.model) sdkOptions.model = opts.profile.model;
   if (opts.profile.allowedTools) sdkOptions.allowedTools = opts.profile.allowedTools;
   if (opts.profile.disallowedTools) sdkOptions.disallowedTools = opts.profile.disallowedTools;
-  // Config-driven cap takes precedence over profile frontmatter (back-compat fallback).
+  // Config-driven cap takes precedence over profile frontmatter; daemon global
+  // default is the final safety net so no profile ever runs without a turn cap.
   const caps = getCaps();
-  const effectiveMaxTurns = caps.profiles[opts.profile.name]?.max_turns ?? opts.profile.maxTurns;
+  const effectiveMaxTurns =
+    caps.profiles[opts.profile.name]?.max_turns ??
+    opts.profile.maxTurns ??
+    caps.default_max_turns;
   if (effectiveMaxTurns) sdkOptions.maxTurns = effectiveMaxTurns;
   if (opts.profile.effort) sdkOptions.effort = opts.profile.effort;
   if (opts.cwd) sdkOptions.cwd = opts.cwd;
