@@ -129,11 +129,11 @@ agent-comms:
     - name: bmo
       host: davids-mac-mini.lan
       port: 3847
-      ip: 192.168.12.169
+      ip: 192.168.x.x
     - name: r2d2
       host: chrissys-mini.lan
       port: 3847
-      ip: 192.168.12.212
+      ip: 192.168.x.x
 ```
 
 LAN delivery requires a shared secret stored in the macOS Keychain under `credential-agent-comms-secret`.

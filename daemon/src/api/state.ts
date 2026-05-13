@@ -16,6 +16,7 @@ import {
   exec,
   getDatabase,
 } from '../core/db.js';
+import { loadConfig } from '../core/config.js';
 import { loadContext } from '../core/context-loader.js';
 import { storeMemoryInternal } from './memory.js';
 import { createLogger } from '../core/logger.js';
@@ -451,15 +452,14 @@ export async function handleStateRoute(
 
     // ── Cross-Agent Proxy ────────────────────────────────────
     if (pathname.startsWith('/api/proxy/agent/') && method === 'GET') {
-      const AGENT_IPS: Record<string, string> = {
-        r2: 'http://192.168.12.212:3847',
-        skippy: 'http://192.168.12.142:3847',
-      };
       const rest = pathname.slice('/api/proxy/agent/'.length);
       const slash = rest.indexOf('/');
       const agentName = slash === -1 ? rest : rest.slice(0, slash);
       const agentPath = slash === -1 ? '' : rest.slice(slash + 1);
-      const base = AGENT_IPS[agentName];
+      const agentComms = (loadConfig() as unknown as Record<string, unknown>)['agent-comms'] as
+        { peers?: Array<{ name: string; host: string; port: number; ip?: string }> } | undefined;
+      const peer = (agentComms?.peers ?? []).find(p => p.name.toLowerCase() === agentName.toLowerCase());
+      const base = peer ? `http://${peer.ip ?? peer.host}:${peer.port}` : undefined;
       if (!base) {
         res.setHeader('Access-Control-Allow-Origin', '*');
         json(res, 404, { error: 'Unknown agent', agent: agentName });

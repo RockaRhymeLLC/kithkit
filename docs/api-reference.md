@@ -1865,7 +1865,7 @@ Create a contact.
 ```bash
 curl -X POST http://localhost:3847/api/contacts \
   -H 'Content-Type: application/json' \
-  -d '{"name": "BMO", "type": "machine", "role": "peer", "ip": "192.168.12.169", "tags": ["agent"]}'
+  -d '{"name": "BMO", "type": "machine", "role": "peer", "ip": "192.168.x.x", "tags": ["agent"]}'
 ```
 
 Required: `name` (string). Optional: `type`, `email`, `phone`, `telegram_id`, `ssh_host`, `ssh_user`, `ip`, `hostname`, `role`, `url`, `metadata` (object), `tags` (string array), `notes`.
