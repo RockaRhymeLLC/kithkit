@@ -151,6 +151,31 @@ const workers = new Map<string, ActiveWorker>();
 
 // ── Helpers ──────────────────────────────────────────────────
 
+/**
+ * Resolve the effective inactivity timeout in milliseconds.
+ *
+ * Priority (highest → lowest):
+ *   1. taskTimeoutMs — per-task override (from orch_tasks.timeout_seconds * 1000)
+ *   2. capsTimeoutMs — system/profile-level cap (e.g. config.inactivity_timeout_ms)
+ *   3. sdkDefaultMs  — last-resort fallback (5 min; only reached if caps config absent)
+ *
+ * Values of 0, negative, or non-finite are treated as "unset" and fall through
+ * to the next tier.
+ */
+export function resolveInactivityTimeout(
+  taskTimeoutMs: number | undefined,
+  capsTimeoutMs: number | undefined,
+  sdkDefaultMs: number = 5 * 60 * 1000,
+): number {
+  if (typeof taskTimeoutMs === 'number' && taskTimeoutMs > 0 && Number.isFinite(taskTimeoutMs)) {
+    return taskTimeoutMs;
+  }
+  if (typeof capsTimeoutMs === 'number' && capsTimeoutMs > 0 && Number.isFinite(capsTimeoutMs)) {
+    return capsTimeoutMs;
+  }
+  return sdkDefaultMs;
+}
+
 function resetInactivityTimer(worker: ActiveWorker, timeoutMs: number): void {
   if (worker.inactivityTimer) clearTimeout(worker.inactivityTimer);
   if (worker.inactivityWarningTimer) clearTimeout(worker.inactivityWarningTimer);
@@ -206,7 +231,7 @@ function clearInactivityTimer(worker: ActiveWorker): void {
 export function spawnWorker(opts: SpawnOptions): string {
   const id = randomUUID();
   const controller = new AbortController();
-  const timeoutMs = opts.timeoutMs ?? getCaps().inactivity_timeout_ms;
+  const timeoutMs = resolveInactivityTimeout(opts.timeoutMs, getCaps().inactivity_timeout_ms);
 
   const state: WorkerState = {
     id,
