@@ -108,6 +108,27 @@ security:
 
 Config changes take effect after `POST /api/config/reload` or daemon restart.
 
+### Caps (firewall, not throttle)
+
+Caps are a hard-stop firewall against runaway agents — not an efficiency throttle. They are configured via the `caps:` block in `kithkit.defaults.yaml` and overridden per-install in `kithkit.config.yaml`. All values deep-merge; unset keys use the defaults.
+
+```yaml
+caps:
+  warning_threshold_pct: 80      # Warn the agent at this % of its turn cap
+  inactivity_timeout_ms: 1500000 # Kill worker after this ms with no output
+  default_max_turns: 100         # Fallback cap for profiles with no caps.profiles entry
+  profiles:
+    orchestrator: { max_turns: 1000 }
+    coding:       { max_turns: 500 }
+    research:     { max_turns: 250 }
+    review:       { max_turns: 250 }
+    # add custom profiles here — names match profile frontmatter `name` field
+```
+
+**Warning mechanic**: When a worker reaches `warning_threshold_pct` of its assigned turn cap, the framework injects an in-band warning into the agent's context. The agent has the remaining turns to wrap up cleanly. At 100% the session is hard-stopped regardless of task state.
+
+**Precedence**: `caps.profiles.<name>.max_turns` overrides the `maxTurns` field in a profile's frontmatter at spawn time. Profile `maxTurns` is a back-compat fallback used only when no matching `caps.profiles` entry exists.
+
 ### Agent Profiles
 
 Worker agents are scoped by profiles in `.kithkit/agents/*.md`. After migration, the authoritative copies live in `.kithkit/agents/` and are synced to `.claude/agents/` by the daemon via `POST /api/sync/claude`. Each profile uses YAML frontmatter to define capabilities:
@@ -200,6 +221,23 @@ When you are the orchestrator:
 - Exit when all work is complete — the daemon will clean up your session
 
 **Task queue**: The `orchestrator_tasks` table is the authoritative record of work. The daemon's idle monitor wakes the orchestrator when pending tasks arrive. Always check and update task status rather than relying on in-session memory alone.
+
+#### Unified task lifecycle (v2.1)
+
+Tasks move through four semantic stages:
+
+1. **Open** — `status` is `pending`, `assigned`, or `in_progress`. Work is ongoing.
+2. **Done-internally** — orchestrator sets `status: completed` and `completed_at` is stamped. This signals the orch considers its work finished. Comms is notified automatically.
+3. **Fully closed** — comms (or orch for orch-originated tasks) sets `acknowledged_at` after reviewing the result with the human. Also sets `comms_outcome` (`accepted` | `corrected` | `redirected` | `cancelled`) and optionally `comms_corrections` (JSON string with human feedback).
+4. **Cancelled** — `status: cancelled`; terminal, no closure required.
+
+**Guard**: For tasks with `source: 'human'` (created via `POST /api/orchestrator/escalate`), only comms may set `acknowledged_at`. The orchestrator is blocked from self-closing these tasks.
+
+**Calibration fields** (set at task completion): `complexity` (`S`|`M`|`L`|`XL`), `estimated_minutes`, `actual_minutes`, `task_type`, `completion_status`, `estimation_method`, `workers_used`. `estimate_multiplier` is **not stored** — it is computed on read as `actual_minutes / estimated_minutes`.
+
+**Retro flag**: Set `generate_retro: 1` on a task to request a post-task retrospective for that task. The global `self_improvement.retro.retro_all_terminal` config knob triggers a retro on every terminal task system-wide.
+
+**Cross-machine ID**: `canonical_task_external_id` (hex UUID, no dashes) for coordinating the same logical task across multiple machines. No UNIQUE constraint — brief duplicates are allowed during sync.
 
 ### Memory-First Context (Comms + Orchestrator)
 
