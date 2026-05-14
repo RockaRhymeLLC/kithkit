@@ -129,12 +129,32 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
         );
         if (exact.length > 0) {
           const taskId = exact[0]!.id;
-          const now = new Date().toISOString();
-          exec(
-            `UPDATE orchestrator_tasks SET status = 'completed', result = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
-            req.body.slice(0, 5000), now, now, taskId,
+
+          // Invariant (#266): reject silent ghost-completions.
+          // A task must have at least one worker row OR one activity event before
+          // it can be auto-completed via a result message.  Tasks with zero workers
+          // AND zero activity were never actually worked on; completing them silently
+          // hides real work that still needs to happen.
+          const workCheck = query<{ total: number }>(
+            `SELECT (
+               (SELECT COUNT(*) FROM orchestrator_task_workers WHERE task_id = ?) +
+               (SELECT COUNT(*) FROM orchestrator_task_activity  WHERE task_id = ?)
+             ) AS total`,
+            taskId, taskId,
           );
-          log.info('Auto-completed orchestrator task on result message', { taskId });
+          if ((workCheck[0]?.total ?? 0) === 0) {
+            log.warn(
+              'Auto-completion rejected: task has no workers and no activity events (ghost-protection, #266)',
+              { taskId },
+            );
+          } else {
+            const now = new Date().toISOString();
+            exec(
+              `UPDATE orchestrator_tasks SET status = 'completed', result = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+              req.body.slice(0, 5000), now, now, taskId,
+            );
+            log.info('Auto-completed orchestrator task on result message', { taskId });
+          }
         } else {
           log.warn('Orchestrator result message task_id not found or not active — no task auto-completed. Message delivered to comms.', {
             task_id: req.metadata.task_id,
