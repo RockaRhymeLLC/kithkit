@@ -43,8 +43,10 @@ type TaskStatus = 'pending' | 'assigned' | 'in_progress' | 'awaiting_approval' |
 type ActivityType = 'progress' | 'note';
 
 type TaskOutcome = 'success' | 'partial' | 'failed' | 'unknown';
+type CommsOutcome = 'accepted' | 'corrected' | 'redirected' | 'cancelled';
 
 const VALID_OUTCOMES: readonly TaskOutcome[] = ['success', 'partial', 'failed', 'unknown'];
+const VALID_COMMS_OUTCOMES: readonly CommsOutcome[] = ['accepted', 'corrected', 'redirected', 'cancelled'];
 
 interface OrchestratorTask {
   id: string;
@@ -60,6 +62,9 @@ interface OrchestratorTask {
   timeout_seconds: number | null;
   outcome: TaskOutcome | null;
   outcome_notes: string | null;
+  comms_outcome: CommsOutcome | null;
+  comms_corrections: string | null;
+  acknowledged_at: string | null;
   plan: string | null;
   plan_status: 'submitted' | 'approved' | 'rejected' | null;
   plan_submitted_at: string | null;
@@ -663,13 +668,38 @@ export async function handleTaskQueueRoute(
         return true;
       }
 
-      // awaiting_approval is not terminal — it can transition back to in_progress
-      if (TERMINAL_STATUSES.includes(task.status as TaskStatus)) {
-        json(res, 409, withTimestamp({ error: `Cannot update ${task.status} task` }));
+      const body = await parseBody(req);
+
+      // Comms feedback fields (comms_outcome, comms_corrections, acknowledged_at) are exempt
+      // from the terminal-task guard — comms may revise its assessment after the fact.
+      // Guard: acknowledged_at may only be set on terminal tasks (prevents premature ack).
+      const hasCommsFeedback = body.comms_outcome !== undefined
+        || body.comms_corrections !== undefined
+        || body.acknowledged_at !== undefined;
+      const hasNonFeedbackFields = body.status !== undefined
+        || body.assignee !== undefined
+        || body.result !== undefined
+        || body.error !== undefined
+        || body.work_notes !== undefined
+        || body.outcome !== undefined
+        || body.outcome_notes !== undefined
+        || body.plan !== undefined;
+
+      // Block acknowledged_at on non-terminal tasks (orch cannot pre-ack Dave-todos)
+      if (body.acknowledged_at !== undefined && !TERMINAL_STATUSES.includes(task.status as TaskStatus)) {
+        json(res, 409, withTimestamp({ error: 'acknowledged_at can only be set on terminal tasks (completed/failed/cancelled)' }));
         return true;
       }
 
-      const body = await parseBody(req);
+      // awaiting_approval is not terminal — it can transition back to in_progress.
+      // Terminal tasks block non-feedback updates; comms-feedback-only updates are allowed.
+      if (TERMINAL_STATUSES.includes(task.status as TaskStatus)) {
+        if (hasNonFeedbackFields || !hasCommsFeedback) {
+          json(res, 409, withTimestamp({ error: `Cannot update ${task.status} task` }));
+          return true;
+        }
+        // Comms-feedback-only update on terminal task — proceed below.
+      }
       const ts = now();
       const updates: Record<string, unknown> = { updated_at: ts };
 
@@ -752,6 +782,22 @@ export async function handleTaskQueueRoute(
       if (body.outcome_notes !== undefined) {
         updates.outcome_notes = typeof body.outcome_notes === 'string' ? body.outcome_notes : null;
       }
+
+      // Comms feedback fields — revisable even on terminal tasks
+      if (body.comms_outcome !== undefined) {
+        if (body.comms_outcome !== null && !VALID_COMMS_OUTCOMES.includes(body.comms_outcome as CommsOutcome)) {
+          json(res, 400, withTimestamp({ error: `comms_outcome must be one of: ${VALID_COMMS_OUTCOMES.join(', ')}` }));
+          return true;
+        }
+        updates.comms_outcome = body.comms_outcome ?? null;
+      }
+      if (body.comms_corrections !== undefined) {
+        updates.comms_corrections = typeof body.comms_corrections === 'string' ? body.comms_corrections : null;
+      }
+      if (body.acknowledged_at !== undefined) {
+        updates.acknowledged_at = typeof body.acknowledged_at === 'string' ? body.acknowledged_at : null;
+      }
+
       if (body.plan !== undefined) {
         // Block plan mutation while awaiting approval — what was approved must match what executes
         if (task.plan_status === 'submitted') {
@@ -836,8 +882,10 @@ export async function handleTaskQueueRoute(
         }
       }
 
-      // Non-blocking retro evaluation after terminal status
-      if (targetStatus === 'completed' || targetStatus === 'failed') {
+      // Non-blocking retro evaluation on the status transition to terminal state.
+      // Skip for comms-feedback-only updates (updates.status is undefined in that case)
+      // to avoid spawning duplicate retro workers on feedback revisions.
+      if (updates.status && (targetStatus === 'completed' || targetStatus === 'failed')) {
         _evalFn(taskId).catch(err => log.warn('Retro evaluation failed', { taskId, error: String(err) }));
       }
 
