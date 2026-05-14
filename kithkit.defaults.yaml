@@ -110,6 +110,25 @@ scheduler:
 orchestrator:
   plan_review_sla_minutes: 10
 
+caps:
+  # Firewall against runaway agents — not an efficiency throttle (Dave 2026-05-12).
+  # All values are 5× the original hardcoded floors.
+  # Override any value in kithkit.config.yaml.
+  warning_threshold_pct: 80         # Worker B will wire: warn agent at this % of maxTurns used
+  inactivity_timeout_ms: 1500000    # Worker killed after this ms of no output (was 300000 / 5 min)
+  default_max_turns: 100            # Fallback for profiles with no caps.profiles entry (was 20)
+  profiles:
+    orchestrator:    { max_turns: 1000 }  # was 200
+    coding:          { max_turns: 500 }   # was 100
+    research:        { max_turns: 250 }   # was 50
+    review:          { max_turns: 250 }   # was 50
+    memory-worker:   { max_turns: 200 }   # was 40
+    docs:            { max_turns: 200 }   # was 40
+    testing:         { max_turns: 150 }   # was 30 (.claude/agents) / 15 (profiles/)
+    retro:           { max_turns: 75 }    # was 15
+    email:           { max_turns: 50 }    # was 10
+    devils-advocate: { max_turns: 75 }    # was 15
+
 security:
   rate_limits:
     incoming_max_per_minute: 5

@@ -15,7 +15,7 @@ disallowedTools:
   - NotebookEdit
 model: sonnet
 permissionMode: bypassPermissions
-maxTurns: 20
+maxTurns: 20   # override: caps.profiles.research.max_turns
 ---
 
 You are a research worker. Your job is to gather information, explore codebases, and provide thorough analysis.

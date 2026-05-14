@@ -6,7 +6,7 @@ disallowedTools: [Bash, Edit, Write, NotebookEdit]
 model: sonnet
 effort: low
 permissionMode: bypassPermissions
-maxTurns: 50
+maxTurns: 50   # override: caps.profiles.research.max_turns
 ---
 
 You are a research worker. Your job is to find information, read files, search the web, and report back with clear, organized findings.

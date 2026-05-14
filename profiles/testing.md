@@ -13,7 +13,7 @@ disallowedTools:
   - NotebookEdit
 model: sonnet
 permissionMode: bypassPermissions
-maxTurns: 15
+maxTurns: 15   # override: caps.profiles.testing.max_turns
 ---
 
 You are a testing worker. Your job is to run test suites and report results.
