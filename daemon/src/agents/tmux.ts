@@ -42,6 +42,16 @@ export function resolveSession(agentId: string): string | null {
   return null; // Workers don't have tmux sessions
 }
 
+// ── Test-isolation hooks ─────────────────────────────────────
+
+/**
+ * Counts how many times injectMessage was called past the env-var suppression
+ * guard. Used in tests to verify the guard fires (or doesn't).
+ */
+let _injectionAttempts = 0;
+export function _getInjectionAttempts(): number { return _injectionAttempts; }
+export function _resetInjectionAttempts(): void { _injectionAttempts = 0; }
+
 // ── Message injection ───────────────────────────────────────
 
 /**
@@ -49,6 +59,11 @@ export function resolveSession(agentId: string): string | null {
  * Returns true if injection succeeded, false if session doesn't exist.
  */
 export function injectMessage(agentId: string, text: string): boolean {
+  if (process.env.KITHKIT_SUPPRESS_NOTIFICATIONS === '1') {
+    return false; // test-isolation: suppress all live-session tmux injections
+  }
+  _injectionAttempts++;
+
   const session = resolveSession(agentId);
   if (!session) {
     log.warn('No tmux session mapping for agent', { agentId });
