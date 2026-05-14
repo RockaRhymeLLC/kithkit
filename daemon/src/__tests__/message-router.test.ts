@@ -17,6 +17,7 @@ import {
   getMessages,
   getMessagesSince,
   _setTmuxInjectorForTesting,
+  _clearDedupForTesting,
   WorkerRestrictionError,
 } from '../agents/message-router.js';
 import type { Message } from '../agents/message-router.js';
@@ -88,6 +89,7 @@ function setup(): Promise<void> {
 function teardown(): Promise<void> {
   return new Promise<void>((resolve) => {
     _resetDbForTesting();
+    _clearDedupForTesting();   // prevent dedup map from leaking between tests
     _setTmuxInjectorForTesting(null);
     server.close(() => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -584,28 +586,42 @@ describe('Auto-complete orchestrator task on result message (#70)', () => {
     );
   }
 
-  it('completes in_progress task over newer pending task', () => {
-    // Task A: older, in_progress (should be matched)
+  function addWorker(taskId: string, workerId: string): void {
+    exec(
+      `INSERT INTO orchestrator_task_workers (task_id, worker_id, role, assigned_at)
+       VALUES (?, ?, NULL, '2026-01-01T00:00:00Z')`,
+      taskId, workerId,
+    );
+  }
+
+  // ── Tests that verify the NEW task_id-required auto-complete behavior ────
+
+  it('without metadata.task_id, no task is auto-completed (FIFO removed, #266 fix)', () => {
+    // Both tasks exist and are active, but no task_id is supplied.
+    // The old FIFO path would have completed one of them; the new code must not.
     createTask('task-a', 'in_progress', '2026-01-01T00:00:00Z');
-    // Task B: newer, pending (should NOT be matched)
-    createTask('task-b', 'pending', '2026-01-02T00:00:00Z');
+    createTask('task-b', 'pending',     '2026-01-02T00:00:00Z');
+    addWorker('task-a', 'worker-a');
 
     sendMessage({
       from: 'orchestrator',
       to: 'comms',
       type: 'result',
-      body: 'Result for task A',
+      body: 'Result without task_id',
+      // no metadata — old FIFO would have completed task-a here
     });
 
     const taskA = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-a');
     const taskB = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-b');
-    assert.equal(taskA[0]!.status, 'completed', 'in_progress task should be completed');
-    assert.equal(taskB[0]!.status, 'pending', 'pending task should remain pending');
+    assert.equal(taskA[0]!.status, 'in_progress', 'task-a must remain in_progress — no FIFO auto-complete');
+    assert.equal(taskB[0]!.status, 'pending',     'task-b must remain pending');
   });
 
-  it('matches by metadata.task_id when provided', () => {
+  it('matches by metadata.task_id when provided (and task has work evidence)', () => {
     createTask('task-a', 'in_progress', '2026-01-01T00:00:00Z');
-    createTask('task-b', 'pending', '2026-01-02T00:00:00Z');
+    createTask('task-b', 'pending',     '2026-01-02T00:00:00Z');
+    // Add a worker to task-b so it passes the invariant guard
+    addWorker('task-b', 'worker-b');
 
     sendMessage({
       from: 'orchestrator',
@@ -618,39 +634,141 @@ describe('Auto-complete orchestrator task on result message (#70)', () => {
     const taskA = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-a');
     const taskB = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-b');
     assert.equal(taskA[0]!.status, 'in_progress', 'task A should remain in_progress');
-    assert.equal(taskB[0]!.status, 'completed', 'task B should be completed via metadata match');
+    assert.equal(taskB[0]!.status, 'completed',   'task B should be completed via metadata match');
   });
 
-  it('falls back to FIFO when no in_progress task exists', () => {
-    // Both pending — oldest should be completed first
+  it('without metadata.task_id and no in_progress task, still no auto-complete (#266 fix)', () => {
+    // Old FIFO "fallback" would have completed the oldest pending task.
+    // New code must not complete any task when task_id is absent.
     createTask('task-old', 'pending', '2026-01-01T00:00:00Z');
     createTask('task-new', 'pending', '2026-01-02T00:00:00Z');
+    addWorker('task-old', 'worker-old');
 
     sendMessage({
       from: 'orchestrator',
       to: 'comms',
       type: 'result',
       body: 'Some result',
+      // no metadata — old FIFO would have completed task-old
     });
 
     const taskOld = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-old');
     const taskNew = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-new');
-    assert.equal(taskOld[0]!.status, 'completed', 'oldest pending task should be completed');
-    assert.equal(taskNew[0]!.status, 'pending', 'newer pending task should remain');
+    assert.equal(taskOld[0]!.status, 'pending', 'task-old must remain pending — no FIFO auto-complete');
+    assert.equal(taskNew[0]!.status, 'pending', 'task-new must remain pending');
   });
 
-  it('does not match already-completed tasks', () => {
-    createTask('task-done', 'completed', '2026-01-01T00:00:00Z');
-    createTask('task-active', 'in_progress', '2026-01-02T00:00:00Z');
+  it('result message with task_id does not affect already-completed tasks', () => {
+    createTask('task-done',   'completed',  '2026-01-01T00:00:00Z');
+    createTask('task-active', 'in_progress','2026-01-02T00:00:00Z');
+    addWorker('task-active', 'worker-active');
 
+    // Send result targeting task-active
     sendMessage({
       from: 'orchestrator',
       to: 'comms',
       type: 'result',
       body: 'New result',
+      metadata: { task_id: 'task-active' },
     });
 
+    const taskDone   = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-done');
     const taskActive = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-active');
-    assert.equal(taskActive[0]!.status, 'completed');
+    assert.equal(taskDone[0]!.status,   'completed', 'already-completed task must not be re-completed');
+    assert.equal(taskActive[0]!.status, 'completed', 'task-active should be completed');
+  });
+});
+
+describe('Regression #266 — task.result race: correct body written, no cross-contamination', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  function createTask(id: string, status: string): void {
+    const ts = '2026-01-01T00:00:00Z';
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, status, priority, created_at, updated_at)
+       VALUES (?, ?, ?, 0, ?, ?)`,
+      id, `Task ${id}`, status, ts, ts,
+    );
+  }
+
+  function addWorker(taskId: string, workerId: string): void {
+    exec(
+      `INSERT INTO orchestrator_task_workers (task_id, worker_id, role, assigned_at)
+       VALUES (?, ?, NULL, '2026-01-01T00:00:00Z')`,
+      taskId, workerId,
+    );
+  }
+
+  it('result with task_id writes correct body; unrelated message without task_id leaves other tasks intact', () => {
+    // Arrange: two active tasks
+    createTask('task-real',  'in_progress');
+    createTask('task-other', 'in_progress');
+    addWorker('task-real',  'worker-real');
+    addWorker('task-other', 'worker-other');
+
+    // Act: send the real result for task-real (with task_id)
+    sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'result',
+      body: 'Correct synthesis for task-real',
+      metadata: { task_id: 'task-real' },
+    });
+
+    // Act: send a ghost/unrelated message without task_id (simulates the race scenario)
+    sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'result',
+      body: 'Ghost-bug alert — should NOT end up in any task.result',
+      // no metadata.task_id — old FIFO code would have written this to task-other
+    });
+
+    const real  = query<{ status: string; result: string }>(
+      'SELECT status, result FROM orchestrator_tasks WHERE id = ?', 'task-real',
+    );
+    const other = query<{ status: string; result: string }>(
+      'SELECT status, result FROM orchestrator_tasks WHERE id = ?', 'task-other',
+    );
+
+    // task-real must be completed with the CORRECT result body
+    assert.equal(real[0]!.status, 'completed', 'task-real must be completed');
+    assert.equal(real[0]!.result, 'Correct synthesis for task-real',
+      'task-real.result must contain the correct body, not the ghost message');
+
+    // task-other must NOT be touched by the ghost message
+    assert.equal(other[0]!.status, 'in_progress',
+      'task-other must remain in_progress — ghost message must not cross-contaminate');
+    assert.equal(other[0]!.result, null,
+      'task-other.result must be null — ghost message must not write into it');
+  });
+
+  it('invariant guard: task with no workers and no activity is not auto-completed (#266)', () => {
+    // A phantom task with zero workers and zero activity must never be auto-completed,
+    // even when a result message names it explicitly via task_id.
+    const ts = '2026-01-01T00:00:00Z';
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, status, priority, created_at, updated_at)
+       VALUES ('ghost-task', 'Ghost Task', 'in_progress', 0, ?, ?)`,
+      ts, ts,
+    );
+    // Intentionally no workers and no activity inserted.
+
+    sendMessage({
+      from: 'orchestrator',
+      to: 'comms',
+      type: 'result',
+      body: 'Should be rejected by invariant',
+      metadata: { task_id: 'ghost-task' },
+    });
+
+    const task = query<{ status: string; result: string }>(
+      'SELECT status, result FROM orchestrator_tasks WHERE id = ?', 'ghost-task',
+    );
+    assert.equal(task[0]!.status, 'in_progress',
+      'ghost task (no workers, no activity) must not be auto-completed');
+    assert.equal(task[0]!.result, null,
+      'ghost task result must remain null');
   });
 });

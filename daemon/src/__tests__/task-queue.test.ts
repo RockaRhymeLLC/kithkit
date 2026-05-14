@@ -664,3 +664,112 @@ describe('Task Queue API', { concurrency: 1 }, () => {
     });
   });
 });
+
+// ── Regression #267 — in_progress filter divergence ──────────────────────────
+//
+// Symptom: GET /api/orchestrator/tasks?status=in_progress returns empty while
+// GET /api/orchestrator/tasks/:id for the same task returns status=in_progress.
+//
+// Root cause: the race in #266 could auto-complete the task between the two
+// queries, making the filter appear to diverge.  This test pins the filter
+// behaviour: a task set to in_progress must appear in both the filter view
+// and the per-task view simultaneously.
+describe('Regression #267 — in_progress filter must agree with per-task query', () => {
+  let server: http.Server;
+  let tmpDir: string;
+
+  function setup267(): Promise<void> {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-tq267-'));
+    _resetDbForTesting();
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+
+    server = http.createServer((inReq, res) => {
+      const url = new URL(inReq.url ?? '/', `http://localhost:${TEST_PORT + 1}`);
+      res.setHeader('X-Timestamp', new Date().toISOString());
+      handleTaskQueueRoute(inReq, res, url.pathname, url.searchParams)
+        .then((handled) => {
+          if (!handled) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
+          }
+        })
+        .catch((err) => {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: String(err), timestamp: new Date().toISOString() }));
+          }
+        });
+    });
+
+    return new Promise<void>((resolve) => {
+      server.listen(TEST_PORT + 1, '127.0.0.1', resolve);
+    });
+  }
+
+  function teardown267(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      _resetDbForTesting();
+      server.close(() => {
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+        resolve();
+      });
+    });
+  }
+
+  function req267(method: string, urlPath: string, body?: unknown): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const opts: http.RequestOptions = {
+        host: '127.0.0.1',
+        port: TEST_PORT + 1,
+        path: urlPath,
+        method,
+        timeout: 5000,
+        headers: {
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          'Connection': 'close',
+        },
+      };
+      const r = http.request(opts, (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+      });
+      r.on('error', reject);
+      r.on('timeout', () => { r.destroy(); reject(new Error('timeout')); });
+      if (body !== undefined) r.write(JSON.stringify(body));
+      r.end();
+    });
+  }
+
+  beforeEach(setup267);
+  afterEach(teardown267);
+
+  it('regression #267: filter and per-task query agree on in_progress status', async () => {
+    // Create a task and advance it to in_progress
+    const createRes = await req267('POST', '/api/orchestrator/tasks', { title: 'Regression #267 task' });
+    assert.equal(createRes.status, 201);
+    const task = JSON.parse(createRes.body);
+
+    await req267('PUT', `/api/orchestrator/tasks/${task.id}`, {
+      status: 'assigned', assignee: 'orchestrator',
+    });
+    const inProgressRes = await req267('PUT', `/api/orchestrator/tasks/${task.id}`, {
+      status: 'in_progress',
+    });
+    assert.equal(inProgressRes.status, 200);
+
+    // Per-task query must return in_progress
+    const detailRes = await req267('GET', `/api/orchestrator/tasks/${task.id}`);
+    assert.equal(detailRes.status, 200);
+    const detail = JSON.parse(detailRes.body);
+    assert.equal(detail.status, 'in_progress', 'per-task query must return in_progress');
+
+    // Filter query for in_progress must include this task
+    const filterRes = await req267('GET', '/api/orchestrator/tasks?status=in_progress');
+    assert.equal(filterRes.status, 200);
+    const filterBody = JSON.parse(filterRes.body);
+    const found = filterBody.data.find((t: { id: string }) => t.id === task.id);
+    assert.ok(found, 'in_progress filter must return the task (regression #267)');
+    assert.equal(found.status, 'in_progress', 'filter result status must equal in_progress');
+  });
+});
