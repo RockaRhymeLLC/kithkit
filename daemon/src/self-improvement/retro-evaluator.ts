@@ -24,6 +24,11 @@ interface OrchestratorTask {
   retry_count: number;
   outcome: string | null;
   outcome_notes: string | null;
+  // v2.1 fields — optional for backward compat with DB rows pre-migration 021
+  generate_retro?: number | null;
+  // comms feedback fields — optional for backward compat with DB rows pre-migration 020
+  comms_outcome?: string | null;
+  comms_corrections?: string | null;
   created_at: string;
   completed_at: string | null;
 }
@@ -69,14 +74,35 @@ export function _setProfilesDirForTesting(dir: string | null): void {
 
 /**
  * Checks whether a retrospective should be triggered for this task.
- * Returns true if self_improvement.enabled AND self_improvement.retro.enabled
- * AND at least one error/retry signal is present.
+ * Returns true if:
+ *   - self_improvement.enabled AND self_improvement.retro.enabled, AND
+ *   - at least one signal is present:
+ *       (a) standard error/retry signals, OR
+ *       (b) per-task generate_retro = 1, OR
+ *       (c) retro_all_terminal global config knob is true.
+ * Returns false immediately if generate_retro = 0 (explicit suppression).
  */
 export function shouldTriggerRetro(task: OrchestratorTask & { workers?: WorkerJob[] }): boolean {
   const cfg = getSelfImprovementConfig();
 
   if (!cfg.enabled || !cfg.retro.enabled) {
     return false;
+  }
+
+  // Per-task generate_retro=0: explicit suppression — no retro for this task.
+  // Takes priority over the global retro_all_terminal knob and signal-based triggers.
+  if (task.generate_retro === 0) {
+    return false;
+  }
+
+  // Global override — trigger on every terminal task
+  if (cfg.retro.retro_all_terminal) {
+    return true;
+  }
+
+  // Per-task generate_retro=1: force retro regardless of error/retry signals
+  if ((task.generate_retro ?? 0) === 1) {
+    return true;
   }
 
   const triggers = cfg.retro.triggers;
@@ -127,11 +153,13 @@ export async function spawnRetro(
     `Title: ${task.title}`,
     `Description: ${task.description ?? '(none)'}`,
     `Status: ${task.status}`,
-    `Result: ${task.result ?? '(none)'}`,
+    `Result (orch internal): ${task.result ?? '(none)'}`,
     `Error: ${task.error ?? '(none)'}`,
     `Retry count: ${task.retry_count}`,
     `Outcome: ${task.outcome ?? 'unknown'}`,
     `Outcome notes: ${task.outcome_notes ?? '(none)'}`,
+    `Comms outcome: ${task.comms_outcome ?? '(not yet acknowledged)'}`,
+    `Comms corrections: ${task.comms_corrections ?? '(none)'}`,
     '```',
     '',
     '### Activity Log',
@@ -139,7 +167,7 @@ export async function spawnRetro(
     activityLog || '(no activity recorded)',
     '```',
     '',
-    'Analyze the above task. Extract up to 5 actionable learnings that would help future agents perform better. Output your findings as JSON as instructed in your profile.',
+    'Analyze the above task. If comms_outcome differs from the orch-internal outcome (e.g. orch completed but comms marked corrected), treat that delta as a high-signal lesson. Extract up to 5 actionable learnings that would help future agents perform better. Output your findings as JSON as instructed in your profile.',
   ].join('\n');
 
   const { jobId } = await spawnFn({

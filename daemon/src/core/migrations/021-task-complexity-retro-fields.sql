@@ -1,0 +1,23 @@
+-- v2.1 task fields: complexity sizing, per-task retro flag, and cross-machine coordination.
+-- Documents fields referenced in PR #262's /task-system skill (§6, §7, §8).
+--
+-- complexity: rough task sizing for ROI prioritization (§7).
+--   Values: S (<30 min) | M (30 min–2 h) | L (2–8 h) | XL (multi-day) | NULL (unclassified).
+--   CHECK constraint enforces the vocabulary; NULL is allowed for legacy rows.
+--
+-- generate_retro: per-task retro flag (§6).
+--   1  = force retro for this task regardless of global config.
+--   0  = suppress retro even if self_improvement.retro.retro_all_terminal is true.
+--   NULL (default) = defer to self_improvement.retro.retro_all_terminal global config knob.
+--   Reserve generate_retro=1 for tasks with genuine retro signal (novel failures,
+--   first use of a new tool/pattern, unexpected complexity).
+--
+-- canonical_task_external_id: cross-machine coordination identifier (§8).
+--   When the same logical task is spawned on multiple machines, set this to the same
+--   string on all instances so agents can deduplicate and correlate work across machines
+--   without a shared DB. Format: typically <source>:<id> (e.g. github:issue-123).
+--   No UNIQUE constraint — two machines may briefly hold tasks with the same external ID
+--   before synchronisation.
+--safe-alter: orchestrator_tasks ADD COLUMN complexity TEXT CHECK(complexity IN ('S','M','L','XL'))
+--safe-alter: orchestrator_tasks ADD COLUMN generate_retro INTEGER DEFAULT NULL
+--safe-alter: orchestrator_tasks ADD COLUMN canonical_task_external_id TEXT

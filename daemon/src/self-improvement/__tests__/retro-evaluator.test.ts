@@ -68,6 +68,7 @@ function makeTask(overrides: Partial<{
   retry_count: number;
   outcome: string | null;
   outcome_notes: string | null;
+  generate_retro: number | null;
   created_at: string;
   completed_at: string | null;
   workers: Array<{ id: string; status: string; error: string | null }>;
@@ -203,6 +204,86 @@ describe('shouldTriggerRetro returns false when self_improvement disabled', () =
     );
     loadConfig(tmpDir);
     const task = makeTask({ error: 'Some error' });
+    assert.equal(shouldTriggerRetro(task), false);
+  });
+});
+
+// ── generate_retro and retro_all_terminal tests (v2.1) ───────
+
+describe('shouldTriggerRetro honors generate_retro per-task flag', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    _resetConfigForTesting();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-retro-gen-'));
+    enableSelfImprovement(tmpDir);
+  });
+
+  afterEach(() => {
+    _resetConfigForTesting();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns true when generate_retro=1 even with no error or retry', () => {
+    const task = makeTask({ error: null, retry_count: 0, generate_retro: 1 });
+    assert.equal(shouldTriggerRetro(task), true);
+  });
+
+  it('returns false when generate_retro=0 suppresses retro even with error', () => {
+    const task = makeTask({ error: 'Some error', retry_count: 0, generate_retro: 0 });
+    assert.equal(shouldTriggerRetro(task), false);
+  });
+
+  it('falls back to signal-based evaluation when generate_retro is null', () => {
+    const taskWithError = makeTask({ error: 'Some error', retry_count: 0, generate_retro: null });
+    assert.equal(shouldTriggerRetro(taskWithError), true);
+
+    const cleanTask = makeTask({ error: null, retry_count: 0, generate_retro: null });
+    assert.equal(shouldTriggerRetro(cleanTask), false);
+  });
+});
+
+describe('shouldTriggerRetro honors retro_all_terminal global config', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    _resetConfigForTesting();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-retro-all-'));
+  });
+
+  afterEach(() => {
+    _resetConfigForTesting();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('returns true for a clean task when retro_all_terminal=true', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'kithkit.config.yaml'),
+      [
+        'self_improvement:',
+        '  enabled: true',
+        '  retro:',
+        '    enabled: true',
+        '    retro_all_terminal: true',
+      ].join('\n') + '\n',
+    );
+    loadConfig(tmpDir);
+    const task = makeTask({ error: null, retry_count: 0 });
+    assert.equal(shouldTriggerRetro(task), true);
+  });
+
+  it('returns false for a clean task when retro_all_terminal defaults to false', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'kithkit.config.yaml'),
+      [
+        'self_improvement:',
+        '  enabled: true',
+        '  retro:',
+        '    enabled: true',
+      ].join('\n') + '\n',
+    );
+    loadConfig(tmpDir);
+    const task = makeTask({ error: null, retry_count: 0 });
     assert.equal(shouldTriggerRetro(task), false);
   });
 });
