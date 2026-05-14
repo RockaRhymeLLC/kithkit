@@ -13,6 +13,7 @@ export interface SelfImprovementConfig {
     enabled: boolean;
     triggers: { on_error: boolean; on_correction: boolean; on_retry: boolean };
     max_learnings_per_retro: number;
+    retro_all_terminal: boolean;
   };
   transcript_review: {
     enabled: boolean;
@@ -47,6 +48,7 @@ const DEFAULTS: SelfImprovementConfig = {
     enabled: false,
     triggers: { on_error: true, on_correction: true, on_retry: true },
     max_learnings_per_retro: 5,
+    retro_all_terminal: false,
   },
   transcript_review: {
     enabled: false,
@@ -85,6 +87,7 @@ type RawSelfImprovement = Partial<{
     enabled: boolean;
     triggers: Partial<{ on_error: boolean; on_correction: boolean; on_retry: boolean }>;
     max_learnings_per_retro: number;
+    retro_all_terminal: boolean;
   }>;
   transcript_review: Partial<{
     enabled: boolean;
@@ -125,6 +128,7 @@ export function getSelfImprovementConfig(): SelfImprovementConfig {
       },
       max_learnings_per_retro:
         raw.retro?.max_learnings_per_retro ?? DEFAULTS.retro.max_learnings_per_retro,
+      retro_all_terminal: raw.retro?.retro_all_terminal ?? DEFAULTS.retro.retro_all_terminal,
     },
     transcript_review: {
       enabled: raw.transcript_review?.enabled ?? DEFAULTS.transcript_review.enabled,

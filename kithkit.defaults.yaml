@@ -143,6 +143,7 @@ self_improvement:
       on_correction: true
       on_retry: true
     max_learnings_per_retro: 5
+    retro_all_terminal: false   # When true, spawn a retro worker for every terminal task
   transcript_review:
     enabled: false
     interval_actions: 25
