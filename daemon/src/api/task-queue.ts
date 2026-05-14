@@ -44,9 +44,11 @@ type ActivityType = 'progress' | 'note';
 
 type TaskOutcome = 'success' | 'partial' | 'failed' | 'unknown';
 type CommsOutcome = 'accepted' | 'corrected' | 'redirected' | 'cancelled';
+type Complexity = 'S' | 'M' | 'L' | 'XL';
 
 const VALID_OUTCOMES: readonly TaskOutcome[] = ['success', 'partial', 'failed', 'unknown'];
 const VALID_COMMS_OUTCOMES: readonly CommsOutcome[] = ['accepted', 'corrected', 'redirected', 'cancelled'];
+const VALID_COMPLEXITY: readonly Complexity[] = ['S', 'M', 'L', 'XL'];
 
 interface OrchestratorTask {
   id: string;
@@ -65,6 +67,10 @@ interface OrchestratorTask {
   comms_outcome: CommsOutcome | null;
   comms_corrections: string | null;
   acknowledged_at: string | null;
+  // v2.1 fields — migration 021
+  complexity: Complexity | null;
+  generate_retro: number | null;   // 0/1/null (SQLite boolean)
+  canonical_task_external_id: string | null;
   plan: string | null;
   plan_status: 'submitted' | 'approved' | 'rejected' | null;
   plan_submitted_at: string | null;
@@ -203,14 +209,16 @@ export async function handleTaskQueueRoute(
       const ts = now();
 
       exec(
-        `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, timeout_seconds, created_at, updated_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?)`,
+        `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, timeout_seconds, complexity, canonical_task_external_id, created_at, updated_at)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
         id,
         body.title,
         typeof body.description === 'string' ? body.description : null,
         priority,
         typeof body.work_notes === 'string' ? body.work_notes : null,
         typeof body.timeout_seconds === 'number' ? body.timeout_seconds : null,
+        typeof body.complexity === 'string' && VALID_COMPLEXITY.includes(body.complexity as Complexity) ? body.complexity : null,
+        typeof body.canonical_task_external_id === 'string' ? body.canonical_task_external_id : null,
         ts,
         ts,
       );
@@ -783,6 +791,23 @@ export async function handleTaskQueueRoute(
         updates.outcome_notes = typeof body.outcome_notes === 'string' ? body.outcome_notes : null;
       }
 
+      // v2.1 fields — complexity, generate_retro, canonical_task_external_id
+      if (body.complexity !== undefined) {
+        if (body.complexity !== null && !VALID_COMPLEXITY.includes(body.complexity as Complexity)) {
+          json(res, 400, withTimestamp({ error: `complexity must be one of: ${VALID_COMPLEXITY.join(', ')}` }));
+          return true;
+        }
+        updates.complexity = body.complexity ?? null;
+      }
+      if (body.generate_retro !== undefined) {
+        updates.generate_retro = body.generate_retro === null ? null : (body.generate_retro ? 1 : 0);
+      }
+      if (body.canonical_task_external_id !== undefined) {
+        updates.canonical_task_external_id = typeof body.canonical_task_external_id === 'string'
+          ? body.canonical_task_external_id
+          : null;
+      }
+
       // Comms feedback fields — revisable even on terminal tasks
       if (body.comms_outcome !== undefined) {
         if (body.comms_outcome !== null && !VALID_COMMS_OUTCOMES.includes(body.comms_outcome as CommsOutcome)) {
@@ -885,8 +910,23 @@ export async function handleTaskQueueRoute(
       // Non-blocking retro evaluation on the status transition to terminal state.
       // Skip for comms-feedback-only updates (updates.status is undefined in that case)
       // to avoid spawning duplicate retro workers on feedback revisions.
+      //
+      // Triggers if:
+      //   (a) standard retro conditions (error/retry signals) — handled inside _evalFn, OR
+      //   (b) per-task generate_retro flag is set to 1, OR
+      //   (c) retro_all_terminal config knob is true (global override).
       if (updates.status && (targetStatus === 'completed' || targetStatus === 'failed')) {
-        _evalFn(taskId).catch(err => log.warn('Retro evaluation failed', { taskId, error: String(err) }));
+        const { getSelfImprovementConfig: _getSIC } = await import('../self-improvement/config.js');
+        const _sic = _getSIC();
+        const perTaskRetro = updated.generate_retro === 1;
+        const globalAll = _sic.retro.retro_all_terminal;
+        if (perTaskRetro || globalAll) {
+          // Force evaluation regardless of error/retry signals
+          _evalFn(taskId).catch(err => log.warn('Retro evaluation (forced) failed', { taskId, error: String(err) }));
+        } else {
+          // Standard signal-based evaluation
+          _evalFn(taskId).catch(err => log.warn('Retro evaluation failed', { taskId, error: String(err) }));
+        }
       }
 
       json(res, 200, withTimestamp(updated));
