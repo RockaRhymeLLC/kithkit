@@ -15,6 +15,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [Phase 8: Caps + Unified Task System v2.1] — PRs #259, migration 019 (2026-05-13)
+
+### Added
+- **Caps system** (PR #259): config-driven agent turn limits replace hardcoded floors. New `caps:` block in `kithkit.defaults.yaml` — `warning_threshold_pct`, `inactivity_timeout_ms`, `default_max_turns`, `profiles.<name>.max_turns`. All default values are 5× the prior hardcoded floors. In-band warning injected at `warning_threshold_pct` of the turn cap; hard stop at 100%.
+
+### Changed
+- Profile `maxTurns` frontmatter field is now a back-compat fallback; `caps.profiles.<name>.max_turns` takes precedence at spawn time.
+- PUT `/api/orchestrator/tasks/:id` supports closure fields (`acknowledged_at`, `comms_outcome`, `comms_corrections`). Guard: only comms may set `acknowledged_at` on tasks with `source='human'`.
+
+---
+
 ## [Phase 7: Migration & Operational] — PRs #234–#241 (2026-04-14)
 
 ### Added
