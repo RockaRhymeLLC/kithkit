@@ -17,7 +17,7 @@ import {
   _getLastSdkCallArgs,
   _getCapWarningStateForTesting,
 } from '../agents/sdk-adapter.js';
-import type { WorkerProfile, SpawnOptions } from '../agents/sdk-adapter.js';
+import type { WorkerProfile } from '../agents/sdk-adapter.js';
 
 // ── Mock helpers ─────────────────────────────────────────────
 
@@ -585,6 +585,109 @@ describe('SDK Adapter', { concurrency: 1 }, () => {
       // Worker should complete cleanly.
       await sleep(100);
       assert.equal(getWorkerStatus(id)?.status, 'completed');
+    });
+  });
+
+  // ── Pulse / lastActivityAt (new) ───────────────────────────────
+
+  describe('Worker liveness tracking — lastActivityAt', () => {
+    // Test A: lastActivityAt is null before any message received
+    it('A: lastActivityAt is null immediately after spawn (before any SDK message)', async () => {
+      _setQueryFnForTesting(async function* () {
+        // Hang before yielding any message — we'll check state synchronously
+        await new Promise(() => {});
+        yield { type: 'assistant', content: 'never' } as never;
+      });
+
+      const id = spawnWorker({ prompt: 'test', profile: { name: 'test' }, timeoutMs: 60_000 });
+      // State is set synchronously before the async generator runs
+      const status = getWorkerStatus(id);
+      assert.equal(status?.lastActivityAt, null, 'Should be null before first message');
+    });
+
+    // Test B: lastActivityAt updates after each SDK message
+    it('B: lastActivityAt updates on each SDK message', async () => {
+      const timestamps: (string | null)[] = [];
+
+      _setQueryFnForTesting(async function* () {
+        yield { type: 'assistant', content: 'msg 1' } as never;
+        await sleep(10);
+        yield { type: 'assistant', content: 'msg 2' } as never;
+        await sleep(10);
+        yield { type: 'result', subtype: 'success', result: 'Done', usage: {} } as never;
+      });
+
+      const id = spawnWorker({ prompt: 'test', profile: { name: 'test' } });
+      await sleep(100); // let all messages process
+
+      const status = getWorkerStatus(id);
+      assert.ok(status?.lastActivityAt, 'Should have lastActivityAt after messages');
+      assert.equal(status?.status, 'completed');
+      // Timestamp should be a valid ISO string
+      const ts = new Date(status!.lastActivityAt!);
+      assert.ok(!isNaN(ts.getTime()), 'lastActivityAt should be a valid ISO timestamp');
+    });
+
+    // Test C: getWorkerStatus() returns lastActivityAt
+    it('C: getWorkerStatus returns lastActivityAt in WorkerState', async () => {
+      _setQueryFnForTesting(createMockQuery([
+        { type: 'assistant', content: 'working' },
+        { type: 'result', subtype: 'success', result: 'Done', usage: {} },
+      ]));
+
+      const id = spawnWorker({ prompt: 'test', profile: { name: 'test' } });
+      await sleep(50);
+
+      const status = getWorkerStatus(id);
+      assert.ok(status, 'Worker should exist');
+      assert.ok('lastActivityAt' in status!, 'WorkerState must include lastActivityAt field');
+      assert.ok(status!.lastActivityAt !== undefined, 'lastActivityAt should be present (not undefined)');
+    });
+
+    // Test D: quiet warning fires when warnThresholdMs is exceeded
+    it('D: quiet_warning fires before kill when warn threshold exceeded', async () => {
+      // Use a hanging query to simulate silence after initial message
+      _setQueryFnForTesting(createHangingQuery());
+
+      // warnThresholdMs=100ms, kill at 300ms — warning should fire first
+      const id = spawnWorker({
+        prompt: 'test',
+        profile: { name: 'test' },
+        timeoutMs: 300,
+        warnThresholdMs: 100,
+      });
+
+      // Wait past warn threshold but before kill
+      await sleep(200);
+
+      // Worker should still be running (not killed yet)
+      assert.equal(getWorkerStatus(id)?.status, 'running', 'Worker should still be running at warn threshold');
+
+      // Wait for kill
+      await sleep(200);
+
+      assert.equal(getWorkerStatus(id)?.status, 'timeout', 'Worker should timeout at inactivity cap');
+    });
+
+    // Test E: true silence still kills worker at inactivity cap (pulse does not suppress kills)
+    it('E: inactivity kill still fires at timeoutMs even with pulse tracking enabled', async () => {
+      _setQueryFnForTesting(createHangingQuery());
+
+      const id = spawnWorker({
+        prompt: 'test',
+        profile: { name: 'test' },
+        timeoutMs: 150,
+        warnThresholdMs: 80, // warn at 80ms, kill at 150ms
+      });
+
+      await sleep(50);
+      assert.equal(getWorkerStatus(id)?.status, 'running');
+
+      await sleep(200); // past both warn and kill thresholds
+
+      const status = getWorkerStatus(id);
+      assert.equal(status?.status, 'timeout', 'Pulse observability must not suppress the inactivity kill');
+      assert.ok(status?.error?.includes('Inactivity timeout'));
     });
   });
 });

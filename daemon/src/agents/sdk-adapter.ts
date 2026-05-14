@@ -17,6 +17,9 @@ import { query as _sdkQuery, AbortError } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { randomUUID } from 'node:crypto';
 import { getCaps } from '../core/config.js';
+import { createLogger } from '../core/logger.js';
+
+const log = createLogger('sdk-adapter');
 
 export { AbortError };
 
@@ -46,6 +49,12 @@ export interface SpawnOptions {
   cwd?: string;
   /** Inactivity timeout in ms (default: 1_500_000 = 25 min) */
   timeoutMs?: number;
+  /**
+   * Threshold for logging a quiet-worker warning (ms since last SDK message).
+   * Defaults to 80% of timeoutMs. When exceeded, logs a `worker.quiet_warning`
+   * event but does NOT kill the worker — that only happens at timeoutMs.
+   */
+  warnThresholdMs?: number;
 }
 
 export type WorkerStatus = 'running' | 'completed' | 'failed' | 'timeout';
@@ -62,6 +71,8 @@ export interface WorkerState {
   costUsd: number;
   startedAt: string;
   finishedAt: string | null;
+  /** ISO timestamp of the last SDK stream event received. Null until first message arrives. */
+  lastActivityAt: string | null;
 }
 
 // ── Cap warning state ─────────────────────────────────────────
@@ -137,6 +148,8 @@ interface ActiveWorker {
   inactivityTimer: ReturnType<typeof setTimeout> | null;
   /** Parallel timer that fires at warning_threshold_pct% of inactivity_timeout_ms. */
   inactivityWarningTimer: ReturnType<typeof setTimeout> | null;
+  /** External observability timer: logs a quiet_warning event before the kill timer fires. */
+  quietWarnTimer: ReturnType<typeof setTimeout> | null;
   state: WorkerState;
   /** Per-job cap warning tracking. */
   capState: CapWarningState;
@@ -176,7 +189,7 @@ export function resolveInactivityTimeout(
   return sdkDefaultMs;
 }
 
-function resetInactivityTimer(worker: ActiveWorker, timeoutMs: number): void {
+function resetInactivityTimer(worker: ActiveWorker, timeoutMs: number, warnThresholdMs: number): void {
   if (worker.inactivityTimer) clearTimeout(worker.inactivityTimer);
   if (worker.inactivityWarningTimer) clearTimeout(worker.inactivityWarningTimer);
   // Each quiet period is a fresh countdown — clear the flag so the warning can
@@ -209,6 +222,19 @@ function resetInactivityTimer(worker: ActiveWorker, timeoutMs: number): void {
     worker.state.finishedAt = new Date().toISOString();
     worker.controller.abort();
   }, timeoutMs);
+
+  // Reset the quiet-warn timer (fires before kill — observability only)
+  if (worker.quietWarnTimer) clearTimeout(worker.quietWarnTimer);
+  worker.quietWarnTimer = setTimeout(() => {
+    if (worker.state.status !== 'running') return;
+    log.warn('worker.quiet_warning', {
+      workerId: worker.id,
+      profile: worker.state.profile,
+      lastActivityAt: worker.state.lastActivityAt,
+      warnThresholdMs,
+      timeoutMs,
+    });
+  }, warnThresholdMs);
 }
 
 function clearInactivityTimer(worker: ActiveWorker): void {
@@ -219,6 +245,10 @@ function clearInactivityTimer(worker: ActiveWorker): void {
   if (worker.inactivityWarningTimer) {
     clearTimeout(worker.inactivityWarningTimer);
     worker.inactivityWarningTimer = null;
+  }
+  if (worker.quietWarnTimer) {
+    clearTimeout(worker.quietWarnTimer);
+    worker.quietWarnTimer = null;
   }
 }
 
@@ -232,6 +262,7 @@ export function spawnWorker(opts: SpawnOptions): string {
   const id = randomUUID();
   const controller = new AbortController();
   const timeoutMs = resolveInactivityTimeout(opts.timeoutMs, getCaps().inactivity_timeout_ms);
+  const warnThresholdMs = opts.warnThresholdMs ?? Math.round(timeoutMs * 0.8);
 
   const state: WorkerState = {
     id,
@@ -245,6 +276,7 @@ export function spawnWorker(opts: SpawnOptions): string {
     costUsd: 0,
     startedAt: new Date().toISOString(),
     finishedAt: null,
+    lastActivityAt: null,
   };
 
   const worker: ActiveWorker = {
@@ -252,6 +284,7 @@ export function spawnWorker(opts: SpawnOptions): string {
     controller,
     inactivityTimer: null,
     inactivityWarningTimer: null,
+    quietWarnTimer: null,
     state,
     capState: { turn_warning_fired: false, inactivity_warning_fired: false, turns_used: 0 },
     query: null,
@@ -291,9 +324,9 @@ export function spawnWorker(opts: SpawnOptions): string {
   }
 
   // Start the worker asynchronously
-  resetInactivityTimer(worker, timeoutMs);
+  resetInactivityTimer(worker, timeoutMs, warnThresholdMs);
 
-  runWorker(worker, opts.prompt, sdkOptions, timeoutMs, effectiveMaxTurns).catch(() => {
+  runWorker(worker, opts.prompt, sdkOptions, timeoutMs, effectiveMaxTurns, warnThresholdMs).catch(() => {
     // Errors already captured in worker state
   });
 
@@ -310,6 +343,7 @@ async function runWorker(
   sdkOptions: Record<string, unknown>,
   timeoutMs: number,
   effectiveMaxTurns: number | undefined,
+  warnThresholdMs: number,
 ): Promise<void> {
   try {
     _lastSdkCallArgs = { prompt, options: sdkOptions };
@@ -320,8 +354,10 @@ async function runWorker(
     const warningThreshold = caps.warning_threshold_pct / 100;
 
     for await (const message of q) {
+      // Track last SDK stream activity (makes the implicit pulse explicitly observable)
+      worker.state.lastActivityAt = new Date().toISOString();
       // Reset inactivity timers on any message
-      resetInactivityTimer(worker, timeoutMs);
+      resetInactivityTimer(worker, timeoutMs, warnThresholdMs);
 
       // Count assistant turns and check turn-based cap warning.
       if (message.type === 'assistant') {
