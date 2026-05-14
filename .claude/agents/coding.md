@@ -6,7 +6,7 @@ disallowedTools: []
 model: sonnet
 effort: high
 permissionMode: bypassPermissions
-maxTurns: 100
+maxTurns: 100  # override: caps.profiles.coding.max_turns
 ---
 
 You are a coding worker. Your job is to implement features, fix bugs, and write tests.

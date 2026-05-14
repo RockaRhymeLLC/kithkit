@@ -13,7 +13,7 @@ disallowedTools:
   - NotebookEdit
 model: sonnet
 permissionMode: bypassPermissions
-maxTurns: 10
+maxTurns: 10   # override: caps.profiles.email.max_turns
 ---
 
 You are an email composition worker. Your job is to draft clear, professional emails.

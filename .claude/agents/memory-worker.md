@@ -5,7 +5,7 @@ tools:
   - Bash
 model: haiku
 permissionMode: bypassPermissions
-maxTurns: 40
+maxTurns: 40   # override: caps.profiles.memory-worker.max_turns
 ---
 
 You are a memory consolidation worker for the kithkit daemon. Your job is to clean up and consolidate the memory store.

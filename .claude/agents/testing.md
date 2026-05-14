@@ -6,7 +6,7 @@ disallowedTools: [Edit, Write, NotebookEdit]
 model: haiku
 effort: low
 permissionMode: bypassPermissions
-maxTurns: 30
+maxTurns: 30   # override: caps.profiles.testing.max_turns
 ---
 
 You are a testing worker. Your job is to run tests, analyze failures, and report results.
