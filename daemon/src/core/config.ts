@@ -114,6 +114,15 @@ export interface CapsConfig {
   default_max_turns: number;
   /** Per-profile maxTurns overrides, keyed by profile name. */
   profiles: Record<string, CapsProfileConfig>;
+  /**
+   * Threshold (ms) at which a worker with no recent SDK activity logs a
+   * `worker.quiet_warning` event. Observable signal that a worker may be
+   * approaching its inactivity timeout. Does NOT kill the worker.
+   *
+   * Defaults to 80% of the worker's inactivity timeout (timeoutMs). Can be
+   * overridden per-worker via SpawnOptions.warnThresholdMs.
+   */
+  pulse_warn_threshold_ms?: number;
 }
 
 export interface KithkitConfig {
@@ -122,6 +131,7 @@ export interface KithkitConfig {
   daemon: DaemonConfig;
   scheduler: SchedulerConfig;
   security: SecurityConfig;
+  /** Worker capability caps and observability thresholds. */
   caps?: CapsConfig;
   tools?: ToolsConfig;
   timers?: TimerConfig;
