@@ -2337,7 +2337,7 @@ send `X-Agent: comms` or the request is rejected with 403. The orchestrator can
 still close its own `source='orchestrator'` (or NULL/legacy) tasks freely.
 
 The existing terminal-status guard (acknowledged_at requires a terminal status)
-takes precedence: a non-terminal task returns 409 regardless of caller.
+takes precedence: a non-terminal task returns 409 regardless of the caller's identity (this check precedes the comms-only guard).
 
 ```json
 // Response 200 — updated task object (base fields only, no workers/activity)
