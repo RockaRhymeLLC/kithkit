@@ -27,6 +27,7 @@ const log = createLogger('network:sdk');
 
 let _network: A2ANetworkClient | null = null;
 let _config: AgentConfig | null = null;
+let _initInFlight: Promise<boolean> | null = null;
 
 export function getNetworkClient(): A2ANetworkClient | null {
   return _network;
@@ -35,8 +36,18 @@ export function getNetworkClient(): A2ANetworkClient | null {
 /**
  * Initialize the KithKit A2A Network SDK.
  * Returns true if initialization succeeded, false if degraded to LAN-only.
+ *
+ * Single-flight: concurrent calls during the same init sequence share one
+ * promise. This prevents two registerWithRetry loops from both calling
+ * initNetworkSDK on success and creating duplicate SDK instances.
  */
-export async function initNetworkSDK(config: Record<string, unknown>): Promise<boolean> {
+export function initNetworkSDK(config: Record<string, unknown>): Promise<boolean> {
+  if (_initInFlight) return _initInFlight;
+  _initInFlight = _doInitNetworkSDK(config).finally(() => { _initInFlight = null; });
+  return _initInFlight;
+}
+
+async function _doInitNetworkSDK(config: Record<string, unknown>): Promise<boolean> {
   _config = config as unknown as AgentConfig;
   const networkConfig = _config.network;
 
@@ -210,6 +221,13 @@ export async function stopNetworkSDK(): Promise<void> {
     _network = null;
     log.info('Network SDK stopped');
   }
+}
+
+/** Reset module state — for testing only. */
+export function _resetForTesting(): void {
+  _network = null;
+  _config = null;
+  _initInFlight = null;
 }
 
 // ── Event Wiring ─────────────────────────────────────────────
