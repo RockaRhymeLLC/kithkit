@@ -15,18 +15,30 @@
  *
  * Alert channels: telegram, tmux (comms session), A2A (configured group, optional).
  * Dedup window: 1 hour by default (daemon.self_watchdog.dedup_window_seconds).
+ *
+ * Channel survivability note: Telegram delivery routes through POST /api/send on the
+ * daemon's own HTTP server; A2A delivery routes through POST /api/a2a/send on the
+ * same HTTP server. Both channels share the daemon's HTTP listener as their failure
+ * domain — if the HTTP listener hangs or crashes, both fail silently in their
+ * try/catch. Only the tmux injectMessage path is truly out-of-band. The three-channel
+ * fanout is designed for the motivating zombie scenario where the scheduler is ticking
+ * and the HTTP listener is alive but no real work is being processed.
  */
 
 import { createLogger } from '../../core/logger.js';
 import { loadConfig } from '../../core/config.js';
 import type { Scheduler } from '../scheduler.js';
 import { getLastActivityTimestamp } from './helpers/activity-query.js';
-import { fireSelfWatchdogAlert } from './helpers/alert.js';
+import { fireSelfWatchdogAlert as _fireSelfWatchdogAlert } from './helpers/alert.js';
 
 const log = createLogger('self-watchdog');
 
 const DEFAULT_WARN_SECONDS = 6 * 3600;   // 6 hours
 const DEFAULT_ALERT_SECONDS = 12 * 3600; // 12 hours
+
+// ── Injectable deps (overridable for testing) ────────────────
+
+let fireSelfWatchdogAlert = _fireSelfWatchdogAlert;
 
 async function run(): Promise<void> {
   const config = loadConfig();
@@ -41,26 +53,34 @@ async function run(): Promise<void> {
   const alertSeconds = watchdog?.idle_threshold_seconds?.alert_seconds ?? DEFAULT_ALERT_SECONDS;
 
   const lastActivityAt = await getLastActivityTimestamp();
-  const nowMs = Date.now();
 
-  // If no activity ever recorded, treat as maximally idle
-  const idleMs = lastActivityAt !== null ? nowMs - lastActivityAt : Infinity;
-  const idleSeconds = idleMs === Infinity ? Infinity : idleMs / 1000;
+  // If no activity has ever been recorded (fresh install, DB wipe, daemon first boot),
+  // there is no evidence of a zombie — skip this tick rather than treating absence of
+  // data as maximum idleness. The watchdog will detect real zombie state once at least
+  // one activity record exists.
+  if (lastActivityAt === null) {
+    log.debug('Self-watchdog: no activity recorded yet — skipping (fresh install or DB wipe)');
+    return;
+  }
+
+  const nowMs = Date.now();
+  const idleMs = nowMs - lastActivityAt;
+  const idleSeconds = idleMs / 1000;
 
   log.debug('Self-watchdog tick', {
-    lastActivityAt: lastActivityAt ? new Date(lastActivityAt).toISOString() : 'never',
-    idleSeconds: idleSeconds === Infinity ? 'infinity' : Math.round(idleSeconds),
+    lastActivityAt: new Date(lastActivityAt).toISOString(),
+    idleSeconds: Math.round(idleSeconds),
     warnSeconds,
     alertSeconds,
   });
 
   if (idleSeconds >= alertSeconds) {
     log.warn('Daemon zombie detected — alert threshold exceeded', {
-      idleSeconds: idleSeconds === Infinity ? 'infinity' : Math.round(idleSeconds),
+      idleSeconds: Math.round(idleSeconds),
       alertSeconds,
     });
     await fireSelfWatchdogAlert('alert', {
-      idleSeconds: idleSeconds === Infinity ? alertSeconds : idleSeconds,
+      idleSeconds,
       lastActivityAt,
     });
   } else if (idleSeconds >= warnSeconds) {
@@ -82,4 +102,22 @@ export function register(scheduler: Scheduler): void {
   scheduler.registerHandler('self-watchdog', async () => {
     await run();
   });
+}
+
+// ── Testing ──────────────────────────────────────────────────
+
+/** @internal Expose run() for direct testing. */
+export async function _runForTesting(): Promise<void> {
+  return run();
+}
+
+/** @internal Override injectable deps for testing. Pass null to restore originals. */
+export function _setDepsForTesting(deps: {
+  fireSelfWatchdogAlert?: typeof _fireSelfWatchdogAlert;
+} | null): void {
+  if (deps === null) {
+    fireSelfWatchdogAlert = _fireSelfWatchdogAlert;
+    return;
+  }
+  if (deps.fireSelfWatchdogAlert) fireSelfWatchdogAlert = deps.fireSelfWatchdogAlert;
 }

@@ -2,9 +2,16 @@
  * Self-Watchdog Alert — three-channel alert fanout with dedup.
  *
  * Fires alerts via:
- *   1. Telegram — POST /api/send
+ *   1. Telegram — POST /api/send (routes through the daemon's own HTTP server)
  *   2. Tmux     — inject into the comms session (dynamic import, degrades gracefully)
- *   3. A2A      — broadcast to a configured A2A group (skipped if not configured)
+ *   3. A2A      — POST /api/a2a/send (routes through the daemon's own HTTP server)
+ *
+ * Channel survivability: Telegram and A2A both route through the daemon's own HTTP
+ * API (`http://127.0.0.1:{port}/api/send` and `/api/a2a/send`). They share the same
+ * failure domain as the daemon being watched — if the HTTP listener hangs, both fail
+ * silently in their try/catch blocks. Only the tmux injectMessage path is truly
+ * out-of-band. This fanout is designed for the zombie scenario where the HTTP listener
+ * is still alive but no real work is being processed.
  *
  * Dedup state is persisted in feature_state so it survives daemon restarts.
  * The dedup window prevents re-firing the same alert level within N seconds

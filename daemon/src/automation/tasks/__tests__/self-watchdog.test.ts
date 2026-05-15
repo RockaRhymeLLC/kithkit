@@ -16,6 +16,7 @@ import { openDatabase, _resetDbForTesting, getDatabase, query, exec } from '../.
 import { _resetConfigForTesting } from '../../../core/config.js';
 import { getLastActivityTimestamp } from '../helpers/activity-query.js';
 import { fireSelfWatchdogAlert } from '../helpers/alert.js';
+import { _runForTesting, _setDepsForTesting } from '../self-watchdog.js';
 
 // ── Test setup ────────────────────────────────────────────────
 
@@ -200,85 +201,78 @@ describe('getLastActivityTimestamp', () => {
 
 describe('self-watchdog run() threshold logic', () => {
   beforeEach(setupDb);
-  afterEach(teardownDb);
+  afterEach(() => {
+    _setDepsForTesting(null); // restore real fireSelfWatchdogAlert
+    teardownDb();
+  });
 
-  let alertsFired: Array<{ level: 'warn' | 'alert'; context: { idleSeconds: number; lastActivityAt: number | null } }> = [];
+  interface AlertCall {
+    level: 'warn' | 'alert';
+    context: { idleSeconds: number; lastActivityAt: number | null };
+  }
 
-  async function mockRun(
-    warnSeconds: number = 6 * 3600,
-    alertSeconds: number = 12 * 3600,
-    mockActivity: number | null = null,
-  ): Promise<void> {
-    alertsFired = [];
-
-    const nowMs = Date.now();
-    const idleMs = mockActivity !== null ? nowMs - mockActivity : Infinity;
-    const idleSeconds = idleMs === Infinity ? Infinity : idleMs / 1000;
-
-    if (idleSeconds >= alertSeconds) {
-      alertsFired.push({
-        level: 'alert',
-        context: {
-          idleSeconds: idleSeconds === Infinity ? alertSeconds : idleSeconds,
-          lastActivityAt: mockActivity,
-        },
-      });
-    } else if (idleSeconds >= warnSeconds) {
-      alertsFired.push({
-        level: 'warn',
-        context: {
-          idleSeconds,
-          lastActivityAt: mockActivity,
-        },
-      });
-    }
+  function setupMockAlert(): AlertCall[] {
+    const calls: AlertCall[] = [];
+    _setDepsForTesting({
+      fireSelfWatchdogAlert: async (level, context) => {
+        calls.push({ level, context });
+      },
+    });
+    return calls;
   }
 
   it('fires no alert when idle < warn threshold', async () => {
-    const warnSeconds = 6 * 3600;
-    const now = Date.now();
-    const mockActivity = now - (3 * 3600 * 1000); // 3 hours ago
+    const calls = setupMockAlert();
 
-    await mockRun(warnSeconds, 12 * 3600, mockActivity);
+    // Seed activity 3 hours ago — below the 6h warn threshold
+    const ts = new Date(Date.now() - 3 * 3600 * 1000).toISOString();
+    seedActivity({ table: 'worker_jobs', timestamp: ts });
 
-    assert.strictEqual(alertsFired.length, 0, 'should not fire any alert');
+    await _runForTesting();
+
+    assert.strictEqual(calls.length, 0, 'should not fire any alert');
   });
 
   it('fires warn alert when idle >= warn but < alert', async () => {
+    const calls = setupMockAlert();
     const warnSeconds = 6 * 3600;
     const alertSeconds = 12 * 3600;
-    const now = Date.now();
-    const mockActivity = now - (8 * 3600 * 1000); // 8 hours ago
 
-    await mockRun(warnSeconds, alertSeconds, mockActivity);
+    // Seed activity 8 hours ago — above warn (6h), below alert (12h)
+    const ts = new Date(Date.now() - 8 * 3600 * 1000).toISOString();
+    seedActivity({ table: 'worker_jobs', timestamp: ts });
 
-    assert.strictEqual(alertsFired.length, 1, 'should fire exactly one alert');
-    assert.strictEqual(alertsFired[0].level, 'warn', 'should fire at warn level');
-    assert.ok(alertsFired[0].context.idleSeconds >= warnSeconds);
-    assert.ok(alertsFired[0].context.idleSeconds < alertSeconds);
+    await _runForTesting();
+
+    assert.strictEqual(calls.length, 1, 'should fire exactly one alert');
+    assert.strictEqual(calls[0].level, 'warn', 'should fire at warn level');
+    assert.ok(calls[0].context.idleSeconds >= warnSeconds, 'idleSeconds should exceed warn threshold');
+    assert.ok(calls[0].context.idleSeconds < alertSeconds, 'idleSeconds should be below alert threshold');
   });
 
   it('fires alert when idle >= alert threshold', async () => {
-    const warnSeconds = 6 * 3600;
+    const calls = setupMockAlert();
     const alertSeconds = 12 * 3600;
-    const now = Date.now();
-    const mockActivity = now - (14 * 3600 * 1000); // 14 hours ago
 
-    await mockRun(warnSeconds, alertSeconds, mockActivity);
+    // Seed activity 14 hours ago — above alert (12h)
+    const ts = new Date(Date.now() - 14 * 3600 * 1000).toISOString();
+    seedActivity({ table: 'worker_jobs', timestamp: ts });
 
-    assert.strictEqual(alertsFired.length, 1, 'should fire exactly one alert');
-    assert.strictEqual(alertsFired[0].level, 'alert', 'should fire at alert level');
-    assert.ok(alertsFired[0].context.idleSeconds >= alertSeconds);
+    await _runForTesting();
+
+    assert.strictEqual(calls.length, 1, 'should fire exactly one alert');
+    assert.strictEqual(calls[0].level, 'alert', 'should fire at alert level');
+    assert.ok(calls[0].context.idleSeconds >= alertSeconds, 'idleSeconds should exceed alert threshold');
   });
 
-  it('treats lastActivityAt = null as maximally idle (fires alert)', async () => {
-    const alertSeconds = 12 * 3600;
+  it('skips alert when no activity recorded yet (fresh install / DB wipe)', async () => {
+    // Per Fix 1: null lastActivityAt → skip, not Infinity idle
+    const calls = setupMockAlert();
 
-    await mockRun(6 * 3600, alertSeconds, null);
+    // No activity seeded — DB is empty, getLastActivityTimestamp() returns null
+    await _runForTesting();
 
-    assert.strictEqual(alertsFired.length, 1, 'should fire an alert');
-    assert.strictEqual(alertsFired[0].level, 'alert', 'should fire at alert level');
-    assert.strictEqual(alertsFired[0].context.lastActivityAt, null);
+    assert.strictEqual(calls.length, 0, 'should not fire any alert on fresh install');
   });
 });
 
