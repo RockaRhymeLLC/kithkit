@@ -2330,7 +2330,14 @@ curl -X PUT "http://localhost:3847/api/orchestrator/tasks/$TASK_ID" \
 }
 ```
 
-> **Closure guard**: For tasks with `source: 'human'`, only comms may set `acknowledged_at`. Orchestrator PUT requests that attempt to set `acknowledged_at` on a `source='human'` task are rejected with `403`.
+**Access control for `acknowledged_at` on `source='human'` tasks:**
+Tasks created via `POST /api/orchestrator/escalate` have `source='human'`. Setting
+`acknowledged_at` on such tasks is restricted to the comms agent — callers must
+send `X-Agent: comms` or the request is rejected with 403. The orchestrator can
+still close its own `source='orchestrator'` (or NULL/legacy) tasks freely.
+
+The existing terminal-status guard (acknowledged_at requires a terminal status)
+takes precedence: a non-terminal task returns 409 regardless of caller.
 
 ```json
 // Response 200 — updated task object (base fields only, no workers/activity)
