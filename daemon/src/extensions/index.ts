@@ -39,6 +39,7 @@ import {
 } from './comms/agent-comms.js';
 import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P, getNetworkClient } from './comms/network/sdk-bridge.js';
 import { registerWithRelay } from './comms/network/registration.js';
+import { recordRetrying } from './comms/network/network-state.js';
 import { handleNetworkRoute } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
@@ -307,6 +308,41 @@ async function loadInstanceExtensions(
   }
 }
 
+// ── Network Registration Retry ──────────────────────────────
+
+/**
+ * Register with the relay and initialize the Network SDK.
+ * Retries on failure with exponential backoff (5s base, 5min cap, 10 attempts).
+ * Registration state is recorded per-community via network-state.ts so that
+ * GET /api/network/status reflects actual outcome rather than config-intent.
+ */
+async function registerWithRetry(config: AgentConfig): Promise<void> {
+  const MAX_RETRIES = 10;
+  const INITIAL_DELAY_MS = 5_000;       // 5s
+  const MAX_DELAY_MS = 5 * 60 * 1_000; // 5min cap
+  let attempt = 0;
+  let delay = INITIAL_DELAY_MS;
+
+  while (attempt < MAX_RETRIES) {
+    const result = await registerWithRelay(config);
+    if (result.ok) {
+      log.info('Network registration succeeded', { attempt: attempt + 1 });
+      const sdkOk = await initNetworkSDK(config as unknown as Record<string, unknown>);
+      if (sdkOk) log.info('Network SDK ready');
+      return;
+    }
+    attempt++;
+    if (attempt >= MAX_RETRIES) {
+      log.warn('Network registration giving up after retries', { attempts: attempt, lastError: result.error });
+      return;
+    }
+    for (const c of config.network?.communities ?? []) recordRetrying(c.name);
+    log.warn('Network registration failed, retrying', { attempt, nextDelayMs: delay, error: result.error });
+    await new Promise(r => setTimeout(r, delay));
+    delay = Math.min(delay * 2, MAX_DELAY_MS);
+  }
+}
+
 // ── Extension Implementation ────────────────────────────────
 
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
@@ -333,14 +369,11 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   setA2ARouter(router);
   setRouter(router);
 
-  // Network SDK (P2P messaging) — non-blocking
+  // Network SDK (P2P messaging) — non-blocking, with exponential backoff retry
   if (_config.network?.enabled) {
-    registerWithRelay(_config)
-      .then(() => initNetworkSDK(_config! as unknown as Record<string, unknown>))
-      .then(ok => { if (ok) log.info('Network SDK ready'); })
-      .catch(err => log.warn('Network init failed (LAN-only mode)', {
-        error: err instanceof Error ? err.message : String(err),
-      }));
+    registerWithRetry(_config).catch(err => log.error('registerWithRetry failed', {
+      error: err instanceof Error ? err.message : String(err),
+    }));
   }
 
   // Register framework routes

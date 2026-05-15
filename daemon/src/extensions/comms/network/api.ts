@@ -7,6 +7,7 @@ import type http from 'node:http';
 import { json, withTimestamp, parseBody } from '../../../api/helpers.js';
 import { createLogger } from '../../../core/logger.js';
 import { getNetworkClient, getCommunityStatus } from './sdk-bridge.js';
+import { getAllRegistrationStates, getRegistrationState } from './network-state.js';
 
 const log = createLogger('api:network');
 
@@ -23,14 +24,33 @@ export async function handleNetworkRoute(
   try {
     // Status (always available)
     if (subpath === 'status') {
+      const states = getAllRegistrationStates();
       if (!network) {
-        json(res, 200, withTimestamp({ initialized: false }));
+        const communities = Object.entries(states).map(([name, s]) => ({ name, ...s }));
+        json(res, 200, withTimestamp({ initialized: false, communities }));
         return true;
       }
-      const communities = network.communities.map((c: { name: string; primary: string; failover?: string }) => ({
-        name: c.name, primary: c.primary, failover: c.failover,
-        ...getCommunityStatus(c.name),
-      }));
+      const defaultState = {
+        registration_status: 'pending' as const,
+        last_successful_registration_at: null,
+        last_error: null,
+        retry_count: 0,
+        current_relay_session_state: 'unknown' as const,
+      };
+      const communities = network.communities.map((c: { name: string; primary: string; failover?: string }) => {
+        const state = getRegistrationState(c.name) ?? defaultState;
+        return {
+          name: c.name,
+          primary: c.primary,
+          failover: c.failover,
+          ...getCommunityStatus(c.name),  // existing status/activeRelay fields — preserved for back-compat
+          registration_status: state.registration_status,
+          last_successful_registration_at: state.last_successful_registration_at,
+          last_error: state.last_error,
+          retry_count: state.retry_count,
+          current_relay_session_state: state.current_relay_session_state,
+        };
+      });
       json(res, 200, withTimestamp({ initialized: true, communities }));
       return true;
     }
