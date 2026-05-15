@@ -1,0 +1,11 @@
+-- Local calibration + provenance fields not in upstream as of 2026-05-14.
+-- Most v2.1 columns landed upstream via 018/020/021. These 7 are the
+-- Skippy-specific remainder — applied additively via --safe-alter so they
+-- are no-ops on machines where they've already been applied (this DB).
+--safe-alter: orchestrator_tasks ADD COLUMN estimated_minutes INTEGER
+--safe-alter: orchestrator_tasks ADD COLUMN actual_minutes INTEGER
+--safe-alter: orchestrator_tasks ADD COLUMN task_type TEXT
+--safe-alter: orchestrator_tasks ADD COLUMN completion_status TEXT
+--safe-alter: orchestrator_tasks ADD COLUMN estimation_method TEXT
+--safe-alter: orchestrator_tasks ADD COLUMN workers_used INTEGER
+--safe-alter: orchestrator_tasks ADD COLUMN source TEXT
