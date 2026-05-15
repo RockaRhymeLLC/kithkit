@@ -1,0 +1,10 @@
+-- Source provenance for orchestrator tasks.
+-- Tracks who created a task, enabling access-control decisions per task origin.
+--
+-- source values:
+--   'human': created via POST /api/orchestrator/escalate — a human commitment
+--            routed through the comms agent. Only the comms agent may set
+--            acknowledged_at on these tasks (enforced in PUT /api/orchestrator/tasks/:id).
+--   'orchestrator': created directly via POST /api/orchestrator/tasks.
+--   NULL: legacy rows created before this migration.
+--safe-alter: orchestrator_tasks ADD COLUMN source TEXT
