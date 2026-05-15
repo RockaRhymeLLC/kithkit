@@ -217,23 +217,9 @@ describe('acknowledged_at guard — source=human tasks', { concurrency: 1 }, () 
     });
   });
 
-  describe('Test 4: no X-Agent header on source=orchestrator task returns 200', () => {
-    beforeEach(setup);
-    afterEach(teardown);
-
-    it('guard does not fire for source=orchestrator — acknowledged_at accepted without X-Agent', async () => {
-      const taskId = insertTask('orchestrator');
-      await completeTask(taskId);
-
-      const ackTime = new Date().toISOString();
-      const res = await request('PUT', `/api/orchestrator/tasks/${taskId}`, {
-        comms_outcome: 'accepted',
-        acknowledged_at: ackTime,
-      });
-      assert.equal(res.status, 200, `Expected 200 for source=orchestrator, got: ${res.body}`);
-      assert.equal(JSON.parse(res.body).acknowledged_at, ackTime);
-    });
-  });
+  // Note: 'orchestrator' is a reserved source enum value but no production code path
+  // currently emits it (escalate hardcodes 'human'; POST /api/orchestrator/tasks omits source).
+  // No test for source='orchestrator' — it is dead code today.
 
   describe('Test 5: no X-Agent header on source=NULL (legacy) task returns 200', () => {
     beforeEach(setup);
