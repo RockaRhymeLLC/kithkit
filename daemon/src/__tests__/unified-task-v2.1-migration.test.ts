@@ -1,11 +1,18 @@
 /**
- * Unified Task System v2.1 — Migration round-trip test (Q1-Q4).
+ * Unified Task System v2.1 — Migration round-trip test.
+ *
+ * Post-sync schema (upstream 83f2634):
+ *   - 018: plan_status, plan_submitted_at, plan_approved_at, plan_rejected_reason
+ *   - 020: comms_outcome, comms_corrections, acknowledged_at
+ *   - 021: complexity, generate_retro, canonical_task_external_id
+ *   - 022-LOCAL: estimated_minutes, actual_minutes, task_type, completion_status,
+ *                estimation_method, workers_used, source  (7 Skippy-specific columns)
  *
  * Verifies:
- *   1. Migration 019 applies cleanly to a fresh database.
- *   2. All new columns are present and accept values.
- *   3. CHECK constraint on complexity (S/M/L/XL) is enforced.
- *   4. CHECK constraint on comms_outcome is enforced.
+ *   1. Migration 022-LOCAL applies cleanly to a fresh database.
+ *   2. All 7 local calibration columns are present and accept values.
+ *   3. CHECK constraint on complexity (S/M/L/XL) is enforced (from upstream 021).
+ *   4. comms_outcome is TEXT with no CHECK constraint (migration 020 uses --safe-alter).
  *   5. Sample row exercising all new columns can be inserted and read back.
  *   6. estimate_multiplier logic (application-layer computation, not a DB column).
  */
@@ -46,36 +53,45 @@ after(() => {
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
-describe('migration 019 — unified-task-v2.1', () => {
-  it('migration applied — version 19 present in migrations table', () => {
-    const row = db.prepare('SELECT version FROM migrations WHERE version = 19').get() as { version: number } | undefined;
-    assert.ok(row, 'Migration version 19 should be recorded');
-    assert.equal(row?.version, 19);
+describe('migration 022-LOCAL — calibration-fields', () => {
+  it('migration applied — version 22 present in migrations table', () => {
+    const row = db.prepare('SELECT version FROM migrations WHERE version = 22').get() as { version: number } | undefined;
+    assert.ok(row, 'Migration version 22 should be recorded');
+    assert.equal(row?.version, 22);
   });
 
-  it('all Q1 calibration columns exist on orchestrator_tasks', () => {
-    const info = db.prepare("PRAGMA table_info('orchestrator_tasks')").all() as { name: string }[];
-    const cols = new Set(info.map(c => c.name));
-    for (const col of ['estimated_minutes', 'actual_minutes', 'task_type', 'complexity', 'completion_status', 'estimation_method', 'workers_used']) {
-      assert.ok(cols.has(col), `Column ${col} should exist`);
+  it('upstream migrations 018/020/021 applied — versions present', () => {
+    for (const version of [18, 20, 21]) {
+      const row = db.prepare('SELECT version FROM migrations WHERE version = ?').get(version) as { version: number } | undefined;
+      assert.ok(row, `Upstream migration version ${version} should be recorded`);
     }
   });
 
-  it('all Q2 dual-stage closure columns exist on orchestrator_tasks', () => {
+  it('all 7 LOCAL calibration columns exist on orchestrator_tasks (from 022-LOCAL)', () => {
     const info = db.prepare("PRAGMA table_info('orchestrator_tasks')").all() as { name: string }[];
     const cols = new Set(info.map(c => c.name));
-    for (const col of ['generate_retro', 'acknowledged_at', 'comms_outcome', 'comms_corrections', 'source']) {
-      assert.ok(cols.has(col), `Column ${col} should exist`);
+    for (const col of ['estimated_minutes', 'actual_minutes', 'task_type', 'completion_status', 'estimation_method', 'workers_used', 'source']) {
+      assert.ok(cols.has(col), `Column ${col} should exist (022-LOCAL)`);
     }
   });
 
-  it('Q4 canonical_task_external_id column exists', () => {
+  it('upstream 021 columns exist: complexity, generate_retro, canonical_task_external_id', () => {
     const info = db.prepare("PRAGMA table_info('orchestrator_tasks')").all() as { name: string }[];
     const cols = new Set(info.map(c => c.name));
-    assert.ok(cols.has('canonical_task_external_id'), 'canonical_task_external_id should exist');
+    for (const col of ['complexity', 'generate_retro', 'canonical_task_external_id']) {
+      assert.ok(cols.has(col), `Column ${col} should exist (upstream 021)`);
+    }
   });
 
-  it('completed_at already existed (not re-added by 019)', () => {
+  it('upstream 020 columns exist: comms_outcome, comms_corrections, acknowledged_at', () => {
+    const info = db.prepare("PRAGMA table_info('orchestrator_tasks')").all() as { name: string }[];
+    const cols = new Set(info.map(c => c.name));
+    for (const col of ['comms_outcome', 'comms_corrections', 'acknowledged_at']) {
+      assert.ok(cols.has(col), `Column ${col} should exist (upstream 020)`);
+    }
+  });
+
+  it('completed_at already existed (not re-added by 022-LOCAL)', () => {
     const info = db.prepare("PRAGMA table_info('orchestrator_tasks')").all() as { name: string }[];
     const cols = new Set(info.map(c => c.name));
     assert.ok(cols.has('completed_at'), 'completed_at should still exist from 008');
@@ -150,15 +166,17 @@ describe('migration 019 — unified-task-v2.1', () => {
     }
   });
 
-  it('comms_outcome CHECK constraint rejects invalid values', () => {
+  it('comms_outcome has no CHECK constraint — any TEXT value is accepted', () => {
+    // migration 020 adds comms_outcome via --safe-alter without a CHECK constraint.
+    // Application-layer validation is responsible for restricting values.
     const id = 'bad-outcome-row';
     const now = new Date().toISOString();
-    assert.throws(() => {
+    assert.doesNotThrow(() => {
       db.prepare(`
         INSERT INTO orchestrator_tasks (id, title, status, priority, created_at, updated_at, comms_outcome)
         VALUES (?, 'bad', 'pending', 0, ?, ?, 'invalid_outcome')
       `).run(id, now, now);
-    }, (err: Error) => err.message.includes('CHECK constraint') || err.message.includes('CONSTRAINT'));
+    }, 'comms_outcome accepts any TEXT (no DB-level CHECK constraint)');
   });
 
   it('comms_outcome CHECK constraint accepts all valid values and NULL', () => {
