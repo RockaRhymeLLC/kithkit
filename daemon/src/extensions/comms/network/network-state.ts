@@ -16,7 +16,14 @@ export interface NetworkRegistrationState {
   last_attempt_at: string | null;
   last_error: string | null;
   retry_count: number;
-  /** Best-effort SDK introspection. TODO: wire to community:status events for live accuracy. */
+  /**
+   * Relay-session state, updated via sdk-bridge.ts `wireCommunityStatusEvent`
+   * (community:status events → 'connected' | 'disconnected').
+   *
+   * Note: this reflects whether our relay socket is alive, NOT whether a specific
+   * peer can receive messages. Per-peer delivery confirmation (relay-ack-vs-actual-
+   * receipt) is tracked as todo #55 and is intentionally out of scope for this PR.
+   */
   current_relay_session_state: 'connected' | 'disconnected' | 'unknown';
 }
 

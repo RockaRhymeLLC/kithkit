@@ -39,7 +39,7 @@ import {
 } from './comms/agent-comms.js';
 import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P, getNetworkClient } from './comms/network/sdk-bridge.js';
 import { registerWithRelay } from './comms/network/registration.js';
-import { recordRetrying } from './comms/network/network-state.js';
+import { runRegistrationRetryLoop } from './comms/network/retry.js';
 import { handleNetworkRoute } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
@@ -62,6 +62,7 @@ let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
 let _initialized = false;
 let _instanceShutdown: (() => Promise<void> | void) | null = null;
+let _retryAbortController: AbortController | null = null;
 
 // ── Route Handlers ──────────────────────────────────────────
 
@@ -313,34 +314,20 @@ async function loadInstanceExtensions(
 /**
  * Register with the relay and initialize the Network SDK.
  * Retries on failure with exponential backoff (5s base, 5min cap, 10 attempts).
- * Registration state is recorded per-community via network-state.ts so that
- * GET /api/network/status reflects actual outcome rather than config-intent.
+ * Cancelled immediately when `signal` fires — preventing zombie retry loops
+ * during daemon restart cycles. Registration state is recorded per-community
+ * via network-state.ts so GET /api/network/status reflects actual outcome.
  */
-async function registerWithRetry(config: AgentConfig): Promise<void> {
-  const MAX_RETRIES = 10;
-  const INITIAL_DELAY_MS = 5_000;       // 5s
-  const MAX_DELAY_MS = 5 * 60 * 1_000; // 5min cap
-  let attempt = 0;
-  let delay = INITIAL_DELAY_MS;
-
-  while (attempt < MAX_RETRIES) {
-    const result = await registerWithRelay(config);
-    if (result.ok) {
-      log.info('Network registration succeeded', { attempt: attempt + 1 });
-      const sdkOk = await initNetworkSDK(config as unknown as Record<string, unknown>);
+async function registerWithRetry(config: AgentConfig, signal: AbortSignal): Promise<void> {
+  return runRegistrationRetryLoop(
+    config,
+    signal,
+    registerWithRelay,
+    async (c) => {
+      const sdkOk = await initNetworkSDK(c as unknown as Record<string, unknown>);
       if (sdkOk) log.info('Network SDK ready');
-      return;
-    }
-    attempt++;
-    if (attempt >= MAX_RETRIES) {
-      log.warn('Network registration giving up after retries', { attempts: attempt, lastError: result.error });
-      return;
-    }
-    for (const c of config.network?.communities ?? []) recordRetrying(c.name);
-    log.warn('Network registration failed, retrying', { attempt, nextDelayMs: delay, error: result.error });
-    await new Promise(r => setTimeout(r, delay));
-    delay = Math.min(delay * 2, MAX_DELAY_MS);
-  }
+    },
+  );
 }
 
 // ── Extension Implementation ────────────────────────────────
@@ -369,9 +356,11 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   setA2ARouter(router);
   setRouter(router);
 
-  // Network SDK (P2P messaging) — non-blocking, with exponential backoff retry
+  // Network SDK (P2P messaging) — non-blocking, with exponential backoff retry.
+  // AbortController lets onShutdown() cancel the loop rather than leaving a zombie.
   if (_config.network?.enabled) {
-    registerWithRetry(_config).catch(err => log.error('registerWithRetry failed', {
+    _retryAbortController = new AbortController();
+    registerWithRetry(_config, _retryAbortController.signal).catch(err => log.error('registerWithRetry failed', {
       error: err instanceof Error ? err.message : String(err),
     }));
   }
@@ -426,6 +415,13 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 }
 
 async function onShutdown(): Promise<void> {
+  // Cancel the registration retry loop before stopping the SDK — prevents zombie loops
+  // from the previous run still being alive when the next onInit fires.
+  if (_retryAbortController) {
+    _retryAbortController.abort();
+    _retryAbortController = null;
+  }
+
   // Shutdown instance extensions first
   if (_instanceShutdown) {
     await _instanceShutdown();
@@ -455,6 +451,10 @@ export function _getStateForTesting() {
 }
 
 export function _resetForTesting(): void {
+  if (_retryAbortController) {
+    _retryAbortController.abort();
+    _retryAbortController = null;
+  }
   _config = null;
   _scheduler = null;
   _initialized = false;

@@ -177,6 +177,7 @@ async function registerMultiCommunity(
 ): Promise<RegistrationResult> {
   let succeeded = 0;
   let total = 0;
+  const allErrors: string[] = [];
 
   for (const community of communities) {
     let publicKey = defaultIdentity.publicKey;
@@ -230,6 +231,7 @@ async function registerMultiCommunity(
       recordRegistrationSuccess(community.name);
     } else {
       recordRegistrationFailure(community.name, communityErrors.join('; '));
+      allErrors.push(`${community.name}: ${communityErrors.join('; ')}`);
     }
   }
 
@@ -239,8 +241,12 @@ async function registerMultiCommunity(
     ok: succeeded > 0,
     status: succeeded === total ? 'active' : 'partial',
     message: `${succeeded}/${total} relays registered`,
+    ...(allErrors.length > 0 ? { error: allErrors.join(' | ') } : {}),
   };
 }
+
+/** Exposed for testing — calls registerMultiCommunity with a fake identity. */
+export { registerMultiCommunity as _registerMultiCommunityForTesting };
 
 export async function checkRegistrationStatus(config: AgentConfig): Promise<RegistrationResult> {
   const network = config.network;
