@@ -22,6 +22,11 @@ import {
   derivePublicKey,
 } from './crypto.js';
 import type { AgentConfig, NetworkCommunity } from '../../config.js';
+import {
+  recordRegistrationAttempt,
+  recordRegistrationSuccess,
+  recordRegistrationFailure,
+} from './network-state.js';
 
 const log = createLogger('network:registration');
 
@@ -189,14 +194,20 @@ async function registerMultiCommunity(
       }
     }
 
+    recordRegistrationAttempt(community.name);
+    let communityOk = false;
+    const communityErrors: string[] = [];
+
     // Primary
     total++;
     log.info(`Registering on community '${community.name}' primary...`);
     const primaryResult = await registerOnRelay(community.primary, agentName, publicKey, ownerEmail, privateKey);
     if (primaryResult.ok) {
       succeeded++;
+      communityOk = true;
       log.info(`Community '${community.name}' primary: registered (${primaryResult.status})`);
     } else {
+      communityErrors.push(`primary: ${primaryResult.error}`);
       log.warn(`Community '${community.name}' primary: failed — ${primaryResult.error}`);
     }
 
@@ -207,10 +218,18 @@ async function registerMultiCommunity(
       const failoverResult = await registerOnRelay(community.failover, agentName, publicKey, ownerEmail, privateKey);
       if (failoverResult.ok) {
         succeeded++;
+        communityOk = true;
         log.info(`Community '${community.name}' failover: registered (${failoverResult.status})`);
       } else {
+        communityErrors.push(`failover: ${failoverResult.error}`);
         log.warn(`Community '${community.name}' failover: failed — ${failoverResult.error}`);
       }
+    }
+
+    if (communityOk) {
+      recordRegistrationSuccess(community.name);
+    } else {
+      recordRegistrationFailure(community.name, communityErrors.join('; '));
     }
   }
 

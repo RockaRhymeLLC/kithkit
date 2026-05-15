@@ -21,6 +21,7 @@ import { readKeychain } from '../../../core/keychain.js';
 import { loadKeyFromKeychain } from './crypto.js';
 import { logCommsEntry, getDisplayName } from '../agent-comms.js';
 import { handleMemorySync } from '../../../self-improvement/memory-sync.js';
+import { updateRelaySessionState } from './network-state.js';
 
 const log = createLogger('network:sdk');
 
@@ -415,6 +416,13 @@ function wireCommunityStatusEvent(): void {
       community: event.community,
       status: event.status,
     });
+
+    // Map SDK status to session state for /api/network/status reporting.
+    const sessionState =
+      event.status === 'active' || event.status === 'failover' ? 'connected' :
+      event.status === 'offline' ? 'disconnected' :
+      'unknown';
+    updateRelaySessionState(event.community, sessionState);
 
     const formatted = `[Network] Community '${event.community}' is now ${event.status}`;
     sendMessage({
