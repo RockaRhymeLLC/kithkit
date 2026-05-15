@@ -67,6 +67,7 @@ export async function initNetworkSDK(config: Record<string, unknown>): Promise<b
     let CC4MeNetworkClass: any;
     try {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // @ts-ignore — kithkit-a2a-client is an optional runtime dep; not in node_modules when not installed
       const sdk = await import('kithkit-a2a-client') as any; // kithkit-a2a-client is a local dev module, resolved at runtime
       CC4MeNetworkClass = sdk.A2ANetwork ?? sdk.CC4MeNetwork;
     } catch {
