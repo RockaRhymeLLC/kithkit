@@ -310,6 +310,14 @@ This is a behavioral protocol — agents follow it by convention today. Infrastr
 - Don't bypass the router — it handles formatting and delivery tracking
 - When calling `/api/send`, include the agent token: `-H "X-Agent-Token: $(cat <project_dir>/.kithkit/.comms-token)"`. The daemon enforces 403 on calls without a valid comms token.
 
+### Reply Delivery Rule
+
+Every reply intended for the human MUST be delivered via `POST /api/send` when the active channel is non-terminal (e.g., `telegram`, `voice`).
+Terminal text output — typing directly in the Claude Code session — does not reach humans on Telegram, Teams, or Voice channels.
+Failing to call `/api/send` means the human never sees your reply.
+The `send-enforcer.sh` Stop hook checks each turn for a conforming `/api/send` call and emits a warning to stderr when one is absent.
+This rule applies to all comms agents (BMO, Skippy, and any future instances) without exception.
+
 ## Quality Standards
 
 ### Code
