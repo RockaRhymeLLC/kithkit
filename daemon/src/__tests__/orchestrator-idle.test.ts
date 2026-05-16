@@ -424,6 +424,154 @@ describe('Orchestrator idle: liveness check', () => {
   });
 });
 
+describe('Orchestrator idle: awaiting_approval guard (#106)', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = setupTestEnv();
+  });
+
+  afterEach(() => {
+    cleanupTestEnv(tmpDir);
+  });
+
+  it('skips idle shutdown when tasks are awaiting plan approval', async () => {
+    const injectCalls: Array<{ target: string; text: string }> = [];
+    _setDepsForTesting({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { throw new Error('should not kill'); },
+      injectMessage: (target: string, text: string) => { injectCalls.push({ target, text }); return true; },
+      cleanupSessionDirs: () => 0,
+    });
+
+    // Make last_activity old enough to normally trigger idle shutdown
+    update('agents', 'orchestrator', {
+      last_activity: new Date(Date.now() - 15 * 60_000).toISOString(),
+    });
+
+    // Insert a task in awaiting_approval state
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('approval-guard-1', 'Plan awaiting approval', null, 'awaiting_approval', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    await _runForTesting({});
+
+    // Must not have sent a shutdown nudge to the orchestrator
+    const state = _getNudgeStateForTesting();
+    assert.equal(state.nudgedAt, null, 'should NOT set shutdown nudge when tasks are awaiting approval');
+    const shutdownInjects = injectCalls.filter(c => c.target === 'orchestrator' && c.text.includes('Shutdown requested'));
+    assert.equal(shutdownInjects.length, 0, 'should NOT inject shutdown prompt while tasks awaiting approval');
+  });
+
+  it('extends grace period when active workers are detected during expiry', async () => {
+    let killed = false;
+    // Nudge was sent 90 seconds ago — past the 60s grace period
+    _setNudgeStateForTesting(Date.now() - 90_000, 'idle timeout');
+    _setDepsForTesting({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killed = true; return true; },
+      injectMessage: () => true,
+      cleanupSessionDirs: () => 0,
+    });
+
+    // Add a running worker job
+    insert('worker_jobs', {
+      id: 'grace-worker-1',
+      agent_id: 'orchestrator',
+      profile: 'coding',
+      status: 'running',
+      prompt: 'active work',
+      created_at: new Date().toISOString(),
+    });
+
+    await _runForTesting({});
+
+    assert.equal(killed, false, 'should NOT force-kill when active workers detected during grace period');
+    const state = _getNudgeStateForTesting();
+    assert.notEqual(state.nudgedAt, null, 'nudge state should be extended, not cleared');
+    assert.ok(state.nudgedAt! > Date.now() - 5_000, 'grace period clock should be reset to now');
+  });
+
+  it('extends grace period when awaiting_approval tasks exist during expiry', async () => {
+    let killed = false;
+    // Nudge was sent 90 seconds ago — past the 60s grace period
+    _setNudgeStateForTesting(Date.now() - 90_000, 'idle timeout');
+    _setDepsForTesting({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killed = true; return true; },
+      injectMessage: () => true,
+      cleanupSessionDirs: () => 0,
+    });
+
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('grace-approval-1', 'Grace approval task', null, 'awaiting_approval', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    await _runForTesting({});
+
+    assert.equal(killed, false, 'should NOT force-kill when awaiting_approval tasks during grace period');
+    const state = _getNudgeStateForTesting();
+    assert.notEqual(state.nudgedAt, null, 'grace period should be extended');
+  });
+
+  it('respawns orchestrator when dead and tasks are awaiting plan approval', async () => {
+    let spawned = false;
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => { spawned = true; return 'orch1'; },
+      cleanupSessionDirs: () => 0,
+    });
+
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('awaiting-respawn-1', 'Plan pending approval', 'details', 'awaiting_approval', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    await _runForTesting({});
+
+    assert.ok(spawned, 'should have respawned orchestrator for awaiting-approval tasks');
+
+    const agents = query<{ status: string }>(
+      "SELECT status FROM agents WHERE id = 'orchestrator'",
+    );
+    assert.equal(agents[0]!.status, 'running', 'agent status should be running after respawn');
+  });
+
+  it('does not respawn when dead and only awaiting_approval tasks exist if pending tasks also present', async () => {
+    // When both pending and awaiting_approval exist, only one respawn should happen (for pending)
+    let spawnCount = 0;
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => { spawnCount++; return 'orch1'; },
+      cleanupSessionDirs: () => 0,
+    });
+
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('both-pending-1', 'Pending task', 'do it', 'pending', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+    exec(
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
+       VALUES ('both-awaiting-1', 'Approval task', 'waiting', 'awaiting_approval', 0, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+
+    await _runForTesting({});
+
+    assert.equal(spawnCount, 1, 'should spawn exactly once even with both pending and awaiting_approval tasks');
+  });
+});
+
 describe('Orchestrator idle: respawn for pending tasks when dead (#121)', () => {
   let tmpDir: string;
 
