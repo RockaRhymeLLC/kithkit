@@ -223,20 +223,29 @@ export async function handleOrchestratorRoute(
     const state = getOrchestratorState(); // 'active' | 'waiting' | 'dead'
     const ts = new Date().toISOString();
 
-    // Reconcile: if the session is alive but the DB record says 'crashed' or
-    // 'stopped', fix it before returning. This window opens after a daemon
-    // restart — cleanupOrphanedAgents() marks the row 'crashed', and if a
-    // new escalation hasn't fired yet the status endpoint would return a
-    // misleading 'crashed' state even though a session is running.
+    // Reconcile DB status against live tmux state.
+    const current = query<{ status: string }>(
+      "SELECT status FROM agents WHERE id = 'orchestrator'",
+    );
     if (state !== 'dead') {
+      // Session is alive — if DB says crashed/stopped, correct it (resurrection).
+      // This window opens after a daemon restart: cleanupOrphanedAgents() marks the
+      // row 'crashed', but a tmux session that survived the restart is still running.
       const staleStatuses = ['crashed', 'stopped'];
-      const current = query<{ status: string }>(
-        "SELECT status FROM agents WHERE id = 'orchestrator'",
-      );
       if (current[0] && staleStatuses.includes(current[0].status)) {
         update('agents', 'orchestrator', { status: 'running', updated_at: ts });
-        log.info('Reconciled stale orchestrator agent status', {
+        log.info('Reconciled stale orchestrator agent status — session survived, DB corrected', {
           was: current[0].status, now: 'running',
+        });
+      }
+    } else {
+      // Session is confirmed dead — if DB still shows an active status, log it.
+      // The idle monitor will correct the DB on its next tick; we log here so the
+      // gap is visible in the status endpoint response before that happens.
+      const activeStatuses = ['running', 'busy', 'idle'];
+      if (current[0] && activeStatuses.includes(current[0].status)) {
+        log.warn('Orchestrator session confirmed dead — DB status not yet corrected by idle monitor', {
+          dbStatus: current[0].status,
         });
       }
     }
