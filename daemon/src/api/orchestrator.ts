@@ -96,8 +96,8 @@ export async function handleOrchestratorRoute(
     const workNotes = typeof body.work_notes === 'string' ? body.work_notes : null;
     const { titleText, descriptionText } = buildTaskFields(task, context);
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)`,
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, source, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, 'human', ?, ?)`,
       taskId,
       titleText,
       descriptionText,

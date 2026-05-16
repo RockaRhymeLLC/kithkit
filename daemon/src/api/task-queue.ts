@@ -64,6 +64,7 @@ interface OrchestratorTask {
   timeout_seconds: number | null;
   outcome: TaskOutcome | null;
   outcome_notes: string | null;
+  source: string | null;
   comms_outcome: CommsOutcome | null;
   comms_corrections: string | null;
   acknowledged_at: string | null;
@@ -697,6 +698,22 @@ export async function handleTaskQueueRoute(
       if (body.acknowledged_at !== undefined && !TERMINAL_STATUSES.includes(task.status as TaskStatus)) {
         json(res, 409, withTimestamp({ error: 'acknowledged_at can only be set on terminal tasks (completed/failed/cancelled)' }));
         return true;
+      }
+
+      // Guard: only comms may set acknowledged_at on tasks with source='human'.
+      // Rationale: source='human' tasks come from /api/orchestrator/escalate — they
+      // represent explicit human commitments. Orchestrator self-closing them would
+      // shortcut the human-visible ack flow. Orch can still close its own
+      // source='orchestrator' (or NULL/legacy) tasks freely.
+      if (body.acknowledged_at !== undefined && task.source === 'human') {
+        const caller = (req.headers['x-agent'] as string | undefined)?.toLowerCase();
+        if (caller !== 'comms') {
+          json(res, 403, withTimestamp({
+            error: 'acknowledged_at on source=human tasks may only be set by the comms agent',
+            caller: caller ?? null,
+          }));
+          return true;
+        }
       }
 
       // awaiting_approval is not terminal — it can transition back to in_progress.
