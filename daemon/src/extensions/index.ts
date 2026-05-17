@@ -43,6 +43,7 @@ import { runRegistrationRetryLoop } from './comms/network/retry.js';
 import { handleNetworkRoute } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
+import { JobsWatcher } from '../automation/jobs-watcher.js';
 import { commsSessionExists } from '../core/session-bridge.js';
 import { enableVectorSearch } from '../api/memory.js';
 import { readKeychain } from '../core/keychain.js';
@@ -65,6 +66,7 @@ const p2pRateLimiter = new RateLimiter(30, 60_000); // 30 req/min per IP
 
 let _config: AgentConfig | null = null;
 let _scheduler: Scheduler | null = null;
+let _jobsWatcher: JobsWatcher | null = null;
 let _initialized = false;
 let _instanceShutdown: (() => Promise<void> | void) | null = null;
 let _retryAbortController: AbortController | null = null;
@@ -528,6 +530,14 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Load external task handlers from configured directories (tasks_dirs)
   await _scheduler.loadExternalTasks(config.scheduler.tasks_dirs ?? []);
 
+  // Hot-load agent-specific jobs from the watched directory (opt-in)
+  const hotLoadConfig = config.scheduler.hot_load_jobs;
+  if (hotLoadConfig?.enabled !== false) {
+    const jobsDir = hotLoadConfig?.dir ?? '.kithkit/scheduled-jobs';
+    _jobsWatcher = new JobsWatcher(_scheduler, jobsDir);
+    _jobsWatcher.start();
+  }
+
   // Wire scheduler to the tasks API
   setScheduler(_scheduler);
   _scheduler.start();
@@ -578,6 +588,10 @@ async function onShutdown(): Promise<void> {
   p2pRateLimiter.stop();
   await stopNetworkSDK();
   stopAgentComms();
+  if (_jobsWatcher) {
+    _jobsWatcher.stop();
+    _jobsWatcher = null;
+  }
   if (_scheduler) {
     _scheduler.stop();
     _scheduler = null;
@@ -603,6 +617,10 @@ export function _resetForTesting(): void {
   if (_retryAbortController) {
     _retryAbortController.abort();
     _retryAbortController = null;
+  }
+  if (_jobsWatcher) {
+    _jobsWatcher.stop();
+    _jobsWatcher = null;
   }
   _config = null;
   _scheduler = null;
