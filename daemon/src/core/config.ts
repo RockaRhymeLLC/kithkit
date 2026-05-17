@@ -20,6 +20,18 @@ export interface LanConfig {
   port: number;
 }
 
+export interface SelfWatchdogThresholds {
+  warn_seconds: number;
+  alert_seconds: number;
+}
+
+export interface SelfWatchdogConfig {
+  enabled: boolean;
+  idle_threshold_seconds: SelfWatchdogThresholds;
+  dedup_window_seconds: number;
+  a2a_group?: string;  // Optional A2A group ID/name to broadcast alerts to. If unset, A2A channel is skipped.
+}
+
 export interface DaemonConfig {
   port: number;
   bind_host?: string;
@@ -27,6 +39,7 @@ export interface DaemonConfig {
   log_dir: string;
   log_rotation: { max_size_mb: number; max_files: number };
   lan?: LanConfig;
+  self_watchdog?: SelfWatchdogConfig;
   db_path?: string;  // Optional override for database file location
 }
 
