@@ -209,9 +209,18 @@ export async function handleTaskQueueRoute(
       const id = randomUUID();
       const ts = now();
 
+      // Validate and sanitize requesting_peer: lowercase alphanumeric/dash/underscore, 1..64 chars.
+      let requestingPeer: string | null = null;
+      if (typeof body.requesting_peer === 'string') {
+        const trimmed = body.requesting_peer.trim().toLowerCase();
+        if (trimmed.length >= 1 && trimmed.length <= 64 && /^[a-z0-9_-]+$/.test(trimmed)) {
+          requestingPeer = trimmed;
+        }
+      }
+
       exec(
-        `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, timeout_seconds, complexity, canonical_task_external_id, created_at, updated_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, timeout_seconds, complexity, canonical_task_external_id, requesting_peer, created_at, updated_at)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         body.title,
         typeof body.description === 'string' ? body.description : null,
@@ -220,6 +229,7 @@ export async function handleTaskQueueRoute(
         typeof body.timeout_seconds === 'number' ? body.timeout_seconds : null,
         typeof body.complexity === 'string' && VALID_COMPLEXITY.includes(body.complexity as Complexity) ? body.complexity : null,
         typeof body.canonical_task_external_id === 'string' ? body.canonical_task_external_id : null,
+        requestingPeer,
         ts,
         ts,
       );

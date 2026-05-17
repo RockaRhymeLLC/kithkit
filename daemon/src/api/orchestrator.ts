@@ -83,6 +83,15 @@ export async function handleOrchestratorRoute(
     const task = body.task as string;
     const context = typeof body.context === 'string' ? body.context : undefined;
 
+    // Validate and sanitize requesting_peer: lowercase alphanumeric/dash/underscore, 1..64 chars.
+    let requestingPeer: string | null = null;
+    if (typeof body.requesting_peer === 'string') {
+      const trimmed = body.requesting_peer.trim().toLowerCase();
+      if (trimmed.length >= 1 && trimmed.length <= 64 && /^[a-z0-9_-]+$/.test(trimmed)) {
+        requestingPeer = trimmed;
+      }
+    }
+
     // Use getOrchestratorState() as the authoritative check — it verifies the tmux session
     // AND whether Claude is running inside it. If it returns 'dead', the session is truly gone
     // even if a prior isOrchestratorAlive() check cached a stale 'true'.
@@ -96,13 +105,14 @@ export async function handleOrchestratorRoute(
     const workNotes = typeof body.work_notes === 'string' ? body.work_notes : null;
     const { titleText, descriptionText } = buildTaskFields(task, context);
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, source, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, 'human', ?, ?)`,
+      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, source, requesting_peer, created_at, updated_at)
+       VALUES (?, ?, ?, 'pending', ?, ?, 'human', ?, ?, ?)`,
       taskId,
       titleText,
       descriptionText,
       priority,
       workNotes,
+      requestingPeer,
       ts,
       ts,
     );
