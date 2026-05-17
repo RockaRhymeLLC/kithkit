@@ -108,6 +108,27 @@ describe('stale-todo-archive (t-271a)', () => {
     assert.ok(logContent.includes('dry_run=true'), 'log should record dry_run=true');
   });
 
+  it('does not archive blocked todos — regression for R2 review (#279)', async () => {
+    const id1 = seedTodo('FYI: maintenance window', 'pending', 30);           // SHOULD archive
+    const idBlocked = seedTodo('FYI: waiting on Outlook creds', 'blocked', 31); // blocked — SHOULD NOT
+
+    await run({
+      stale_days: 14,
+      title_prefixes: ['FYI:', 'Reminder:', 'Maintenance:'],
+      dry_run: false,
+      log_path: logPath,
+    });
+
+    // The pending todo should be archived
+    const done = query<{ id: number; status: string }>('SELECT id, status FROM todos WHERE status = ?', 'done');
+    assert.equal(done.length, 1, 'exactly 1 todo should be archived (the pending one)');
+    assert.ok(done.map(r => r.id).includes(id1), 'pending FYI todo should be archived');
+
+    // The blocked todo must NOT be archived — it's waiting on an external dependency
+    const blockedRow = query<{ status: string }>('SELECT status FROM todos WHERE id = ?', idBlocked);
+    assert.equal(blockedRow[0]?.status, 'blocked', 'blocked todo should remain blocked, never auto-archived');
+  });
+
   it('does not archive fresh todos (below stale_days threshold)', async () => {
     seedTodo('FYI: recent note', 'pending', 5);
 

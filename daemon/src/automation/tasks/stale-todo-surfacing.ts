@@ -54,7 +54,8 @@ export async function run(config: Record<string, unknown> = {}): Promise<void> {
     return; // Nothing to surface — exit silently
   }
 
-  // Split the cap back into buckets (pending comes first in combined)
+  // Split the cap back into buckets (pending comes first in combined).
+  // If pending rows fill the cap entirely, in-progress rows are excluded — pending takes priority.
   const pendingCount = Math.min(pendingRows.length, maxItems);
   const pendingInMsg = pendingRows.slice(0, pendingCount);
   const inProgressInMsg = inProgressRows.slice(0, maxItems - pendingCount);

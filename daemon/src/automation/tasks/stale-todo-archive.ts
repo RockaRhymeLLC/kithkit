@@ -29,10 +29,12 @@ export async function run(config: Record<string, unknown> = {}): Promise<void> {
   const dryRun = (config.dry_run as boolean) ?? false;
   const logPath = (config.log_path as string) ?? 'logs/stale-todo-archive.log';
 
-  // Fetch pending/blocked todos older than staleDays, cap at 500
+  // Fetch pending todos older than staleDays, cap at 500.
+  // Blocked todos are NEVER auto-archived — they're waiting on external
+  // dependencies and must remain visible until manually resolved.
   const rows = query<TodoRow>(
     `SELECT id, title FROM todos
-     WHERE status IN ('pending', 'blocked')
+     WHERE status = 'pending'
        AND updated_at < datetime('now', ?)
      LIMIT 500`,
     `-${staleDays} days`,
