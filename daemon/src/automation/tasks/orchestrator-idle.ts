@@ -264,6 +264,62 @@ function respawnForPendingTasks(taskId: string, taskTitle: string, taskDesc: str
   }
 }
 
+/**
+ * Respawn the orchestrator when it died while tasks were awaiting plan approval.
+ * Unlike respawnForPendingTasks, this does not re-queue a new task message — the
+ * tasks already exist in the DB. The orchestrator will discover them via
+ * GET /api/orchestrator/tasks?status=awaiting_approval on startup.
+ */
+function respawnForAwaitingApproval(count: number): void {
+  try {
+    const session = spawnOrchestratorSession();
+    if (!session) {
+      log.error('Failed to respawn orchestrator for awaiting-approval tasks');
+      return;
+    }
+
+    const ts = new Date().toISOString();
+    try {
+      exec(
+        `INSERT INTO agents (id, type, profile, status, tmux_session, started_at, created_at, updated_at)
+         VALUES ('orchestrator', 'orchestrator', 'orchestrator', 'running', ?, ?, ?, ?)`,
+        session, ts, ts, ts,
+      );
+    } catch {
+      update('agents', 'orchestrator', {
+        status: 'running',
+        tmux_session: session,
+        started_at: ts,
+        updated_at: ts,
+      });
+    }
+
+    logActivity({
+      agent_id: 'orchestrator',
+      session_id: session,
+      event_type: 'session_start',
+      details: `Respawned by idle monitor — ${count} task(s) awaiting plan approval`,
+    });
+
+    sendMessage({
+      from: 'daemon',
+      to: 'orchestrator',
+      type: 'status',
+      body: JSON.stringify({
+        action: 'awaiting_approval_recovery',
+        count,
+        message: `${count} task(s) are awaiting plan approval. Check GET /api/orchestrator/tasks?status=awaiting_approval`,
+      }),
+    });
+
+    log.info('Orchestrator respawned for awaiting-approval tasks', { session, count });
+  } catch (err) {
+    log.error('Failed to respawn orchestrator for awaiting-approval tasks', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 const PENDING_TIMEOUT_MS = 5 * 60 * 1000;   // 5 minutes
 const STALE_WORK_NOTES_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -401,6 +457,23 @@ async function run(config: Record<string, unknown>): Promise<void> {
 
     const elapsed = Date.now() - shutdownNudgedAt;
     if (elapsed >= GRACE_PERIOD_MS) {
+      // Guard: if workers are still active or tasks are awaiting approval, extend the grace
+      // period rather than force-killing. Killing while in-flight work exists would orphan it.
+      const activeJobsDuringGrace = query<{ count: number }>(
+        "SELECT COUNT(*) as count FROM worker_jobs WHERE status IN ('queued', 'running')",
+      );
+      const awaitingDuringGrace = query<{ count: number }>(
+        "SELECT COUNT(*) as count FROM orchestrator_tasks WHERE status = 'awaiting_approval'",
+      );
+      if ((activeJobsDuringGrace[0]?.count ?? 0) > 0 || (awaitingDuringGrace[0]?.count ?? 0) > 0) {
+        log.info('Grace period expired but live work detected — extending grace period', {
+          activeJobs: activeJobsDuringGrace[0]?.count ?? 0,
+          awaitingApproval: awaitingDuringGrace[0]?.count ?? 0,
+        });
+        shutdownNudgedAt = Date.now(); // reset the clock
+        return;
+      }
+
       log.warn('Orchestrator did not exit within grace period — force killing', { reason: shutdownReason });
       writePostMortem(`Grace period expired: ${shutdownReason}`);
       killOrchestratorSession();
@@ -467,6 +540,20 @@ async function run(config: Record<string, unknown>): Promise<void> {
       log.info('Orchestrator dead but pending tasks exist — spawning fresh orchestrator', { pendingCount });
       const firstTask = pendingForRespawn[0]!;
       respawnForPendingTasks(firstTask.id, firstTask.title, firstTask.description ?? firstTask.title, pendingCount);
+      return;
+    }
+
+    // Also respawn if tasks are awaiting approval — the orch must be alive to handle
+    // the human's approve/reject decision when it arrives.
+    const awaitingApprovalOnDeath = query<{ count: number }>(
+      "SELECT COUNT(*) as count FROM orchestrator_tasks WHERE status = 'awaiting_approval'",
+    );
+    const awaitingApprovalCount = awaitingApprovalOnDeath[0]?.count ?? 0;
+    if (awaitingApprovalCount > 0) {
+      log.info('Orchestrator dead but tasks awaiting approval — respawning to handle response', {
+        awaitingApprovalCount,
+      });
+      respawnForAwaitingApproval(awaitingApprovalCount);
     }
 
     return;
@@ -519,6 +606,24 @@ async function run(config: Record<string, unknown>): Promise<void> {
   if ((activeJobs[0]?.count ?? 0) > 0) {
     log.debug('Workers still running — not idle');
     return; // Workers still running — not idle
+  }
+
+  // Check if any tasks are awaiting plan approval.
+  // The orchestrator must remain alive to handle the human's approve/reject response.
+  // Shutting it down here leaves the task in limbo with no process to receive the decision.
+  const awaitingApprovalRows = query<{ count: number }>(
+    "SELECT COUNT(*) as count FROM orchestrator_tasks WHERE status = 'awaiting_approval'",
+  );
+  if ((awaitingApprovalRows[0]?.count ?? 0) > 0) {
+    log.debug('Tasks awaiting plan approval — deferring idle shutdown', {
+      count: awaitingApprovalRows[0]?.count ?? 0,
+    });
+    // Touch last_activity so the idle clock resets and we don't re-evaluate immediately
+    update('agents', 'orchestrator', {
+      last_activity: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    });
+    return;
   }
 
   // --- Check 1: Context exhaustion (backstop) ---
