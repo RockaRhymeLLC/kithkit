@@ -10,6 +10,10 @@
  * structured memories, feeding them into pre-task injection) is deferred to a follow-up.
  */
 
+import { createLogger } from '../../core/logger.js';
+
+const log = createLogger('extract-from-delta');
+
 export interface DeltaInput {
   /** Orch internal result string (free text). May be null if task ended without a result. */
   result: string | null;
@@ -62,10 +66,17 @@ export function detectDelta(input: DeltaInput): DeltaLesson | null {
   }
 
   if (comms_outcome === 'redirected') {
+    if (!hasResult) {
+      return {
+        signal: 'medium',
+        diverged: false,
+        description: `Task redirected before orch produced a result.`,
+      };
+    }
     return {
       signal: 'high',
       diverged: true,
-      description: `Orch ${hasResult ? 'reported result' : 'completed'} but comms marked outcome as 'redirected' — deliverable did not match user intent.`,
+      description: `Orch reported result but comms marked outcome as 'redirected' — deliverable did not match user intent.`,
     };
   }
 
@@ -93,6 +104,8 @@ export function detectDelta(input: DeltaInput): DeltaLesson | null {
       diverged: false,
       description: 'Task accepted without corrections — no delta.',
     };
+  } else {
+    log.warn('extract-from-delta: unrecognized comms_outcome', { outcome: comms_outcome });
   }
 
   return null;
