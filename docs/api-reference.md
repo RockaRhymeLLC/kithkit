@@ -2933,7 +2933,7 @@ Network SDK API — contacts, presence, groups, broadcasts. See the network sub-
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/network/status` | GET | Network SDK status and community info |
+| `/api/network/status` | GET | Actual relay registration state and community info |
 | `/api/network/contacts` | GET | List contacts |
 | `/api/network/contacts/request` | POST | Send a contact request (`{username}`) |
 | `/api/network/contacts/pending` | GET | List pending contact requests |
@@ -2954,6 +2954,47 @@ Network SDK API — contacts, presence, groups, broadcasts. See the network sub-
 | `/api/network/groups/:id/members/:username` | DELETE | Remove a member from a group |
 | `/api/network/groups/:id` | DELETE | Dissolve a group |
 | `/api/network/broadcasts` | GET | Check for new broadcasts |
+
+#### GET /api/network/status
+
+Returns the actual relay registration state for each configured community.
+
+Always responds 200. When the SDK has not loaded (`initialized: false`), communities are still listed with their registration state — this lets operators detect failed startup registration without SDK availability.
+
+**Response shape:**
+```json
+{
+  "initialized": true,
+  "communities": [
+    {
+      "name": "home-agents",
+      "primary": "wss://relay.example.com",
+      "failover": "wss://failover.example.com",
+      "status": "active",
+      "activeRelay": "wss://relay.example.com",
+      "registration_status": "success",
+      "last_successful_registration_at": "2026-05-15T02:37:00.000Z",
+      "last_error": null,
+      "retry_count": 0,
+      "current_relay_session_state": "connected"
+    }
+  ],
+  "timestamp": "2026-05-15T03:00:00.000Z"
+}
+```
+
+**Fields:**
+
+| Field | Description |
+|-------|-------------|
+| `initialized` | Whether the network SDK module has loaded. Does not imply registration succeeded. |
+| `status` | SDK-level view of which relay is in use: `active` \| `failover` \| `offline` \| `unknown`. Legacy field — preserved for back-compat. Does **not** reflect registration outcome. |
+| `activeRelay` | URL of the relay currently in use (SDK-level view). Legacy field — preserved for back-compat. |
+| `registration_status` | Actual registration result: `success` \| `failed` \| `retrying` \| `pending` |
+| `last_successful_registration_at` | ISO timestamp of the most recent successful registration, or `null` if never registered. |
+| `last_error` | Error message from the most recent failed attempt, or `null`. |
+| `retry_count` | Number of consecutive failures since the last success (resets to 0 on success). |
+| `current_relay_session_state` | `connected` \| `disconnected` \| `unknown` — best-effort SDK introspection from `community:status` events. |
 
 ### POST /hook/response
 
