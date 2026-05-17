@@ -9,6 +9,13 @@
  *
  * Uses message type `status` (not `ping` — valid types are:
  * text, status, coordination, pr-review).
+ *
+ * Local-DNS failure guard: when the configured peer host is a .lan/.local
+ * mDNS hostname and the LAN probe fails, we fall back to probing via the
+ * A2A relay before recording the peer as down.  This prevents a local DNS
+ * outage on our machine from falsely marking healthy peers unreachable.
+ * A distinct `localDnsFailed` flag is emitted in log entries so the two
+ * failure modes can be distinguished in dashboards and alerts.
  */
 
 import { createLogger } from '../../core/logger.js';
@@ -21,12 +28,57 @@ const log = createLogger('peer-heartbeat');
 const _lastScan = new Map<string, number>();
 const SCAN_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 
+/**
+ * Peers currently in the "local-DNS-indeterminate" state: send failed via
+ * .lan DNS but the peer was confirmed reachable via relay.  This is a
+ * DISTINCT flag from "peer-actually-unreachable" (where both paths fail).
+ */
+const _localDnsIndeterminate = new Set<string>();
+
 function shouldScan(peerName: string): boolean {
   const key = peerName.toLowerCase();
   const last = _lastScan.get(key) ?? 0;
   if (Date.now() - last < SCAN_COOLDOWN_MS) return false;
   _lastScan.set(key, Date.now());
   return true;
+}
+
+/**
+ * Returns true when the host is an mDNS hostname (.lan / .local) that is
+ * resolved by the local router/DNS and therefore susceptible to a local
+ * DNS outage on our machine independent of the peer's actual health.
+ */
+function isMdnsHost(host: string): boolean {
+  return host.endsWith('.lan') || host.endsWith('.local');
+}
+
+/**
+ * Probe the peer via the A2A relay by POSTing to our local daemon's
+ * /api/a2a/send endpoint with route:relay.  Returns true when the relay
+ * confirms delivery (ok:true).
+ *
+ * This is intentionally a separate HTTP round-trip to localhost so that it
+ * uses a completely independent code path from the LAN probe.
+ */
+async function probeViaRelay(peerName: string, daemonPort: number): Promise<boolean> {
+  try {
+    const body = JSON.stringify({
+      to: peerName,
+      payload: { type: 'status', status: 'dns-fallback-probe' },
+      route: 'relay',
+    });
+    const resp = await fetch(`http://127.0.0.1:${daemonPort}/api/a2a/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json() as { ok?: boolean };
+    return data.ok === true;
+  } catch {
+    return false;
+  }
 }
 
 interface PeerConfig {
@@ -65,6 +117,8 @@ async function run(): Promise<void> {
     return;
   }
 
+  const daemonPort = config.daemon.port;
+
   let sent = 0;
   let failed = 0;
 
@@ -75,32 +129,105 @@ async function run(): Promise<void> {
       });
 
       if (result.ok) {
-        comms.updatePeerState(peer.name, {
+        // Clear any prior local-DNS-indeterminate flag — peer is now reachable directly.
+        _localDnsIndeterminate.delete(peer.name.toLowerCase());
+        comms.updatePeerState?.(peer.name, {
           status: 'idle',
           updatedAt: Date.now(),
         });
         sent++;
         log.debug(`Heartbeat sent to ${peer.name}`, { queued: result.queued });
       } else {
-        comms.updatePeerState(peer.name, {
-          status: 'unknown',
-          updatedAt: Date.now(),
-        });
-        failed++;
-        log.debug(`Heartbeat failed for ${peer.name}`, { error: result.error });
+        // ── Local-DNS failure guard ──────────────────────────────────────
+        // When the configured host is an mDNS (.lan/.local) hostname, a
+        // DNS resolution failure on our machine can cause a false "peer
+        // down" reading even though the peer is healthy.  Before recording
+        // the peer as unreachable we probe via the A2A relay, which does
+        // NOT depend on local .lan DNS.
+        if (isMdnsHost(peer.host)) {
+          const relayOk = await probeViaRelay(peer.name, daemonPort);
 
-        // Attempt LAN discovery to find peer at a new IP
-        if (shouldScan(peer.name)) {
-          const discovered = await scanForPeers(peer.port ?? 3847);
-          const newIP = discovered.get(peer.name.toLowerCase());
-          if (newIP) {
-            comms.setPeerIpOverride(peer.name, newIP);
-            log.info(`Discovered ${peer.name} at new IP ${newIP}`);
+          if (relayOk) {
+            // Peer is alive — our local .lan DNS path is broken, not the peer.
+            // Record the indeterminate state and do NOT increment `failed`.
+            _localDnsIndeterminate.add(peer.name.toLowerCase());
+            log.warn(`${peer.name}: local .lan DNS probe failed but peer confirmed reachable via relay — NOT marking peer down`, {
+              localDnsFailed: true,
+              host: peer.host,
+              peerStatus: 'local-dns-indeterminate',
+            });
+            sent++;
+
+            // Still try to discover the peer's current IP via ARP so the
+            // next heartbeat can reach it directly without DNS.
+            if (shouldScan(peer.name)) {
+              try {
+                const discovered = await scanForPeers(peer.port ?? 3847);
+                const newIP = discovered.get(peer.name.toLowerCase());
+                if (newIP) {
+                  comms.setPeerIpOverride?.(peer.name, newIP);
+                  log.info(`Discovered ${peer.name} at IP ${newIP} (will use for direct probes while .lan DNS is broken)`);
+                }
+              } catch (scanErr) {
+                log.warn(`LAN discovery scan failed for ${peer.name}`, {
+                  error: scanErr instanceof Error ? scanErr.message : String(scanErr),
+                });
+              }
+            }
+          } else {
+            // Both .lan DNS and relay failed — peer is likely genuinely
+            // unreachable (or relay is also down).  This is distinct from
+            // the local-DNS-only failure above.
+            _localDnsIndeterminate.delete(peer.name.toLowerCase());
+            comms.updatePeerState?.(peer.name, {
+              status: 'unreachable',
+              updatedAt: Date.now(),
+            });
+            failed++;
+            log.warn(`${peer.name}: unreachable via .lan DNS and relay — marking peer down`, {
+              localDnsFailed: true,
+              host: peer.host,
+              peerStatus: 'peer-actually-unreachable',
+            });
+
+            // ARP scan to check whether peer has moved to a new IP.
+            if (shouldScan(peer.name)) {
+              try {
+                const discovered = await scanForPeers(peer.port ?? 3847);
+                const newIP = discovered.get(peer.name.toLowerCase());
+                if (newIP) {
+                  comms.setPeerIpOverride?.(peer.name, newIP);
+                  log.info(`Discovered ${peer.name} at new IP ${newIP}`);
+                }
+              } catch (scanErr) {
+                log.warn(`LAN discovery scan failed for ${peer.name}`, {
+                  error: scanErr instanceof Error ? scanErr.message : String(scanErr),
+                });
+              }
+            }
+          }
+        } else {
+          // Non-mDNS host — original behavior: record unknown and scan.
+          comms.updatePeerState?.(peer.name, {
+            status: 'unknown',
+            updatedAt: Date.now(),
+          });
+          failed++;
+          log.debug(`Heartbeat failed for ${peer.name}`, { error: result.error });
+
+          // Attempt LAN discovery to find peer at a new IP
+          if (shouldScan(peer.name)) {
+            const discovered = await scanForPeers(peer.port ?? 3847);
+            const newIP = discovered.get(peer.name.toLowerCase());
+            if (newIP) {
+              comms.setPeerIpOverride?.(peer.name, newIP);
+              log.info(`Discovered ${peer.name} at new IP ${newIP}`);
+            }
           }
         }
       }
     } catch (err) {
-      comms.updatePeerState(peer.name, {
+      comms.updatePeerState?.(peer.name, {
         status: 'unknown',
         updatedAt: Date.now(),
       });
@@ -115,7 +242,7 @@ async function run(): Promise<void> {
           const discovered = await scanForPeers(peer.port ?? 3847);
           const newIP = discovered.get(peer.name.toLowerCase());
           if (newIP) {
-            comms.setPeerIpOverride(peer.name, newIP);
+            comms.setPeerIpOverride?.(peer.name, newIP);
             log.info(`Discovered ${peer.name} at new IP ${newIP}`);
           }
         } catch (scanErr) {
