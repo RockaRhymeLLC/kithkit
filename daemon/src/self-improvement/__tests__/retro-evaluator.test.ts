@@ -358,6 +358,34 @@ describe('spawnRetro constructs correct prompt with task context', () => {
     assert.ok(req.prompt.includes('2'), 'prompt includes retry_count');
     assert.ok(req.prompt.includes('Task started'), 'prompt includes activity log entry');
   });
+
+  it('includes comms_outcome and comms_corrections in prompt when set', async () => {
+    const task = {
+      id: 'task-comms',
+      title: 'Comms delta test',
+      description: null,
+      status: 'completed',
+      result: 'Task completed by orch',
+      error: null,
+      retry_count: 0,
+      outcome: null,
+      outcome_notes: null,
+      comms_outcome: 'corrected',
+      comms_corrections: '{"detail":"user said it was wrong"}',
+      created_at: '2026-03-19T10:00:00Z',
+      completed_at: '2026-03-19T10:05:00Z',
+      workers: [],
+      activity: [],
+    };
+
+    const jobId = await spawnRetro(task);
+    assert.equal(jobId, 'mock-job-id');
+
+    const req = capturedRequest as { prompt: string };
+    assert.ok(req.prompt.includes('Task completed by orch'), 'Prompt should include orch result');
+    assert.ok(req.prompt.includes('corrected'), 'Prompt should include comms_outcome');
+    assert.ok(req.prompt.includes('user said it was wrong'), 'Prompt should include comms_corrections');
+  });
 });
 
 // ── finishJob callback tests ──────────────────────────────────
