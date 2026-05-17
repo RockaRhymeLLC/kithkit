@@ -39,6 +39,12 @@ run_test() {
     printf '%s' "$CHANNEL" > "$TMPDIR/.claude/state/channel.txt"
   fi
 
+  # Write comms-session.txt so the session-scope guard in the hook allows
+  # enforcement to proceed. CLAUDE_SESSION_ID must match this value (passed
+  # via env below). Without this, the hook exits 0 (fail-open) for all tests.
+  TEST_SESSION_ID="test-session-enforcer-abc123"
+  printf '%s' "$TEST_SESSION_ID" > "$TMPDIR/.claude/state/comms-session.txt"
+
   # Write transcript JSONL
   TRANSCRIPT_FILE="$TMPDIR/transcript.jsonl"
   printf '%s\n' "$TRANSCRIPT_JSON" > "$TRANSCRIPT_FILE"
@@ -47,10 +53,11 @@ run_test() {
   PAYLOAD=$(printf '{"transcript_path":"%s","hook_event_name":"Stop"}' "$TRANSCRIPT_FILE")
 
   # Run the hook; capture stderr (where warnings go); suppress stdout.
-  # Use env(1) to pass CLAUDE_PROJECT_DIR to sh — a bare VAR=val before a
-  # pipeline only applies to the first command (printf), not to sh "$HOOK".
+  # Use env(1) to pass CLAUDE_PROJECT_DIR and CLAUDE_SESSION_ID to sh — a bare
+  # VAR=val before a pipeline only applies to the first command (printf), not
+  # to sh "$HOOK".
   STDERR_OUT=$(printf '%s' "$PAYLOAD" \
-    | env CLAUDE_PROJECT_DIR="$TMPDIR" sh "$HOOK" 2>&1 >/dev/null || true)
+    | env CLAUDE_PROJECT_DIR="$TMPDIR" CLAUDE_SESSION_ID="$TEST_SESSION_ID" sh "$HOOK" 2>&1 >/dev/null || true)
 
   HOOK_EXIT=$?
 
@@ -109,6 +116,22 @@ run_test \
   "channel=telegram without /api/send call emits warning" \
   "telegram" \
   "$TRANSCRIPT_WITHOUT_SEND" \
+  "yes"
+
+# Test 4: channel=telegram + text-only reply (no tool calls at all) → warning
+# Primary failure mode: comms responds with text but never calls /api/send.
+# No tool_use blocks means HAS_SEND will be "no" → warning must fire.
+run_test \
+  "channel=telegram with text-only reply (no tool calls) emits warning" \
+  "telegram" \
+  "$TRANSCRIPT_TEXT_ONLY" \
+  "yes"
+
+# Test 5 (minor #5): channel=voice + text-only reply → warning
+run_test \
+  "channel=voice with text-only reply emits warning" \
+  "voice" \
+  "$TRANSCRIPT_TEXT_ONLY" \
   "yes"
 
 # ── Summary ───────────────────────────────────────────────────────────────────

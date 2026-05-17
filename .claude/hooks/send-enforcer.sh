@@ -16,6 +16,29 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(cd "$(dirname "$0")/../.." && pwd)}"
 CHANNEL_FILE="$PROJECT_DIR/.claude/state/channel.txt"
 LOG_FILE="$PROJECT_DIR/logs/send-enforcer.log"
 
+# ── 0. Session scope guard ────────────────────────────────────────────────────
+# Only enforce for the comms session. Workers, orchestrators, and any other
+# Claude Code sessions bypass this hook entirely. This prevents false warnings
+# from coding workers or test sessions that legitimately don't call /api/send.
+#
+# The comms session ID is written by session-start.sh at bootstrap time.
+# Known limitation: on first boot before session-start.sh has run, the file
+# won't exist and enforcement is skipped (fail-open for back-compat). This is
+# acceptable because Dave's machine runs exactly one persistent comms session.
+COMMS_SESSION_FILE="$PROJECT_DIR/.claude/state/comms-session.txt"
+if [ -f "$COMMS_SESSION_FILE" ]; then
+  COMMS_SESSION_ID=$(cat "$COMMS_SESSION_FILE" | tr -d '[:space:]')
+  if [ "${CLAUDE_SESSION_ID:-}" != "$COMMS_SESSION_ID" ]; then
+    # Different session — skip enforcement silently
+    exit 0
+  fi
+else
+  # comms-session.txt not found — fail-open; log for visibility
+  printf 'DEBUG send-enforcer: comms-session.txt not found at %s — skipping session guard\n' \
+    "$COMMS_SESSION_FILE" >> "$LOG_FILE" 2>/dev/null || true
+  exit 0
+fi
+
 # ── 1. Check channel ──────────────────────────────────────────────────────────
 CHANNEL=""
 if [ -f "$CHANNEL_FILE" ]; then
