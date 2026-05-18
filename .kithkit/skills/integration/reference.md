@@ -194,13 +194,13 @@ Hybrid: combines keyword and vector results.
 
 ### Scheduler / Tasks
 
-**GET /api/tasks** — List all tasks with status, schedule, next/last run times.
+**GET /api/scheduler/tasks** — List all tasks with status, schedule, next/last run times.
 
-**POST /api/tasks/:name/run** — Manual trigger (bypasses schedule and idle checks).
+**POST /api/scheduler/tasks/:name/run** — Manual trigger (bypasses schedule and idle checks).
 
 Result: `{ "task_name": "...", "status": "success", "output": "...", "duration_ms": 48 }`.
 
-**GET /api/tasks/:name/history** — Execution history for a task.
+**GET /api/scheduler/tasks/:name/history** — Execution history for a task.
 
 ### Usage & Metrics
 

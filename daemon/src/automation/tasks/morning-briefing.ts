@@ -450,7 +450,7 @@ async function sendBriefing(
 
 async function run(config: Record<string, unknown>): Promise<string> {
   // Dedup guard: skip if a briefing was sent in the last hour (prevents
-  // accidental duplicates from manual /api/tasks/.../run triggers)
+  // accidental duplicates from manual /api/scheduler/tasks/.../run triggers)
   try {
     const recent = query<{ id: number }>(
       `SELECT id FROM task_results
