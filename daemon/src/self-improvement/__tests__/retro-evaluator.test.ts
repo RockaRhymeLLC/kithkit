@@ -59,7 +59,8 @@ const TEST_PROFILE: AgentProfile = {
 };
 
 function makeTask(overrides: Partial<{
-  id: string;
+  id: number;
+  external_id: string;
   title: string;
   description: string | null;
   status: string;
@@ -68,13 +69,15 @@ function makeTask(overrides: Partial<{
   retry_count: number;
   outcome: string | null;
   outcome_notes: string | null;
+  outcome_reason: string | null;
   generate_retro: number | null;
   created_at: string;
   completed_at: string | null;
   workers: Array<{ id: string; status: string; error: string | null }>;
 }> = {}) {
   return {
-    id: 'task-1',
+    id: 1,
+    external_id: 'aaaaaaaa-0000-4000-8000-000000000001',
     title: 'Test Task',
     description: null,
     status: 'completed',
@@ -83,6 +86,7 @@ function makeTask(overrides: Partial<{
     retry_count: 0,
     outcome: null,
     outcome_notes: null,
+    outcome_reason: null,
     created_at: new Date().toISOString(),
     completed_at: null,
     ...overrides,
@@ -320,7 +324,8 @@ describe('spawnRetro constructs correct prompt with task context', () => {
 
   it('includes task id, title, error, and retry_count in prompt', async () => {
     const task = {
-      id: 'task-abc',
+      id: 42,
+      external_id: 'task-abc-uuid-0000-0000-000000000001',
       title: 'Test the retro system',
       description: 'Run all retro checks',
       status: 'failed',
@@ -329,13 +334,14 @@ describe('spawnRetro constructs correct prompt with task context', () => {
       retry_count: 2,
       outcome: 'failed',
       outcome_notes: 'Hit timeout on second attempt',
+      outcome_reason: null,
       created_at: '2026-03-19T10:00:00Z',
       completed_at: null,
       workers: [],
       activity: [
         {
           id: 1,
-          task_id: 'task-abc',
+          task_id: 42,
           agent: 'orchestrator',
           type: 'progress',
           stage: 'start',
@@ -352,7 +358,7 @@ describe('spawnRetro constructs correct prompt with task context', () => {
     assert.ok(req, 'spawn was called');
     assert.equal(req.profile.name, 'retro');
     assert.equal(req.spawned_by, 'orchestrator');
-    assert.ok(req.prompt.includes('task-abc'), 'prompt includes task id');
+    assert.ok(req.prompt.includes('task-abc-uuid-0000-0000-000000000001'), 'prompt includes external_id');
     assert.ok(req.prompt.includes('Test the retro system'), 'prompt includes title');
     assert.ok(req.prompt.includes('Worker timed out'), 'prompt includes error');
     assert.ok(req.prompt.includes('2'), 'prompt includes retry_count');
@@ -361,7 +367,8 @@ describe('spawnRetro constructs correct prompt with task context', () => {
 
   it('includes comms_outcome and comms_corrections in prompt when set', async () => {
     const task = {
-      id: 'task-comms',
+      id: 99,
+      external_id: 'task-comms-uuid-0000-0000-000000000099',
       title: 'Comms delta test',
       description: null,
       status: 'completed',
@@ -370,6 +377,7 @@ describe('spawnRetro constructs correct prompt with task context', () => {
       retry_count: 0,
       outcome: null,
       outcome_notes: null,
+      outcome_reason: null,
       comms_outcome: 'corrected',
       comms_corrections: '{"detail":"user said it was wrong"}',
       created_at: '2026-03-19T10:00:00Z',

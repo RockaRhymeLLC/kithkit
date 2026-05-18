@@ -123,6 +123,7 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
       if (!req.metadata?.task_id || typeof req.metadata.task_id !== 'string') {
         log.warn('Orchestrator result message missing task_id — no task auto-completed. Message delivered to comms.');
       } else {
+        // TODO(PR-C): migrate orchestrator_tasks queries to tasks table — see issue #94
         const exact = query<{ id: string; requesting_peer: string | null }>(
           `SELECT id, requesting_peer FROM orchestrator_tasks
            WHERE id = ? AND status IN ('assigned', 'in_progress', 'pending')`,
