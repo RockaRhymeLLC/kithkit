@@ -135,6 +135,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_created_at  ON tasks(created_at);
 CREATE INDEX IF NOT EXISTS idx_tasks_external_id ON tasks(external_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_source      ON tasks(source);
 CREATE INDEX IF NOT EXISTS idx_tasks_kind        ON tasks(kind);
+CREATE INDEX IF NOT EXISTS idx_tasks_due_date    ON tasks(due_date);
 
 -- ============================================================
 -- 3. INSERT todos → tasks (kind='todo')
@@ -258,8 +259,9 @@ SELECT
   '[]',            -- tags: no equivalent in orchestrator_tasks
   assignee,        -- → assigned_to
   CASE
-    WHEN priority = 1                THEN 'low'
-    WHEN priority = 0 OR priority = 2 THEN 'medium'
+    WHEN priority <= 0               THEN 'low'
+    WHEN priority = 1                THEN 'medium'
+    WHEN priority = 2                THEN 'urgent'
     WHEN priority = 3                THEN 'high'
     WHEN priority >= 4               THEN 'urgent'
     ELSE                                  'medium'

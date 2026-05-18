@@ -83,7 +83,7 @@ interface WorkerJob {
   cost_usd: number;
 }
 
-const VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'];
+const VALID_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const VALID_TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'cancelled'];
 
 const execFileAsync = promisify(execFile);
