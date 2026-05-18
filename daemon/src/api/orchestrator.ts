@@ -104,14 +104,16 @@ export async function handleOrchestratorRoute(
     const priority = typeof body.priority === 'number' ? body.priority : 0;
     const workNotes = typeof body.work_notes === 'string' ? body.work_notes : null;
     const { titleText, descriptionText } = buildTaskFields(task, context);
+    const source = requestingPeer ? 'peer' : 'human';
     exec(
       `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, source, requesting_peer, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, 'human', ?, ?, ?)`,
+       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
       taskId,
       titleText,
       descriptionText,
       priority,
       workNotes,
+      source,
       requestingPeer,
       ts,
       ts,

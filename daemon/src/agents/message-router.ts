@@ -159,20 +159,28 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
             // Auto-relay result to requesting peer agent (fire-and-forget).
             const peer = exact[0]!.requesting_peer;
             if (peer && req.body) {
-              const router = _testRouter ?? getA2ARouter();
-              if (!router) {
-                log.warn('A2A router not initialised — cannot relay result to requesting_peer', { peer, taskId });
-              } else {
-                Promise.resolve(router.send({ to: peer, type: 'text', text: req.body })).then(
-                  (result) => {
-                    const ok = (result as { ok?: boolean }).ok !== false;
-                    if (ok) log.info('Relayed result to requesting peer', { peer, taskId });
-                    else log.warn('Result relay returned non-ok', { peer, taskId, result });
-                  },
-                  (err: unknown) => {
-                    log.warn('Failed to relay result to requesting peer', { peer, taskId, error: err instanceof Error ? err.message : String(err) });
-                  },
-                );
+              try {
+                const router = _testRouter ?? getA2ARouter();
+                if (!router) {
+                  log.warn('A2A router not initialised — cannot relay result to requesting_peer', { peer, taskId });
+                } else {
+                  const timeoutMs = 15000;
+                  Promise.race([
+                    router.send({ to: peer, type: 'text', text: req.body }),
+                    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`A2A relay timeout after ${timeoutMs}ms`)), timeoutMs).unref()),
+                  ]).then(
+                    (result) => {
+                      const ok = (result as { ok?: boolean }).ok !== false;
+                      if (ok) log.info('Relayed result to requesting peer', { peer, taskId });
+                      else log.warn('Result relay returned non-ok', { peer, taskId, result });
+                    }
+                  ).catch(err => log.warn('A2A relay failed/timed out', { peer, taskId, error: String(err) }));
+                }
+              } catch (err) {
+                log.warn('Failed to relay completed-task result to requesting_peer', {
+                  peer, taskId,
+                  error: err instanceof Error ? err.message : String(err),
+                });
               }
             }
           }
