@@ -12,6 +12,7 @@ import { insert, query, exec } from '../core/db.js';
 import { injectMessage } from './tmux.js';
 import { notifyNewMessage, recordDirectInjection } from '../automation/tasks/message-delivery.js';
 import { createLogger } from '../core/logger.js';
+import { getA2ARouter } from '../a2a/handler.js';
 
 const log = createLogger('message-router');
 
@@ -122,8 +123,9 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
       if (!req.metadata?.task_id || typeof req.metadata.task_id !== 'string') {
         log.warn('Orchestrator result message missing task_id — no task auto-completed. Message delivered to comms.');
       } else {
-        const exact = query<{ id: string }>(
-          `SELECT id FROM orchestrator_tasks
+        // TODO(PR-C): migrate orchestrator_tasks queries to tasks table — see issue #94
+        const exact = query<{ id: string; requesting_peer: string | null }>(
+          `SELECT id, requesting_peer FROM orchestrator_tasks
            WHERE id = ? AND status IN ('assigned', 'in_progress', 'pending')`,
           req.metadata.task_id,
         );
@@ -154,6 +156,34 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
               req.body.slice(0, 5000), now, now, taskId,
             );
             log.info('Auto-completed orchestrator task on result message', { taskId });
+
+            // Auto-relay result to requesting peer agent (fire-and-forget).
+            const peer = exact[0]!.requesting_peer;
+            if (peer && req.body) {
+              try {
+                const router = _testRouter ?? getA2ARouter();
+                if (!router) {
+                  log.warn('A2A router not initialised — cannot relay result to requesting_peer', { peer, taskId });
+                } else {
+                  const timeoutMs = 15000;
+                  Promise.race([
+                    router.send({ to: peer, type: 'text', text: req.body }),
+                    new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`A2A relay timeout after ${timeoutMs}ms`)), timeoutMs).unref()),
+                  ]).then(
+                    (result) => {
+                      const ok = (result as { ok?: boolean }).ok !== false;
+                      if (ok) log.info('Relayed result to requesting peer', { peer, taskId });
+                      else log.warn('Result relay returned non-ok', { peer, taskId, result });
+                    }
+                  ).catch(err => log.warn('A2A relay failed/timed out', { peer, taskId, error: String(err) }));
+                }
+              } catch (err) {
+                log.warn('Failed to relay completed-task result to requesting_peer', {
+                  peer, taskId,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+              }
+            }
           }
         } else {
           log.warn('Orchestrator result message task_id not found or not active — no task auto-completed. Message delivered to comms.', {
@@ -341,4 +371,9 @@ export function _setTmuxInjectorForTesting(fn: TmuxInjector | null): void {
 
 export function _clearDedupForTesting(): void {
   _recentMessages.clear();
+}
+
+let _testRouter: { send: (body: unknown) => Promise<unknown> } | null = null;
+export function _setA2ARouterForTesting(r: { send: (body: unknown) => Promise<unknown> } | null): void {
+  _testRouter = r;
 }

@@ -20,6 +20,7 @@ import { cleanupOrphanedResources } from './core/orphan-cleanup.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
 import { handleTasksRoute } from './api/tasks.js';
+import { handleUnifiedTasksRoute } from './api/unified-tasks.js';
 import { handleConfigRoute, setConfigWatcher, setCurrentDbPath, setConfigFilePath } from './api/config.js';
 import { handleOrchestratorRoute } from './api/orchestrator.js';
 import { handleSelftestRoute } from './api/selftest.js';
@@ -259,6 +260,8 @@ const server = http.createServer((req, res) => {
       const handlers = [
         () => handleAgentsRoute(req, res, url.pathname),
         () => handleOrchestratorRoute(req, res, url.pathname),
+        // Unified tasks endpoint — canonical. Must come before task-queue (shim) and scheduler tasks.
+        () => handleUnifiedTasksRoute(req, res, url.pathname, url.searchParams),
         () => handleTaskQueueRoute(req, res, url.pathname, url.searchParams),
         () => handleContactsRoute(req, res, url.pathname, url.searchParams),
         () => handleSendRoute(req, res, url.pathname),

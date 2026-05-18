@@ -28,16 +28,30 @@ import {
 const EXPECTED_TABLES = [
   'agent_activity_log',
   'agents',
-  'worker_jobs',
-  'memories',
-  'todos',
-  'todo_actions',
+  'api_metrics_hourly',
+  'api_request_logs',
   'calendar',
-  'messages',
   'config',
+  'contact_actions',
+  'contacts',
   'feature_state',
-  'task_results',
+  'memories',
+  'messages',
   'migrations',
+  'orchestrator_task_activity',
+  'orchestrator_task_workers',
+  'orchestrator_tasks',
+  'task_actions',
+  'task_activity',
+  'task_calibration',
+  'task_deps',
+  'task_results',
+  'task_workers',
+  'tasks',
+  'timers',
+  'todo_actions',
+  'todos',
+  'worker_jobs',
 ];
 
 describe('Database schema (t-118)', () => {
@@ -61,7 +75,7 @@ describe('Database schema (t-118)', () => {
     assert.ok(fs.existsSync(dbPath), 'DB should be created');
   });
 
-  it('creates all 12 tables with correct schema', () => {
+  it(`creates all ${EXPECTED_TABLES.length} tables with correct schema`, () => {
     const dbPath = path.join(tmpDir, 'kithkit.db');
     const db = openDatabase(tmpDir, dbPath, getMigrationsDir());
 
@@ -150,22 +164,15 @@ describe('Migrations (t-119)', () => {
     const db = getDatabase();
 
     const version = getCurrentVersion(db);
-    assert.equal(version, 4);
+    const available = discoverMigrations(getMigrationsDir());
+    assert.equal(version, available.at(-1)!.version, 'current version should match latest migration');
 
     const applied = getAppliedMigrations(db);
-    assert.equal(applied.length, 4);
+    assert.equal(applied.length, available.length, 'all discovered migrations should be applied');
+    // Spot-check first migration is still present
     assert.equal(applied[0]!.version, 1);
     assert.equal(applied[0]!.name, 'initial-schema');
     assert.ok(applied[0]!.applied_at);
-    assert.equal(applied[1]!.version, 2);
-    assert.equal(applied[1]!.name, 'add-indexes');
-    assert.ok(applied[1]!.applied_at);
-    assert.equal(applied[2]!.version, 3);
-    assert.equal(applied[2]!.name, 'message-read-tracking');
-    assert.ok(applied[2]!.applied_at);
-    assert.equal(applied[3]!.version, 4);
-    assert.equal(applied[3]!.name, 'agent-activity-log');
-    assert.ok(applied[3]!.applied_at);
   });
 
   it('new migration auto-applies on next open', () => {

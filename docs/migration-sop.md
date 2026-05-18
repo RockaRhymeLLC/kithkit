@@ -349,7 +349,7 @@ tmux attach -t <session-name>
 - [ ] **Daemon health**: `curl http://localhost:<port>/health` -> `{"status":"ok","extension":"<name>"}`
 - [ ] **Extension loaded**: health response `extension` field is NOT null
 - [ ] **Identity loaded**: `curl http://localhost:<port>/status` -> shows agent name
-- [ ] **Scheduler tasks**: `curl http://localhost:<port>/api/tasks` -> lists configured tasks
+- [ ] **Scheduler tasks**: `curl http://localhost:<port>/api/scheduler/tasks` -> lists configured tasks
 - [ ] **Database created**: `ls -la ~/KKit-<AGENT>/kithkit.db` -> file exists
 - [ ] **Logs writing**: `ls ~/KKit-<AGENT>/logs/` -> daemon-stdout.log, daemon-stderr.log present
 - [ ] **Tmux session**: `tmux list-sessions` -> shows agent session
@@ -402,7 +402,7 @@ curl -s -X POST http://localhost:<port>/api/config/reload
 
 ### GOTCHA 4: Core scheduler tasks not registered
 
-**Symptom**: Scheduler tasks appear in `GET /api/tasks` but core handlers never execute.
+**Symptom**: Scheduler tasks appear in `GET /api/scheduler/tasks` but core handlers never execute.
 
 **Cause**: `registerCoreTasks()` must be called explicitly by the extension's `onInit`. It is NOT automatic.
 

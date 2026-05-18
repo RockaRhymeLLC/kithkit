@@ -179,7 +179,7 @@ it('should update spec via skill', () => {
 ```typescript
 it('should handle API request', async () => {
   // Make API call as external system would
-  const response = await fetch('/api/tasks', {
+  const response = await fetch('/api/scheduler/tasks', {
     method: 'POST',
     body: JSON.stringify({ task: 'New task' })
   });

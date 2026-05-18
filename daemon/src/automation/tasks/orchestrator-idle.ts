@@ -11,6 +11,9 @@
  * 3. If still alive after grace period, force-kill the session
  */
 
+// TODO(PR-C): orchestrator-idle reads directly from orchestrator_tasks. Migrate to
+// the unified tasks table once PR-C drops the legacy tables. See issue #94.
+
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { query, exec, update } from '../../core/db.js';
