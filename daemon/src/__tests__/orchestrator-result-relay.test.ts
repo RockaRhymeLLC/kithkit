@@ -238,4 +238,43 @@ describe('orchestrator result auto-relay to requesting_peer', () => {
     assert.ok(tasks.length > 0, 'task row should have been created');
     assert.equal(tasks[0]!.requesting_peer, null, 'invalid requesting_peer should be stored as null');
   });
+
+  it('requesting_peer set + getA2ARouter() returns null → "A2A router not initialised" warn fires, task still completes', async () => {
+    seedTask('task-null-router', 'in_progress', 'bmo');
+    addWorker('task-null-router', 'worker-6');
+
+    // _testRouter is null (cleared by teardown); getA2ARouter() also returns null
+    // in the test environment — no A2A handler is initialised. The code should
+    // log a warn and continue without throwing.
+    const warnLines: string[] = [];
+    const origConsoleLog = console.log;
+    console.log = (...args: unknown[]) => {
+      warnLines.push(args.join(' '));
+      origConsoleLog(...args);
+    };
+
+    try {
+      const res = await request('POST', '/api/messages', {
+        from: 'orchestrator',
+        to: 'comms',
+        type: 'result',
+        body: 'Result with null router',
+        metadata: { task_id: 'task-null-router' },
+      });
+
+      assert.ok(res.status >= 200 && res.status < 300, `expected 2xx, got ${res.status}`);
+
+      await new Promise(r => setImmediate(r));
+
+      // Assert: the 'A2A router not initialised' warn was logged
+      const routerWarn = warnLines.find(l => l.includes('A2A router not initialised'));
+      assert.ok(routerWarn !== undefined, 'expected "A2A router not initialised" warn to fire');
+
+      // Assert: task still auto-completes despite null router
+      const task = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-null-router');
+      assert.equal(task[0]!.status, 'completed', 'task should be completed even when A2A router is null');
+    } finally {
+      console.log = origConsoleLog;
+    }
+  });
 });
