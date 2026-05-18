@@ -25,6 +25,10 @@ export function setA2ARouter(router: UnifiedA2ARouter): void {
   _router = router;
 }
 
+export function getA2ARouter(): UnifiedA2ARouter | null {
+  return _router;
+}
+
 export async function handleA2ARoute(
   req: http.IncomingMessage,
   res: http.ServerResponse,
