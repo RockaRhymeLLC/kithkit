@@ -386,7 +386,7 @@ describe('Scheduler Engine', { concurrency: 1 }, () => {
     });
 
     // API route tests
-    it('GET /api/tasks returns task list', async () => {
+    it('GET /api/scheduler/tasks returns task list', async () => {
       scheduler = new Scheduler({
         tasks: [
           { name: 'api-task-1', enabled: true, interval: '5m', config: { command: 'echo 1' } },
@@ -395,7 +395,7 @@ describe('Scheduler Engine', { concurrency: 1 }, () => {
       });
       setScheduler(scheduler);
 
-      const { status, body } = await fakeRequest('GET', '/api/tasks');
+      const { status, body } = await fakeRequest('GET', '/api/scheduler/tasks');
       assert.equal(status, 200);
       assert.equal(body.data.length, 2);
       assert.equal(body.data[0].name, 'api-task-1');
@@ -403,7 +403,7 @@ describe('Scheduler Engine', { concurrency: 1 }, () => {
       assert.ok(body.timestamp);
     });
 
-    it('POST /api/tasks/:name/run triggers task', async () => {
+    it('POST /api/scheduler/tasks/:name/run triggers task', async () => {
       scheduler = new Scheduler({
         tasks: [{
           name: 'api-run',
@@ -414,22 +414,22 @@ describe('Scheduler Engine', { concurrency: 1 }, () => {
       });
       setScheduler(scheduler);
 
-      const { status, body } = await fakeRequest('POST', '/api/tasks/api-run/run');
+      const { status, body } = await fakeRequest('POST', '/api/scheduler/tasks/api-run/run');
       assert.equal(status, 200);
       assert.equal(body.data.status, 'success');
       assert.ok(body.data.output.includes('api-triggered'));
     });
 
-    it('POST /api/tasks/:name/run returns 404 for unknown task', async () => {
+    it('POST /api/scheduler/tasks/:name/run returns 404 for unknown task', async () => {
       scheduler = new Scheduler({ tasks: [] });
       setScheduler(scheduler);
 
-      const { status, body } = await fakeRequest('POST', '/api/tasks/nope/run');
+      const { status, body } = await fakeRequest('POST', '/api/scheduler/tasks/nope/run');
       assert.equal(status, 404);
       assert.ok(body.error.includes('not found'));
     });
 
-    it('GET /api/tasks/:name/history returns history', async () => {
+    it('GET /api/scheduler/tasks/:name/history returns history', async () => {
       scheduler = new Scheduler({
         tasks: [{
           name: 'api-history',
@@ -442,7 +442,7 @@ describe('Scheduler Engine', { concurrency: 1 }, () => {
 
       await scheduler.triggerTask('api-history');
 
-      const { status, body } = await fakeRequest('GET', '/api/tasks/api-history/history');
+      const { status, body } = await fakeRequest('GET', '/api/scheduler/tasks/api-history/history');
       assert.equal(status, 200);
       assert.equal(body.data.length, 1);
     });
@@ -616,7 +616,7 @@ describe('Scheduler Engine', { concurrency: 1 }, () => {
 
       scheduler.registerHandler('api-handler', async () => {});
 
-      const { status, body } = await fakeRequest('POST', '/api/tasks/api-handler/run');
+      const { status, body } = await fakeRequest('POST', '/api/scheduler/tasks/api-handler/run');
       assert.equal(status, 200);
       assert.equal(body.data.status, 'success');
       assert.ok(body.data.output.includes('In-process handler completed'));

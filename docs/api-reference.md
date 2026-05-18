@@ -1598,12 +1598,12 @@ Hot-reload caps changes with `POST /api/config/reload` — no daemon restart req
 
 ## Scheduler / Tasks
 
-### GET /api/tasks
+### GET /api/scheduler/tasks
 
 List all registered scheduler tasks with their status.
 
 ```bash
-curl http://localhost:3847/api/tasks
+curl http://localhost:3847/api/scheduler/tasks
 ```
 
 ```json
@@ -1633,12 +1633,12 @@ curl http://localhost:3847/api/tasks
 
 ---
 
-### POST /api/tasks/:name/run
+### POST /api/scheduler/tasks/:name/run
 
 Manually trigger a task immediately, bypassing its schedule and idle/session checks.
 
 ```bash
-curl -X POST http://localhost:3847/api/tasks/context-watchdog/run
+curl -X POST http://localhost:3847/api/scheduler/tasks/context-watchdog/run
 ```
 
 ```json
@@ -1665,12 +1665,12 @@ curl -X POST http://localhost:3847/api/tasks/context-watchdog/run
 
 ---
 
-### GET /api/tasks/:name/history
+### GET /api/scheduler/tasks/:name/history
 
 Get execution history for a specific task.
 
 ```bash
-curl http://localhost:3847/api/tasks/context-watchdog/history
+curl http://localhost:3847/api/scheduler/tasks/context-watchdog/history
 ```
 
 ```json
