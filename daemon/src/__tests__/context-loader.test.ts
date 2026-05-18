@@ -33,8 +33,8 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     afterEach(teardown);
 
     it('returns structured summary with active_todos array', () => {
-      insert('todos', { title: 'Fix bug', priority: 'high', status: 'in_progress' });
-      insert('todos', { title: 'Write docs', priority: 'medium', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Fix bug', priority: 'high', status: 'in_progress' });
+      insert('tasks', { kind: 'todo', title: 'Write docs', priority: 'medium', status: 'pending' });
 
       const ctx = loadContext();
       assert.ok(Array.isArray(ctx.active_todos));
@@ -42,8 +42,8 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     });
 
     it('filters out completed todos', () => {
-      insert('todos', { title: 'Fix bug', priority: 'high', status: 'in_progress' });
-      insert('todos', { title: 'Done task', priority: 'low', status: 'completed' });
+      insert('tasks', { kind: 'todo', title: 'Fix bug', priority: 'high', status: 'in_progress' });
+      insert('tasks', { kind: 'todo', title: 'Done task', priority: 'low', status: 'completed' });
 
       const ctx = loadContext();
       const completed = ctx.active_todos.filter(t => t.status === 'completed');
@@ -51,21 +51,21 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     });
 
     it('filters out cancelled todos', () => {
-      insert('todos', { title: 'Active', priority: 'high', status: 'pending' });
-      insert('todos', { title: 'Dropped', priority: 'low', status: 'cancelled' });
+      insert('tasks', { kind: 'todo', title: 'Active', priority: 'high', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Dropped', priority: 'low', status: 'cancelled' });
 
       const ctx = loadContext();
       const cancelled = ctx.active_todos.filter(t => t.status === 'cancelled');
       assert.equal(cancelled.length, 0);
     });
 
-    it('orders by priority (critical first)', () => {
-      insert('todos', { title: 'Low item', priority: 'low', status: 'pending' });
-      insert('todos', { title: 'Critical item', priority: 'critical', status: 'pending' });
-      insert('todos', { title: 'Medium item', priority: 'medium', status: 'pending' });
+    it('orders by priority (urgent first)', () => {
+      insert('tasks', { kind: 'todo', title: 'Low item', priority: 'low', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Urgent item', priority: 'urgent', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Medium item', priority: 'medium', status: 'pending' });
 
       const ctx = loadContext();
-      assert.equal(ctx.active_todos[0]!.priority, 'critical');
+      assert.equal(ctx.active_todos[0]!.priority, 'urgent');
     });
   });
 
@@ -74,8 +74,8 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     afterEach(teardown);
 
     it('includes in_progress items', () => {
-      insert('todos', { title: 'Fix bug', priority: 'high', status: 'in_progress' });
-      insert('todos', { title: 'Write docs', priority: 'medium', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Fix bug', priority: 'high', status: 'in_progress' });
+      insert('tasks', { kind: 'todo', title: 'Write docs', priority: 'medium', status: 'pending' });
 
       const ctx = loadContext();
       assert.ok(ctx.in_progress.length >= 1);
@@ -83,7 +83,7 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     });
 
     it('does not include pending todos in in_progress', () => {
-      insert('todos', { title: 'Pending item', priority: 'medium', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Pending item', priority: 'medium', status: 'pending' });
 
       const ctx = loadContext();
       const pendingInProgress = ctx.in_progress.filter(t => t.title === 'Pending item');
@@ -91,7 +91,7 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     });
 
     it('in_progress items have required fields', () => {
-      insert('todos', { title: 'Active task', priority: 'high', status: 'in_progress' });
+      insert('tasks', { kind: 'todo', title: 'Active task', priority: 'high', status: 'in_progress' });
 
       const ctx = loadContext();
       assert.ok(ctx.in_progress.length >= 1);
@@ -117,7 +117,7 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     });
 
     it('reports token_budget_used', () => {
-      insert('todos', { title: 'A task', priority: 'medium', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'A task', priority: 'medium', status: 'pending' });
 
       const ctx = loadContext();
       assert.ok(typeof ctx.token_budget_used === 'number');
@@ -199,8 +199,8 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     afterEach(teardown);
 
     it('applies a registered filter to the summary', () => {
-      insert('todos', { title: 'High priority task', priority: 'high', status: 'pending' });
-      insert('todos', { title: 'Low priority task', priority: 'low', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'High priority task', priority: 'high', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Low priority task', priority: 'low', status: 'pending' });
 
       registerContextFilter((summary) => ({
         ...summary,
@@ -212,9 +212,9 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     });
 
     it('applies multiple filters in registration order', () => {
-      insert('todos', { title: 'Alpha', priority: 'high', status: 'pending' });
-      insert('todos', { title: 'Beta', priority: 'high', status: 'pending' });
-      insert('todos', { title: 'Gamma', priority: 'low', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Alpha', priority: 'high', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Beta', priority: 'high', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Gamma', priority: 'low', status: 'pending' });
 
       registerContextFilter((summary) => ({
         ...summary,
@@ -231,8 +231,8 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     });
 
     it('clearContextFilters removes all filters', () => {
-      insert('todos', { title: 'High', priority: 'high', status: 'pending' });
-      insert('todos', { title: 'Low', priority: 'low', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'High', priority: 'high', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Low', priority: 'low', status: 'pending' });
 
       registerContextFilter((summary) => ({
         ...summary,
@@ -270,7 +270,7 @@ describe('context-loader (t-m19)', { concurrency: 1 }, () => {
     });
 
     it('todo summaries have required fields', () => {
-      insert('todos', { title: 'Test task', priority: 'medium', status: 'pending' });
+      insert('tasks', { kind: 'todo', title: 'Test task', priority: 'medium', status: 'pending' });
 
       const ctx = loadContext();
       assert.ok(ctx.active_todos.length >= 1);

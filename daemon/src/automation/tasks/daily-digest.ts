@@ -115,10 +115,10 @@ function getTodoActivity(): DigestSection {
   const lines: string[] = [];
 
   try {
-    // Completed todos in last 24h (todos table has updated_at, not completed_at)
+    // Completed todos in last 24h (tasks table has updated_at, not completed_at)
     const completed = query<TodoRow>(
-      `SELECT id, title, status FROM todos
-       WHERE status = 'completed'
+      `SELECT id, title, status FROM tasks WHERE kind = 'todo'
+         AND status = 'completed'
          AND updated_at >= datetime('now', '-24 hours')
        ORDER BY updated_at DESC
        LIMIT 5`,
@@ -130,7 +130,7 @@ function getTodoActivity(): DigestSection {
 
     // Open todos count
     const openResult = query<{ count: number }>(
-      `SELECT COUNT(*) as count FROM todos WHERE status NOT IN ('completed', 'cancelled')`,
+      `SELECT COUNT(*) as count FROM tasks WHERE kind = 'todo' AND status NOT IN ('completed', 'cancelled')`,
     );
     const openCount = openResult[0]?.count ?? 0;
     if (openCount > 0) {
@@ -214,8 +214,9 @@ function getBlockers(): DigestSection {
 
   try {
     const failed = query<OrchestratorTask>(
-      `SELECT id, title, status, error FROM orchestrator_tasks
-       WHERE status = 'failed'
+      `SELECT external_id AS id, title, status, error FROM tasks
+       WHERE kind = 'orchestrator'
+         AND status = 'failed'
          AND updated_at >= datetime('now', '-24 hours')
        ORDER BY updated_at DESC
        LIMIT 5`,
@@ -231,8 +232,9 @@ function getBlockers(): DigestSection {
 
     // Check for stale in-progress tasks (running > 2h)
     const stale = query<OrchestratorTask>(
-      `SELECT id, title, status, error FROM orchestrator_tasks
-       WHERE status = 'in_progress'
+      `SELECT external_id AS id, title, status, error FROM tasks
+       WHERE kind = 'orchestrator'
+         AND status = 'in_progress'
          AND started_at <= datetime('now', '-2 hours')
        LIMIT 3`,
     );

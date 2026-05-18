@@ -18,7 +18,7 @@ const log = createLogger('self-watchdog:activity');
  */
 const ACTIVITY_SOURCES: Array<{ table: string; col: string }> = [
   { table: 'worker_jobs',        col: 'finished_at'  },
-  { table: 'orchestrator_tasks', col: 'updated_at'   },
+  { table: 'tasks',              col: 'updated_at'   },
   { table: 'messages',           col: 'created_at'   },
   { table: 'memories',           col: 'created_at'   },
   { table: 'todos',              col: 'updated_at'   },
