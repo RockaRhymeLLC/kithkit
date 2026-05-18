@@ -63,13 +63,13 @@ curl -s -X POST http://localhost:3847/api/config/reload
 Verify it appeared:
 
 ```bash
-curl -s http://localhost:3847/api/tasks | jq '.[] | select(.name=="email-triage")'
+curl -s http://localhost:3847/api/scheduler/tasks | jq '.[] | select(.name=="email-triage")'
 ```
 
 Trigger manually to test:
 
 ```bash
-curl -s -X POST http://localhost:3847/api/tasks/email-triage/run
+curl -s -X POST http://localhost:3847/api/scheduler/tasks/email-triage/run
 ```
 
 ---
@@ -392,7 +392,7 @@ async function handleSubAgentAction(
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| Emails not being checked | Scheduler task not registered or not enabled | Check `GET /api/tasks`; confirm `email-triage` appears with `enabled: true`. Verify `registerEmailTriageTask()` is called in `onInit`. |
+| Emails not being checked | Scheduler task not registered or not enabled | Check `GET /api/scheduler/tasks`; confirm `email-triage` appears with `enabled: true`. Verify `registerEmailTriageTask()` is called in `onInit`. |
 | Rules not matching | Pattern case sensitivity or whitespace | `from_contains` is lowercased before comparison; `subject_regex` uses `i` flag. Log `email.from` and `email.subject` raw to verify. |
 | Sub-agent API errors | Missing or invalid `ANTHROPIC_API_KEY` | Confirm env var is set in daemon's launchd plist. Check daemon logs for `curl` stderr. |
 | Double notifications | Task fired twice in one interval | Check for duplicate task registrations. Each `scheduler.register(name)` call overwrites the previous, but two `onInit` calls will double-fire. |

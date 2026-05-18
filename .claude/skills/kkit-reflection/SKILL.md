@@ -25,7 +25,7 @@ Trigger a full reflection cycle immediately:
 5. Generate and deliver a summary
 
 ```bash
-curl -s -X POST 'http://localhost:3847/api/tasks/kkit-reflection/run'
+curl -s -X POST 'http://localhost:3847/api/scheduler/tasks/kkit-reflection/run'
 ```
 
 ### dry-run
@@ -33,7 +33,7 @@ curl -s -X POST 'http://localhost:3847/api/tasks/kkit-reflection/run'
 Same as `run` but with `dry_run: true` — logs what would happen without making changes.
 
 ```bash
-curl -s -X POST 'http://localhost:3847/api/tasks/kkit-reflection/run' \
+curl -s -X POST 'http://localhost:3847/api/scheduler/tasks/kkit-reflection/run' \
   -H 'Content-Type: application/json' \
   -d '{"config": {"dry_run": true}}'
 ```
@@ -43,7 +43,7 @@ curl -s -X POST 'http://localhost:3847/api/tasks/kkit-reflection/run' \
 Show the last reflection run result and timestamp:
 
 ```bash
-curl -s 'http://localhost:3847/api/tasks' | python3 -m json.tool
+curl -s 'http://localhost:3847/api/scheduler/tasks' | python3 -m json.tool
 ```
 
 Or query the task_results table directly for recent runs:
@@ -146,9 +146,9 @@ When memories are expired or consolidated, their content is preserved in the ref
 ## Troubleshooting
 
 **Task not running on schedule**
-- Check it is enabled: `curl -s 'http://localhost:3847/api/tasks'` — confirm `kkit-reflection` shows `enabled: true`
+- Check it is enabled: `curl -s 'http://localhost:3847/api/scheduler/tasks'` — confirm `kkit-reflection` shows `enabled: true`
 - Check cron expression in `kithkit.config.yaml` — default is `0 3 * * *` (3 AM daily)
-- Trigger manually: `curl -s -X POST 'http://localhost:3847/api/tasks/kkit-reflection/run'`
+- Trigger manually: `curl -s -X POST 'http://localhost:3847/api/scheduler/tasks/kkit-reflection/run'`
 
 **No memories processed (returns "No retro memories found")**
 - Memories must have `trigger='retro'` OR include `'self-improvement'` in their tags

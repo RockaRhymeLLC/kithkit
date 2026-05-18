@@ -65,8 +65,8 @@ describe('Documentation completeness (t-174)', () => {
       'GET /api/feature-state',
       'PUT /api/feature-state',
       'GET /api/usage',
-      'GET /api/tasks',
-      'POST /api/tasks',
+      'GET /api/scheduler/tasks',
+      'POST /api/scheduler/tasks',
       'POST /api/config/reload',
     ];
 

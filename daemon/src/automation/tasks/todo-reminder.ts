@@ -22,7 +22,7 @@ import type { Scheduler } from '../scheduler.js';
 const log = createLogger('todo-reminder');
 
 const SLEEP_HINT =
-  '\n\n_To snooze reminders, POST /api/tasks/todo-reminder/sleep with {"hours": N, "reason": "written justification"}. Max 4h. Reason is required and logged._';
+  '\n\n_To snooze reminders, POST /api/scheduler/tasks/todo-reminder/sleep with {"hours": N, "reason": "written justification"}. Max 4h. Reason is required and logged._';
 
 const DEFAULT_IDLE_NUDGE =
   `If not actively working — do the following NOW:
