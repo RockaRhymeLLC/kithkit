@@ -1,0 +1,4 @@
+-- Track which peer agent (if any) requested an orchestrator task.
+-- When set, completed-task result messages are auto-relayed back to that peer
+-- via the A2A router. NULL for tasks not originated by a peer (human / direct).
+--safe-alter: orchestrator_tasks ADD COLUMN requesting_peer TEXT

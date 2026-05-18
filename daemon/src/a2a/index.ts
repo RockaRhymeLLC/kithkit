@@ -12,4 +12,4 @@ export type {
   DeliveryAttempt,
 } from './types.js';
 export { A2A_ERROR_CODES } from './types.js';
-export { handleA2ARoute, setA2ARouter } from './handler.js';
+export { handleA2ARoute, setA2ARouter, getA2ARouter } from './handler.js';
