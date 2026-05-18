@@ -55,6 +55,10 @@ cli/src/**/*.d.ts
 cli/src/**/*.d.ts.map
 *.tsbuildinfo
 
+# Hand-written type stubs (not generated — must not be excluded by patterns above)
+!daemon/src/types/
+!daemon/src/types/*.d.ts
+
 # Optional npm cache directory
 .npm
 
