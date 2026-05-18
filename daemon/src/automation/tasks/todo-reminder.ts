@@ -82,8 +82,8 @@ async function run(config: Record<string, unknown> = {}): Promise<void> {
 
   // Query all non-done todos from the database
   const todos = query<TodoRow>(
-    `SELECT id, title, status, priority, snooze_until FROM todos
-     WHERE status NOT IN ('done', 'completed', 'cancelled')
+    `SELECT id, title, status, priority, snooze_until FROM tasks WHERE kind = 'todo'
+     AND status NOT IN ('done', 'completed', 'cancelled')
      ORDER BY
        CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
        created_at ASC

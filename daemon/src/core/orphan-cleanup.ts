@@ -151,6 +151,7 @@ export function cleanupOrphanedResources(): OrphanCleanupReport {
   // The only assignee that matters for session-checking is 'orchestrator'.
   // If the orchestrator session is gone, these tasks can never complete.
 
+  // TODO(PR-C): migrate orchestrator_tasks queries to tasks table — see issue #94
   const activeTasks = query<TaskRow>(
     `SELECT id, title, status, assignee FROM orchestrator_tasks WHERE status IN ('assigned', 'in_progress')`,
   );

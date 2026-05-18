@@ -87,10 +87,10 @@ export function loadContext(budgetChars: number = 8000): ContextSummary {
   let used = 0;
 
   // 1. Active todos (pending + in_progress), ordered by priority then created_at
-  const priorityOrder = "CASE priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END";
+  const priorityOrder = "CASE priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END";
   const activeTodos = query<TodoSummary>(
-    `SELECT id, title, priority, status, due_date FROM todos
-     WHERE status IN ('pending', 'in_progress')
+    `SELECT id, title, priority, status, due_date FROM tasks WHERE kind = 'todo'
+     AND status IN ('pending', 'in_progress')
      ORDER BY ${priorityOrder}, created_at DESC
      LIMIT 20`,
   );

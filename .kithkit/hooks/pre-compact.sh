@@ -41,7 +41,7 @@ fi
 # PreCompact fires at the exact moment of context pressure — trigger the
 # watchdog now so threshold actions (warn, restart) fire promptly.
 DAEMON_PORT="${KITHKIT_PORT:-3847}"
-curl -s -X POST "http://localhost:$DAEMON_PORT/api/tasks/context-watchdog/run" \
+curl -s -X POST "http://localhost:$DAEMON_PORT/api/scheduler/tasks/context-watchdog/run" \
   >/dev/null 2>&1 || true
 
 # ── Handle based on role ────────────────────────────────────
