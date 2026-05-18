@@ -99,7 +99,7 @@ scheduler.registerHandler('my-task', handler);
 
 Task flags: `requires_session: true` (skip when no tmux session), `idle_only: true` (skip when agent is active).
 
-Manual trigger: `curl -X POST http://localhost:3847/api/tasks/my-task/run`
+Manual trigger: `curl -X POST http://localhost:3847/api/scheduler/tasks/my-task/run`
 
 ### Health Checks
 
@@ -151,8 +151,8 @@ All endpoints are on `localhost:3847`. JSON responses include `timestamp` (ISO 8
 | `/api/memory/search` | POST | Search (`{query, mode, tags}`) |
 | `/api/config/:key` | GET/PUT | Config KV store |
 | `/api/config/reload` | POST | Hot-reload config from disk |
-| `/api/tasks` | GET | List scheduler tasks |
-| `/api/tasks/:name/run` | POST | Manual trigger |
+| `/api/scheduler/tasks` | GET | List scheduler tasks |
+| `/api/scheduler/tasks/:name/run` | POST | Manual trigger |
 | `/api/usage` | GET | Token/cost stats |
 
 See `reference.md` for full request/response details.

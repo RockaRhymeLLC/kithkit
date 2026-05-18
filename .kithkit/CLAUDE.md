@@ -59,8 +59,8 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `POST /api/send` | Deliver message through channel router |
 | `POST /api/memory/store` | Store a memory |
 | `POST /api/memory/search` | Search memories (keyword, vector, hybrid) |
-| `GET /api/tasks` | List scheduler tasks |
-| `POST /api/tasks/:name/run` | Manually trigger a task |
+| `GET /api/scheduler/tasks` | List scheduler tasks |
+| `POST /api/scheduler/tasks/:name/run` | Manually trigger a task |
 | `POST /api/orchestrator/escalate` | Escalate a task to the orchestrator (spawns if needed) |
 | `GET /api/orchestrator/status` | Check orchestrator status (alive, active jobs) |
 | `POST /api/orchestrator/shutdown` | Gracefully shut down orchestrator |

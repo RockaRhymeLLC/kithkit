@@ -2,12 +2,12 @@
  * Tasks API — list scheduled tasks, trigger runs, view history.
  *
  * Routes:
- *   GET  /api/tasks              — List all registered tasks with next run time
- *   POST /api/tasks/:name/run    — Manually trigger a task
- *   GET  /api/tasks/:name/history — Get execution history for a task
- *   POST   /api/tasks/:name/sleep  — Put task to sleep for N hours
- *   GET    /api/tasks/:name/sleep  — Get current sleep state (or null)
- *   DELETE /api/tasks/:name/sleep  — Cancel sleep (wake task)
+ *   GET  /api/scheduler/tasks              — List all registered tasks with next run time
+ *   POST /api/scheduler/tasks/:name/run    — Manually trigger a task
+ *   GET  /api/scheduler/tasks/:name/history — Get execution history for a task
+ *   POST   /api/scheduler/tasks/:name/sleep  — Put task to sleep for N hours
+ *   GET    /api/scheduler/tasks/:name/sleep  — Get current sleep state (or null)
+ *   DELETE /api/scheduler/tasks/:name/sleep  — Cancel sleep (wake task)
  */
 
 import type http from 'node:http';
@@ -41,8 +41,8 @@ export async function handleTasksRoute(
 ): Promise<boolean> {
   const method = req.method ?? 'GET';
 
-  // GET /api/tasks — list all tasks
-  if (pathname === '/api/tasks' && method === 'GET') {
+  // GET /api/scheduler/tasks — list all tasks
+  if (pathname === '/api/scheduler/tasks' && method === 'GET') {
     if (!_scheduler) {
       json(res, 200, withTimestamp({ data: [] }));
       return true;
@@ -61,8 +61,8 @@ export async function handleTasksRoute(
     return true;
   }
 
-  // POST /api/tasks/:name/run — manual trigger
-  const runMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/run$/);
+  // POST /api/scheduler/tasks/:name/run — manual trigger
+  const runMatch = pathname.match(/^\/api\/scheduler\/tasks\/([^/]+)\/run$/);
   if (runMatch && method === 'POST') {
     if (!_scheduler) {
       json(res, 503, withTimestamp({ error: 'Scheduler not initialized' }));
@@ -87,8 +87,8 @@ export async function handleTasksRoute(
     return true;
   }
 
-  // GET /api/tasks/:name/history — task history
-  const historyMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/history$/);
+  // GET /api/scheduler/tasks/:name/history — task history
+  const historyMatch = pathname.match(/^\/api\/scheduler\/tasks\/([^/]+)\/history$/);
   if (historyMatch && method === 'GET') {
     const taskName = decodeURIComponent(historyMatch[1]!);
     const history = getTaskHistory(taskName);
@@ -96,8 +96,8 @@ export async function handleTasksRoute(
     return true;
   }
 
-  // Sleep endpoints: POST/GET/DELETE /api/tasks/:name/sleep
-  const sleepMatch = pathname.match(/^\/api\/tasks\/([^/]+)\/sleep$/);
+  // Sleep endpoints: POST/GET/DELETE /api/scheduler/tasks/:name/sleep
+  const sleepMatch = pathname.match(/^\/api\/scheduler\/tasks\/([^/]+)\/sleep$/);
   if (sleepMatch) {
     if (!_scheduler) {
       json(res, 503, withTimestamp({ error: 'Scheduler not initialized' }));

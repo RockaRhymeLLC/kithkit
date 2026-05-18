@@ -122,7 +122,7 @@ HTTP route handlers, one file per domain area. `main.ts` dispatches to these bas
 | `agents.ts` | `/api/agents/spawn`, `/api/agents`, `/api/agents/:id` |
 | `messages.ts` | `/api/messages` |
 | `send.ts` | `/api/send` |
-| `tasks.ts` | `/api/tasks`, `/api/tasks/:name/run`, `/api/tasks/:name/history` |
+| `tasks.ts` | `/api/scheduler/tasks`, `/api/scheduler/tasks/:name/run`, `/api/scheduler/tasks/:name/history` |
 | `config.ts` | `/api/config/reload` |
 
 All responses include a `timestamp` field (ISO 8601). Invalid JSON bodies return `400 { error: "Invalid JSON" }`.

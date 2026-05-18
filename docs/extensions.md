@@ -157,7 +157,7 @@ Tasks with `requires_session: true` are skipped when no tmux session exists. Tas
 **Manual trigger** (for testing):
 
 ```bash
-curl -X POST http://localhost:3847/api/tasks/my-custom-task/run
+curl -X POST http://localhost:3847/api/scheduler/tasks/my-custom-task/run
 ```
 
 ## Registering Health Checks
