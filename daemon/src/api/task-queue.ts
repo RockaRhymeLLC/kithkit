@@ -1,6 +1,9 @@
 /**
  * Task Queue API — structured task management for orchestrator work.
  *
+ * TODO(PR-C): /api/orchestrator/tasks shim reading from unified tasks table
+ * instead of orchestrator_tasks — deprecate orchestrator_tasks in next release.
+ *
  * State machine: pending → assigned → in_progress → completed/failed/cancelled
  *                                    in_progress → awaiting_approval → in_progress (approved/rejected)
  * Retry: failed → pending (increments retry_count)
@@ -23,7 +26,7 @@
 import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
-import { query, exec, get, getDatabase } from '../core/db.js';
+import { query, exec, getDatabase } from '../core/db.js';
 import { injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { storeMemoryInternal } from './memory.js';
@@ -50,8 +53,52 @@ const VALID_OUTCOMES: readonly TaskOutcome[] = ['success', 'partial', 'failed', 
 const VALID_COMMS_OUTCOMES: readonly CommsOutcome[] = ['accepted', 'corrected', 'redirected', 'cancelled'];
 const VALID_COMPLEXITY: readonly Complexity[] = ['S', 'M', 'L', 'XL'];
 
+/**
+ * Unified tasks table row shape — matches the schema from migration 024.
+ */
+interface UnifiedTask {
+  id: number;
+  external_id: string | null;
+  kind: 'todo' | 'orchestrator';
+  title: string;
+  description: string | null;
+  status: string;
+  assigned_to: string | null;
+  priority: string;
+  result: string | null;
+  error: string | null;
+  retry_count: number;
+  work_notes: string | null;
+  timeout_seconds: number | null;
+  outcome: string | null;
+  outcome_reason: string | null;
+  source: string | null;
+  comms_outcome: string | null;
+  comms_corrections: string | null;
+  acknowledged_at: string | null;
+  complexity: number | null;
+  generate_retro: number | null;
+  canonical_task_external_id: string | null;
+  requesting_peer: string | null;
+  plan: string | null;
+  plan_status: string | null;
+  plan_submitted_at: string | null;
+  plan_approved_at: string | null;
+  plan_rejected_reason: string | null;
+  created_at: string;
+  assigned_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  updated_at: string;
+}
+
+/**
+ * Legacy OrchestratorTask response shape — preserved for API compat.
+ * Callers expect `id` as UUID, `assignee`, `priority` as number, `outcome_notes`.
+ */
 interface OrchestratorTask {
   id: string;
+  _int_id: number;
   title: string;
   description: string | null;
   status: TaskStatus;
@@ -68,9 +115,8 @@ interface OrchestratorTask {
   comms_outcome: CommsOutcome | null;
   comms_corrections: string | null;
   acknowledged_at: string | null;
-  // v2.1 fields — migration 021
   complexity: Complexity | null;
-  generate_retro: number | null;   // 0/1/null (SQLite boolean)
+  generate_retro: number | null;
   canonical_task_external_id: string | null;
   plan: string | null;
   plan_status: 'submitted' | 'approved' | 'rejected' | null;
@@ -85,7 +131,7 @@ interface OrchestratorTask {
 }
 
 interface TaskWorker {
-  task_id: string;
+  task_id: number;
   worker_id: string;
   role: string | null;
   assigned_at: string;
@@ -93,7 +139,7 @@ interface TaskWorker {
 
 interface TaskActivity {
   id: number;
-  task_id: string;
+  task_id: number;
   agent: string;
   type: ActivityType;
   stage: string | null;
@@ -119,6 +165,93 @@ const VALID_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   failed: ['pending'],  // retry: failed → pending
   cancelled: [],
 };
+
+// ── Complexity mapping ────────────────────────────────────────
+
+/**
+ * Convert integer complexity (tasks table) to legacy string (S/M/L/XL).
+ * The unified schema stores 1-4; old callers expect S/M/L/XL.
+ */
+function intToComplexity(n: number | null): Complexity | null {
+  if (n === null || n === undefined) return null;
+  const map: Record<number, Complexity> = { 1: 'S', 2: 'M', 3: 'L', 4: 'XL' };
+  return map[n] ?? null;
+}
+
+/**
+ * Convert legacy complexity string to integer for storage.
+ */
+function complexityToInt(s: Complexity | null | undefined): number | null {
+  if (!s) return null;
+  const map: Record<Complexity, number> = { S: 1, M: 2, L: 3, XL: 4 };
+  return map[s] ?? null;
+}
+
+/**
+ * Convert text priority (tasks table) to legacy numeric priority.
+ * Inverts legacyIntToPriorityText to preserve round-trip for 0/1/2:
+ *   low→0, medium→1, urgent→2
+ * Also handles migration-era values: high→1 (closest to medium), mapped data.
+ */
+function priorityTextToLegacyInt(p: string | null): number {
+  if (!p) return 0;
+  const map: Record<string, number> = { low: 0, medium: 1, high: 1, urgent: 2 };
+  return map[p] ?? 0;
+}
+
+/**
+ * Convert legacy numeric priority (0/1/2) to unified text priority.
+ * Chosen so alphabetical DESC sort preserves the expected priority order:
+ *   2 (urgent) > 1 (medium) > 0 (low)
+ * Alphabetical DESC: urgent > medium > low ✓
+ */
+function legacyIntToPriorityText(n: number): string {
+  if (n <= 0) return 'low';
+  if (n === 1) return 'medium';
+  return 'urgent'; // 2+
+}
+
+// ── Response mapper ───────────────────────────────────────────
+
+/**
+ * Map a UnifiedTask row to the legacy OrchestratorTask response shape.
+ * Preserves all field names that existing callers expect.
+ */
+function taskToOrchestratorResponse(task: UnifiedTask): OrchestratorTask {
+  return {
+    id: task.external_id ?? String(task.id),
+    _int_id: task.id,
+    title: task.title,
+    description: task.description,
+    status: task.status as TaskStatus,
+    assignee: task.assigned_to,
+    priority: priorityTextToLegacyInt(task.priority),
+    result: task.result,
+    error: task.error,
+    retry_count: task.retry_count,
+    work_notes: task.work_notes,
+    timeout_seconds: task.timeout_seconds,
+    outcome: (task.outcome as TaskOutcome) ?? null,
+    outcome_notes: task.outcome_reason,
+    source: task.source,
+    comms_outcome: (task.comms_outcome as CommsOutcome) ?? null,
+    comms_corrections: task.comms_corrections,
+    acknowledged_at: task.acknowledged_at,
+    complexity: intToComplexity(task.complexity),
+    generate_retro: task.generate_retro,
+    canonical_task_external_id: task.canonical_task_external_id,
+    plan: task.plan,
+    plan_status: task.plan_status as OrchestratorTask['plan_status'],
+    plan_submitted_at: task.plan_submitted_at,
+    plan_approved_at: task.plan_approved_at,
+    plan_rejected_reason: task.plan_rejected_reason,
+    created_at: task.created_at,
+    assigned_at: task.assigned_at,
+    started_at: task.started_at,
+    completed_at: task.completed_at,
+    updated_at: task.updated_at,
+  };
+}
 
 // ── Validation ───────────────────────────────────────────────
 
@@ -148,30 +281,40 @@ function extractTaskId(pathname: string): string | null {
   return match ? match[1]! : null;
 }
 
-function getTask(id: string): OrchestratorTask | undefined {
-  return get<OrchestratorTask>('orchestrator_tasks', id);
+/**
+ * Look up a task from the unified `tasks` table.
+ * Accepts either:
+ *   - a UUID string (matched against external_id)
+ *   - a numeric string (matched against integer id)
+ */
+function getTask(id: string): UnifiedTask | undefined {
+  const db = getDatabase();
+  if (/^\d+$/.test(id)) {
+    return db.prepare('SELECT * FROM tasks WHERE id = ?').get(parseInt(id, 10)) as UnifiedTask | undefined;
+  }
+  return db.prepare('SELECT * FROM tasks WHERE external_id = ?').get(id) as UnifiedTask | undefined;
 }
 
-function getTaskWorkers(taskId: string): TaskWorker[] {
+function getTaskWorkers(taskIntId: number): TaskWorker[] {
   return query<TaskWorker>(
-    'SELECT * FROM orchestrator_task_workers WHERE task_id = ? ORDER BY assigned_at ASC',
-    taskId,
+    'SELECT * FROM task_workers WHERE task_id = ? ORDER BY assigned_at ASC',
+    taskIntId,
   );
 }
 
-function getTaskActivity(taskId: string, limit = 50, offset = 0): { data: TaskActivity[]; total: number } {
+function getTaskActivity(taskIntId: number, limit = 50, offset = 0): { data: TaskActivity[]; total: number } {
   const safeLimit = Math.min(Math.max(1, limit), 200);
   const safeOffset = Math.max(0, offset);
 
   const countRow = query<{ count: number }>(
-    'SELECT COUNT(*) as count FROM orchestrator_task_activity WHERE task_id = ?',
-    taskId,
+    'SELECT COUNT(*) as count FROM task_activity WHERE task_id = ?',
+    taskIntId,
   );
   const total = countRow[0]?.count ?? 0;
 
   const data = query<TaskActivity>(
-    'SELECT * FROM orchestrator_task_activity WHERE task_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?',
-    taskId, safeLimit, safeOffset,
+    'SELECT * FROM task_activity WHERE task_id = ? ORDER BY created_at ASC LIMIT ? OFFSET ?',
+    taskIntId, safeLimit, safeOffset,
   );
 
   return { data, total };
@@ -206,34 +349,52 @@ export async function handleTaskQueueRoute(
         return true;
       }
 
-      const id = randomUUID();
+      const externalId = randomUUID();
       const ts = now();
 
+      // Validate and sanitize requesting_peer: lowercase alphanumeric/dash/underscore, 1..64 chars.
+      let requestingPeer: string | null = null;
+      if (typeof body.requesting_peer === 'string') {
+        const trimmed = body.requesting_peer.trim().toLowerCase();
+        if (trimmed.length >= 1 && trimmed.length <= 64 && /^[a-z0-9_-]+$/.test(trimmed)) {
+          requestingPeer = trimmed;
+        }
+      }
+
+      const source = typeof body.source === 'string' ? body.source : 'orchestrator';
+      const priorityText = legacyIntToPriorityText(priority);
+      const complexityInt = typeof body.complexity === 'string' && VALID_COMPLEXITY.includes(body.complexity as Complexity)
+        ? complexityToInt(body.complexity as Complexity)
+        : null;
+
       exec(
-        `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, timeout_seconds, complexity, canonical_task_external_id, created_at, updated_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?)`,
-        id,
+        `INSERT INTO tasks (external_id, kind, title, description, status, priority, source, work_notes, timeout_seconds, complexity, canonical_task_external_id, requesting_peer, created_at, updated_at)
+         VALUES (?, 'orchestrator', ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        externalId,
         body.title,
         typeof body.description === 'string' ? body.description : null,
-        priority,
+        priorityText,
+        source,
         typeof body.work_notes === 'string' ? body.work_notes : null,
         typeof body.timeout_seconds === 'number' ? body.timeout_seconds : null,
-        typeof body.complexity === 'string' && VALID_COMPLEXITY.includes(body.complexity as Complexity) ? body.complexity : null,
+        complexityInt,
         typeof body.canonical_task_external_id === 'string' ? body.canonical_task_external_id : null,
+        requestingPeer,
         ts,
         ts,
       );
 
-      const task = getTask(id)!;
-      log.info('Task created', { id, title: task.title, priority });
-      json(res, 201, withTimestamp(task));
+      const task = getTask(externalId)!;
+      const mapped = taskToOrchestratorResponse(task);
+      log.info('Task created', { id: externalId, title: task.title, priority });
+      json(res, 201, withTimestamp(mapped));
       return true;
     }
 
     // GET /api/orchestrator/tasks — list tasks
     if (pathname === '/api/orchestrator/tasks' && method === 'GET') {
       const statusFilter = searchParams.get('status');
-      let tasks: OrchestratorTask[];
+      let tasks: UnifiedTask[];
 
       if (statusFilter) {
         const statuses = statusFilter.split(',').map(s => s.trim());
@@ -243,13 +404,13 @@ export async function handleTaskQueueRoute(
           return true;
         }
         const placeholders = statuses.map(() => '?').join(',');
-        tasks = query<OrchestratorTask>(
-          `SELECT * FROM orchestrator_tasks WHERE status IN (${placeholders}) ORDER BY priority DESC, created_at ASC`,
+        tasks = query<UnifiedTask>(
+          `SELECT * FROM tasks WHERE kind = 'orchestrator' AND status IN (${placeholders}) ORDER BY priority DESC, created_at ASC`,
           ...statuses,
         );
       } else {
-        tasks = query<OrchestratorTask>(
-          "SELECT * FROM orchestrator_tasks WHERE status != 'cancelled' ORDER BY priority DESC, created_at ASC",
+        tasks = query<UnifiedTask>(
+          "SELECT * FROM tasks WHERE kind = 'orchestrator' AND status != 'cancelled' ORDER BY priority DESC, created_at ASC",
         );
       }
 
@@ -257,11 +418,11 @@ export async function handleTaskQueueRoute(
       const enriched = tasks.map(task => {
         const workers = getTaskWorkers(task.id);
         const latestActivity = query<TaskActivity>(
-          'SELECT * FROM orchestrator_task_activity WHERE task_id = ? ORDER BY created_at DESC LIMIT 1',
+          'SELECT * FROM task_activity WHERE task_id = ? ORDER BY created_at DESC LIMIT 1',
           task.id,
         );
         return {
-          ...task,
+          ...taskToOrchestratorResponse(task),
           worker_count: workers.length,
           latest_activity: latestActivity[0] ?? null,
         };
@@ -288,7 +449,7 @@ export async function handleTaskQueueRoute(
 
       const limit = parseInt(searchParams.get('limit') ?? '50', 10);
       const offset = parseInt(searchParams.get('offset') ?? '0', 10);
-      const result = getTaskActivity(taskId, isNaN(limit) ? 50 : limit, isNaN(offset) ? 0 : offset);
+      const result = getTaskActivity(task.id, isNaN(limit) ? 50 : limit, isNaN(offset) ? 0 : offset);
 
       json(res, 200, withTimestamp({ data: result.data, total: result.total }));
       return true;
@@ -320,9 +481,9 @@ export async function handleTaskQueueRoute(
       const ts = now();
 
       exec(
-        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+        `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
          VALUES (?, ?, ?, ?, ?, ?)`,
-        taskId, agent, type, stage, body.message, ts,
+        task.id, agent, type, stage, body.message, ts,
       );
 
       // For progress updates, forward to comms session immediately
@@ -332,8 +493,8 @@ export async function handleTaskQueueRoute(
       }
 
       const entry = query<TaskActivity>(
-        'SELECT * FROM orchestrator_task_activity WHERE task_id = ? ORDER BY id DESC LIMIT 1',
-        taskId,
+        'SELECT * FROM task_activity WHERE task_id = ? ORDER BY id DESC LIMIT 1',
+        task.id,
       );
 
       log.info('Activity posted', { taskId, type, agent });
@@ -366,8 +527,8 @@ export async function handleTaskQueueRoute(
 
       try {
         exec(
-          'INSERT INTO orchestrator_task_workers (task_id, worker_id, role, assigned_at) VALUES (?, ?, ?, ?)',
-          taskId, body.worker_id, role, ts,
+          'INSERT INTO task_workers (task_id, worker_id, role, assigned_at) VALUES (?, ?, ?, ?)',
+          task.id, body.worker_id, role, ts,
         );
       } catch (err) {
         if (err instanceof Error && err.message.includes('UNIQUE constraint')) {
@@ -378,7 +539,7 @@ export async function handleTaskQueueRoute(
       }
 
       log.info('Worker assigned to task', { taskId, workerId: body.worker_id, role });
-      json(res, 201, withTimestamp({ task_id: taskId, worker_id: body.worker_id, role, assigned_at: ts }));
+      json(res, 201, withTimestamp({ task_id: task.external_id ?? String(task.id), worker_id: body.worker_id, role, assigned_at: ts }));
       return true;
     }
 
@@ -400,15 +561,15 @@ export async function handleTaskQueueRoute(
       const newRetryCount = (task.retry_count ?? 0) + 1;
 
       exec(
-        `UPDATE orchestrator_tasks SET status = 'pending', assignee = NULL, error = NULL, result = NULL, retry_count = ?, completed_at = NULL, updated_at = ? WHERE id = ?`,
-        newRetryCount, ts, taskId,
+        `UPDATE tasks SET status = 'pending', assigned_to = NULL, error = NULL, result = NULL, retry_count = ?, completed_at = NULL, updated_at = ? WHERE id = ?`,
+        newRetryCount, ts, task.id,
       );
 
       // Log retry activity
       exec(
-        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+        `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
          VALUES (?, 'daemon', 'note', 'retry', ?, ?)`,
-        taskId, `Task retried (attempt ${newRetryCount + 1})`, ts,
+        task.id, `Task retried (attempt ${newRetryCount + 1})`, ts,
       );
 
       // Alert comms after 2 consecutive failures
@@ -418,7 +579,7 @@ export async function handleTaskQueueRoute(
 
       const updated = getTask(taskId)!;
       log.info('Task retried', { id: taskId, retry_count: newRetryCount });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(taskToOrchestratorResponse(updated)));
       return true;
     }
 
@@ -439,7 +600,7 @@ export async function handleTaskQueueRoute(
 
       // If in_progress, kill assigned workers first
       if (task.status === 'in_progress') {
-        const workers = getTaskWorkers(taskId);
+        const workers = getTaskWorkers(task.id);
         for (const w of workers) {
           try {
             // Mark worker job as cancelled in DB
@@ -454,20 +615,20 @@ export async function handleTaskQueueRoute(
       }
 
       exec(
-        `UPDATE orchestrator_tasks SET status = 'cancelled', completed_at = ?, updated_at = ? WHERE id = ?`,
-        ts, ts, taskId,
+        `UPDATE tasks SET status = 'cancelled', completed_at = ?, updated_at = ? WHERE id = ?`,
+        ts, ts, task.id,
       );
 
       // Log cancellation activity
       exec(
-        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+        `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
          VALUES (?, 'daemon', 'note', 'cancelled', 'Task cancelled', ?)`,
-        taskId, ts,
+        task.id, ts,
       );
 
       const updated = getTask(taskId)!;
       log.info('Task cancelled', { id: taskId, previous_status: task.status });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(taskToOrchestratorResponse(updated)));
       return true;
     }
 
@@ -492,23 +653,24 @@ export async function handleTaskQueueRoute(
       }
 
       const ts = now();
+      const resolvedTaskId = task.external_id ?? String(task.id);
 
       getDatabase().transaction(() => {
         exec(
-          `UPDATE orchestrator_tasks SET plan = ?, plan_status = 'submitted', plan_submitted_at = ?, status = 'awaiting_approval', updated_at = ? WHERE id = ?`,
-          body.plan, ts, ts, taskId,
+          `UPDATE tasks SET plan = ?, plan_status = 'submitted', plan_submitted_at = ?, status = 'awaiting_approval', updated_at = ? WHERE id = ?`,
+          body.plan, ts, ts, task.id,
         );
 
         exec(
-          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+          `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
            VALUES (?, 'orchestrator', 'note', 'plan_submitted', 'Plan submitted for human approval', ?)`,
-          taskId, ts,
+          task.id, ts,
         );
       })();
 
       // Notify comms via DB message
       const planPreview = (body.plan as string).slice(0, 500);
-      const notifyBody = `[plan approval needed] Task "${task.title.slice(0, 80)}" has submitted a plan for review.\n\nPlan:\n${planPreview}${(body.plan as string).length > 500 ? '\n...(truncated)' : ''}\n\nApprove: curl -s -X POST 'http://localhost:3847/api/orchestrator/tasks/${taskId}/approve-plan' -H 'Content-Type: application/json' -d '{}'\nReject: curl -s -X POST 'http://localhost:3847/api/orchestrator/tasks/${taskId}/reject-plan' -H 'Content-Type: application/json' -d '{"reason":"..."}'`;
+      const notifyBody = `[plan approval needed] Task "${task.title.slice(0, 80)}" has submitted a plan for review.\n\nPlan:\n${planPreview}${(body.plan as string).length > 500 ? '\n...(truncated)' : ''}\n\nApprove: curl -s -X POST 'http://localhost:3847/api/orchestrator/tasks/${resolvedTaskId}/approve-plan' -H 'Content-Type: application/json' -d '{}'\nReject: curl -s -X POST 'http://localhost:3847/api/orchestrator/tasks/${resolvedTaskId}/reject-plan' -H 'Content-Type: application/json' -d '{"reason":"..."}'`;
 
       try {
         exec(
@@ -528,7 +690,7 @@ export async function handleTaskQueueRoute(
 
       const updated = getTask(taskId)!;
       log.info('Plan submitted for approval', { taskId, title: task.title });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(taskToOrchestratorResponse(updated)));
       return true;
     }
 
@@ -554,19 +716,20 @@ export async function handleTaskQueueRoute(
 
       getDatabase().transaction(() => {
         exec(
-          `UPDATE orchestrator_tasks SET plan_status = 'approved', plan_approved_at = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
-          ts, ts, taskId,
+          `UPDATE tasks SET plan_status = 'approved', plan_approved_at = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
+          ts, ts, task.id,
         );
 
         exec(
-          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+          `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
            VALUES (?, 'daemon', 'note', 'plan_approved', 'Plan approved — resuming execution', ?)`,
-          taskId, ts,
+          task.id, ts,
         );
       })();
 
       // Notify orchestrator
-      const approveMsg = `[System] Plan approved for task ${taskId}. Resume execution.`;
+      const resolvedTaskId = task.external_id ?? String(task.id);
+      const approveMsg = `[System] Plan approved for task ${resolvedTaskId}. Resume execution.`;
       try {
         exec(
           `INSERT INTO messages (from_agent, to_agent, type, body, created_at) VALUES ('daemon', 'orchestrator', 'task', ?, ?)`,
@@ -584,7 +747,7 @@ export async function handleTaskQueueRoute(
 
       const updated = getTask(taskId)!;
       log.info('Plan approved', { taskId, title: task.title });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(taskToOrchestratorResponse(updated)));
       return true;
     }
 
@@ -615,19 +778,20 @@ export async function handleTaskQueueRoute(
 
       getDatabase().transaction(() => {
         exec(
-          `UPDATE orchestrator_tasks SET plan_status = 'rejected', plan_rejected_reason = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
-          reason, ts, taskId,
+          `UPDATE tasks SET plan_status = 'rejected', plan_rejected_reason = ?, status = 'in_progress', updated_at = ? WHERE id = ?`,
+          reason, ts, task.id,
         );
 
         exec(
-          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+          `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
            VALUES (?, 'daemon', 'note', 'plan_rejected', ?, ?)`,
-          taskId, `Plan rejected. Reason: ${reason}`, ts,
+          task.id, `Plan rejected. Reason: ${reason}`, ts,
         );
       })();
 
       // Notify orchestrator
-      const rejectMsg = `[System] Plan rejected for task ${taskId}. Reason: ${reason}. Revise and resubmit.`;
+      const resolvedTaskId = task.external_id ?? String(task.id);
+      const rejectMsg = `[System] Plan rejected for task ${resolvedTaskId}. Reason: ${reason}. Revise and resubmit.`;
       try {
         exec(
           `INSERT INTO messages (from_agent, to_agent, type, body, created_at) VALUES ('daemon', 'orchestrator', 'task', ?, ?)`,
@@ -645,7 +809,7 @@ export async function handleTaskQueueRoute(
 
       const updated = getTask(taskId)!;
       log.info('Plan rejected', { taskId, title: task.title, reason });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(taskToOrchestratorResponse(updated)));
       return true;
     }
 
@@ -657,11 +821,11 @@ export async function handleTaskQueueRoute(
         return true;
       }
 
-      const workers = getTaskWorkers(taskId);
-      const activity = getTaskActivity(taskId);
+      const workers = getTaskWorkers(task.id);
+      const activity = getTaskActivity(task.id);
 
       json(res, 200, withTimestamp({
-        ...task,
+        ...taskToOrchestratorResponse(task),
         workers,
         activity: activity.data,
         activity_total: activity.total,
@@ -728,9 +892,9 @@ export async function handleTaskQueueRoute(
       const ts = now();
       const updates: Record<string, unknown> = { updated_at: ts };
 
-      // Determine the target status and assignee
+      // Determine the target status and assignee (using unified column names)
       let targetStatus = task.status as TaskStatus;
-      let targetAssignee = task.assignee;
+      let targetAssignee = task.assigned_to;
 
       if (body.status !== undefined) {
         const newStatus = body.status as TaskStatus;
@@ -766,13 +930,14 @@ export async function handleTaskQueueRoute(
         // Drift rule: setting status to 'pending' clears assignee
         if (newStatus === 'pending') {
           targetAssignee = null;
-          updates.assignee = null;
+          updates.assigned_to = null;
         }
       }
 
+      // Accept `assignee` in request body for compat — map to `assigned_to` in DB
       if (body.assignee !== undefined) {
         targetAssignee = body.assignee as string | null;
-        updates.assignee = body.assignee;
+        updates.assigned_to = body.assignee;
         if (body.assignee && !task.assigned_at && !updates.assigned_at) {
           updates.assigned_at = ts;
         }
@@ -804,17 +969,18 @@ export async function handleTaskQueueRoute(
         }
         updates.outcome = body.outcome ?? null;
       }
+      // Accept `outcome_notes` in request body for compat — map to `outcome_reason` in DB
       if (body.outcome_notes !== undefined) {
-        updates.outcome_notes = typeof body.outcome_notes === 'string' ? body.outcome_notes : null;
+        updates.outcome_reason = typeof body.outcome_notes === 'string' ? body.outcome_notes : null;
       }
 
-      // v2.1 fields — complexity, generate_retro, canonical_task_external_id
+      // v2.1 fields — complexity (accept S/M/L/XL, store as integer), generate_retro, canonical_task_external_id
       if (body.complexity !== undefined) {
         if (body.complexity !== null && !VALID_COMPLEXITY.includes(body.complexity as Complexity)) {
           json(res, 400, withTimestamp({ error: `complexity must be one of: ${VALID_COMPLEXITY.join(', ')}` }));
           return true;
         }
-        updates.complexity = body.complexity ?? null;
+        updates.complexity = body.complexity !== null ? complexityToInt(body.complexity as Complexity) : null;
       }
       if (body.generate_retro !== undefined) {
         updates.generate_retro = body.generate_retro === null ? null : (body.generate_retro ? 1 : 0);
@@ -860,11 +1026,11 @@ export async function handleTaskQueueRoute(
       const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
       const values = Object.values(updates);
       exec(
-        `UPDATE orchestrator_tasks SET ${setClauses} WHERE id = ?`,
-        ...values, taskId,
+        `UPDATE tasks SET ${setClauses} WHERE id = ?`,
+        ...values, task.id,
       );
 
-      // Fix 4: Auto-log activity on status change
+      // Auto-log activity on status change
       if (updates.status) {
         const activityMessage = updates.status === 'completed'
           ? `Status → completed. Result: ${(updates.result as string)?.slice(0, 200) ?? '(none)'}`
@@ -873,14 +1039,15 @@ export async function handleTaskQueueRoute(
             : `Status → ${updates.status}`;
 
         exec(
-          `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+          `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
            VALUES (?, 'daemon', 'note', 'status_change', ?, ?)`,
-          taskId, activityMessage, ts,
+          task.id, activityMessage, ts,
         );
       }
 
       const updated = getTask(taskId)!;
-      log.info('Task updated', { id: taskId, status: updated.status, assignee: updated.assignee });
+      const mappedUpdated = taskToOrchestratorResponse(updated);
+      log.info('Task updated', { id: taskId, status: updated.status, assignee: updated.assigned_to });
 
       // Auto-notify comms on task completion/failure/cancellation
       if (updates.status && TERMINAL_STATUSES.includes(updates.status as TaskStatus)) {
@@ -937,16 +1104,18 @@ export async function handleTaskQueueRoute(
         const _sic = _getSIC();
         const perTaskRetro = updated.generate_retro === 1;
         const globalAll = _sic.retro.retro_all_terminal;
+        // Pass the external_id (UUID) to the retro evaluator which still uses orchestrator_tasks
+        const evalId = updated.external_id ?? String(updated.id);
         if (perTaskRetro || globalAll) {
           // Force evaluation regardless of error/retry signals
-          _evalFn(taskId).catch(err => log.warn('Retro evaluation (forced) failed', { taskId, error: String(err) }));
+          _evalFn(evalId).catch(err => log.warn('Retro evaluation (forced) failed', { taskId, error: String(err) }));
         } else {
           // Standard signal-based evaluation
-          _evalFn(taskId).catch(err => log.warn('Retro evaluation failed', { taskId, error: String(err) }));
+          _evalFn(evalId).catch(err => log.warn('Retro evaluation failed', { taskId, error: String(err) }));
         }
       }
 
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(mappedUpdated));
       return true;
     }
 

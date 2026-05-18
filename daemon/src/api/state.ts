@@ -83,7 +83,7 @@ interface WorkerJob {
   cost_usd: number;
 }
 
-const VALID_PRIORITIES = ['low', 'medium', 'high', 'critical'];
+const VALID_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const VALID_TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'cancelled'];
 
 const execFileAsync = promisify(execFile);
@@ -110,7 +110,7 @@ function now(): string {
 
 function logTodoAction(todoId: number, action: string, oldValue?: string | null, newValue?: string | null, note?: string | null): void {
   exec(
-    'INSERT INTO todo_actions (todo_id, action, old_value, new_value, note) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO task_actions (task_id, action, old_value, new_value, note) VALUES (?, ?, ?, ?, ?)',
     todoId, action, oldValue ?? null, newValue ?? null, note ?? null,
   );
 }
@@ -127,13 +127,14 @@ export async function handleStateRoute(
 
   try {
     // ── Todos ──────────────────────────────────────────────
+    // TODO(PR-C): /api/todos shim reading from tasks table — deprecate in next release
     if (pathname === '/api/todos' && method === 'GET') {
-      const filter: Record<string, unknown> = {};
+      const filter: Record<string, unknown> = { kind: 'todo' };
       const status = searchParams.get('status');
       if (status && VALID_TODO_STATUSES.includes(status)) filter.status = status;
       const priority = searchParams.get('priority');
       if (priority && VALID_PRIORITIES.includes(priority)) filter.priority = priority;
-      const todos = list<Todo>('todos', Object.keys(filter).length ? filter : undefined, 'created_at DESC');
+      const todos = list<Todo>('tasks', Object.keys(filter).length ? filter : undefined, 'created_at DESC');
       json(res, 200, withTimestamp({ data: todos }));
       return true;
     }
@@ -148,19 +149,22 @@ export async function handleStateRoute(
         json(res, 400, withTimestamp({ error: `invalid priority (must be ${VALID_PRIORITIES.join('/')})` }));
         return true;
       }
-      if (body.status && !VALID_TODO_STATUSES.includes(body.status as string)) {
+      // Normalize legacy 'done' status to 'completed'
+      let incomingStatus = body.status as string | undefined;
+      if (incomingStatus === 'done') incomingStatus = 'completed';
+      if (incomingStatus && !VALID_TODO_STATUSES.includes(incomingStatus)) {
         json(res, 400, withTimestamp({ error: `invalid status (must be ${VALID_TODO_STATUSES.join('/')})` }));
         return true;
       }
 
-      const data: Record<string, unknown> = { title: body.title };
+      const data: Record<string, unknown> = { title: body.title, kind: 'todo' };
       if (body.description !== undefined) data.description = body.description;
       if (body.priority) data.priority = body.priority;
-      if (body.status) data.status = body.status;
+      if (incomingStatus) data.status = incomingStatus;
       if (body.due_date) data.due_date = body.due_date;
       if (body.tags) data.tags = JSON.stringify(body.tags);
 
-      const todo = insert<Todo>('todos', data);
+      const todo = insert<Todo>('tasks', data);
       logTodoAction(todo.id, 'created', null, null, `Created with title: ${todo.title}`);
       json(res, 201, withTimestamp(todo));
       return true;
@@ -172,13 +176,13 @@ export async function handleStateRoute(
       // Check for /api/todos/:id/actions
       if (pathname.endsWith('/actions') && method === 'GET') {
         const realId = pathname.split('/')[3];
-        const actions = query('SELECT * FROM todo_actions WHERE todo_id = ? ORDER BY created_at ASC', realId);
+        const actions = query('SELECT * FROM task_actions WHERE task_id = ? ORDER BY created_at ASC', realId);
         json(res, 200, withTimestamp({ data: actions }));
         return true;
       }
 
       if (method === 'GET') {
-        const todo = get<Todo>('todos', Number(todoId));
+        const todo = get<Todo>('tasks', Number(todoId));
         if (!todo) {
           json(res, 404, withTimestamp({ error: 'Not found' }));
           return true;
@@ -193,12 +197,15 @@ export async function handleStateRoute(
           json(res, 400, withTimestamp({ error: `invalid priority (must be ${VALID_PRIORITIES.join('/')})` }));
           return true;
         }
-        if (body.status && !VALID_TODO_STATUSES.includes(body.status as string)) {
+        // Normalize legacy 'done' status to 'completed'
+        let putStatus = body.status as string | undefined;
+        if (putStatus === 'done') putStatus = 'completed';
+        if (putStatus && !VALID_TODO_STATUSES.includes(putStatus)) {
           json(res, 400, withTimestamp({ error: `invalid status (must be ${VALID_TODO_STATUSES.join('/')})` }));
           return true;
         }
 
-        const existing = get<Todo>('todos', Number(todoId));
+        const existing = get<Todo>('tasks', Number(todoId));
         if (!existing) {
           json(res, 404, withTimestamp({ error: 'Not found' }));
           return true;
@@ -218,19 +225,19 @@ export async function handleStateRoute(
         if (body.due_date !== undefined) data.due_date = body.due_date;
         if (body.tags !== undefined) data.tags = JSON.stringify(body.tags);
         if (body.snooze_until !== undefined) data.snooze_until = body.snooze_until;
-        if (body.status !== undefined) {
-          data.status = body.status;
-          logTodoAction(existing.id, 'status_change', existing.status, body.status as string);
+        if (putStatus !== undefined) {
+          data.status = putStatus;
+          logTodoAction(existing.id, 'status_change', existing.status, putStatus);
         }
         if (body.priority !== undefined && body.priority !== existing.priority) {
           logTodoAction(existing.id, 'priority_change', existing.priority, body.priority as string);
         }
 
-        update('todos', Number(todoId), data);
-        const updated = get<Todo>('todos', Number(todoId));
+        update('tasks', Number(todoId), data);
+        const updated = get<Todo>('tasks', Number(todoId));
 
         // Auto-store completion memory when a todo is marked done or completed
-        const newStatus = body.status as string | undefined;
+        const newStatus = putStatus;
         if (newStatus === 'done' || newStatus === 'completed') {
           try {
             const todoTitle = (updated!.title || '').substring(0, 100);
@@ -254,12 +261,12 @@ export async function handleStateRoute(
       }
 
       if (method === 'DELETE') {
-        const existing = get<Todo>('todos', Number(todoId));
+        const existing = get<Todo>('tasks', Number(todoId));
         if (!existing) {
           json(res, 404, withTimestamp({ error: 'Not found' }));
           return true;
         }
-        remove('todos', Number(todoId));
+        remove('tasks', Number(todoId));
         res.writeHead(204);
         res.end();
         return true;

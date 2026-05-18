@@ -81,7 +81,7 @@ export async function handleAgentsRoute(
       let resolvedTimeoutMs: number | undefined = typeof body.timeoutMs === 'number' ? body.timeoutMs : undefined;
       if (typeof body.task_id === 'string') {
         const rows = query<{ timeout_seconds: number | null }>(
-          'SELECT timeout_seconds FROM orchestrator_tasks WHERE id = ?',
+          'SELECT timeout_seconds FROM tasks WHERE external_id = ?',
           body.task_id,
         );
         const taskSeconds = rows[0]?.timeout_seconds;

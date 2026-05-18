@@ -175,8 +175,8 @@ describe('spawn route — task_id timeout threading', () => {
 
   function insertTask(id: string, timeoutSeconds: number | null): void {
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, status, priority, timeout_seconds, created_at, updated_at)
-       VALUES (?, 'test task', 'in_progress', 0, ?, datetime('now'), datetime('now'))`,
+      `INSERT INTO tasks (external_id, kind, title, status, priority, timeout_seconds, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'test task', 'in_progress', 'medium', ?, datetime('now'), datetime('now'))`,
       id, timeoutSeconds,
     );
   }

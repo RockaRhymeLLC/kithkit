@@ -79,6 +79,7 @@ function buildMessage(
     ? '[self-watchdog WARN]'
     : '[self-watchdog ALERT]';
 
+  // TODO(PR-C): update to mention 'tasks' table once legacy tables dropped — see issue #94
   return (
     `${prefix} Daemon has been idle for ${idleHours}h — no real work detected ` +
     `(worker_jobs, orchestrator_tasks, messages, memories, todos). ` +
