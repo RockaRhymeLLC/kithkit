@@ -117,14 +117,15 @@ function teardown(): Promise<void> {
 
 /**
  * Insert a task directly into the DB with a specific source value.
- * Returns the task ID. Task starts in 'pending' state.
+ * Returns the task external_id (UUID). Task starts in 'pending' state.
+ * Uses the unified `tasks` table (migration 024).
  */
 function insertTask(source: string | null): string {
   const id = randomUUID();
   const ts = new Date().toISOString();
   exec(
-    `INSERT INTO orchestrator_tasks (id, title, status, priority, source, created_at, updated_at)
-     VALUES (?, ?, 'pending', 0, ?, ?, ?)`,
+    `INSERT INTO tasks (external_id, kind, title, status, priority, source, created_at, updated_at)
+     VALUES (?, 'orchestrator', ?, 'pending', 'medium', ?, ?, ?)`,
     id,
     'Human source guard test task',
     source,

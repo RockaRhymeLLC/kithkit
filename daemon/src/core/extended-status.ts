@@ -199,7 +199,7 @@ export async function getExtendedStatus(version: string): Promise<ExtendedStatus
     const tables = db.prepare('SELECT count(*) as cnt FROM sqlite_master WHERE type=\'table\'').get() as CountRow | undefined;
     tableCount = tables?.cnt ?? 0;
     try {
-      const todos = db.prepare('SELECT count(*) as cnt FROM todos').get() as CountRow | undefined;
+      const todos = db.prepare("SELECT count(*) as cnt FROM tasks WHERE kind = 'todo'").get() as CountRow | undefined;
       todoCount = todos?.cnt ?? 0;
     } catch { /* table may not exist */ }
     try {
