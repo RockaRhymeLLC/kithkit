@@ -11,9 +11,6 @@
  * 3. If still alive after grace period, force-kill the session
  */
 
-// TODO(PR-C): orchestrator-idle reads directly from orchestrator_tasks. Migrate to
-// the unified tasks table once PR-C drops the legacy tables. See issue #94.
-
 import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { query, exec, update } from '../../core/db.js';
@@ -142,19 +139,23 @@ function buildShutdownPrompt(reason: string): string {
 function cleanupZombieTasks(): number {
   const ts = new Date().toISOString();
   const zombies = query<{ id: string; status: string }>(
-    `SELECT id, status FROM orchestrator_tasks WHERE status IN ('in_progress', 'assigned')`,
+    `SELECT external_id AS id, status FROM tasks WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned')`,
   );
   for (const task of zombies) {
     exec(
-      `UPDATE orchestrator_tasks SET status = 'failed', error = 'orchestrator_died', completed_at = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE tasks SET status = 'failed', error = 'orchestrator_died', completed_at = ?, updated_at = ? WHERE kind = 'orchestrator' AND external_id = ?`,
       ts, ts, task.id,
     );
-    // Auto-log activity for each zombie task
-    exec(
-      `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
-       VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
-      task.id, `Task failed: orchestrator died while task was ${task.status}`, ts,
-    );
+    // TODO(PR-C): migrate orchestrator_task_activity to unified activity log
+    try {
+      exec(
+        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+         VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
+        task.id, `Task failed: orchestrator died while task was ${task.status}`, ts,
+      );
+    } catch {
+      // FK constraint — task_id references tasks.external_id after migration, not orchestrator_tasks.id
+    }
   }
   if (zombies.length > 0) {
     log.warn('Cleaned up zombie tasks after orchestrator death', { count: zombies.length, taskIds: zombies.map(t => t.id) });
@@ -184,8 +185,8 @@ function cleanupOrphanedTasks(): number {
   // For in_progress: use started_at (when it transitioned to in_progress), fall back to created_at.
   // For assigned: use assigned_at, fall back to created_at.
   const orphans = query<{ id: string; status: string }>(
-    `SELECT id, status FROM orchestrator_tasks
-     WHERE status IN ('in_progress', 'assigned')
+    `SELECT external_id AS id, status FROM tasks
+     WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned')
      AND (
        (status = 'in_progress' AND COALESCE(started_at, created_at) < ?)
        OR
@@ -196,14 +197,19 @@ function cleanupOrphanedTasks(): number {
 
   for (const task of orphans) {
     exec(
-      `UPDATE orchestrator_tasks SET status = 'failed', error = 'orchestrator_restarted', completed_at = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE tasks SET status = 'failed', error = 'orchestrator_restarted', completed_at = ?, updated_at = ? WHERE kind = 'orchestrator' AND external_id = ?`,
       ts, ts, task.id,
     );
-    exec(
-      `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
-       VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
-      task.id, `Task failed: orchestrator restarted while task was ${task.status}`, ts,
-    );
+    // TODO(PR-C): migrate orchestrator_task_activity to unified activity log
+    try {
+      exec(
+        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+         VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
+        task.id, `Task failed: orchestrator restarted while task was ${task.status}`, ts,
+      );
+    } catch {
+      // FK constraint — task_id references tasks.external_id after migration, not orchestrator_tasks.id
+    }
   }
   if (orphans.length > 0) {
     log.info('Cleaned up orphaned tasks from previous orchestrator instance', {
