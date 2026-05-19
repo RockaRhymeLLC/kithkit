@@ -205,7 +205,7 @@ function priorityTextToLegacyInt(p: string | null): number {
  *   2 (urgent) > 1 (medium) > 0 (low)
  * Alphabetical DESC: urgent > medium > low ✓
  */
-function legacyIntToPriorityText(n: number): string {
+export function legacyIntToPriorityText(n: number): string {
   if (n <= 0) return 'low';
   if (n === 1) return 'medium';
   return 'urgent'; // 2+
