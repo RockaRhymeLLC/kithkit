@@ -27,6 +27,7 @@ const log = createLogger('state-api');
 
 interface Todo {
   id: number;
+  external_id: string | null;
   title: string;
   description: string | null;
   priority: string;
@@ -86,6 +87,36 @@ interface WorkerJob {
 const VALID_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const VALID_TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'cancelled'];
 
+// ── Shim helpers ─────────────────────────────────────────────
+
+/**
+ * Resolve a legacy todo :id (the integer from the old todos table, now stored
+ * as tasks.external_id) to the internal tasks.id (auto-increment integer that
+ * is NOT equal to the legacy id once the shared sequence diverges).
+ *
+ * Returns null when no kind='todo' row with external_id = legacyId exists.
+ * Callers MUST return 404 on null — do NOT fall back to tasks.id lookup,
+ * as that path resurrects the collision bug where tasks.id=N might belong
+ * to an orchestrator-kind row.
+ */
+function resolveLegacyTodoId(legacyId: string): number | null {
+  const db = getDatabase();
+  const row = db.prepare(
+    "SELECT id FROM tasks WHERE external_id = ? AND kind = 'todo'",
+  ).get(legacyId) as { id: number } | undefined;
+  return row?.id ?? null;
+}
+
+/**
+ * Map a unified tasks row to the legacy todo response shape:
+ * - id: legacy integer (parseInt(external_id) when set, else tasks.id)
+ * - external_id: masked as null to preserve legacy API contract
+ */
+function mapTodoResponse(row: Todo): Record<string, unknown> {
+  const legacyId = row.external_id != null ? parseInt(row.external_id, 10) : row.id;
+  return { ...(row as unknown as Record<string, unknown>), id: legacyId, external_id: null };
+}
+
 const execFileAsync = promisify(execFile);
 
 let _usageHistoryCache: { data: unknown; expiresAt: number } | null = null;
@@ -134,8 +165,8 @@ export async function handleStateRoute(
       if (status && VALID_TODO_STATUSES.includes(status)) filter.status = status;
       const priority = searchParams.get('priority');
       if (priority && VALID_PRIORITIES.includes(priority)) filter.priority = priority;
-      const todos = list<Todo>('tasks', Object.keys(filter).length ? filter : undefined, 'created_at DESC');
-      json(res, 200, withTimestamp({ data: todos }));
+      const todos = list<Todo>('tasks', filter, 'created_at DESC');
+      json(res, 200, withTimestamp({ data: todos.map(mapTodoResponse) }));
       return true;
     }
 
@@ -165,8 +196,14 @@ export async function handleStateRoute(
       if (body.tags) data.tags = JSON.stringify(body.tags);
 
       const todo = insert<Todo>('tasks', data);
+      // Immediately stamp external_id = String(tasks.id) so legacy callers can
+      // resolve the returned integer id back to this row via external_id lookup.
+      // (Migrated todos get their external_id from migration 025; new ones get it here.)
+      exec('UPDATE tasks SET external_id = ? WHERE id = ?', String(todo.id), todo.id);
       logTodoAction(todo.id, 'created', null, null, `Created with title: ${todo.title}`);
-      json(res, 201, withTimestamp(todo));
+      // todo was read before the UPDATE so external_id is still null — mapTodoResponse
+      // falls back to tasks.id which equals parseInt(CAST(id AS TEXT)), same value.
+      json(res, 201, withTimestamp(mapTodoResponse(todo)));
       return true;
     }
 
@@ -175,19 +212,29 @@ export async function handleStateRoute(
     if (todoId !== null) {
       // Check for /api/todos/:id/actions
       if (pathname.endsWith('/actions') && method === 'GET') {
-        const realId = pathname.split('/')[3];
-        const actions = query('SELECT * FROM task_actions WHERE task_id = ? ORDER BY created_at ASC', realId);
+        const rawId = pathname.split('/')[3];
+        const internalIdForActions = resolveLegacyTodoId(rawId!);
+        if (internalIdForActions === null) {
+          json(res, 404, withTimestamp({ error: 'Not found' }));
+          return true;
+        }
+        const actions = query('SELECT * FROM task_actions WHERE task_id = ? ORDER BY created_at ASC', internalIdForActions);
         json(res, 200, withTimestamp({ data: actions }));
         return true;
       }
 
       if (method === 'GET') {
-        const todo = get<Todo>('tasks', Number(todoId));
+        const internalId = resolveLegacyTodoId(todoId);
+        if (internalId === null) {
+          json(res, 404, withTimestamp({ error: 'Not found' }));
+          return true;
+        }
+        const todo = get<Todo>('tasks', internalId);
         if (!todo) {
           json(res, 404, withTimestamp({ error: 'Not found' }));
           return true;
         }
-        json(res, 200, withTimestamp(todo));
+        json(res, 200, withTimestamp(mapTodoResponse(todo)));
         return true;
       }
 
@@ -205,7 +252,12 @@ export async function handleStateRoute(
           return true;
         }
 
-        const existing = get<Todo>('tasks', Number(todoId));
+        const putInternalId = resolveLegacyTodoId(todoId);
+        if (putInternalId === null) {
+          json(res, 404, withTimestamp({ error: 'Not found' }));
+          return true;
+        }
+        const existing = get<Todo>('tasks', putInternalId);
         if (!existing) {
           json(res, 404, withTimestamp({ error: 'Not found' }));
           return true;
@@ -233,8 +285,8 @@ export async function handleStateRoute(
           logTodoAction(existing.id, 'priority_change', existing.priority, body.priority as string);
         }
 
-        update('tasks', Number(todoId), data);
-        const updated = get<Todo>('tasks', Number(todoId));
+        update('tasks', putInternalId, data);
+        const updated = get<Todo>('tasks', putInternalId);
 
         // Auto-store completion memory when a todo is marked done or completed
         const newStatus = putStatus;
@@ -242,7 +294,8 @@ export async function handleStateRoute(
           try {
             const todoTitle = (updated!.title || '').substring(0, 100);
             const todoDesc = (updated!.description || '').substring(0, 150);
-            const content = `Completed todo #${updated!.id}: ${todoTitle}${todoDesc ? ' — ' + todoDesc : ''}`;
+            const legacyTodoId = updated!.external_id != null ? parseInt(updated!.external_id, 10) : updated!.id;
+            const content = `Completed todo #${legacyTodoId}: ${todoTitle}${todoDesc ? ' — ' + todoDesc : ''}`;
             await storeMemoryInternal({
               content,
               category: 'event',
@@ -256,17 +309,22 @@ export async function handleStateRoute(
           }
         }
 
-        json(res, 200, withTimestamp(updated!));
+        json(res, 200, withTimestamp(mapTodoResponse(updated!)));
         return true;
       }
 
       if (method === 'DELETE') {
-        const existing = get<Todo>('tasks', Number(todoId));
+        const deleteInternalId = resolveLegacyTodoId(todoId);
+        if (deleteInternalId === null) {
+          json(res, 404, withTimestamp({ error: 'Not found' }));
+          return true;
+        }
+        const existing = get<Todo>('tasks', deleteInternalId);
         if (!existing) {
           json(res, 404, withTimestamp({ error: 'Not found' }));
           return true;
         }
-        remove('tasks', Number(todoId));
+        remove('tasks', deleteInternalId);
         res.writeHead(204);
         res.end();
         return true;
