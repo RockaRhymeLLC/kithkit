@@ -15,7 +15,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { openDatabase, _resetDbForTesting } from '../../core/db.js';
+import { openDatabase, _resetDbForTesting, exec, getDatabase } from '../../core/db.js';
 import { handleStateRoute } from '../state.js';
 import { handleTaskQueueRoute, _setEvaluateTaskFnForTesting } from '../task-queue.js';
 
@@ -251,5 +251,93 @@ describe('/api/orchestrator/tasks back-compat shim', { concurrency: 1 }, () => {
     assert.equal(res.status, 200);
     const body = JSON.parse(res.body);
     assert.equal(body.data.length, 0, 'no todos — the orch task should not appear');
+  });
+});
+
+// ── Collision-bug regression tests ────────────────────────────
+//
+// These tests directly reproduce the bug that would have been caught at
+// PR #287 review time: tasks.id is a shared auto-increment sequence across
+// both kind='todo' and kind='orchestrator'.  A legacy todo :id (stored as
+// external_id) may happen to equal the tasks.id of an orchestrator row.
+// Before the fix, the shim would return the orchestrator row.
+
+describe('shim id-collision regression', { concurrency: 1 }, () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('GET /api/todos/:id returns the TODO whose external_id matches, not the orch task at that tasks.id', async () => {
+    // 1. Create an orchestrator task — it occupies tasks.id=1 (first auto-increment slot)
+    const orchRes = await makeOrchRequest('POST', '/api/orchestrator/tasks', { title: 'Orch task at id=1' });
+    assert.equal(orchRes.status, 201);
+    const orchTask = JSON.parse(orchRes.body);
+    const orchIntId: number = orchTask._int_id; // tasks.id of the orch row
+
+    // 2. Directly insert a legacy-style todo with external_id = CAST(orchIntId AS TEXT).
+    //    This simulates a migrated todo whose original todos.id equals the orch task's
+    //    tasks.id — the exact collision scenario the shim must handle correctly.
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, status, priority, tags, created_at, updated_at)
+       VALUES (?, 'todo', 'Legacy todo with same id as orch', 'pending', 'medium', '[]', datetime('now'), datetime('now'))`,
+      String(orchIntId),
+    );
+
+    // 3. GET /api/todos/<orchIntId> must return the TODO (via external_id='<orchIntId>')
+    //    NOT the orchestrator task that occupies tasks.id=<orchIntId>.
+    const res = await makeTodoRequest('GET', `/api/todos/${orchIntId}`);
+    assert.equal(res.status, 200, 'should find the todo via external_id lookup');
+    const body = JSON.parse(res.body);
+    assert.equal(body.kind, 'todo', 'must return a todo-kind row, not the orchestrator task');
+    assert.equal(body.title, 'Legacy todo with same id as orch');
+    assert.equal(body.id, orchIntId, 'response id should be the legacy integer id');
+    assert.equal(body.external_id, null, 'external_id is masked in legacy response');
+  });
+
+  it('GET /api/orchestrator/tasks/:uuid resolves by external_id, is kind-scoped', async () => {
+    // 1. Create a todo first — occupies tasks.id=1
+    await makeTodoRequest('POST', '/api/todos', { title: 'Todo in slot 1' });
+
+    // 2. Create an orch task — gets tasks.id=2, external_id=uuid
+    const orchRes = await makeOrchRequest('POST', '/api/orchestrator/tasks', { title: 'Orch after todo' });
+    assert.equal(orchRes.status, 201);
+    const orchTask = JSON.parse(orchRes.body);
+    const orchUuid: string = orchTask.id;
+    const orchIntId: number = orchTask._int_id;
+
+    // Sanity: orch task's tasks.id should be > 1 (todo occupied id=1)
+    assert.ok(orchIntId > 1, 'orch task internal id should not be 1 (todo occupies slot 1)');
+
+    // 3. GET by UUID must resolve via external_id (UUID contains dashes → not tasks.id)
+    const res = await makeOrchRequest('GET', `/api/orchestrator/tasks/${orchUuid}`);
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.id, orchUuid, 'response id must be the UUID (external_id)');
+    assert.equal(body._int_id, orchIntId, 'internal integer id is preserved separately');
+    assert.equal(body.title, 'Orch after todo');
+
+    // 4. GET /api/orchestrator/tasks/<orchIntId> (numeric) must NOT return the todo
+    //    that happens to share tasks.id=1; it must check kind='orchestrator'.
+    //    Since no orch task has tasks.id=1, this should 404.
+    const numericRes = await makeOrchRequest('GET', '/api/orchestrator/tasks/1');
+    assert.equal(numericRes.status, 404, 'numeric id=1 should 404 — that slot holds a todo, not an orch task');
+  });
+
+  it('POST /api/todos response id round-trips via external_id in tasks table', async () => {
+    // POST creates a task, stamps external_id = CAST(tasks.id AS TEXT),
+    // and returns id = parseInt(external_id).  Verify the DB round-trip.
+    const res = await makeTodoRequest('POST', '/api/todos', { title: 'Round-trip check' });
+    assert.equal(res.status, 201);
+    const body = JSON.parse(res.body);
+    const legacyId: number = body.id;
+    assert.ok(typeof legacyId === 'number', 'POST should return integer id');
+
+    // Query the tasks table: there must be a kind='todo' row with external_id = CAST(legacyId AS TEXT)
+    const db = getDatabase();
+    const row = db.prepare(
+      "SELECT external_id FROM tasks WHERE external_id = ? AND kind = 'todo'",
+    ).get(String(legacyId)) as { external_id: string } | undefined;
+
+    assert.ok(row !== undefined, 'tasks row must have external_id set after POST');
+    assert.equal(parseInt(row!.external_id, 10), legacyId, 'external_id must equal the legacy integer id');
   });
 });
