@@ -282,17 +282,21 @@ function extractTaskId(pathname: string): string | null {
 }
 
 /**
- * Look up a task from the unified `tasks` table.
+ * Look up an orchestrator task from the unified `tasks` table.
  * Accepts either:
- *   - a UUID string (matched against external_id)
- *   - a numeric string (matched against integer id)
+ *   - a UUID string (matched against external_id) — the normal case for orch tasks
+ *   - a numeric string (matched against integer id) — legacy / testing path
+ *
+ * The kind='orchestrator' filter prevents accidental cross-kind collisions:
+ * if tasks.id=N belongs to a todo row, a numeric lookup for N will correctly
+ * return undefined rather than the wrong task.
  */
 function getTask(id: string): UnifiedTask | undefined {
   const db = getDatabase();
   if (/^\d+$/.test(id)) {
-    return db.prepare('SELECT * FROM tasks WHERE id = ?').get(parseInt(id, 10)) as UnifiedTask | undefined;
+    return db.prepare("SELECT * FROM tasks WHERE id = ? AND kind = 'orchestrator'").get(parseInt(id, 10)) as UnifiedTask | undefined;
   }
-  return db.prepare('SELECT * FROM tasks WHERE external_id = ?').get(id) as UnifiedTask | undefined;
+  return db.prepare("SELECT * FROM tasks WHERE external_id = ? AND kind = 'orchestrator'").get(id) as UnifiedTask | undefined;
 }
 
 function getTaskWorkers(taskIntId: number): TaskWorker[] {
