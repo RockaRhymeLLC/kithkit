@@ -11,13 +11,14 @@ import type http from 'node:http';
 import fs from 'node:fs';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import {
-  spawnOrchestratorSession,
+  spawnOrchestratorSession as _spawnOrchestratorSession,
   killOrchestratorSession,
   isOrchestratorAlive,
-  getOrchestratorState,
-  injectMessage,
+  getOrchestratorState as _getOrchestratorState,
+  injectMessage as _injectMessage,
 } from '../agents/tmux.js';
-import { sendMessage } from '../agents/message-router.js';
+import { sendMessage as _sendMessageImpl } from '../agents/message-router.js';
+import { legacyIntToPriorityText } from './task-queue.js';
 import { loadConfig, resolveProjectPath } from '../core/config.js';
 import { randomUUID } from 'node:crypto';
 import { exec, query, update } from '../core/db.js';
@@ -29,6 +30,33 @@ import { isVectorSearchEnabled } from './memory.js';
 import { hybridSearch } from '../memory/vector-search.js';
 
 const log = createLogger('orchestrator-api');
+
+// ── Injectable deps (overridable for testing) ─────────────────
+
+let getOrchestratorState = _getOrchestratorState;
+let spawnOrchestratorSession = _spawnOrchestratorSession;
+let sendMessage = _sendMessageImpl;
+let injectMessage = _injectMessage;
+
+/** @internal Override injectable deps for testing. Pass null to restore originals. */
+export function _setDepsForTesting(deps: {
+  getOrchestratorState?: () => 'active' | 'waiting' | 'dead';
+  spawnOrchestratorSession?: () => string | null;
+  sendMessage?: typeof _sendMessageImpl;
+  injectMessage?: (target: string, text: string) => boolean;
+} | null): void {
+  if (deps === null) {
+    getOrchestratorState = _getOrchestratorState;
+    spawnOrchestratorSession = _spawnOrchestratorSession;
+    sendMessage = _sendMessageImpl;
+    injectMessage = _injectMessage;
+    return;
+  }
+  if (deps.getOrchestratorState) getOrchestratorState = deps.getOrchestratorState;
+  if (deps.spawnOrchestratorSession) spawnOrchestratorSession = deps.spawnOrchestratorSession;
+  if (deps.sendMessage) sendMessage = deps.sendMessage;
+  if (deps.injectMessage) injectMessage = deps.injectMessage;
+}
 
 function getConfigPort(): number {
   return loadConfig().daemon.port;
@@ -98,23 +126,22 @@ export async function handleOrchestratorRoute(
     const orchStateCheck = getOrchestratorState();
     const alive = orchStateCheck !== 'dead';
 
-    // Create an orchestrator_tasks row for tracking
+    // Create a tasks row for tracking
     const taskId = randomUUID();
     const ts = new Date().toISOString();
     const priority = typeof body.priority === 'number' ? body.priority : 0;
     const workNotes = typeof body.work_notes === 'string' ? body.work_notes : null;
     const { titleText, descriptionText } = buildTaskFields(task, context);
     const source = requestingPeer ? 'peer' : 'human';
-    // TODO(PR-C): migrate orchestrator_tasks queries to tasks table — see issue #94
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, work_notes, source, requesting_peer, created_at, updated_at)
-       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO tasks (external_id, kind, title, description, status, priority, source, work_notes, requesting_peer, created_at, updated_at)
+       VALUES (?, 'orchestrator', ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,
       taskId,
       titleText,
       descriptionText,
-      priority,
-      workNotes,
+      legacyIntToPriorityText(priority),
       source,
+      workNotes,
       requestingPeer,
       ts,
       ts,
@@ -133,9 +160,8 @@ export async function handleOrchestratorRoute(
 
       if (!session) {
         // Mark task as failed since we couldn't spawn
-        // TODO(PR-C): migrate orchestrator_tasks queries to tasks table — see issue #94
         exec(
-          `UPDATE orchestrator_tasks SET status = 'failed', error = 'Failed to spawn orchestrator session', updated_at = ? WHERE id = ?`,
+          `UPDATE tasks SET status = 'failed', error = 'Failed to spawn orchestrator session', updated_at = ? WHERE external_id = ? AND kind = 'orchestrator'`,
           new Date().toISOString(), taskId,
         );
         json(res, 500, withTimestamp({ error: 'Failed to spawn orchestrator session' }));
