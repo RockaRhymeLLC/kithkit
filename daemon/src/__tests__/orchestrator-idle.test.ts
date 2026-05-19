@@ -166,11 +166,12 @@ describe('Orchestrator idle: zombie task cleanup', () => {
   });
 
   it('marks in_progress tasks as failed when orchestrator dies after nudge', async () => {
-    // Insert an in_progress task
+    // Insert an in_progress task into the unified tasks table
+    const taskExtId = 'zombie-ext-id-0001-0001';
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('zombie-task-1', 'In-progress task', null, 'in_progress', 0, ?, ?)`,
-      new Date().toISOString(), new Date().toISOString(),
+      `INSERT INTO tasks (external_id, kind, title, status, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'In-progress task', 'in_progress', 'low', ?, ?)`,
+      taskExtId, new Date().toISOString(), new Date().toISOString(),
     );
 
     // Simulate: nudge was sent, orchestrator has since exited
@@ -184,9 +185,10 @@ describe('Orchestrator idle: zombie task cleanup', () => {
 
     await _runForTesting({});
 
-    // Task should now be failed
-    const tasks = query<{ id: string; status: string; error: string }>(
-      `SELECT id, status, error FROM orchestrator_tasks WHERE id = 'zombie-task-1'`,
+    // Task should now be failed in the unified tasks table
+    const tasks = query<{ external_id: string; status: string; error: string }>(
+      `SELECT external_id, status, error FROM tasks WHERE external_id = ? AND kind = 'orchestrator'`,
+      taskExtId,
     );
     assert.equal(tasks.length, 1);
     assert.equal(tasks[0]!.status, 'failed', 'zombie task should be marked failed');
@@ -194,11 +196,12 @@ describe('Orchestrator idle: zombie task cleanup', () => {
   });
 
   it('marks assigned tasks as failed when orchestrator is dead with no nudge', async () => {
-    // Insert an assigned task
+    // Insert an assigned task into the unified tasks table
+    const taskExtId = 'zombie-ext-id-0002-0001';
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, assignee, priority, created_at, updated_at)
-       VALUES ('zombie-task-2', 'Assigned task', null, 'assigned', 'orchestrator', 0, ?, ?)`,
-      new Date().toISOString(), new Date().toISOString(),
+      `INSERT INTO tasks (external_id, kind, title, status, assigned_to, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Assigned task', 'assigned', 'orchestrator', 'low', ?, ?)`,
+      taskExtId, new Date().toISOString(), new Date().toISOString(),
     );
 
     _setDepsForTesting({
@@ -210,19 +213,23 @@ describe('Orchestrator idle: zombie task cleanup', () => {
 
     await _runForTesting({});
 
-    const tasks = query<{ id: string; status: string; error: string }>(
-      `SELECT id, status, error FROM orchestrator_tasks WHERE id = 'zombie-task-2'`,
+    const tasks = query<{ external_id: string; status: string; error: string }>(
+      `SELECT external_id, status, error FROM tasks WHERE external_id = ? AND kind = 'orchestrator'`,
+      taskExtId,
     );
     assert.equal(tasks.length, 1);
     assert.equal(tasks[0]!.status, 'failed', 'assigned zombie task should be marked failed');
     assert.equal(tasks[0]!.error, 'orchestrator_died');
   });
 
-  it('logs activity for each zombie task cleaned up', async () => {
+  it('marks zombie tasks as failed (activity insert skipped — TODO(PR-C): migrate orchestrator_task_activity)', async () => {
+    // Activity logging to orchestrator_task_activity is skipped for tasks in the unified tasks
+    // table — FK constraint prevents it. The task itself is still correctly marked failed.
+    const taskExtId = 'zombie-ext-id-0003-0001';
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('zombie-task-3', 'Another zombie', null, 'in_progress', 0, ?, ?)`,
-      new Date().toISOString(), new Date().toISOString(),
+      `INSERT INTO tasks (external_id, kind, title, status, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Another zombie', 'in_progress', 'low', ?, ?)`,
+      taskExtId, new Date().toISOString(), new Date().toISOString(),
     );
 
     _setDepsForTesting({
@@ -234,22 +241,26 @@ describe('Orchestrator idle: zombie task cleanup', () => {
 
     await _runForTesting({});
 
-    const activity = query<{ task_id: string; stage: string; message: string }>(
-      `SELECT task_id, stage, message FROM orchestrator_task_activity WHERE task_id = 'zombie-task-3'`,
+    // Verify task is marked failed in the unified tasks table
+    const tasks = query<{ status: string; error: string }>(
+      `SELECT status, error FROM tasks WHERE external_id = ? AND kind = 'orchestrator'`,
+      taskExtId,
     );
-    assert.ok(activity.length > 0, 'should have logged activity for zombie task');
-    assert.equal(activity[0]!.stage, 'cleanup');
-    assert.ok(activity[0]!.message.includes('orchestrator died'), `message: ${activity[0]!.message}`);
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]!.status, 'failed', 'zombie task should be marked failed');
+    assert.equal(tasks[0]!.error, 'orchestrator_died');
+    // Activity insert is not checked here — see TODO(PR-C) in orchestrator-idle.ts
   });
 
   it('marks tasks from a previous orchestrator as failed when new orchestrator is running', async () => {
-    // Insert an in_progress task with started_at BEFORE the orchestrator's started_at
-    // (simulating a task from a previous orchestrator instance)
+    // Insert an in_progress task into the unified tasks table with started_at BEFORE
+    // the orchestrator's started_at (simulating a task from a previous orchestrator instance)
+    const taskExtId = 'orphan-ext-id-0001-0001';
     const oldTime = new Date(Date.now() - 10 * 60_000).toISOString();
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, started_at, created_at, updated_at)
-       VALUES ('orphan-task-1', 'Orphaned task', null, 'in_progress', 0, ?, ?, ?)`,
-      oldTime, oldTime, oldTime,
+      `INSERT INTO tasks (external_id, kind, title, status, priority, started_at, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Orphaned task', 'in_progress', 'low', ?, ?, ?)`,
+      taskExtId, oldTime, oldTime, oldTime,
     );
 
     // Orchestrator is alive (new instance)
@@ -262,8 +273,9 @@ describe('Orchestrator idle: zombie task cleanup', () => {
 
     await _runForTesting({});
 
-    const tasks = query<{ id: string; status: string; error: string }>(
-      `SELECT id, status, error FROM orchestrator_tasks WHERE id = 'orphan-task-1'`,
+    const tasks = query<{ external_id: string; status: string; error: string }>(
+      `SELECT external_id, status, error FROM tasks WHERE external_id = ? AND kind = 'orchestrator'`,
+      taskExtId,
     );
     assert.equal(tasks.length, 1);
     assert.equal(tasks[0]!.status, 'failed', 'orphaned task should be marked failed');
