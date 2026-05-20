@@ -27,6 +27,7 @@ import {
 
 const EXPECTED_TABLES = [
   'agent_activity_log',
+  'agent_tokens',
   'agents',
   'api_metrics_hourly',
   'api_request_logs',

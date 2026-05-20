@@ -55,6 +55,11 @@ export interface SpawnOptions {
    * event but does NOT kill the worker — that only happens at timeoutMs.
    */
   warnThresholdMs?: number;
+  /**
+   * Additional environment variables merged on top of process.env for the
+   * spawned Claude Code subprocess. Used to inject KITHKIT_AGENT_TOKEN.
+   */
+  env?: Record<string, string>;
 }
 
 export type WorkerStatus = 'running' | 'completed' | 'failed' | 'timeout';
@@ -315,6 +320,11 @@ export function spawnWorker(opts: SpawnOptions): string {
   if (effectiveMaxTurns) sdkOptions.maxTurns = effectiveMaxTurns;
   if (opts.profile.effort) sdkOptions.effort = opts.profile.effort;
   if (opts.cwd) sdkOptions.cwd = opts.cwd;
+  if (opts.env) {
+    // Merge caller-supplied env vars on top of the current process environment.
+    // This is how KITHKIT_AGENT_TOKEN reaches the spawned Claude Code subprocess.
+    sdkOptions.env = { ...process.env, ...opts.env };
+  }
 
   if (opts.profile.permissionMode === 'bypassPermissions') {
     sdkOptions.permissionMode = 'bypassPermissions';
