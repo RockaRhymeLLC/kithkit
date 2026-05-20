@@ -31,6 +31,7 @@ import { injectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { storeMemoryInternal } from './memory.js';
 import { evaluateTask as _evaluateTask } from '../self-improvement/retro-evaluator.js';
+import { normalizeStatusAlias } from '../core/task-state-machine.js';
 
 // Injectable for testing — allows tests to mock evaluateTask without spawning real workers
 let _evalFn: (taskId: string) => Promise<void> = _evaluateTask;
@@ -901,6 +902,7 @@ export async function handleTaskQueueRoute(
       let targetAssignee = task.assigned_to;
 
       if (body.status !== undefined) {
+        body.status = normalizeStatusAlias(body.status);
         const newStatus = body.status as TaskStatus;
         if (!VALID_STATUSES.includes(newStatus)) {
           json(res, 400, withTimestamp({ error: `invalid status: ${body.status}` }));

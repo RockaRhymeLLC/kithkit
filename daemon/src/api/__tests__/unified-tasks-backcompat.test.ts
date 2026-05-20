@@ -341,3 +341,54 @@ describe('shim id-collision regression', { concurrency: 1 }, () => {
     assert.equal(parseInt(row!.external_id, 10), legacyId, 'external_id must equal the legacy integer id');
   });
 });
+
+// ── /api/todos status alias normalization (#211) ───────────────
+
+describe('/api/todos status alias normalization', { concurrency: 1 }, () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it("PUT /api/todos/:id with status 'done' stores as 'completed'", async () => {
+    const createRes = await makeTodoRequest('POST', '/api/todos', { title: 'alias-done-todo' });
+    assert.equal(createRes.status, 201);
+    const todo = JSON.parse(createRes.body);
+
+    const putRes = await makeTodoRequest('PUT', `/api/todos/${todo.id}`, { status: 'done' });
+    assert.equal(putRes.status, 200, "'done' should be accepted");
+    assert.equal(JSON.parse(putRes.body).status, 'completed', "response status must be 'completed'");
+
+    // Confirm via GET
+    const getRes = await makeTodoRequest('GET', `/api/todos/${todo.id}`);
+    assert.equal(getRes.status, 200);
+    assert.equal(JSON.parse(getRes.body).status, 'completed', "GET must return 'completed'");
+  });
+
+  it("PUT /api/todos/:id with status 'wip' stores as 'in_progress'", async () => {
+    const createRes = await makeTodoRequest('POST', '/api/todos', { title: 'alias-wip-todo' });
+    const todo = JSON.parse(createRes.body);
+
+    const putRes = await makeTodoRequest('PUT', `/api/todos/${todo.id}`, { status: 'wip' });
+    assert.equal(putRes.status, 200, "'wip' should be accepted");
+    assert.equal(JSON.parse(putRes.body).status, 'in_progress');
+
+    const getRes = await makeTodoRequest('GET', `/api/todos/${todo.id}`);
+    assert.equal(JSON.parse(getRes.body).status, 'in_progress');
+  });
+
+  it("alias lookup is case-insensitive: 'Wip' → 'in_progress'", async () => {
+    const createRes = await makeTodoRequest('POST', '/api/todos', { title: 'alias-case-wip' });
+    const todo = JSON.parse(createRes.body);
+
+    const putRes = await makeTodoRequest('PUT', `/api/todos/${todo.id}`, { status: 'Wip' });
+    assert.equal(putRes.status, 200, "'Wip' should be accepted");
+    assert.equal(JSON.parse(putRes.body).status, 'in_progress');
+  });
+
+  it("unknown status still returns HTTP 400 via /api/todos", async () => {
+    const createRes = await makeTodoRequest('POST', '/api/todos', { title: 'alias-bogus-todo' });
+    const todo = JSON.parse(createRes.body);
+
+    const putRes = await makeTodoRequest('PUT', `/api/todos/${todo.id}`, { status: 'bogus' });
+    assert.equal(putRes.status, 400, "unrecognised value must still be rejected");
+  });
+});

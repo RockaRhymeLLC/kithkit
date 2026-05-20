@@ -21,6 +21,7 @@ import {
   validateTransition,
   allowedTransitions,
   getTransitionSideEffects,
+  normalizeStatusAlias,
   VALID_STATUSES,
   TERMINAL_STATUSES,
 } from '../core/task-state-machine.js';
@@ -981,6 +982,7 @@ export async function handleUnifiedTasksRoute(
 
       // ── Status transition ──────────────────────────────────
       if (body.status !== undefined) {
+        body.status = normalizeStatusAlias(body.status);
         const newStatus = body.status as TaskStatus;
         if (!VALID_STATUSES.includes(newStatus)) {
           json(res, 400, withTimestamp({ error: `invalid status: ${body.status}` }));
