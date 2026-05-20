@@ -283,6 +283,65 @@ describe('PUT /api/tasks/:id state machine transitions', { concurrency: 1 }, () 
   });
 });
 
+// ── PUT /api/tasks/:id todo transitions (dogfood bug #1724) ────
+//
+// Regression: canonical PUT was rejecting pending → completed for kind='todo'
+// via the orchestrator state machine, even though the /api/todos shim allows it.
+// Fix: todo tasks bypass the state machine — any valid status is permitted.
+
+describe('PUT /api/tasks/:id todo bypasses state machine', { concurrency: 1 }, () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('allows todo pending → completed directly (bug #1724)', async () => {
+    const createRes = await request('POST', '/api/tasks', {
+      title: 'bug-1724-regression',
+      kind: 'todo',
+      priority: 'low',
+    });
+    assert.equal(createRes.status, 201);
+    const task = JSON.parse(createRes.body);
+    assert.equal(task.status, 'pending');
+
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { status: 'completed' });
+    assert.equal(putRes.status, 200, 'should return 200, not 422');
+    const updated = JSON.parse(putRes.body);
+    assert.equal(updated.status, 'completed');
+    assert.ok(updated.completed_at, 'completed_at should be stamped');
+
+    // GET to confirm DB was updated
+    const getRes = await request('GET', `/api/tasks/${task.id}`);
+    assert.equal(getRes.status, 200);
+    const fetched = JSON.parse(getRes.body);
+    assert.equal(fetched.status, 'completed', 'DB must reflect completed status');
+  });
+
+  it('allows todo pending → in_progress directly', async () => {
+    const createRes = await request('POST', '/api/tasks', {
+      title: 'todo-direct-in-progress',
+      kind: 'todo',
+    });
+    const task = JSON.parse(createRes.body);
+
+    const res = await request('PUT', `/api/tasks/${task.id}`, { status: 'in_progress' });
+    assert.equal(res.status, 200);
+    assert.equal(JSON.parse(res.body).status, 'in_progress');
+  });
+
+  it('orchestrator pending → completed still returns 422', async () => {
+    const createRes = await request('POST', '/api/tasks', {
+      title: 'orch-state-machine-still-enforced',
+      kind: 'orchestrator',
+    });
+    const task = JSON.parse(createRes.body);
+
+    const res = await request('PUT', `/api/tasks/${task.id}`, { status: 'completed', result: 'Done' });
+    assert.equal(res.status, 422, 'orchestrator tasks must still enforce state machine');
+    const body = JSON.parse(res.body);
+    assert.ok(body.error.includes('cannot transition from pending'));
+  });
+});
+
 // ── POST /api/tasks/:id/activity ───────────────────────────────
 
 describe('POST /api/tasks/:id/activity', { concurrency: 1 }, () => {
