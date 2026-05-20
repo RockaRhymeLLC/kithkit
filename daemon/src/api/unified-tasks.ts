@@ -959,7 +959,10 @@ export async function handleUnifiedTasksRoute(
           return true;
         }
 
-        if (!validateTransition(task.status, newStatus)) {
+        // Todo tasks bypass the orchestrator state machine — any valid status is permitted
+        // (mirrors the /api/todos shim behaviour which has no transition enforcement).
+        // Orchestrator tasks remain strictly gated.
+        if (task.kind !== 'todo' && !validateTransition(task.status, newStatus)) {
           json(res, 422, withTimestamp({
             error: `cannot transition from ${task.status} to ${newStatus}`,
             allowed_transitions: allowedTransitions(task.status),
