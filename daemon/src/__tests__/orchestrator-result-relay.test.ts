@@ -136,7 +136,7 @@ describe('orchestrator result auto-relay to requesting_peer', () => {
       to: 'comms',
       type: 'result',
       body: 'All done!',
-      metadata: { task_id: 'task-relay' },
+      metadata: { task_id: 'task-relay', completion: true },
     });
 
     assert.equal(res.status, 200);
@@ -168,7 +168,7 @@ describe('orchestrator result auto-relay to requesting_peer', () => {
       to: 'comms',
       type: 'result',
       body: 'Done with no peer',
-      metadata: { task_id: 'task-no-peer' },
+      metadata: { task_id: 'task-no-peer', completion: true },
     });
 
     assert.equal(res.status, 200);
@@ -193,7 +193,7 @@ describe('orchestrator result auto-relay to requesting_peer', () => {
       to: 'comms',
       type: 'result',
       body: 'Result despite relay failure',
-      metadata: { task_id: 'task-throw' },
+      metadata: { task_id: 'task-throw', completion: true },
     });
 
     // Must not return 500 — relay failure is non-fatal
@@ -259,7 +259,7 @@ describe('orchestrator result auto-relay to requesting_peer', () => {
         to: 'comms',
         type: 'result',
         body: 'Result with null router',
-        metadata: { task_id: 'task-null-router' },
+        metadata: { task_id: 'task-null-router', completion: true },
       });
 
       assert.ok(res.status >= 200 && res.status < 300, `expected 2xx, got ${res.status}`);
