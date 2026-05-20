@@ -273,6 +273,7 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - Messages are logged and auditable via `GET /api/messages`
 - Workers can only message the orchestrator that spawned them
 - The comms agent is the only agent that talks to humans
+- Workers MUST NOT call `/api/send`. The daemon enforces this with 403.
 
 ### 10-4 Acknowledgment Rule
 
@@ -307,6 +308,7 @@ This is a behavioral protocol — agents follow it by convention today. Infrastr
 - Use `POST /api/send` to deliver messages to the human
 - The channel router handles delivery to configured channels (Telegram, email, etc.)
 - Don't bypass the router — it handles formatting and delivery tracking
+- When calling `/api/send`, include the agent token: `-H "X-Agent-Token: $(cat <project_dir>/.kithkit/.comms-token)"`. The daemon enforces 403 on calls without a valid comms token.
 
 ## Quality Standards
 
