@@ -9,6 +9,7 @@ import { routeMessage, listAdapters } from '../comms/channel-router.js';
 import { sendMessage } from '../agents/message-router.js';
 import { createLogger } from '../core/logger.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
+import { verifyToken } from '../auth/agent-tokens.js';
 
 const log = createLogger('api-send');
 
@@ -23,6 +24,28 @@ export async function handleSendRoute(
 
   try {
     if (pathname === '/api/send' && method === 'POST') {
+      // ── Role gate ─────────────────────────────────────────────
+      // Only the comms agent may deliver messages to human channels.
+      // Workers and orchestrators must escalate via /api/messages.
+      const rawHeader = req.headers['x-agent-token'];
+      const token = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+      if (!token) {
+        json(res, 401, withTimestamp({ error: 'X-Agent-Token header required' }));
+        return true;
+      }
+      const identity = verifyToken(token);
+      if (!identity) {
+        json(res, 401, withTimestamp({ error: 'Invalid or revoked agent token' }));
+        return true;
+      }
+      if (identity.role !== 'comms') {
+        json(res, 403, withTimestamp({
+          error: 'Workers and orchestrators cannot send to human channels. Escalate via /api/messages (worker → orchestrator → comms → human).',
+          role: identity.role,
+        }));
+        return true;
+      }
+
       const body = await parseBody(req);
 
       if (!body.message || typeof body.message !== 'string') {
