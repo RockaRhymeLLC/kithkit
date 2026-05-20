@@ -628,7 +628,7 @@ describe('Auto-complete orchestrator task on result message (#70)', () => {
       to: 'comms',
       type: 'result',
       body: 'Result for task B',
-      metadata: { task_id: 'task-b' },
+      metadata: { task_id: 'task-b', completion: true },
     });
 
     const taskA = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-a');
@@ -669,7 +669,7 @@ describe('Auto-complete orchestrator task on result message (#70)', () => {
       to: 'comms',
       type: 'result',
       body: 'New result',
-      metadata: { task_id: 'task-active' },
+      metadata: { task_id: 'task-active', completion: true },
     });
 
     const taskDone   = query<{ status: string }>('SELECT status FROM orchestrator_tasks WHERE id = ?', 'task-done');
@@ -707,13 +707,13 @@ describe('Regression #266 — task.result race: correct body written, no cross-c
     addWorker('task-real',  'worker-real');
     addWorker('task-other', 'worker-other');
 
-    // Act: send the real result for task-real (with task_id)
+    // Act: send the real result for task-real (with task_id and completion flag)
     sendMessage({
       from: 'orchestrator',
       to: 'comms',
       type: 'result',
       body: 'Correct synthesis for task-real',
-      metadata: { task_id: 'task-real' },
+      metadata: { task_id: 'task-real', completion: true },
     });
 
     // Act: send a ghost/unrelated message without task_id (simulates the race scenario)
@@ -760,7 +760,7 @@ describe('Regression #266 — task.result race: correct body written, no cross-c
       to: 'comms',
       type: 'result',
       body: 'Should be rejected by invariant',
-      metadata: { task_id: 'ghost-task' },
+      metadata: { task_id: 'ghost-task', completion: true },
     });
 
     const task = query<{ status: string; result: string }>(
