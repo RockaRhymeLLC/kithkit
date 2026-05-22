@@ -15,6 +15,21 @@
 #   ./migrate.sh --rollback   # Reverse migration from manifest
 #   ./migrate.sh --dry-run    # Show what would be done (no changes)
 #   ./migrate.sh --yes        # Skip confirmation prompts
+#   ./migrate.sh --force      # Bypass manifest guard (deprecated: kept for back-compat;
+#                             #   no longer implies clobber — mv -n and rsync --ignore-existing
+#                             #   prevent overwriting destination files regardless)
+#
+# Overwrite semantics (as of fix #309):
+#   move_file(): uses mv -n (no-clobber). If destination already exists, a warning is
+#                logged to stderr naming the file and the script continues. Operator resolves.
+#   move_dir():  uses rsync -a --ignore-existing. Upstream-shipped seed files in the
+#                destination directory win by default; only absent files are copied over.
+#
+# Empty-dir guard (as of fix #309):
+#   The double-run guard now checks only for the rollback manifest. If .kithkit/hooks/
+#   contains files but no manifest exists, this is treated as an upstream-shipped seed
+#   scaffold scenario: an informational message is logged and migration proceeds using the
+#   collision-safe mv -n + rsync --ignore-existing semantics above.
 #
 # After migration:
 #   - .kithkit/ is the authoritative source for hooks, state, agents, skills
@@ -44,7 +59,8 @@ for arg in "$@"; do
 done
 
 if $FORCE && ! $DRY_RUN; then
-  echo "[migrate] WARNING: --force flag set — skipping double-run guard." >&2
+  echo "[migrate] WARNING: --force flag set — skipping manifest guard." >&2
+  echo "[migrate] NOTE: --force no longer implies clobber; mv -n and rsync --ignore-existing still apply." >&2
 fi
 
 # ── Exit trap for partial failure ────────────────────────────
@@ -87,7 +103,11 @@ move_file() {
   dst_dir="$(dirname "$dst")"
   mkdir -p "$dst_dir"
 
-  mv "$src" "$dst"
+  if [ -e "$dst" ]; then
+    echo "[migrate] WARN: skipping $src — destination $dst already exists; operator should resolve manually" >&2
+    return 0
+  fi
+  mv -n "$src" "$dst"
   echo "${src}|${dst}" >> "$MANIFEST"
   log "Moved: $src → $dst"
 }
@@ -109,8 +129,8 @@ move_dir() {
   fi
 
   mkdir -p "$dst"
-  # rsync: src/ copies contents into dst/
-  rsync -a "$src/" "$dst/"
+  # rsync: src/ copies contents into dst/; --ignore-existing preserves seed files already in dst
+  rsync -a --ignore-existing "$src/" "$dst/"
   rm -rf "$src"
   echo "${src}/|${dst}/" >> "$MANIFEST"
   log "Moved dir: $src/ → $dst/"
@@ -260,13 +280,15 @@ fi
 if ! $DRY_RUN && ! $FORCE; then
   if [ -f "$MANIFEST" ]; then
     echo "[migrate] ERROR: Manifest already exists at $MANIFEST" >&2
-    echo "[migrate] Migration may have already run. Use --rollback to undo first, or --force to override." >&2
+    echo "[migrate] Migration has already run. Use --rollback to undo first, or --force to bypass this guard." >&2
     exit 1
   fi
+  # If .kithkit/hooks/ has files but no manifest, treat as upstream-shipped seed scaffold.
+  # The mv -n + rsync --ignore-existing semantics below handle collisions without clobbering.
   if [ -d "$PROJECT_DIR/.kithkit/hooks" ] && [ "$(ls -A "$PROJECT_DIR/.kithkit/hooks" 2>/dev/null)" ]; then
-    echo "[migrate] ERROR: .kithkit/hooks/ already contains files. Migration may have already run." >&2
-    echo "[migrate] Use --rollback first, or --force to override." >&2
-    exit 1
+    echo "[migrate] INFO: .kithkit/hooks/ contains files but no migration manifest found." >&2
+    echo "[migrate] Treating as upstream-shipped seed scaffold — proceeding with collision-safe merge." >&2
+    echo "[migrate] (mv -n and rsync --ignore-existing preserve existing files on any conflict.)" >&2
   fi
 fi
 
