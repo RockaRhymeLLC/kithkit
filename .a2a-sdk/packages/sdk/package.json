@@ -1,0 +1,49 @@
+{
+  "name": "kithkit-a2a-client",
+  "version": "0.2.0",
+  "type": "module",
+  "description": "KithKit A2A Agent — P2P encrypted messaging for AI agents",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "node --import tsx --test src/__tests__/*.test.ts",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "ai-agents",
+    "p2p",
+    "messaging",
+    "e2e-encryption",
+    "ed25519",
+    "agent-to-agent"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/RockaRhymeLLC/kithkit-a2a-client.git",
+    "directory": "packages/sdk"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "kithkit-a2a-relay": "github:RockaRhymeLLC/kithkit-a2a-relay",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "files": [
+    "dist",
+    "skills",
+    "README.md",
+    "LICENSE"
+  ]
+}

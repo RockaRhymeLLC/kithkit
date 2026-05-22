@@ -6,7 +6,8 @@
   "description": "Personal AI assistant framework — install, configure identity, go.",
   "workspaces": [
     "daemon",
-    "cli"
+    "cli",
+    ".a2a-sdk/packages/sdk"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
