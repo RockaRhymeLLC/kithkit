@@ -303,6 +303,44 @@ async function withRetry<T>(
 
 // ── Send message ─────────────────────────────────────────────
 
+/** Telegram's documented maximum text length per sendMessage call (in characters). */
+const TELEGRAM_MAX_MESSAGE_LENGTH = 4096;
+
+/**
+ * Split text into chunks of at most maxLen characters.
+ *
+ * Prefers to split at a newline boundary within the final 25% of the chunk
+ * so that the break falls at a natural paragraph boundary. If no suitable
+ * newline exists, falls back to a space boundary, then a hard cut.
+ */
+function chunkText(text: string, maxLen: number): string[] {
+  if (text.length <= maxLen) return [text];
+
+  const chunks: string[] = [];
+  let pos = 0;
+  while (pos < text.length) {
+    if (text.length - pos <= maxLen) {
+      chunks.push(text.slice(pos));
+      break;
+    }
+    const end = pos + maxLen;
+    const searchFrom = pos + Math.floor(maxLen * 0.75);
+    const nl = text.lastIndexOf('\n', end - 1);
+    const sp = text.lastIndexOf(' ', end - 1);
+    let splitAt: number;
+    if (nl >= searchFrom) {
+      splitAt = nl + 1; // include the newline in the current chunk
+    } else if (sp >= searchFrom) {
+      splitAt = sp + 1; // include the space in the current chunk
+    } else {
+      splitAt = end; // hard cut at the limit
+    }
+    chunks.push(text.slice(pos, splitAt));
+    pos = splitAt;
+  }
+  return chunks;
+}
+
 /**
  * Inner send — single attempt.
  * - Resolves true on success.
@@ -392,36 +430,46 @@ async function telegramSend(text: string, chatId?: string): Promise<boolean> {
 
   // Strip MarkdownV2 escape sequences (legacy callers may still send them)
   const cleaned = text.replace(/\\([^a-zA-Z0-9\s])/g, '$1');
-  const truncated = cleaned.length > 4000 ? cleaned.substring(0, 4000) + '...' : cleaned;
 
-  // Detect formatting: pre-existing HTML tags get parse_mode but skip conversion;
-  // markdown patterns get converted to HTML first.
-  const alreadyHtml = hasHtmlTags(truncated);
-  const hasMarkdown = !alreadyHtml && hasMarkdownPatterns(truncated);
-  const formatted = hasMarkdown ? markdownToTelegramHtml(truncated) : truncated;
-  const data = JSON.stringify({
-    chat_id: targetChatId,
-    text: formatted,
-    ...(alreadyHtml || hasMarkdown ? { parse_mode: 'HTML' } : {}),
-  });
-
-  // Retry with backoff — track retryAfterMs from 429 responses.
-  // `retryAfterMs` is updated inside the attempt via onRateLimit callback;
-  // `() => retryAfterMs` is evaluated lazily by withRetry after each failure
-  // so the updated value is always used for the next sleep interval.
-  let retryAfterMs: number | undefined;
-  try {
-    await withRetry(
-      () => telegramSendOnce(truncated, token, data, (ms) => { retryAfterMs = ms; }),
-      3,
-      1000,
-      () => retryAfterMs,
-    );
-    return true;
-  } catch (err) {
-    // NonRetriableError and exhausted-retry errors both end up here
-    return false;
+  // Telegram's API limit is 4096 chars per message. For longer text, split into
+  // chunks and send sequentially rather than silently truncating content.
+  const chunks = chunkText(cleaned, TELEGRAM_MAX_MESSAGE_LENGTH);
+  if (chunks.length > 1) {
+    log.info(`Chunking long message into ${chunks.length} parts (${cleaned.length} chars total)`);
   }
+
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]!;
+
+    // Detect formatting per chunk: pre-existing HTML tags get parse_mode but skip
+    // conversion; markdown patterns get converted to HTML first.
+    const alreadyHtml = hasHtmlTags(chunk);
+    const hasMarkdown = !alreadyHtml && hasMarkdownPatterns(chunk);
+    const formatted = hasMarkdown ? markdownToTelegramHtml(chunk) : chunk;
+    const data = JSON.stringify({
+      chat_id: targetChatId,
+      text: formatted,
+      ...(alreadyHtml || hasMarkdown ? { parse_mode: 'HTML' } : {}),
+    });
+
+    // Retry with backoff — track retryAfterMs from 429 responses.
+    // `retryAfterMs` is updated inside the attempt via onRateLimit callback;
+    // `() => retryAfterMs` is evaluated lazily by withRetry after each failure
+    // so the updated value is always used for the next sleep interval.
+    let retryAfterMs: number | undefined;
+    try {
+      await withRetry(
+        () => telegramSendOnce(chunk, token, data, (ms) => { retryAfterMs = ms; }),
+        3,
+        1000,
+        () => retryAfterMs,
+      );
+    } catch {
+      // NonRetriableError and exhausted-retry errors both end up here
+      return false;
+    }
+  }
+  return true;
 }
 
 // ── Send photo ───────────────────────────────────────────────
@@ -798,8 +846,9 @@ export class TelegramAdapter implements ChannelAdapter {
         return text;
       case 'normal':
       default:
-        // Truncate to Telegram limit
-        return text.length > 4000 ? text.substring(0, 4000) + '...' : text;
+        // Pass through unchanged — chunked delivery in telegramSend() handles
+        // Telegram's 4096-char protocol limit without silently destroying content.
+        return text;
     }
   }
 
