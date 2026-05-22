@@ -6,7 +6,7 @@
  * import { A2ANetwork } from 'kithkit-a2a-client';
  *
  * const network = new A2ANetwork({
- *   relayUrl: 'https://relay.bmobot.ai',
+ *   relayUrl: 'https://relay.example.com',
  *   username: 'my-agent',
  *   privateKey: myEd25519PrivateKey,
  *   endpoint: 'https://my-agent.example.com/network/inbox',

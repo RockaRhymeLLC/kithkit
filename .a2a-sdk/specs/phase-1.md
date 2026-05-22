@@ -161,7 +161,7 @@ kithkit-a2a-client/
 
 #### Direct Messaging (4 items)
 
-- [ ] **D-01: P2P direct messaging**: Agents send messages directly to each other's HTTPS endpoints (e.g., `https://bmo.bmobot.ai/network/inbox`). No relay involvement in message delivery. Messages are signed (Ed25519) and encrypted (X25519/AES-256-GCM). Recipient verifies signature, checks sender is an approved contact, then decrypts.
+- [ ] **D-01: P2P direct messaging**: Agents send messages directly to each other's HTTPS endpoints (e.g., `https://bmo.example.com/network/inbox`). No relay involvement in message delivery. Messages are signed (Ed25519) and encrypted (X25519/AES-256-GCM). Recipient verifies signature, checks sender is an approved contact, then decrypts.
 
 - [ ] **D-02: Presence-gated delivery with retry**: Before sending, check recipient's presence via relay. If online: send directly. If offline: queue locally for retry (see R-01). Sender always gets a clear status: `delivered`, `queued` (retrying), or `expired` (gave up). No silent drops.
 
@@ -391,7 +391,7 @@ Presence response:
 {
   "agent": "bmo",
   "online": true,
-  "endpoint": "https://bmo.bmobot.ai/network/inbox",
+  "endpoint": "https://bmo.example.com/network/inbox",
   "lastSeen": "2026-02-17T03:45:00Z"
 }
 ```
@@ -510,10 +510,10 @@ import { KithKitNetwork } from 'kithkit-a2a-client';
 
 // Initialize
 const network = new KithKitNetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'bmo',
   privateKey: ed25519PrivateKeyBuffer,  // Agent provides from their secure storage
-  endpoint: 'https://bmo.bmobot.ai/network/inbox',
+  endpoint: 'https://bmo.example.com/network/inbox',
   dataDir: './kithkit-a2a-client-data',      // For local cache persistence
   heartbeatInterval: 5 * 60 * 1000,    // 5 minutes (default)
 });
@@ -624,7 +624,7 @@ await network.stop();
 ### Email Sending from Relay
 
 The relay sends verification emails via AWS SES (already in the ecosystem).
-- From address: `noreply@relay.bmobot.ai` (requires SES domain verification)
+- From address: `noreply@relay.example.com` (requires SES domain verification)
 - Template: simple plaintext with 6-digit code
 - Rate: max ~100 verifications/day (well within SES free tier)
 
@@ -642,9 +642,9 @@ When KithKit (`npm install kithkit-a2a-client`) integrates the SDK:
 ```yaml
 network:
   enabled: true
-  relay_url: "https://relay.bmobot.ai"
+  relay_url: "https://relay.example.com"
   owner_email: "agent@example.com"
-  endpoint: "https://bmo.bmobot.ai/network/inbox"
+  endpoint: "https://bmo.example.com/network/inbox"
   auto_approve_contacts: false
   heartbeat_interval: 300        # seconds (5 minutes)
   retry_queue_max: 100
@@ -666,7 +666,7 @@ The `docs/` directory must include:
 
 ## Open Questions
 
-- [ ] **SES domain verification**: Need to verify `relay.bmobot.ai` in SES before email verification works. Can use the existing AWS account.
+- [ ] **SES domain verification**: Need to verify `relay.example.com` in SES before email verification works. Can use the existing AWS account.
 - [ ] **Contact request encryption**: Should the greeting in contact requests be encrypted? Relay needs to store pending requests but doesn't need to read the greeting. Could encrypt greeting with recipient's public key from the registry.
 - [ ] **Presence staleness threshold**: 2x heartbeat interval (10 min at default) — or make it configurable?
 

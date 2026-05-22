@@ -83,18 +83,18 @@ describe('t-100: CommunityConfig type validation and mutual exclusion', () => {
   it('Step 1: valid relayUrl config creates default community', () => {
     const net = new A2ANetwork({
       ...baseOpts(kp),
-      relayUrl: 'https://relay.bmobot.ai',
+      relayUrl: 'https://relay.example.com',
     } as A2ANetworkInternalOptions);
     assert.equal(net.communities.length, 1);
     assert.equal(net.communities[0].name, 'default');
-    assert.equal(net.communities[0].primary, 'https://relay.bmobot.ai');
+    assert.equal(net.communities[0].primary, 'https://relay.example.com');
   });
 
   it('Step 2: valid communities array (2 communities, one with failover)', () => {
     const net = new A2ANetwork({
       ...baseOpts(kp),
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai', failover: 'https://backup.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com', failover: 'https://backup.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
     } as A2ANetworkInternalOptions);
@@ -107,8 +107,8 @@ describe('t-100: CommunityConfig type validation and mutual exclusion', () => {
     assert.throws(() => {
       new A2ANetwork({
         ...baseOpts(kp),
-        relayUrl: 'https://relay.bmobot.ai',
-        communities: [{ name: 'home', primary: 'https://relay.bmobot.ai' }],
+        relayUrl: 'https://relay.example.com',
+        communities: [{ name: 'home', primary: 'https://relay.example.com' }],
       } as A2ANetworkInternalOptions);
     }, /relayUrl and communities are mutually exclusive/);
   });
@@ -126,7 +126,7 @@ describe('t-100: CommunityConfig type validation and mutual exclusion', () => {
     assert.throws(() => {
       new A2ANetwork({
         ...baseOpts(kp),
-        communities: [{ name: '', primary: 'https://relay.bmobot.ai' }],
+        communities: [{ name: '', primary: 'https://relay.example.com' }],
       } as A2ANetworkInternalOptions);
     }, /missing required field: name|Invalid community name/);
   });
@@ -172,7 +172,7 @@ describe('t-101: CommunityRelayManager construction and API routing', () => {
   const companyPrimaryMock = createMockRelayAPI();
 
   const communities: CommunityConfig[] = [
-    { name: 'home', primary: 'https://relay.bmobot.ai', failover: 'https://backup.bmobot.ai' },
+    { name: 'home', primary: 'https://relay.example.com', failover: 'https://backup.example.com' },
     { name: 'company', primary: 'https://relay.acme.com' },
   ];
 
@@ -228,8 +228,8 @@ describe('t-101: CommunityRelayManager construction and API routing', () => {
 
   it('Step 6: getCommunityByHostname resolves known relay hostname', () => {
     const manager = createManager();
-    assert.equal(manager.getCommunityByHostname('relay.bmobot.ai'), 'home');
-    assert.equal(manager.getCommunityByHostname('backup.bmobot.ai'), 'home');
+    assert.equal(manager.getCommunityByHostname('relay.example.com'), 'home');
+    assert.equal(manager.getCommunityByHostname('backup.example.com'), 'home');
     assert.equal(manager.getCommunityByHostname('relay.acme.com'), 'company');
   });
 
@@ -274,7 +274,7 @@ describe('t-102: Per-community independent heartbeat', () => {
   const endpoint = 'https://test.example.com/inbox';
 
   const communities: CommunityConfig[] = [
-    { name: 'home', primary: 'https://relay.bmobot.ai', failover: 'https://backup.bmobot.ai' },
+    { name: 'home', primary: 'https://relay.example.com', failover: 'https://backup.example.com' },
     { name: 'company', primary: 'https://relay.acme.com' },
   ];
 
@@ -380,7 +380,7 @@ describe('t-103: Failover detection and sticky switch', () => {
   const kp = genKeypair();
 
   const communities: CommunityConfig[] = [
-    { name: 'home', primary: 'https://relay.bmobot.ai', failover: 'https://backup.bmobot.ai' },
+    { name: 'home', primary: 'https://relay.example.com', failover: 'https://backup.example.com' },
     { name: 'company', primary: 'https://relay.acme.com' },
   ];
 
@@ -601,7 +601,7 @@ describe('t-104: Community fully offline (both relays down)', () => {
   const kp = genKeypair();
 
   const communities: CommunityConfig[] = [
-    { name: 'home', primary: 'https://relay.bmobot.ai', failover: 'https://backup.bmobot.ai' },
+    { name: 'home', primary: 'https://relay.example.com', failover: 'https://backup.example.com' },
     { name: 'company', primary: 'https://relay.acme.com' },
   ];
 
@@ -741,7 +741,7 @@ describe('t-105: Per-community contact cache files and migration', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://test.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -801,7 +801,7 @@ describe('t-105: Per-community contact cache files and migration', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://test.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -856,7 +856,7 @@ describe('t-105: Per-community contact cache files and migration', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://test.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
       ],
       relayAPIs: {
         'home:primary': createContactsMockRelayAPI([]),
@@ -894,7 +894,7 @@ describe('t-105: Per-community contact cache files and migration', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://test.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
       ],
       relayAPIs: {
         'home:primary': createContactsMockRelayAPI([]),
@@ -948,7 +948,7 @@ describe('t-109: Backward compatibility with single relayUrl', () => {
       username: 'bmo',
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
-      relayUrl: 'https://relay.bmobot.ai',
+      relayUrl: 'https://relay.example.com',
       relayAPI: createContactsMockRelayAPI(contacts),
       deliverFn: async () => true,
       dataDir,
@@ -973,7 +973,7 @@ describe('t-109: Backward compatibility with single relayUrl', () => {
       username: 'bmo',
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
-      relayUrl: 'https://relay.bmobot.ai',
+      relayUrl: 'https://relay.example.com',
       relayAPI: createContactsMockRelayAPI(contacts),
       deliverFn: async () => true,
       dataDir,
@@ -1002,7 +1002,7 @@ describe('t-109: Backward compatibility with single relayUrl', () => {
       username: 'bmo',
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
-      relayUrl: 'https://relay.bmobot.ai',
+      relayUrl: 'https://relay.example.com',
       relayAPI: createContactsMockRelayAPI(contacts),
       deliverFn: async () => { delivered = true; return true; },
       dataDir,
@@ -1028,7 +1028,7 @@ describe('t-109: Backward compatibility with single relayUrl', () => {
       username: 'bmo',
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
-      relayUrl: 'https://relay.bmobot.ai',
+      relayUrl: 'https://relay.example.com',
       relayAPI: createContactsMockRelayAPI(contacts),
       deliverFn: async () => true,
       dataDir,
@@ -1095,9 +1095,9 @@ describe('t-106: Qualified name parsing and resolution', () => {
   // Steps 1-3: Pure parsing
   it('steps 1-3: parseQualifiedName parsing', () => {
     // Step 1: qualified name
-    const r1 = parseQualifiedName('bmo@relay.bmobot.ai');
+    const r1 = parseQualifiedName('bmo@relay.example.com');
     assert.equal(r1.username, 'bmo');
-    assert.equal(r1.hostname, 'relay.bmobot.ai');
+    assert.equal(r1.hostname, 'relay.example.com');
 
     // Step 2: unqualified name
     const r2 = parseQualifiedName('bmo');
@@ -1125,7 +1125,7 @@ describe('t-106: Qualified name parsing and resolution', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -1160,7 +1160,7 @@ describe('t-106: Qualified name parsing and resolution', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://test.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -1187,7 +1187,7 @@ describe('t-106: Qualified name parsing and resolution', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -1215,7 +1215,7 @@ describe('t-106: Qualified name parsing and resolution', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
       ],
       relayAPIs: {
         'home:primary': createContactsMockRelayAPI([]),
@@ -1242,7 +1242,7 @@ describe('t-106: Qualified name parsing and resolution', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -1273,7 +1273,7 @@ describe('t-106: Qualified name parsing and resolution', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -1337,7 +1337,7 @@ describe('t-107: Community-scoped contact and messaging operations', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -1374,7 +1374,7 @@ describe('t-107: Community-scoped contact and messaging operations', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -1409,7 +1409,7 @@ describe('t-107: Community-scoped contact and messaging operations', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {
@@ -1435,7 +1435,7 @@ describe('t-107: Community-scoped contact and messaging operations', () => {
 
     // Step 5: Envelope sender is unqualified
     assert.ok(capturedEnvelope);
-    assert.equal(capturedEnvelope.sender, 'bmo'); // NOT bmo@relay.bmobot.ai
+    assert.equal(capturedEnvelope.sender, 'bmo'); // NOT bmo@relay.example.com
     assert.equal(capturedEnvelope.recipient, 'alice'); // NOT alice@relay.acme.com
   });
 
@@ -1457,7 +1457,7 @@ describe('t-107: Community-scoped contact and messaging operations', () => {
       privateKey: kp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'company', primary: 'https://relay.acme.com' },
       ],
       relayAPIs: {

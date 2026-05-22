@@ -110,7 +110,7 @@ describe('t-110: Key rotation with shared keypairs fans out', () => {
       privateKey: defaultKp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'public', primary: 'https://relay.public.ai' },
         { name: 'company', primary: 'https://relay.acme.com', privateKey: companyKp.privateKeyDer },
       ],
@@ -151,7 +151,7 @@ describe('t-110: Key rotation with shared keypairs fans out', () => {
       privateKey: defaultKp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'public', primary: 'https://relay.public.ai' },
       ],
       relayAPIs: {
@@ -187,7 +187,7 @@ describe('t-110: Key rotation with shared keypairs fans out', () => {
       privateKey: defaultKp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'public', primary: 'https://relay.public.ai' },
       ],
       relayAPIs: {
@@ -244,7 +244,7 @@ describe('t-110: Key rotation with shared keypairs fans out', () => {
       privateKey: defaultKp.privateKeyDer,
       endpoint: 'https://bmo.example.com/inbox',
       communities: [
-        { name: 'home', primary: 'https://relay.bmobot.ai' },
+        { name: 'home', primary: 'https://relay.example.com' },
         { name: 'public', primary: 'https://relay.public.ai' },
         { name: 'company', primary: 'https://relay.acme.com', privateKey: companyKp.privateKeyDer },
       ],

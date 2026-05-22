@@ -314,7 +314,7 @@ export interface ParsedName {
  * Parse a qualified name (name@hostname) or unqualified name.
  *
  * Examples:
- * - 'bmo@relay.bmobot.ai' → {username: 'bmo', hostname: 'relay.bmobot.ai'}
+ * - 'bmo@relay.example.com' → {username: 'bmo', hostname: 'relay.example.com'}
  * - 'bmo' → {username: 'bmo', hostname: undefined}
  * - 'agent@example.com' → {username: 'agent', hostname: 'example.com'}
  */
