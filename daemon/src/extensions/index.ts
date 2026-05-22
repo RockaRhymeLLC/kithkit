@@ -51,6 +51,8 @@ import { UnifiedA2ARouter } from '../a2a/router.js';
 import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { sendMessage } from '../agents/message-router.js';
 import { RateLimiter } from '../core/rate-limiter.js';
+import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
+import { createCommsTelegramAdapter, type CommsTelegramAdapter } from './comms/telegram.js';
 
 const log = createLogger('agent-extension');
 
@@ -63,6 +65,7 @@ let _scheduler: Scheduler | null = null;
 let _initialized = false;
 let _instanceShutdown: (() => Promise<void> | void) | null = null;
 let _retryAbortController: AbortController | null = null;
+let _telegramAdapter: CommsTelegramAdapter | null = null;
 
 // ── Route Handlers ──────────────────────────────────────────
 
@@ -272,6 +275,21 @@ async function handleHookResponse(
   return true;
 }
 
+async function handleTelegramStatus(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    ok: true,
+    adapter: 'comms-telegram',
+    mode: 'polling',
+  }));
+  return true;
+}
+
 // ── Health Checks ───────────────────────────────────────────
 
 function registerAgentHealthChecks(): void {
@@ -343,6 +361,49 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 
   // Initialize agent-to-agent comms (LAN + P2P SDK)
   initAgentComms(_config);
+
+  // ── Telegram ─────────────────────────────────────────────
+  const fullConfig = config as KithkitConfig & {
+    channels?: {
+      telegram?: {
+        enabled?: boolean;
+        bot_token?: string;
+        safe_senders?: Array<{ chat_id: number; name: string }>;
+        poll_interval_ms?: number;
+        max_message_length?: number;
+        allowed_chat_ids?: number[];
+      };
+    };
+  };
+  const telegramConfig = fullConfig.channels?.telegram;
+  if (!telegramConfig?.enabled) {
+    log.warn('Telegram not enabled in config (channels.telegram.enabled)');
+  } else if (!telegramConfig.bot_token) {
+    log.error('No bot_token in channels.telegram config');
+  } else {
+    let safeSenders = telegramConfig.safe_senders ?? [];
+    if (safeSenders.length === 0 && telegramConfig.allowed_chat_ids?.length) {
+      safeSenders = telegramConfig.allowed_chat_ids.map((id, i) => ({
+        chat_id: id,
+        name: `User${i + 1}`,
+      }));
+    }
+    try {
+      _telegramAdapter = await createCommsTelegramAdapter({
+        bot_token: telegramConfig.bot_token,
+        safe_senders: safeSenders,
+        poll_interval_ms: telegramConfig.poll_interval_ms ?? 3000,
+        max_message_length: telegramConfig.max_message_length ?? 4000,
+      });
+      registerAdapter(_telegramAdapter);
+      log.info('Telegram adapter registered with channel router');
+    } catch (err) {
+      log.error('Failed to initialize Telegram adapter', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  registerRoute('/telegram/status', handleTelegramStatus);
 
   // ── Unified A2A Router (PR #136) ─────────────────────────
   const router = new UnifiedA2ARouter({
@@ -426,6 +487,11 @@ async function onShutdown(): Promise<void> {
   if (_instanceShutdown) {
     await _instanceShutdown();
   }
+  if (_telegramAdapter) {
+    await _telegramAdapter.shutdown();
+    unregisterAdapter('telegram');
+    _telegramAdapter = null;
+  }
   p2pRateLimiter.stop();
   await stopNetworkSDK();
   stopAgentComms();
@@ -459,4 +525,5 @@ export function _resetForTesting(): void {
   _scheduler = null;
   _initialized = false;
   _instanceShutdown = null;
+  _telegramAdapter = null;
 }
