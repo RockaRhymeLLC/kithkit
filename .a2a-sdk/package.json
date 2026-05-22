@@ -1,0 +1,16 @@
+{
+  "name": "kithkit-a2a-client-monorepo",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/sdk"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "test": "npm run test --workspaces",
+    "lint": "npm run lint --workspaces"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  }
+}

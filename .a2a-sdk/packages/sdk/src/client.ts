@@ -1,0 +1,1234 @@
+/**
+ * A2ANetwork — main SDK client.
+ *
+ * Handles contacts, presence, local cache, lifecycle, and P2P encrypted messaging.
+ */
+
+import { EventEmitter } from 'node:events';
+import { createPrivateKey, generateKeyPairSync, randomUUID, sign as cryptoSign, type KeyObject } from 'node:crypto';
+import type {
+  A2ANetworkOptions,
+  CommunityConfig,
+  CommunityStatusEvent,
+  SendResult,
+  GroupSendResult,
+  GroupMessage,
+  Message,
+  ContactRequest,
+  ContactActionResult,
+  Broadcast,
+  DeliveryStatus,
+  DeliveryReport,
+  Contact,
+  WireEnvelope,
+  KeyRotationResult,
+  KeyRotationCommunityResult,
+} from './types.js';
+import {
+  HttpRelayAPI,
+  type IRelayAPI,
+  type RelayContact,
+  type RelayBroadcast,
+  type RelayGroup,
+  type RelayGroupMember,
+  type RelayGroupInvitation,
+  type RelayGroupChange,
+} from './relay-api.js';
+import {
+  loadCache,
+  saveCache,
+  getCommunityCachePath,
+  migrateOldCache,
+  type CacheData,
+  type CachedContact,
+} from './cache.js';
+import { CommunityRelayManager, parseQualifiedName } from './community-manager.js';
+import { RetryQueue } from './retry.js';
+import {
+  buildEnvelope,
+  processEnvelope,
+  httpDeliver,
+} from './messaging.js';
+
+/** Delivery function signature: POST envelope to endpoint, return success. */
+export type DeliverFn = (endpoint: string, envelope: WireEnvelope) => Promise<boolean>;
+
+export interface GroupInvitationEvent {
+  groupId: string;
+  groupName: string;
+  invitedBy: string;
+  greeting: string | null;
+}
+
+export interface GroupMemberChangeEvent {
+  groupId: string;
+  agent: string;
+  action: 'joined' | 'left' | 'removed' | 'invited' | 'ownership-transferred';
+}
+
+export interface A2ANetworkEvents {
+  message: [msg: Message];
+  'contact-request': [req: ContactRequest];
+  broadcast: [broadcast: Broadcast];
+  'delivery-status': [status: DeliveryStatus];
+  'group-invitation': [invitation: GroupInvitationEvent];
+  'group-member-change': [change: GroupMemberChangeEvent];
+  'group-message': [msg: GroupMessage];
+  'community:status': [event: CommunityStatusEvent];
+}
+
+export interface A2ANetworkInternalOptions extends A2ANetworkOptions {
+  /** Injectable relay API for single-relay testing. If not provided, uses HttpRelayAPI. */
+  relayAPI?: IRelayAPI;
+  /** Injectable relay APIs map for multi-community testing. Key: "communityName:primary" or "communityName:failover". */
+  relayAPIs?: Record<string, IRelayAPI>;
+  /** Injectable delivery function (for testing). If not provided, uses HTTP POST. */
+  deliverFn?: DeliverFn;
+  /** Custom retry delays in ms (for testing). Default: [10000, 30000, 90000]. */
+  retryDelays?: number[];
+  /** Custom retry process interval in ms (for testing). Default: 1000. */
+  retryProcessInterval?: number;
+}
+
+/** Regex for valid community names: alphanumeric + hyphen, 1-64 chars. */
+const COMMUNITY_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9-]{0,63}$/;
+
+/**
+ * Validate and normalize SDK config. Returns resolved communities array.
+ * Throws on invalid config.
+ */
+function validateConfig(options: A2ANetworkOptions): CommunityConfig[] {
+  const { relayUrl, communities } = options;
+
+  // Mutual exclusion
+  if (relayUrl && communities) {
+    throw new Error('relayUrl and communities are mutually exclusive');
+  }
+  if (!relayUrl && !communities) {
+    throw new Error('Either relayUrl or communities must be provided');
+  }
+
+  // Single-relay → implicit 'default' community
+  if (relayUrl) {
+    return [{ name: 'default', primary: relayUrl }];
+  }
+
+  // Multi-community validation
+  if (!communities!.length) {
+    throw new Error('At least one community must be configured');
+  }
+  const seen = new Set<string>();
+  for (const c of communities!) {
+    if (!c.name) {
+      throw new Error('Community is missing required field: name');
+    }
+    if (!COMMUNITY_NAME_RE.test(c.name)) {
+      throw new Error(`Invalid community name '${c.name}': must be alphanumeric and hyphens only (1-64 chars, cannot start with hyphen)`);
+    }
+    if (seen.has(c.name)) {
+      throw new Error(`Duplicate community name: '${c.name}'`);
+    }
+    seen.add(c.name);
+    if (!c.primary) {
+      throw new Error(`Community '${c.name}' is missing required field: primary`);
+    }
+  }
+
+  return communities!;
+}
+
+export class A2ANetwork extends EventEmitter {
+  private options: A2ANetworkOptions & { dataDir: string; heartbeatInterval: number; retryQueueMax: number; failoverThreshold: number };
+  /** Resolved communities (always present — single relayUrl creates 'default' community). */
+  readonly communities: CommunityConfig[];
+  private started = false;
+  private relayAPI: IRelayAPI;
+  private communityManager: CommunityRelayManager;
+  private privateKeyObj: KeyObject;
+  /** Per-community contact caches keyed by community name. */
+  private caches: Map<string, CacheData> = new Map();
+  private retryQueue: RetryQueue;
+  private deliverFn: DeliverFn;
+  private deliveryReports: Map<string, DeliveryReport> = new Map();
+  private static MAX_DELIVERY_REPORTS = 500;
+  private seenBroadcastIds: Set<string> = new Set();
+  private static MAX_SEEN_BROADCAST_IDS = 1000;
+  private seenContactRequestIds: Set<string> = new Set();
+  private static MAX_SEEN_CONTACT_REQUEST_IDS = 500;
+  private memberCache: Map<string, { members: RelayGroupMember[]; fetchedAt: number }> = new Map();
+  private static MEMBER_CACHE_TTL = 60_000; // 60s staleness threshold
+  private seenGroupMessageIds: Set<string> = new Set();
+  private static MAX_SEEN_GROUP_MSG_IDS = 1000;
+
+  constructor(options: A2ANetworkInternalOptions) {
+    super();
+
+    // Validate and normalize config
+    this.communities = validateConfig(options);
+
+    this.options = {
+      dataDir: './a2a-network-data',
+      heartbeatInterval: 5 * 60 * 1000,
+      retryQueueMax: 100,
+      failoverThreshold: 3,
+      ...options,
+    };
+
+    // Convert Buffer (PKCS8 DER) to KeyObject and validate key type
+    this.privateKeyObj = createPrivateKey({
+      key: Buffer.from(this.options.privateKey),
+      format: 'der',
+      type: 'pkcs8',
+    });
+    if (this.privateKeyObj.asymmetricKeyType !== 'ed25519') {
+      throw new Error(`Expected Ed25519 private key, got '${this.privateKeyObj.asymmetricKeyType}'`);
+    }
+
+    // Build CommunityRelayManager — handles per-community API instances and heartbeats
+    // When relayAPI is injected (single relay backward compat), use it as default:primary
+    let managerAPIs = options.relayAPIs;
+    if (!managerAPIs && options.relayAPI) {
+      managerAPIs = { 'default:primary': options.relayAPI };
+    }
+    this.communityManager = new CommunityRelayManager(
+      this.communities,
+      this.options.username,
+      this.privateKeyObj,
+      this.options.failoverThreshold,
+      managerAPIs,
+    );
+
+    // relayAPI points to the first community's active API (backward compat for existing methods)
+    this.relayAPI = this.communityManager.getActiveApi(this.communities[0].name);
+
+    // Forward community status events (failover, offline)
+    this.communityManager.on('community:status', (event: CommunityStatusEvent) => {
+      this.emit('community:status', event);
+    });
+
+    // Delivery function: injectable for testing, defaults to HTTP POST
+    this.deliverFn = options.deliverFn || httpDeliver;
+
+    // Retry queue with configurable timing
+    this.retryQueue = new RetryQueue(
+      this.options.retryQueueMax,
+      options.retryDelays,
+      options.retryProcessInterval,
+    );
+
+    // Wire retry queue's send function with delivery tracking
+    this.retryQueue.setSendFn(async (msg) => {
+      const contact = this.getCachedContact(msg.recipient);
+      if (!contact) return false;
+
+      const startTime = Date.now();
+      const presence = await this.checkPresence(msg.recipient);
+      if (!presence.online) {
+        this.recordAttempt(msg.messageId, presence.online, presence.endpoint || '', undefined, 'Recipient offline', Date.now() - startTime);
+        return false;
+      }
+
+      const endpoint = presence.endpoint || contact.endpoint;
+      if (!endpoint) return false;
+
+      const envelope = buildEnvelope({
+        sender: this.options.username,
+        recipient: msg.recipient,
+        payload: msg.payload,
+        senderPrivateKey: this.privateKeyObj,
+        recipientPublicKeyBase64: contact.publicKey,
+        messageId: msg.messageId,
+        type: msg.groupId ? 'group' : 'direct',
+        groupId: msg.groupId,
+      });
+
+      const success = await this.deliverFn(endpoint, envelope);
+      this.recordAttempt(msg.messageId, true, endpoint, success ? 200 : 0, success ? undefined : 'Delivery failed', Date.now() - startTime);
+      if (success) this.finalizeReport(msg.messageId, 'delivered');
+      return success;
+    });
+
+    // Forward retry queue delivery-status events
+    this.retryQueue.on('delivery-status', (status: DeliveryStatus) => {
+      this.emit('delivery-status', status);
+    });
+  }
+
+  /**
+   * Generate a new Ed25519 keypair suitable for KithKit A2A Network registration.
+   * Returns base64-encoded DER keys (SPKI for public, PKCS8 for private).
+   */
+  static generateKeypair(): { publicKey: string; privateKey: string } {
+    const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+    return {
+      publicKey: publicKey.export({ format: 'der', type: 'spki' }).toString('base64'),
+      privateKey: privateKey.export({ format: 'der', type: 'pkcs8' }).toString('base64'),
+    };
+  }
+
+  /** Start the network client (loads cache, begins heartbeat, starts retry queue). */
+  async start(): Promise<void> {
+    if (this.started) return;
+
+    // Migrate legacy single-file cache to per-community format
+    migrateOldCache(this.options.dataDir, this.communities[0].name);
+
+    // Load per-community caches; refresh from relay for any community with no cache
+    for (const community of this.communities) {
+      const cachePath = getCommunityCachePath(this.options.dataDir, community.name);
+      const cache = loadCache(cachePath);
+      if (cache) {
+        this.caches.set(community.name, cache);
+      } else {
+        await this.refreshContactsForCommunity(community.name);
+      }
+    }
+
+    // Send initial heartbeats to all communities
+    await this.communityManager.sendAllHeartbeats(this.options.endpoint);
+
+    // Start periodic heartbeat timers (per-community)
+    this.communityManager.startHeartbeats(this.options.endpoint, this.options.heartbeatInterval);
+
+    // Start retry queue processing
+    this.retryQueue.start();
+
+    this.started = true;
+  }
+
+  /** Stop the network client. */
+  async stop(): Promise<void> {
+    if (!this.started) return;
+
+    // Stop all community heartbeats
+    this.communityManager.stopHeartbeats();
+
+    // Stop retry queue
+    this.retryQueue.stop();
+
+    // Flush all community caches
+    for (const community of this.communities) {
+      const cache = this.caches.get(community.name);
+      if (cache) {
+        saveCache(getCommunityCachePath(this.options.dataDir, community.name), cache);
+      }
+    }
+
+    this.started = false;
+  }
+
+  /** Whether the client is currently running. */
+  get isStarted(): boolean {
+    return this.started;
+  }
+
+  // --- Contacts ---
+
+  async requestContact(nameOrQualified: string): Promise<ContactActionResult> {
+    const { username, community } = this.resolveContactCommunity(nameOrQualified);
+    const api = this.communityManager.getActiveApi(community);
+    const result = await api.requestContact(username);
+    if (!result.ok) {
+      throw new Error(result.error || `Failed to request contact: ${result.status}`);
+    }
+    return { ok: true, status: result.status };
+  }
+
+  async getPendingRequests(): Promise<ContactRequest[]> {
+    const result = await this.relayAPI.getPendingRequests();
+    if (!result.ok) return [];
+    return (result.data || []).map((r) => ({
+      from: r.from,
+      requesterEmail: r.requesterEmail || '',
+      publicKey: '',
+    }));
+  }
+
+  async acceptContact(username: string): Promise<ContactActionResult> {
+    const result = await this.relayAPI.acceptContact(username);
+    if (!result.ok) {
+      throw new Error(result.error || `Failed to accept contact: ${result.status}`);
+    }
+    // Refresh contacts cache
+    await this.refreshContactsFromRelay();
+    return { ok: true, status: result.status };
+  }
+
+  async denyContact(username: string): Promise<void> {
+    const result = await this.relayAPI.denyContact(username);
+    if (!result.ok) {
+      throw new Error(result.error || `Failed to deny contact: ${result.status}`);
+    }
+  }
+
+  async removeContact(username: string): Promise<void> {
+    const result = await this.relayAPI.removeContact(username);
+    if (!result.ok) {
+      throw new Error(result.error || `Failed to remove contact: ${result.status}`);
+    }
+    // Update cache — remove from all community caches
+    for (const community of this.communities) {
+      const cache = this.caches.get(community.name);
+      if (cache) {
+        const before = cache.contacts.length;
+        cache.contacts = cache.contacts.filter((c) => c.username !== username);
+        if (cache.contacts.length !== before) {
+          cache.lastUpdated = new Date().toISOString();
+          saveCache(getCommunityCachePath(this.options.dataDir, community.name), cache);
+        }
+      }
+    }
+  }
+
+  async getContacts(): Promise<Contact[]> {
+    // Query all communities' relays in parallel, merge results
+    const allContacts: Contact[] = [];
+    const seen = new Set<string>();
+
+    const results = await Promise.allSettled(
+      this.communities.map(async (community) => {
+        try {
+          const api = this.communityManager.getActiveApi(community.name);
+          const result = await api.getContacts();
+          if (result.ok && result.data) {
+            this.updateContactsCache(result.data, community.name);
+            return { community: community.name, contacts: result.data };
+          }
+        } catch { /* relay unreachable */ }
+        return { community: community.name, contacts: null };
+      }),
+    );
+
+    // Collect relay results
+    for (const r of results) {
+      if (r.status === 'fulfilled' && r.value.contacts) {
+        for (const c of r.value.contacts) {
+          if (seen.has(c.agent)) continue;
+          seen.add(c.agent);
+          allContacts.push(toContact(c));
+        }
+      }
+    }
+
+    // If we got contacts from relays, return them
+    if (allContacts.length > 0) return allContacts;
+
+    // Fall back to cache — aggregate across all communities (config order)
+    for (const community of this.communities) {
+      const cache = this.caches.get(community.name);
+      if (!cache) continue;
+      for (const c of cache.contacts) {
+        if (seen.has(c.username)) continue;
+        seen.add(c.username);
+        allContacts.push({
+          username: c.username,
+          publicKey: c.publicKey,
+          endpoint: c.endpoint || '',
+          addedAt: c.addedAt,
+          online: c.online || false,
+          lastSeen: c.lastSeen || null,
+          keyUpdatedAt: null,
+          recoveryInProgress: false,
+        });
+      }
+    }
+    return allContacts;
+  }
+
+  /** Get a contact from the local cache (no relay call). Searches all community caches. */
+  getCachedContact(username: string): CachedContact | undefined {
+    for (const community of this.communities) {
+      const cache = this.caches.get(community.name);
+      if (!cache) continue;
+      const found = cache.contacts.find((c) => c.username === username);
+      if (found) return found;
+    }
+    return undefined;
+  }
+
+  /**
+   * Resolve a possibly qualified name to {username, community}.
+   *
+   * Resolution rules:
+   * - Qualified (name@hostname): look up hostname via community manager. Throws if no match.
+   * - Unqualified: search community caches in config order. First cache with the contact wins.
+   * - Unqualified not found in any cache: defaults to first configured community.
+   */
+  resolveContactCommunity(name: string): { username: string; community: string } {
+    const parsed = parseQualifiedName(name);
+
+    if (parsed.hostname) {
+      const community = this.communityManager.resolveByHostname(parsed.hostname);
+      return { username: parsed.username, community };
+    }
+
+    // Unqualified: search caches in community config order
+    for (const community of this.communities) {
+      const cache = this.caches.get(community.name);
+      if (!cache) continue;
+      if (cache.contacts.some((c) => c.username === parsed.username)) {
+        if (community.name !== this.communities[0].name) {
+          // Debug: resolved to non-primary community
+          this.emit('debug', `Resolved '${parsed.username}' to community '${community.name}' (not primary)`);
+        }
+        return { username: parsed.username, community: community.name };
+      }
+    }
+
+    // Not found — default to first community
+    return { username: parsed.username, community: this.communities[0].name };
+  }
+
+  // --- Presence ---
+
+  /**
+   * Check if a contact is online. Uses contacts data (which includes
+   * online/lastSeen in v3) rather than a separate presence endpoint.
+   */
+  async checkPresence(username: string): Promise<{ agent: string; online: boolean; endpoint?: string; lastSeen: string }> {
+    // Resolve which community this contact belongs to
+    const resolved = this.resolveContactCommunity(username);
+    const api = this.communityManager.getActiveApi(resolved.community);
+
+    // Try relay contacts (which now include presence info)
+    try {
+      const result = await api.getContacts();
+      if (result.ok && result.data) {
+        this.updateContactsCache(result.data, resolved.community);
+        const contact = result.data.find(c => c.agent === resolved.username);
+        if (contact) {
+          return {
+            agent: resolved.username,
+            online: contact.online,
+            endpoint: contact.endpoint || undefined,
+            lastSeen: contact.lastSeen || '',
+          };
+        }
+      }
+    } catch {
+      // Relay unreachable — fall back to cache
+    }
+
+    // Fall back to cached contact data
+    const cached = this.getCachedContact(username);
+    if (cached) {
+      return {
+        agent: username,
+        online: cached.online || false,
+        endpoint: cached.endpoint || undefined,
+        lastSeen: cached.lastSeen || '',
+      };
+    }
+
+    return { agent: username, online: false, lastSeen: '' };
+  }
+
+  // --- Messaging ---
+
+  /**
+   * Send an encrypted message to a contact.
+   *
+   * Flow:
+   * 1. Verify recipient is a contact
+   * 2. Check presence — if offline, queue for retry
+   * 3. Build encrypted envelope (X25519 ECDH + AES-256-GCM, Ed25519 signed)
+   * 4. Deliver to recipient's endpoint
+   * 5. If delivery fails, queue for retry
+   */
+  async send(to: string, payload: Record<string, unknown>): Promise<SendResult> {
+    // Resolve qualified name to {username, community}
+    const resolved = this.resolveContactCommunity(to);
+    const recipientName = resolved.username;
+
+    // Check: must be a contact
+    let contact = this.getCachedContact(recipientName);
+    if (!contact) {
+      // Try refreshing from the resolved community's relay
+      await this.refreshContactsForCommunity(resolved.community);
+      contact = this.getCachedContact(recipientName);
+      if (!contact) {
+        return { status: 'failed', messageId: '', error: 'Not a contact' };
+      }
+    }
+
+    if (!contact.publicKey) {
+      return { status: 'failed', messageId: '', error: 'Contact has no public key' };
+    }
+
+    // Build encrypted, signed envelope (always unqualified names in wire format)
+    const envelope = buildEnvelope({
+      sender: this.options.username,
+      recipient: recipientName,
+      payload,
+      senderPrivateKey: this.privateKeyObj,
+      recipientPublicKeyBase64: contact.publicKey,
+    });
+
+    // Initialize delivery report
+    this.initReport(envelope.messageId);
+
+    // Check presence (using unqualified name — already resolved above)
+    const startTime = Date.now();
+    const presence = await this.checkPresence(recipientName);
+
+    if (!presence.online) {
+      this.recordAttempt(envelope.messageId, false, '', undefined, 'Recipient offline', Date.now() - startTime);
+      // Offline — queue for retry
+      const queued = this.retryQueue.enqueue(envelope.messageId, recipientName, payload);
+      if (queued) {
+        return { status: 'queued', messageId: envelope.messageId };
+      }
+      this.finalizeReport(envelope.messageId, 'failed');
+      return { status: 'failed', messageId: envelope.messageId, error: 'Retry queue full' };
+    }
+
+    // Online — try direct delivery
+    const endpoint = presence.endpoint || contact.endpoint;
+    if (!endpoint) {
+      this.finalizeReport(envelope.messageId, 'failed');
+      return { status: 'failed', messageId: envelope.messageId, error: 'No endpoint for recipient' };
+    }
+
+    const delivered = await this.deliverFn(endpoint, envelope);
+    this.recordAttempt(envelope.messageId, true, endpoint, delivered ? 200 : 0, delivered ? undefined : 'Delivery failed', Date.now() - startTime);
+
+    if (delivered) {
+      this.finalizeReport(envelope.messageId, 'delivered');
+      return { status: 'delivered', messageId: envelope.messageId };
+    }
+
+    // Delivery failed — queue for retry
+    const queued = this.retryQueue.enqueue(envelope.messageId, recipientName, payload);
+    if (queued) {
+      return { status: 'queued', messageId: envelope.messageId };
+    }
+    this.finalizeReport(envelope.messageId, 'failed');
+    return { status: 'failed', messageId: envelope.messageId, error: 'Delivery failed and retry queue full' };
+  }
+
+  /**
+   * Process an incoming message envelope.
+   *
+   * Verifies the sender is a contact, checks Ed25519 signature,
+   * decrypts AES-256-GCM payload, and emits 'message' event.
+   *
+   * Returns null if the message is not addressed to this agent.
+   * Throws on non-contact sender, invalid signature, or decryption failure.
+   */
+  receiveMessage(envelope: WireEnvelope): Message {
+    // Validate it's addressed to us
+    if (envelope.recipient !== this.options.username) {
+      throw new Error(`Message not addressed to us (to: ${envelope.recipient})`);
+    }
+
+    // Check sender is a contact
+    const contact = this.getCachedContact(envelope.sender);
+    if (!contact) {
+      throw new Error(`Sender '${envelope.sender}' is not a contact`);
+    }
+
+    if (!contact.publicKey) {
+      throw new Error(`No public key for sender '${envelope.sender}'`);
+    }
+
+    // Verify signature + decrypt
+    const processed = processEnvelope({
+      envelope,
+      recipientPrivateKey: this.privateKeyObj,
+      senderPublicKeyBase64: contact.publicKey,
+    });
+
+    const msg: Message = {
+      sender: processed.sender,
+      messageId: processed.messageId,
+      timestamp: processed.timestamp,
+      payload: processed.payload,
+      verified: processed.verified,
+    };
+
+    // Emit event
+    this.emit('message', msg);
+
+    return msg;
+  }
+
+  // --- Admin ---
+
+  /**
+   * Get an admin interface using the provided admin private key.
+   * Admin ops require the caller to be registered as an admin on the relay.
+   */
+  asAdmin(adminPrivateKey: Buffer) {
+    const adminKeyObj = createPrivateKey({
+      key: adminPrivateKey,
+      format: 'der',
+      type: 'pkcs8',
+    });
+    const relayAPI = this.relayAPI;
+
+    return {
+      /**
+       * Send a signed admin broadcast.
+       * Payload is JSON-stringified and signed with the admin key.
+       */
+      broadcast: async (type: string, payload: Record<string, unknown>): Promise<void> => {
+        const payloadStr = JSON.stringify(payload);
+        const sig = cryptoSign(null, Buffer.from(payloadStr), adminKeyObj);
+        const signatureBase64 = Buffer.from(sig).toString('base64');
+        const result = await relayAPI.createBroadcast(type, payloadStr, signatureBase64);
+        if (!result.ok) {
+          throw new Error(result.error || 'Failed to create broadcast');
+        }
+      },
+
+      /** Revoke an active agent. */
+      revokeAgent: async (name: string): Promise<void> => {
+        const result = await relayAPI.revokeAgent(name);
+        if (!result.ok) {
+          throw new Error(result.error || 'Failed to revoke agent');
+        }
+      },
+    };
+  }
+
+  // --- Key Management ---
+
+  /**
+   * Rotate this agent's public key across communities.
+   *
+   * Multi-community behavior:
+   * - No options: fans out to all communities using the DEFAULT keypair
+   * - communities option: targets specific communities
+   * - Returns per-community success/failure results
+   * - Emits 'key:rotation-partial' on partial failure
+   * - Throws only if ALL communities fail
+   */
+  async rotateKey(newPublicKey: string, options?: { communities?: string[] }): Promise<KeyRotationResult> {
+    const targets = options?.communities ?? this.communityManager.getDefaultKeyCommunities();
+    const results: KeyRotationCommunityResult[] = [];
+
+    for (const communityName of targets) {
+      try {
+        const api = this.communityManager.getActiveApi(communityName);
+        const result = await api.rotateKey(this.options.username, newPublicKey);
+        results.push({
+          community: communityName,
+          success: result.ok,
+          error: result.ok ? undefined : (result.error || 'Unknown error'),
+        });
+      } catch (err) {
+        results.push({
+          community: communityName,
+          success: false,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const successes = results.filter(r => r.success);
+    const failures = results.filter(r => !r.success);
+
+    // Partial failure — some succeeded, some failed
+    if (failures.length > 0 && successes.length > 0) {
+      this.emit('key:rotation-partial', { results });
+    }
+
+    // Total failure
+    if (successes.length === 0) {
+      throw new Error(`Key rotation failed on all communities: ${failures.map(f => f.community).join(', ')}`);
+    }
+
+    return { results };
+  }
+
+  /** Initiate key recovery (unauthenticated — verifies via owner email). */
+  async recoverKey(ownerEmail: string, newPublicKey: string): Promise<void> {
+    const result = await this.relayAPI.recoverKey(this.options.username, ownerEmail, newPublicKey);
+    if (!result.ok) {
+      throw new Error(result.error || 'Failed to initiate key recovery');
+    }
+  }
+
+  // --- Broadcasts ---
+
+  /**
+   * Check for new broadcasts from the relay.
+   * Emits 'broadcast' event for each new broadcast found.
+   * Returns the list of new broadcasts.
+   */
+  async checkBroadcasts(): Promise<Broadcast[]> {
+    try {
+      const result = await this.relayAPI.listBroadcasts();
+      if (!result.ok || !result.data) return [];
+
+      const newBroadcasts: Broadcast[] = [];
+      for (const b of result.data) {
+        if (this.seenBroadcastIds.has(b.id)) continue;
+        this.seenBroadcastIds.add(b.id);
+        if (this.seenBroadcastIds.size > A2ANetwork.MAX_SEEN_BROADCAST_IDS) {
+          const first = this.seenBroadcastIds.values().next().value;
+          if (first) this.seenBroadcastIds.delete(first);
+        }
+
+        const broadcast: Broadcast = {
+          type: b.type,
+          payload: safeParse(b.payload),
+          sender: b.sender,
+          verified: true, // Relay verified the signature on creation
+        };
+        newBroadcasts.push(broadcast);
+        this.emit('broadcast', broadcast);
+      }
+      return newBroadcasts;
+    } catch {
+      return [];
+    }
+  }
+
+  // --- Contact Request Events ---
+
+  /**
+   * Check for new contact requests and emit events.
+   * Returns the list of new requests found.
+   */
+  async checkContactRequests(): Promise<ContactRequest[]> {
+    const requests = await this.getPendingRequests();
+    const newRequests: ContactRequest[] = [];
+
+    for (const req of requests) {
+      if (this.seenContactRequestIds.has(req.from)) continue;
+      this.seenContactRequestIds.add(req.from);
+      if (this.seenContactRequestIds.size > A2ANetwork.MAX_SEEN_CONTACT_REQUEST_IDS) {
+        const first = this.seenContactRequestIds.values().next().value;
+        if (first) this.seenContactRequestIds.delete(first);
+      }
+      newRequests.push(req);
+      this.emit('contact-request', req);
+    }
+
+    return newRequests;
+  }
+
+  // --- Groups ---
+
+  /** Create a new group. Returns the group object with groupId. */
+  async createGroup(name: string, settings?: { membersCanInvite?: boolean; membersCanSend?: boolean; maxMembers?: number }): Promise<RelayGroup> {
+    const result = await this.relayAPI.createGroup(name, settings);
+    if (!result.ok || !result.data) {
+      throw new Error(result.error || 'Failed to create group');
+    }
+    return result.data;
+  }
+
+  /** Invite a contact to a group. */
+  async inviteToGroup(groupId: string, agent: string, greeting?: string): Promise<void> {
+    const result = await this.relayAPI.inviteToGroup(groupId, agent, greeting);
+    if (!result.ok) {
+      throw new Error(result.error || 'Failed to invite to group');
+    }
+  }
+
+  /** Accept a group invitation. */
+  async acceptGroupInvitation(groupId: string): Promise<void> {
+    const result = await this.relayAPI.acceptGroupInvitation(groupId);
+    if (!result.ok) {
+      throw new Error(result.error || 'Failed to accept group invitation');
+    }
+  }
+
+  /** Decline a group invitation. */
+  async declineGroupInvitation(groupId: string): Promise<void> {
+    const result = await this.relayAPI.declineGroupInvitation(groupId);
+    if (!result.ok) {
+      throw new Error(result.error || 'Failed to decline group invitation');
+    }
+  }
+
+  /** Leave a group. Owners must dissolve instead. */
+  async leaveGroup(groupId: string): Promise<void> {
+    const result = await this.relayAPI.leaveGroup(groupId);
+    if (!result.ok) {
+      throw new Error(result.error || 'Failed to leave group');
+    }
+    this.emit('group-member-change', { groupId, agent: this.options.username, action: 'left' });
+  }
+
+  /** Remove a member from a group (owner/admin only). */
+  async removeFromGroup(groupId: string, agent: string): Promise<void> {
+    const result = await this.relayAPI.removeMember(groupId, agent);
+    if (!result.ok) {
+      throw new Error(result.error || 'Failed to remove member');
+    }
+    this.emit('group-member-change', { groupId, agent, action: 'removed' });
+  }
+
+  /** Dissolve a group (owner, or admin if owner offline > 7 days). */
+  async dissolveGroup(groupId: string): Promise<void> {
+    const result = await this.relayAPI.dissolveGroup(groupId);
+    if (!result.ok) {
+      throw new Error(result.error || 'Failed to dissolve group');
+    }
+  }
+
+  /** List the caller's groups. */
+  async getGroups(): Promise<RelayGroup[]> {
+    const result = await this.relayAPI.listGroups();
+    if (!result.ok) return [];
+    return result.data || [];
+  }
+
+  /** List active members of a group. */
+  async getGroupMembers(groupId: string): Promise<RelayGroupMember[]> {
+    const result = await this.relayAPI.getGroupMembers(groupId);
+    if (!result.ok) return [];
+    return result.data || [];
+  }
+
+  /** List pending group invitations for the caller. */
+  async getGroupInvitations(): Promise<RelayGroupInvitation[]> {
+    const result = await this.relayAPI.getGroupInvitations();
+    if (!result.ok) return [];
+    return result.data || [];
+  }
+
+  /**
+   * Check for new group invitations and emit events.
+   * Returns new invitations found.
+   */
+  async checkGroupInvitations(): Promise<GroupInvitationEvent[]> {
+    const invitations = await this.getGroupInvitations();
+    const events: GroupInvitationEvent[] = [];
+    for (const inv of invitations) {
+      const event: GroupInvitationEvent = {
+        groupId: inv.groupId,
+        groupName: inv.groupName,
+        invitedBy: inv.invitedBy,
+        greeting: inv.greeting,
+      };
+      events.push(event);
+      this.emit('group-invitation', event);
+    }
+    return events;
+  }
+
+  // --- Group Messaging ---
+
+  /**
+   * Send an encrypted message to all group members (fan-out).
+   *
+   * Each member receives an individually encrypted envelope (1:1 ECDH keys).
+   * Deliveries happen in parallel (max 10 concurrent, 5s timeout each).
+   * Failed deliveries are queued in the RetryQueue.
+   */
+  async sendToGroup(groupId: string, payload: Record<string, unknown>): Promise<GroupSendResult> {
+    const messageId = randomUUID();
+    const members = await this.getGroupMembersCached(groupId);
+    const recipients = members.filter(m => m.agent !== this.options.username);
+
+    const result: GroupSendResult = { messageId, delivered: [], queued: [], failed: [] };
+
+    // Pre-fetch contacts for endpoint/presence resolution (one relay call for all)
+    let contactsMap: Map<string, { endpoint: string | null; online: boolean; publicKey: string }> = new Map();
+    try {
+      const contactsResult = await this.relayAPI.getContacts();
+      if (contactsResult.ok && contactsResult.data) {
+        this.updateContactsCache(contactsResult.data);
+        for (const c of contactsResult.data) {
+          contactsMap.set(c.agent, { endpoint: c.endpoint, online: c.online, publicKey: c.publicKey });
+        }
+      }
+    } catch {
+      // Fall back to cache — aggregate across all communities
+      for (const cache of this.caches.values()) {
+        for (const c of cache.contacts) {
+          if (!contactsMap.has(c.username)) {
+            contactsMap.set(c.username, { endpoint: c.endpoint, online: c.online || false, publicKey: c.publicKey });
+          }
+        }
+      }
+    }
+
+    const deliverTo = async (member: RelayGroupMember) => {
+      const contactInfo = contactsMap.get(member.agent) || this.getCachedContact(member.agent);
+      if (!contactInfo?.publicKey) {
+        result.failed.push(member.agent);
+        return;
+      }
+
+      // Build per-member encrypted envelope with type='group'
+      const envelope = buildEnvelope({
+        sender: this.options.username,
+        recipient: member.agent,
+        payload,
+        senderPrivateKey: this.privateKeyObj,
+        recipientPublicKeyBase64: contactInfo.publicKey,
+        messageId,
+        type: 'group',
+        groupId,
+      });
+
+      // Check if online via contacts data (no separate presence call)
+      const online = 'online' in contactInfo ? contactInfo.online : false;
+      if (!online) {
+        const retryId = randomUUID();
+        const enqueued = this.retryQueue.enqueue(retryId, member.agent, payload, groupId);
+        if (enqueued) result.queued.push(member.agent);
+        else result.failed.push(member.agent);
+        return;
+      }
+
+      const endpoint = contactInfo.endpoint;
+      if (!endpoint) {
+        result.failed.push(member.agent);
+        return;
+      }
+
+      // Deliver with 5s timeout (clear timer to avoid leak)
+      try {
+        let timer: ReturnType<typeof setTimeout>;
+        const success = await Promise.race([
+          this.deliverFn(endpoint, envelope),
+          new Promise<false>(resolve => { timer = setTimeout(() => resolve(false), 5000); }),
+        ]);
+        clearTimeout(timer!);
+        if (success) {
+          result.delivered.push(member.agent);
+        } else {
+          const retryId = randomUUID();
+          const enqueued = this.retryQueue.enqueue(retryId, member.agent, payload, groupId);
+          if (enqueued) result.queued.push(member.agent);
+          else result.failed.push(member.agent);
+        }
+      } catch {
+        result.failed.push(member.agent);
+      }
+    };
+
+    // Fan-out with concurrency limit
+    await parallelLimit(recipients, 10, deliverTo);
+    return result;
+  }
+
+  /**
+   * Process an incoming group message envelope.
+   *
+   * Verifies the sender's Ed25519 signature, decrypts with pairwise ECDH key,
+   * validates sender is a group member, and emits 'group-message' event.
+   * Deduplicates based on messageId (last 1000 seen). Returns null for duplicates.
+   * If sender is not in the member cache, refreshes from relay before rejecting.
+   */
+  async receiveGroupMessage(envelope: WireEnvelope): Promise<GroupMessage | null> {
+    if (envelope.type !== 'group') {
+      throw new Error('Not a group envelope');
+    }
+    if (!envelope.groupId) {
+      throw new Error('Missing groupId');
+    }
+    if (envelope.recipient !== this.options.username) {
+      throw new Error(`Message not addressed to us (to: ${envelope.recipient})`);
+    }
+
+    // Dedup: skip already-seen messageIds
+    if (this.seenGroupMessageIds.has(envelope.messageId)) {
+      return null;
+    }
+
+    // Check sender is a contact (needed for public key)
+    const contact = this.getCachedContact(envelope.sender);
+    if (!contact?.publicKey) {
+      throw new Error(`No public key for sender '${envelope.sender}'`);
+    }
+
+    // Verify signature + decrypt (same crypto as direct messages)
+    const processed = processEnvelope({
+      envelope,
+      recipientPrivateKey: this.privateKeyObj,
+      senderPublicKeyBase64: contact.publicKey,
+    });
+
+    // Verify sender is a member of the group
+    const cachedMembers = this.memberCache.get(envelope.groupId);
+    const members = cachedMembers?.members;
+    const isMember = members?.some(m => m.agent === envelope.sender);
+
+    if (!isMember) {
+      // Cache might be stale or missing — refresh from relay and check again
+      const freshMembers = await this.getGroupMembers(envelope.groupId);
+      this.memberCache.set(envelope.groupId, { members: freshMembers, fetchedAt: Date.now() });
+      const isMemberNow = freshMembers.some(m => m.agent === envelope.sender);
+      if (!isMemberNow) {
+        throw new Error(`Sender '${envelope.sender}' is not a member of group ${envelope.groupId}`);
+      }
+    }
+
+    // Track this messageId for dedup
+    this.seenGroupMessageIds.add(envelope.messageId);
+    if (this.seenGroupMessageIds.size > A2ANetwork.MAX_SEEN_GROUP_MSG_IDS) {
+      const first = this.seenGroupMessageIds.values().next().value;
+      if (first) this.seenGroupMessageIds.delete(first);
+    }
+
+    const msg: GroupMessage = {
+      groupId: envelope.groupId,
+      sender: processed.sender,
+      messageId: processed.messageId,
+      timestamp: processed.timestamp,
+      payload: processed.payload,
+      verified: processed.verified,
+    };
+
+    this.emit('group-message', msg);
+    return msg;
+  }
+
+  /** Transfer group ownership to another active member. */
+  async transferGroupOwnership(groupId: string, newOwner: string): Promise<void> {
+    const result = await this.relayAPI.transferGroupOwnership(groupId, newOwner);
+    if (!result.ok) {
+      throw new Error(result.error || 'Failed to transfer ownership');
+    }
+    this.emit('group-member-change', { groupId, agent: newOwner, action: 'ownership-transferred' });
+  }
+
+  /** Get group members with local caching (60s staleness). */
+  private async getGroupMembersCached(groupId: string): Promise<RelayGroupMember[]> {
+    const cached = this.memberCache.get(groupId);
+    if (cached && Date.now() - cached.fetchedAt < A2ANetwork.MEMBER_CACHE_TTL) {
+      return cached.members;
+    }
+    const members = await this.getGroupMembers(groupId);
+    this.memberCache.set(groupId, { members, fetchedAt: Date.now() });
+    return members;
+  }
+
+  // --- Delivery Reports ---
+
+  /**
+   * Get diagnostic delivery report for a message.
+   * Tracks all delivery attempts, presence checks, and final status.
+   */
+  getDeliveryReport(messageId: string): DeliveryReport | undefined {
+    return this.deliveryReports.get(messageId);
+  }
+
+  // --- Internal ---
+
+  /** Get the community manager (for testing and advanced use). */
+  getCommunityManager(): CommunityRelayManager {
+    return this.communityManager;
+  }
+
+  /** Refresh contacts list from the first community's relay and update cache. */
+  private async refreshContactsFromRelay(): Promise<void> {
+    await this.refreshContactsForCommunity(this.communities[0].name);
+  }
+
+  /** Refresh contacts for a specific community from its active relay. */
+  private async refreshContactsForCommunity(communityName: string): Promise<void> {
+    try {
+      const api = this.communityManager.getActiveApi(communityName);
+      const result = await api.getContacts();
+      if (result.ok && result.data) {
+        this.updateContactsCache(result.data, communityName);
+      }
+    } catch {
+      // Relay unreachable — keep existing cache
+    }
+  }
+
+  /** Initialize a delivery report for a message. */
+  private initReport(messageId: string): void {
+    this.deliveryReports.set(messageId, {
+      messageId,
+      attempts: [],
+      finalStatus: 'failed',
+    });
+    // Evict oldest reports to prevent unbounded growth
+    if (this.deliveryReports.size > A2ANetwork.MAX_DELIVERY_REPORTS) {
+      const first = this.deliveryReports.keys().next().value;
+      if (first) this.deliveryReports.delete(first);
+    }
+  }
+
+  /** Record a delivery attempt. */
+  private recordAttempt(
+    messageId: string,
+    presenceCheck: boolean,
+    endpoint: string,
+    httpStatus: number | undefined,
+    error: string | undefined,
+    durationMs: number,
+  ): void {
+    const report = this.deliveryReports.get(messageId);
+    if (!report) return;
+    report.attempts.push({
+      timestamp: new Date().toISOString(),
+      presenceCheck,
+      endpoint,
+      httpStatus,
+      error,
+      durationMs,
+    });
+  }
+
+  /** Set the final status of a delivery report. */
+  private finalizeReport(messageId: string, status: DeliveryReport['finalStatus']): void {
+    const report = this.deliveryReports.get(messageId);
+    if (report) report.finalStatus = status;
+  }
+
+  /** Update the local contacts cache for a specific community. */
+  private updateContactsCache(contacts: RelayContact[], communityName?: string): void {
+    const name = communityName || this.communities[0].name;
+    const cache: CacheData = {
+      contacts: contacts.map((c) => ({
+        username: c.agent,
+        publicKey: c.publicKey,
+        endpoint: c.endpoint,
+        addedAt: c.since,
+        online: c.online,
+        lastSeen: c.lastSeen,
+        community: name,
+      })),
+      lastUpdated: new Date().toISOString(),
+    };
+    this.caches.set(name, cache);
+    saveCache(getCommunityCachePath(this.options.dataDir, name), cache);
+  }
+}
+
+/** Convert a relay contact to the SDK Contact type. */
+function toContact(rc: RelayContact): Contact {
+  return {
+    username: rc.agent,
+    publicKey: rc.publicKey,
+    endpoint: rc.endpoint || '',
+    addedAt: rc.since,
+    online: rc.online,
+    lastSeen: rc.lastSeen,
+    keyUpdatedAt: rc.keyUpdatedAt,
+    recoveryInProgress: rc.recoveryInProgress,
+  };
+}
+
+/** Safely parse a JSON string, returning empty object on failure. */
+function safeParse(json: string): Record<string, unknown> {
+  try {
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
+
+/** Execute async functions with a concurrency limit. */
+async function parallelLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
+  const executing: Set<Promise<void>> = new Set();
+  for (const item of items) {
+    const p = fn(item).finally(() => executing.delete(p));
+    executing.add(p);
+    if (executing.size >= limit) {
+      await Promise.race(executing);
+    }
+  }
+  await Promise.all(executing);
+}
