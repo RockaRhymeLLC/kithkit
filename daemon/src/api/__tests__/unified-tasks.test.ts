@@ -440,6 +440,69 @@ describe('Plan approval workflow', { concurrency: 1 }, () => {
   });
 });
 
+// ── estimate_multiplier computed field ────────────────────────
+
+describe('estimate_multiplier is computed on read', { concurrency: 1 }, () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('returns null when both minutes fields are null', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'No estimates' });
+    const task = JSON.parse(createRes.body);
+    assert.equal(task.estimate_multiplier, null);
+
+    const getRes = await request('GET', `/api/tasks/${task.id}`);
+    assert.equal(JSON.parse(getRes.body).estimate_multiplier, null);
+  });
+
+  it('returns null when only actual_minutes is set', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'Only actual' });
+    const task = JSON.parse(createRes.body);
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { actual_minutes: 30 });
+    assert.equal(JSON.parse(putRes.body).estimate_multiplier, null);
+  });
+
+  it('returns null when only estimated_minutes is set', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'Only estimated' });
+    const task = JSON.parse(createRes.body);
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { estimated_minutes: 30 });
+    assert.equal(JSON.parse(putRes.body).estimate_multiplier, null);
+  });
+
+  it('returns null when estimated_minutes is 0 (divide-by-zero guard)', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'Zero estimate' });
+    const task = JSON.parse(createRes.body);
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, {
+      estimated_minutes: 0,
+      actual_minutes: 30,
+    });
+    assert.equal(JSON.parse(putRes.body).estimate_multiplier, null);
+  });
+
+  it('computes actual/estimated when both are set', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'Both set' });
+    const task = JSON.parse(createRes.body);
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, {
+      estimated_minutes: 20,
+      actual_minutes: 30,
+    });
+    const body = JSON.parse(putRes.body);
+    assert.equal(body.estimate_multiplier, 1.5);
+  });
+
+  it('appears on GET /api/tasks list', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'List test' });
+    const task = JSON.parse(createRes.body);
+    await request('PUT', `/api/tasks/${task.id}`, { estimated_minutes: 10, actual_minutes: 20 });
+
+    const listRes = await request('GET', '/api/tasks');
+    const body = JSON.parse(listRes.body);
+    const found = body.data.find((t: { id: number }) => t.id === task.id);
+    assert.ok(found, 'task should appear in list');
+    assert.equal(found.estimate_multiplier, 2);
+  });
+});
+
 // ── DELETE /api/tasks/:id ──────────────────────────────────────
 
 describe('DELETE /api/tasks/:id removes task', { concurrency: 1 }, () => {
