@@ -52,7 +52,7 @@ import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { sendMessage } from '../agents/message-router.js';
 import { RateLimiter } from '../core/rate-limiter.js';
 import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
-import { createCommsTelegramAdapter, type CommsTelegramAdapter } from './comms/adapters/telegram.js';
+import { createCommsTelegramAdapter, type CommsTelegramAdapter, type TelegramUpdate } from './comms/adapters/telegram.js';
 
 const log = createLogger('agent-extension');
 
@@ -290,6 +290,31 @@ async function handleTelegramStatus(
   return true;
 }
 
+async function handleTelegramWebhook(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'POST') return false;
+  if (!_telegramAdapter) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'Telegram adapter not initialized' }));
+    return true;
+  }
+  try {
+    const body = await parseBody(req);
+    await _telegramAdapter.handleUpdate(body as TelegramUpdate);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  } catch (err) {
+    log.error('Telegram webhook error', { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'Invalid update' }));
+  }
+  return true;
+}
+
 // ── Health Checks ───────────────────────────────────────────
 
 function registerAgentHealthChecks(): void {
@@ -403,6 +428,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
       });
     }
   }
+  registerRoute('/telegram', handleTelegramWebhook);
   registerRoute('/telegram/status', handleTelegramStatus);
 
   // ── Unified A2A Router (PR #136) ─────────────────────────
