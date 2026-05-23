@@ -985,6 +985,11 @@ export class TelegramAdapter implements ChannelAdapter {
     stopTypingLoop();
   }
 
+  /** Clean up adapter resources on daemon shutdown. */
+  async shutdown(): Promise<void> {
+    stopTypingLoop();
+  }
+
   /** Start typing indicator on the current reply chat. */
   async startTyping(): Promise<void> {
     const token = await getBotToken();
@@ -1021,6 +1026,35 @@ export async function createTelegramAdapter(): Promise<TelegramAdapter> {
   const adapter = new TelegramAdapter();
   await adapter.init();
   return adapter;
+}
+
+// ── CommsTelegramAdapter compatibility ───────────────────────
+//
+// Provides the interface and factory that daemon/src/extensions/index.ts
+// (agentExtension) consumes.  Mirrors the shape of the stub at
+// ../telegram.ts so that agentExtension can import from the real adapter
+// without changing its call-site.
+
+export interface CommsTelegramAdapter extends ChannelAdapter {
+  shutdown(): Promise<void>;
+}
+
+/**
+ * Create and initialize a Telegram adapter that satisfies CommsTelegramAdapter.
+ *
+ * The _config parameter mirrors the stub's signature for drop-in compatibility;
+ * the real adapter reads credentials from the system keychain at init time rather
+ * than from the passed config.
+ */
+export async function createCommsTelegramAdapter(
+  _config: {
+    bot_token: string;
+    safe_senders: Array<{ chat_id: number; name: string }>;
+    poll_interval_ms?: number;
+    max_message_length?: number;
+  },
+): Promise<CommsTelegramAdapter> {
+  return createTelegramAdapter();
 }
 
 // ── Testing ──────────────────────────────────────────────────
