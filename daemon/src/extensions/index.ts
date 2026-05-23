@@ -52,7 +52,7 @@ import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { sendMessage } from '../agents/message-router.js';
 import { RateLimiter } from '../core/rate-limiter.js';
 import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
-import { createCommsTelegramAdapter, type CommsTelegramAdapter } from './comms/telegram.js';
+import { createCommsTelegramAdapter, type CommsTelegramAdapter } from './comms/adapters/telegram.js';
 
 const log = createLogger('agent-extension');
 
