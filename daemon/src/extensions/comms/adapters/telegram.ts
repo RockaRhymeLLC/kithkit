@@ -65,7 +65,7 @@ async function getShortcutToken(): Promise<string | null> {
 
 // ── Telegram types ──────────────────────────────────────────
 
-interface TelegramUpdate {
+export interface TelegramUpdate {
   update_id?: number;
   message?: TelegramMessage;
   message_reaction?: MessageReactionUpdated;
@@ -1036,6 +1036,7 @@ export async function createTelegramAdapter(): Promise<TelegramAdapter> {
 // without changing its call-site.
 
 export interface CommsTelegramAdapter extends ChannelAdapter {
+  handleUpdate(update: TelegramUpdate): Promise<void>;
   shutdown(): Promise<void>;
 }
 
