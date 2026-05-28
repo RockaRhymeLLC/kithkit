@@ -909,6 +909,21 @@ export async function handleUnifiedTasksRoute(
         return true;
       }
 
+      // Warn when an integer path param resolves to a kind='todo' row via the shared
+      // auto-increment tasks.id PK.  Callers intending to update a specific todo by
+      // its legacy display-id should use /api/todos/:id (the shim), which resolves
+      // by external_id + kind='todo' and is immune to PK collision.  Direct integer
+      // lookups on /api/tasks mutate whatever row occupies that PK slot — which may
+      // be a migrated todo whose display-id is completely different.
+      const _taskIdAsInt = parseInt(taskId, 10);
+      if (!isNaN(_taskIdAsInt) && String(_taskIdAsInt) === taskId && task.kind === 'todo') {
+        log.warn(
+          `PUT /api/tasks/:id resolved to a kind="todo" row (id=${task.id}). ` +
+          'Callers updating todos should use /api/todos/:id; raw /api/tasks/:id mutates by ' +
+          'internal PK which may collide with todo display ids. See kithkit-internal #1812.',
+        );
+      }
+
       const body = await parseBody(req);
 
       // Classify what's being updated
