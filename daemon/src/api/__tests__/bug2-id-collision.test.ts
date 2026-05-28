@@ -7,7 +7,7 @@
  *   3. Shim round-trip B: PUT /api/todos/:id with work_notes persists, GET returns it.
  *   4. Graceful-degrade: PUT /api/todos/:id returns 503 (not 500/crash) when schema flag is false.
  *
- * Reference: kithkit-internal #1812, Skippy todo #638, BMO memory 6471.
+ * Reference: kithkit-internal #1812 (cross-agent coordination tracker).
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
