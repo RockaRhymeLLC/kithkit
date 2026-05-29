@@ -32,6 +32,7 @@ import { handleContactsRoute } from './api/contacts.js';
 import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleMetricsRoute, logRequest } from './api/metrics.js';
 import { handleSelfImprovementRoute } from './api/self-improvement.js';
+import { handleEmailRoute } from './api/email.js';
 import {
   getExtension,
   isDegraded,
@@ -320,6 +321,7 @@ const server = http.createServer((req, res) => {
         () => handleMetricsRoute(req, res, url.pathname, url.searchParams),
         () => handleTimerRoute(req, res, url.pathname),
         () => handleSelfImprovementRoute(req, res, url.pathname),
+        () => handleEmailRoute(req, res, url.pathname, url.searchParams),
       ];
       for (const handler of handlers) {
         const handled = await handler();
