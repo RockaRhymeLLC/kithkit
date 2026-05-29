@@ -26,8 +26,11 @@ export interface OutboundGateContext {
   channel: string;
   /** Canonical recipient addresses — sourced from message.metadata.recipients if present */
   recipient: string[];
-  /** The formatted message text (post-formatMessage, pre-send) */
+  /** The formatted message text (post-formatMessage, pre-send) — used for human-facing preview */
   content: string;
+  /** The original message text before channel formatting — used for content_hash in the gate.
+   *  Stable across channels so duplicate-detection works even when formatters differ. */
+  rawContent: string;
   /** Agent name — sourced from message.metadata.sender_agent if present */
   sender_agent: string;
 }
@@ -64,6 +67,12 @@ export function unregisterAdapter(name: string): boolean {
 
 /**
  * Get a registered adapter by name.
+ *
+ * @warning Calling adapter.send() directly on the returned adapter BYPASSES the
+ * approval gate entirely. Extension-originated outbound sends MUST go through
+ * {@link routeMessage} so the gate is applied. Only use the raw adapter for
+ * non-gated operations (e.g. inbound polling, answerCallbackQuery, internal
+ * status pings that are not human-facing message sends).
  */
 export function getAdapter(name: string): ChannelAdapter | undefined {
   return adapters.get(name);
@@ -146,6 +155,7 @@ export async function routeMessage(
           channel: channelName,
           recipient: Array.isArray(meta.recipients) ? (meta.recipients as string[]) : [],
           content: formattedText,
+          rawContent: message.text,   // pre-format original — used for content_hash
           sender_agent: typeof meta.sender_agent === 'string' ? meta.sender_agent : 'unknown',
         };
 

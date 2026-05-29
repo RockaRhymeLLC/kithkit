@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
 import fs from 'node:fs';
+import http from 'node:http';
 import { openDatabase, closeDatabase, getDatabase, _resetDbForTesting } from '../core/db.js';
 import {
   approvalGate,
@@ -26,10 +27,14 @@ import {
   canonicalizeRecipient,
   recordSuccessfulSend,
   registerCardDelivery,
+  getPendingGates,
   _resetForTesting,
   normalizeApprovalFor,
   resolvePolicy,
 } from '../comms/approval-gate.js';
+import { loadConfig, _resetConfigForTesting } from '../core/config.js';
+import { handleApprovalRoute } from '../api/approval.js';
+import { issueToken } from '../auth/agent-tokens.js';
 
 // ── Hash construction ──────────────────────────────────────────────────
 
@@ -134,6 +139,7 @@ describe('approvalGate', () => {
       channel: 'telegram',
       recipient: ['user@example.com'],
       content: 'hello',
+      rawContent: 'hello',
       sender_agent: 'bridget',
     });
     assert.equal(result, true);
@@ -159,6 +165,7 @@ describe('approvalGate', () => {
       channel: 'non-gated-channel',
       recipient: ['user@example.com'],
       content: 'test content',
+      rawContent: 'test content',
       sender_agent: 'test-agent',
     });
     assert.equal(result, true);
@@ -316,6 +323,253 @@ describe('resolveGate', () => {
 
     const result = resolveGate('test-resolved', 'approved');
     assert.equal(result, 'already_resolved');
+  });
+});
+
+// ── FIX #1: pending placeholder ──────────────────────────────────────
+
+describe('approvalGate: pending row placeholder', () => {
+  let _dbDir: string;
+
+  beforeEach(() => {
+    _dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-placeholder-'));
+    _resetDbForTesting();
+    openDatabase(_dbDir, path.join(_dbDir, 'test.db'));
+    _resetForTesting();
+    // Inject a policy for 'mail' so the gate actually fires
+    fs.writeFileSync(path.join(_dbDir, 'kithkit.config.yaml'), [
+      'approval_policies:',
+      '  mail:',
+      '    require_approval_for: all',
+      '    timeout_minutes: 1',
+    ].join('\n'));
+    _resetConfigForTesting();
+    loadConfig(_dbDir);
+  });
+
+  afterEach(() => {
+    _resetForTesting();
+    _resetConfigForTesting();
+    closeDatabase();
+    fs.rmSync(_dbDir, { recursive: true, force: true });
+  });
+
+  it('inserts pending row with decision="pending" (not "approved")', async () => {
+    const db = getDatabase();
+
+    // Delivery fn that stalls until we release it
+    let deliverResolve!: () => void;
+    registerCardDelivery(() => new Promise<void>((res) => { deliverResolve = res; }));
+
+    // writeDecisionRow is called synchronously before approvalGate returns its Promise,
+    // so the row is already in DB by the time we reach the next line.
+    const gatePromise = approvalGate({
+      channel: 'mail',
+      recipient: ['test@example.com'],
+      content: '[FORMATTED] hello world',
+      rawContent: 'hello world',
+      sender_agent: 'bridget',
+    });
+
+    // Inspect the DB row — written synchronously, no need for setImmediate
+    const row = db.prepare(
+      `SELECT decision, decided_at FROM approval_decisions WHERE decided_at IS NULL LIMIT 1`,
+    ).get() as { decision: string; decided_at: string | null } | undefined;
+
+    assert.ok(row, 'Expected a pending row in approval_decisions');
+    assert.equal(row!.decision, 'pending', 'Placeholder decision must be "pending", not "approved"');
+    assert.equal(row!.decided_at, null);
+
+    // Clean up: resolve the in-memory gate so gatePromise settles
+    for (const g of getPendingGates().values()) {
+      resolveGate(g.card.approval_id, 'rejected');
+    }
+    deliverResolve();
+    await gatePromise;
+  });
+});
+
+// ── FIX #2: content_hash uses raw content ────────────────────────────
+
+describe('approvalGate: content_hash uses rawContent', () => {
+  let _dbDir: string;
+
+  beforeEach(() => {
+    _dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-hash-'));
+    _resetDbForTesting();
+    openDatabase(_dbDir, path.join(_dbDir, 'test.db'));
+    _resetForTesting();
+    // Inject a policy for 'mail'
+    fs.writeFileSync(path.join(_dbDir, 'kithkit.config.yaml'), [
+      'approval_policies:',
+      '  mail:',
+      '    require_approval_for: all',
+      '    timeout_minutes: 1',
+    ].join('\n'));
+    _resetConfigForTesting();
+    loadConfig(_dbDir);
+  });
+
+  afterEach(() => {
+    _resetForTesting();
+    _resetConfigForTesting();
+    closeDatabase();
+    fs.rmSync(_dbDir, { recursive: true, force: true });
+  });
+
+  it('content_hash in DB matches SHA-256 of rawContent, not formatted content', async () => {
+    const db = getDatabase();
+    const rawText = 'hello world';
+    const formattedText = '[FORMATTED] hello world';
+
+    let deliverResolve!: () => void;
+    registerCardDelivery(() => new Promise<void>((res) => { deliverResolve = res; }));
+
+    const gatePromise = approvalGate({
+      channel: 'mail',
+      recipient: ['test@example.com'],
+      content: formattedText,
+      rawContent: rawText,
+      sender_agent: 'bridget',
+    });
+
+    // Row written synchronously
+    const row = db.prepare(
+      `SELECT content_hash FROM approval_decisions WHERE decided_at IS NULL LIMIT 1`,
+    ).get() as { content_hash: string } | undefined;
+
+    assert.ok(row, 'Expected a pending row in approval_decisions');
+    const expectedHash = hashContent(rawText);
+    const wrongHash = hashContent(formattedText);
+    assert.equal(row!.content_hash, expectedHash, 'content_hash must match SHA-256 of rawContent');
+    assert.notEqual(row!.content_hash, wrongHash, 'content_hash must NOT match formatted content');
+
+    // Clean up
+    for (const g of getPendingGates().values()) {
+      resolveGate(g.card.approval_id, 'rejected');
+    }
+    deliverResolve();
+    await gatePromise;
+  });
+});
+
+// ── FIX #3: decision endpoint auth ───────────────────────────────────
+
+const APPROVAL_TEST_PORT = 19895;
+
+function approvalRequest(
+  method: string,
+  urlPath: string,
+  body?: unknown,
+  extraHeaders?: Record<string, string>,
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const opts: http.RequestOptions = {
+      host: '127.0.0.1',
+      port: APPROVAL_TEST_PORT,
+      path: urlPath,
+      method,
+      timeout: 5000,
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        'Connection': 'close',
+        ...extraHeaders,
+      },
+    };
+    const r = http.request(opts, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+    });
+    r.on('error', reject);
+    r.on('timeout', () => { r.destroy(); reject(new Error('timeout')); });
+    if (body !== undefined) r.write(JSON.stringify(body));
+    r.end();
+  });
+}
+
+describe('POST /api/approval/decision auth', () => {
+  let _dbDir: string;
+  let _server: http.Server;
+  let commsToken: string;
+  let workerToken: string;
+
+  beforeEach(async () => {
+    _dbDir = fs.mkdtempSync(path.join(os.tmpdir(), 'approval-api-'));
+    _resetDbForTesting();
+    openDatabase(_dbDir, path.join(_dbDir, 'test.db'));
+    _resetForTesting();
+    commsToken = issueToken('comms');
+    workerToken = issueToken('worker');
+
+    _server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', `http://localhost:${APPROVAL_TEST_PORT}`);
+      handleApprovalRoute(req, res, url.pathname).then((handled) => {
+        if (!handled) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Not found' }));
+        }
+      }).catch((err) => {
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(err) }));
+        }
+      });
+    });
+
+    await new Promise<void>((res) => _server.listen(APPROVAL_TEST_PORT, '127.0.0.1', res));
+  });
+
+  afterEach(async () => {
+    _resetForTesting();
+    closeDatabase();
+    await new Promise<void>((res) => _server.close(() => {
+      _resetDbForTesting();
+      fs.rmSync(_dbDir, { recursive: true, force: true });
+      res();
+    }));
+  });
+
+  it('rejects with 401 when no X-Agent-Token header', async () => {
+    const res = await approvalRequest('POST', '/api/approval/decision', {
+      approval_id: 'some-id',
+      decision: 'approved',
+    });
+    assert.equal(res.status, 401);
+    const body = JSON.parse(res.body) as { error: string };
+    assert.ok(body.error.includes('X-Agent-Token'), `Expected X-Agent-Token in error, got: ${body.error}`);
+  });
+
+  it('rejects with 401 when token is invalid', async () => {
+    const res = await approvalRequest(
+      'POST',
+      '/api/approval/decision',
+      { approval_id: 'some-id', decision: 'approved' },
+      { 'X-Agent-Token': 'notarealtoken0000000000000000000000000000000000000000000' },
+    );
+    assert.equal(res.status, 401);
+  });
+
+  it('rejects with 403 when token is valid but not comms role', async () => {
+    const res = await approvalRequest(
+      'POST',
+      '/api/approval/decision',
+      { approval_id: 'some-id', decision: 'approved' },
+      { 'X-Agent-Token': workerToken },
+    );
+    assert.equal(res.status, 403);
+  });
+
+  it('allows comms-role token through to business logic (404 means auth passed)', async () => {
+    // A valid comms token should pass auth; the 'some-nonexistent-id' will return 404 from resolveGate
+    const res = await approvalRequest(
+      'POST',
+      '/api/approval/decision',
+      { approval_id: 'some-nonexistent-id', decision: 'approved' },
+      { 'X-Agent-Token': commsToken },
+    );
+    // Auth passed → resolveGate returns 'not_found' → 404 (not 401/403)
+    assert.equal(res.status, 404);
   });
 });
 

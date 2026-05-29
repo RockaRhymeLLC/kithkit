@@ -10,6 +10,7 @@ import type http from 'node:http';
 import { json, parseBody } from './helpers.js';
 import { resolveGate, getPendingGates } from '../comms/approval-gate.js';
 import { createLogger } from '../core/logger.js';
+import { verifyToken } from '../auth/agent-tokens.js';
 
 const log = createLogger('approval-api');
 
@@ -40,6 +41,28 @@ async function handleDecision(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<boolean> {
+  // ── Auth gate ──────────────────────────────────────────────────────────
+  // Only the comms agent may submit approval decisions.
+  // Telegram inline-button decisions are routed directly through resolveGate()
+  // in extensions/index.ts (callback_query path) and do NOT go through this
+  // HTTP endpoint, so adding auth here does not break the button flow.
+  const rawHeader = req.headers['x-agent-token'];
+  const token = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+  if (!token) {
+    json(res, 401, { error: 'X-Agent-Token header required' });
+    return true;
+  }
+  const identity = verifyToken(token);
+  if (!identity) {
+    json(res, 401, { error: 'Invalid or revoked agent token' });
+    return true;
+  }
+  if (identity.role !== 'comms') {
+    json(res, 403, { error: 'Only the comms agent may submit approval decisions' });
+    return true;
+  }
+  // ── End auth gate ──────────────────────────────────────────────────────
+
   let body: Record<string, unknown>;
   try {
     body = await parseBody(req);
@@ -66,7 +89,11 @@ async function handleDecision(
     return true;
   }
 
-  const result = resolveGate(approval_id, decision as 'approved' | 'rejected');
+  const result = resolveGate(
+    approval_id,
+    decision as 'approved' | 'rejected',
+    typeof decider === 'string' ? decider : 'human',
+  );
 
   if (result === 'not_found') {
     json(res, 404, { error: 'approval_id not found' });

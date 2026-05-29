@@ -4,7 +4,7 @@
 CREATE TABLE IF NOT EXISTS approval_decisions (
   id                 INTEGER PRIMARY KEY AUTOINCREMENT,
   approval_id        TEXT NOT NULL,    -- UUID from the card
-  decision           TEXT NOT NULL,    -- 'approved' | 'rejected' | 'timeout'
+  decision           TEXT NOT NULL CHECK(decision IN ('pending','approved','rejected','timeout')),
   decider            TEXT NOT NULL,    -- 'human' | 'system'
   time_to_decide     REAL,             -- seconds from card creation to decision (null if timeout)
   content_hash       TEXT NOT NULL,    -- SHA-256 of original content (not the preview)
