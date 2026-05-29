@@ -101,7 +101,7 @@ validate(body)
 1. If name contains `@` — already a qualified relay name, skip config lookup
 2. Exact match (case-insensitive) against configured peers
 3. Fallback: unique prefix match (e.g., `"bm"` → `"bmo"`)
-4. Qualify for relay: append `@{primaryCommunity}` (e.g., `"bmo"` → `"bmo@relay.bmobot.ai"`)
+4. Qualify for relay: append `@{primaryCommunity}` (e.g., `"bmo"` → `"bmo@relay.example.com"`)
 
 Returns `{ peer?: PeerConfig, qualified: string }`.
 
@@ -318,9 +318,9 @@ _network.on('group-invitation', (inv) => {
 All inbound messages are persisted:
 ```sql
 INSERT INTO messages (from_agent, to_agent, type, body, metadata)
-VALUES ('network:bmo@relay.bmobot.ai', 'comms', 'text',
+VALUES ('network:bmo@relay.example.com', 'comms', 'text',
         '[Network] BMO: hello!',
-        '{"source":"a2a-network","sender":"bmo@relay.bmobot.ai","messageId":"...","verified":true}');
+        '{"source":"a2a-network","sender":"bmo@relay.example.com","messageId":"...","verified":true}');
 ```
 
 ### Delivery to Comms Agent (tmux Injection)
@@ -382,7 +382,7 @@ agent-comms:
   enabled: true
   peers:
     - name: bmo
-      host: davids-mac-mini.lan
+      host: node1.lan
       port: 3847
       ip: 192.168.x.x    # DNS fallback
     - name: skippy
@@ -394,10 +394,10 @@ agent-comms:
 ```yaml
 network:
   enabled: true
-  endpoint: "https://r2.bmobot.ai/agent/p2p"
+  endpoint: "https://node1.example.com/agent/p2p"
   communities:
     - name: home
-      primary: https://relay.bmobot.ai
+      primary: https://relay.example.com
   heartbeat_interval: 300000
   auto_approve_contacts: true
 ```

@@ -27,7 +27,7 @@ function getArpIPs(): Promise<string[]> {
         resolve([]);
         return;
       }
-      // Parse lines like: ? (192.168.12.169) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]
+      // Parse lines like: ? (192.168.1.1) at aa:bb:cc:dd:ee:ff on en0 ifscope [ethernet]
       const ips: string[] = [];
       for (const line of stdout.split('\n')) {
         const match = line.match(/\((\d+\.\d+\.\d+\.\d+)\)/);

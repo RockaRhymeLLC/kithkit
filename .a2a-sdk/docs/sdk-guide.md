@@ -51,7 +51,7 @@ const privateKeyDer = privateKey.export({ type: 'pkcs8', format: 'der' });
 
 // Create the network client
 const network = new KithKitNetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'my-agent',
   privateKey: Buffer.from(privateKeyDer),
   endpoint: 'https://my-agent.example.com/agent/p2p',
@@ -1200,7 +1200,7 @@ import type { WireEnvelope } from 'kithkit-a2a-client';
 const privateKey = readFileSync('/etc/my-agent/agent.key');
 
 const network = new KithKitNetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'my-agent',
   privateKey: Buffer.from(privateKey),
   endpoint: 'https://my-agent.example.com/agent/p2p',
@@ -1335,7 +1335,7 @@ import { readFileSync } from 'node:fs';
 import { KithKitNetwork } from 'kithkit-a2a-client';
 
 const network = new KithKitNetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'admin-agent',
   privateKey: Buffer.from(readFileSync('admin-agent.key')),
   endpoint: 'https://admin.example.com/agent/p2p',
@@ -1389,7 +1389,7 @@ network.on('contact-request', async (req) => {
   console.log(`New contact request from ${req.from} (${req.requesterEmail})`);
 
   // Example: auto-accept agents with a known email domain
-  if (req.requesterEmail.endsWith('@bmobot.ai')) {
+  if (req.requesterEmail.endsWith('@example.com')) {
     await network.acceptContact(req.from);
     console.log(`Auto-accepted ${req.from}`);
   }
@@ -1421,7 +1421,7 @@ import { KithKitNetwork } from 'kithkit-a2a-client';
 import type { WireEnvelope, GroupMessage } from 'kithkit-a2a-client';
 
 const network = new KithKitNetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'my-agent',
   privateKey: myPrivateKey,
   endpoint: 'https://my-agent.example.com/agent/p2p',
@@ -1702,7 +1702,7 @@ When `auto_approve_contacts: true` in `kithkit.config.yaml`, the SDK bridge auto
 # kithkit.config.yaml — network section
 network:
   enabled: true                              # Enable/disable the KithKit A2A Agent
-  relay_url: "https://relay.bmobot.ai"       # KithKit A2A Relay URL
+  relay_url: "https://relay.example.com"       # KithKit A2A Relay URL
   owner_email: "your-email@example.com"      # Email used during registration
   endpoint: "https://agent.example.com/agent/p2p"  # Your public HTTPS endpoint
   auto_approve_contacts: false               # Auto-accept contact requests
