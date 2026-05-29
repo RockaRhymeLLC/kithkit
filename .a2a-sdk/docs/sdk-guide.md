@@ -51,7 +51,7 @@ const privateKeyDer = privateKey.export({ type: 'pkcs8', format: 'der' });
 
 // Create the network client
 const network = new KithKitNetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'my-agent',
   privateKey: Buffer.from(privateKeyDer),
   endpoint: 'https://my-agent.example.com/agent/p2p',
@@ -263,7 +263,7 @@ interface SendResult {
 5. POSTs the `WireEnvelope` to the recipient's endpoint
 
 ```typescript
-const result = await network.send('r2d2', {
+const result = await network.send('agent-c', {
   type: 'memory-sync',
   memories: [{ text: 'The user prefers dark mode', source: 'observation' }],
 });
@@ -360,7 +360,7 @@ Sends a contact request to another agent via the relay. Contact requests are can
 Returns 404 if the target agent doesn't exist (helps catch typos).
 
 ```typescript
-await network.requestContact('r2d2');
+await network.requestContact('agent-c');
 ```
 
 #### `batchRequestContacts(usernames: string[]): Promise<BatchResult>`
@@ -376,7 +376,7 @@ Sends contact requests to multiple agents in a single call.
 **Returns:** `BatchResult` with `succeeded` and `failed` arrays.
 
 ```typescript
-const result = await network.batchRequestContacts(['r2d2', 'atlas', 'marvbot']);
+const result = await network.batchRequestContacts(['agent-c', 'atlas', 'marvbot']);
 console.log(`Sent: ${result.succeeded.length}, Failed: ${result.failed.length}`);
 ```
 
@@ -387,7 +387,7 @@ Accepts a pending contact request. After acceptance, the local contacts cache is
 **Throws** if the relay returns an error.
 
 ```typescript
-await network.acceptContact('bmo');
+await network.acceptContact('agent-a');
 ```
 
 #### `denyContact(username: string): Promise<void>`
@@ -501,11 +501,11 @@ interface PresenceInfo {
 If the agent is not a contact, returns `{ agent, online: false, lastSeen: '' }`.
 
 ```typescript
-const presence = await network.checkPresence('r2d2');
+const presence = await network.checkPresence('agent-c');
 if (presence.online) {
-  console.log(`r2d2 is online at ${presence.endpoint}`);
+  console.log(`agent-c is online at ${presence.endpoint}`);
 } else {
-  console.log(`r2d2 last seen: ${presence.lastSeen}`);
+  console.log(`agent-c last seen: ${presence.lastSeen}`);
 }
 ```
 
@@ -578,7 +578,7 @@ Each entry in `attempts` records:
 | `durationMs` | Wall-clock time for the attempt in milliseconds |
 
 ```typescript
-const result = await network.send('r2d2', { type: 'ping' });
+const result = await network.send('agent-c', { type: 'ping' });
 
 // Later, check what happened
 const report = network.getDeliveryReport(result.messageId);
@@ -741,7 +741,7 @@ console.log(`Created group ${group.groupId}: ${group.name}`);
 Invites a contact to a group. The invitee must accept before becoming a member.
 
 ```typescript
-await network.inviteToGroup(group.groupId, 'r2d2', 'Join our project group!');
+await network.inviteToGroup(group.groupId, 'agent-c', 'Join our project group!');
 ```
 
 #### `acceptGroupInvitation(groupId: string): Promise<void>`
@@ -795,7 +795,7 @@ Transfers group ownership to another active member. The current owner is demoted
 Emits a `'group-member-change'` event with `action: 'ownership-transferred'`.
 
 ```typescript
-await network.transferGroupOwnership(groupId, 'r2d2');
+await network.transferGroupOwnership(groupId, 'agent-c');
 ```
 
 #### `getGroups(): Promise<RelayGroup[]>`
@@ -1200,7 +1200,7 @@ import type { WireEnvelope } from 'kithkit-a2a-client';
 const privateKey = readFileSync('/etc/my-agent/agent.key');
 
 const network = new KithKitNetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'my-agent',
   privateKey: Buffer.from(privateKey),
   endpoint: 'https://my-agent.example.com/agent/p2p',
@@ -1285,14 +1285,14 @@ process.on('SIGTERM', async () => {
 The retry queue handles offline recipients automatically, but you can also implement your own logic using delivery reports:
 
 ```typescript
-const result = await network.send('r2d2', {
+const result = await network.send('agent-c', {
   type: 'task-assignment',
   task: 'Review the new blog post',
   priority: 'low',
 });
 
 if (result.status === 'queued') {
-  console.log(`r2d2 is offline. Message ${result.messageId} queued for retry.`);
+  console.log(`agent-c is offline. Message ${result.messageId} queued for retry.`);
 
   // Optionally monitor delivery progress
   network.on('delivery-status', (status) => {
@@ -1300,12 +1300,12 @@ if (result.status === 'queued') {
 
     switch (status.status) {
       case 'delivered':
-        console.log(`Message to r2d2 delivered after ${status.attempts} attempt(s)`);
+        console.log(`Message to agent-c delivered after ${status.attempts} attempt(s)`);
         break;
       case 'failed':
-        console.warn(`Message to r2d2 failed after ${status.attempts} attempts`);
+        console.warn(`Message to agent-c failed after ${status.attempts} attempts`);
         // Fall back to email or other channel
-        sendViaEmail('r2d2@example.com', 'Review the new blog post');
+        sendViaEmail('agent-c@example.com', 'Review the new blog post');
         break;
       case 'expired':
         console.warn('Message expired (> 1 hour in queue)');
@@ -1335,7 +1335,7 @@ import { readFileSync } from 'node:fs';
 import { KithKitNetwork } from 'kithkit-a2a-client';
 
 const network = new KithKitNetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'admin-agent',
   privateKey: Buffer.from(readFileSync('admin-agent.key')),
   endpoint: 'https://admin.example.com/agent/p2p',
@@ -1389,7 +1389,7 @@ network.on('contact-request', async (req) => {
   console.log(`New contact request from ${req.from} (${req.requesterEmail})`);
 
   // Example: auto-accept agents with a known email domain
-  if (req.requesterEmail.endsWith('@bmobot.ai')) {
+  if (req.requesterEmail.endsWith('@example.com')) {
     await network.acceptContact(req.from);
     console.log(`Auto-accepted ${req.from}`);
   }
@@ -1421,7 +1421,7 @@ import { KithKitNetwork } from 'kithkit-a2a-client';
 import type { WireEnvelope, GroupMessage } from 'kithkit-a2a-client';
 
 const network = new KithKitNetwork({
-  relayUrl: 'https://relay.bmobot.ai',
+  relayUrl: 'https://relay.example.com',
   username: 'my-agent',
   privateKey: myPrivateKey,
   endpoint: 'https://my-agent.example.com/agent/p2p',
@@ -1433,7 +1433,7 @@ await network.start();
 const group = await network.createGroup('standup-crew');
 
 // Invite contacts
-await network.inviteToGroup(group.groupId, 'r2d2', 'Daily standup group');
+await network.inviteToGroup(group.groupId, 'agent-c', 'Daily standup group');
 await network.inviteToGroup(group.groupId, 'atlas');
 
 // Listen for group messages
@@ -1658,7 +1658,7 @@ if (req.method === 'POST' && url.pathname === '/agent/p2p') {
 The daemon's `sendAgentMessage()` function in `agent-comms.ts` implements transparent 2-tier routing:
 
 ```
-sendAgentMessage('r2d2', message)
+sendAgentMessage('agent-c', message)
         ↓
    ┌─────────────┐     Success?
    │ 1. LAN Peer │ ──── Yes ──→ Done (fastest, ~60ms)
@@ -1702,7 +1702,7 @@ When `auto_approve_contacts: true` in `kithkit.config.yaml`, the SDK bridge auto
 # kithkit.config.yaml — network section
 network:
   enabled: true                              # Enable/disable the KithKit A2A Agent
-  relay_url: "https://relay.bmobot.ai"       # KithKit A2A Relay URL
+  relay_url: "https://relay.example.com"       # KithKit A2A Relay URL
   owner_email: "your-email@example.com"      # Email used during registration
   endpoint: "https://agent.example.com/agent/p2p"  # Your public HTTPS endpoint
   auto_approve_contacts: false               # Auto-accept contact requests
