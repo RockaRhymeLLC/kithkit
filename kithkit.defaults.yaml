@@ -207,6 +207,10 @@ self_improvement:
 #     teams_chat_send:
 #       require_approval_for: all
 #       timeout_minutes: 10
+#     # Teams Bot Framework channel — gate all outbound Teams messages:
+#     teams:
+#       require_approval_for: all
+#       timeout_minutes: 10
 #     # Longer window for external recipients:
 #     external_email_send:
 #       require_approval_for: external_only
