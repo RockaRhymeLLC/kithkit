@@ -18,7 +18,7 @@ jobs:
     if: github.event_name == 'push'
     strategy:
       matrix:
-        repo: ${{ fromJSON(vars.INSTANCE_REPOS) }}
+        repo: ${{ fromJSON(vars.INSTANCE_REPOS || '[]') }}
       fail-fast: false
 
     steps:
