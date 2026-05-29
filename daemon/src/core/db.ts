@@ -11,6 +11,28 @@ import { runMigrations } from './migrations.js';
 
 let _db: Database.Database | null = null;
 
+// Tracks whether the tasks table has all columns required by the /api/todos shim.
+// Set to false at boot when PRAGMA table_info(tasks) reveals missing columns.
+// The shim PUT handler checks this flag and returns 503 instead of crashing.
+let _shimPragmaOk = true;
+
+/**
+ * Returns true when the boot-time PRAGMA check confirmed all shim-critical
+ * columns exist in the tasks table (assigned_to, work_notes, snooze_until).
+ * Returns false if migrations 019 or 024 have not been applied.
+ */
+export function getShimPragmaOk(): boolean {
+  return _shimPragmaOk;
+}
+
+/**
+ * Override the shim PRAGMA flag for testing only.
+ * Simulates a pre-migration database where shim columns are absent.
+ */
+export function _setShimPragmaOkForTesting(value: boolean): void {
+  _shimPragmaOk = value;
+}
+
 /**
  * Open (or create) the database, enable WAL mode, and run migrations.
  * @param projectDir - Project root directory (kithkit.db will be created here)
@@ -35,6 +57,32 @@ export function openDatabase(
 
   // Run pending migrations
   runMigrations(_db, migrationsDir);
+
+  // Defensive boot-time check: verify that /api/todos shim-critical columns
+  // exist in the tasks table.  On daemons that haven't applied migration 024
+  // (unified-tasks), these columns are absent and a later SQL UPDATE would
+  // crash rather than fail gracefully.  Setting _shimPragmaOk=false causes
+  // the shim PUT handler to return 503 instead.
+  //   snooze_until  → migration 019-todo-snooze-until.sql
+  //   assigned_to   → migration 024-unified-tasks.sql
+  //   work_notes    → migration 024-unified-tasks.sql
+  const _requiredShimCols = ['assigned_to', 'work_notes', 'snooze_until'];
+  const _tableInfo = _db.pragma('table_info(tasks)') as { name: string }[];
+  const _presentCols = new Set(_tableInfo.map((r) => r.name));
+  const _missingCols = _requiredShimCols.filter((c) => !_presentCols.has(c));
+  if (_missingCols.length > 0) {
+    _shimPragmaOk = false;
+    // Use console.error here to avoid a circular import with logger.ts
+    console.error(
+      `[db] PRAGMA table_info(tasks): missing columns [${_missingCols.join(', ')}]. ` +
+      'Shim PUT /api/todos/:id will return 503 until resolved. ' +
+      'snooze_until: migration 019-todo-snooze-until.sql; ' +
+      'assigned_to, work_notes: migration 024-unified-tasks.sql. ' +
+      'Run pending migrations to restore full functionality.',
+    );
+  } else {
+    _shimPragmaOk = true;
+  }
 
   return _db;
 }
@@ -355,4 +403,5 @@ export async function migrateDbIfNeeded(
 /** Reset for testing. */
 export function _resetDbForTesting(): void {
   closeDatabase();
+  _shimPragmaOk = true;
 }
