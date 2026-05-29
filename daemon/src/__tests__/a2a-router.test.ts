@@ -18,12 +18,12 @@ function createMockDeps(overrides?: Partial<RouterDeps>): RouterDeps {
       'agent-comms': {
         enabled: true,
         peers: [
-          { name: 'bmo', host: 'davids-mac-mini.lan', port: 3847, ip: '192.168.12.169' },
-          { name: 'r2d2', host: 'chrissys-mini.lan', port: 3847 },
+          { name: 'bmo', host: 'node-a.lan', port: 3847, ip: '10.0.0.1' },
+          { name: 'r2d2', host: 'node-b.lan', port: 3847 },
         ],
       },
       network: {
-        communities: [{ name: 'home', primary: 'https://relay.bmobot.ai' }],
+        communities: [{ name: 'home', primary: 'https://relay.example.com' }],
       },
     },
     sendViaLAN: async () => ({ ok: true }),
@@ -175,10 +175,10 @@ describe('A2A Router — Peer Resolution', () => {
     assert.equal(result.qualified, 'bmo@home');
   });
 
-  it('12. Qualified name (bmo@relay.bmobot.ai) -> skips config lookup', () => {
-    const result = router.resolvePeer('bmo@relay.bmobot.ai');
+  it('12. Qualified name (bmo@relay.example.com) -> skips config lookup', () => {
+    const result = router.resolvePeer('bmo@relay.example.com');
     assert.equal(result.peer, undefined);
-    assert.equal(result.qualified, 'bmo@relay.bmobot.ai');
+    assert.equal(result.qualified, 'bmo@relay.example.com');
   });
 
   it('13. Unknown bare name -> no peer, still returns qualified name for relay', () => {
@@ -208,7 +208,7 @@ describe('A2A Router — Peer Resolution', () => {
           ],
         },
         network: {
-          communities: [{ name: 'home', primary: 'https://relay.bmobot.ai' }],
+          communities: [{ name: 'home', primary: 'https://relay.example.com' }],
         },
       },
     });
@@ -611,7 +611,7 @@ describe('A2A Router — Spec Bug Fixes', () => {
     const deps = createMockDeps();
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo@relay.bmobot.ai',
+      to: 'bmo@relay.example.com',
       payload: { type: 'text', text: 'hi' },
       route: 'lan',
     });
