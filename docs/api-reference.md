@@ -1920,6 +1920,94 @@ Get the audit trail for a contact.
 
 ---
 
+## Email Inbox
+
+Exposes JMAP inbox reads via HTTP. Credentials are loaded from keychain by the JMAP provider inside the daemon, allowing the comms agent (non-interactive shell without direct keychain access) to read email by proxying through the daemon.
+
+### GET /api/email/inbox
+
+List recent inbox messages.
+
+```bash
+curl 'http://localhost:3847/api/email/inbox'
+curl 'http://localhost:3847/api/email/inbox?limit=10'
+```
+
+| Query Param | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `limit` | integer | `20` | Number of messages to return (max 100) |
+
+**Response 200:**
+
+```json
+{
+  "data": [
+    {
+      "id": "M1234abcd",
+      "from": "alice@example.com",
+      "subject": "Hello",
+      "snippet": "Hi there, just wanted to...",
+      "received_at": "2026-05-27T10:00:00Z",
+      "is_read": false
+    }
+  ],
+  "timestamp": "2026-05-27T10:01:00.000Z"
+}
+```
+
+**Errors:**
+- `503` — JMAP credentials missing from keychain (`credential-fastmail-api`)
+- `502` — JMAP provider returned an error
+
+### GET /api/email/inbox/search
+
+Search inbox messages by text query.
+
+```bash
+curl 'http://localhost:3847/api/email/inbox/search?q=invoice'
+curl 'http://localhost:3847/api/email/inbox/search?q=from:alice&limit=5'
+```
+
+| Query Param | Type | Default | Description |
+|-------------|------|---------|-------------|
+| `q` | string | — | **Required.** Search query (passed to JMAP `Email/query` text filter) |
+| `limit` | integer | `20` | Max results to return (max 100) |
+
+**Errors:**
+- `400` — `q` parameter missing
+- `503` — credentials missing
+- `502` — JMAP error
+
+### GET /api/email/inbox/:id
+
+Get a full message by JMAP email ID (including body text).
+
+```bash
+curl http://localhost:3847/api/email/inbox/M1234abcd
+```
+
+**Response 200:**
+
+```json
+{
+  "id": "M1234abcd",
+  "from": "alice@example.com",
+  "subject": "Hello",
+  "snippet": "Hi there, just wanted to...",
+  "received_at": "2026-05-27T10:00:00Z",
+  "is_read": false,
+  "body": "Hi there, just wanted to check in...",
+  "timestamp": "2026-05-27T10:01:00.000Z"
+}
+```
+
+**Errors:**
+- `404` — message not found
+- `503` — credentials missing
+- `502` — JMAP error
+
+---
+
 ## Selftest
 
 ### GET /api/selftest
