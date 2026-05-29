@@ -15,6 +15,7 @@ import {
   query,
   exec,
   getDatabase,
+  getShimPragmaOk,
 } from '../core/db.js';
 import { loadConfig } from '../core/config.js';
 import { loadContext } from '../core/context-loader.js';
@@ -86,6 +87,14 @@ interface WorkerJob {
 
 const VALID_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const VALID_TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'cancelled'];
+
+// Fields accepted by PUT /api/todos/:id.  Any field in the request body that
+// is NOT in this set is silently dropped and a log.warn is emitted so callers
+// can diagnose partial-update surprises.  See kithkit-internal #1812.
+const KNOWN_TODO_PUT_FIELDS = new Set([
+  'title', 'description', 'priority', 'status', 'due_date', 'tags',
+  'snooze_until', 'assigned_to', 'work_notes',
+]);
 
 // ── Shim helpers ─────────────────────────────────────────────
 
@@ -239,6 +248,18 @@ export async function handleStateRoute(
       }
 
       if (method === 'PUT') {
+        // Guard: if boot-time PRAGMA check found missing schema columns, refuse the
+        // update rather than crashing on a column-not-found SQL error.
+        // Callers should run pending migrations (019: snooze_until, 024: unified tasks).
+        if (!getShimPragmaOk()) {
+          json(res, 503, withTimestamp({
+            error: 'Database schema incomplete — required columns missing from tasks table ' +
+              '(check migrations 019 for snooze_until, 024 for assigned_to/work_notes). ' +
+              'Shim PUT /api/todos/:id is unavailable until migrations are applied.',
+          }));
+          return true;
+        }
+
         const body = await parseBody(req);
         if (body.priority && !VALID_PRIORITIES.includes(body.priority as string)) {
           json(res, 400, withTimestamp({ error: `invalid priority (must be ${VALID_PRIORITIES.join('/')})` }));
@@ -250,6 +271,18 @@ export async function handleStateRoute(
         if (putStatus && !VALID_TODO_STATUSES.includes(putStatus)) {
           json(res, 400, withTimestamp({ error: `invalid status (must be ${VALID_TODO_STATUSES.join('/')})` }));
           return true;
+        }
+
+        // Warn on any fields not in the shim whitelist — they will be dropped.
+        // Callers can't know their update was partially applied otherwise.
+        for (const key of Object.keys(body)) {
+          if (!KNOWN_TODO_PUT_FIELDS.has(key)) {
+            log.warn(
+              `PUT /api/todos/:id: unknown field "${key}" dropped — not in shim whitelist. ` +
+              'To persist it, add it to KNOWN_TODO_PUT_FIELDS in state.ts. ' +
+              'See kithkit-internal #1812.',
+            );
+          }
         }
 
         const putInternalId = resolveLegacyTodoId(todoId);
@@ -277,6 +310,8 @@ export async function handleStateRoute(
         if (body.due_date !== undefined) data.due_date = body.due_date;
         if (body.tags !== undefined) data.tags = JSON.stringify(body.tags);
         if (body.snooze_until !== undefined) data.snooze_until = body.snooze_until;
+        if (body.assigned_to !== undefined) data.assigned_to = body.assigned_to;
+        if (body.work_notes !== undefined) data.work_notes = body.work_notes;
         if (putStatus !== undefined) {
           data.status = putStatus;
           logTodoAction(existing.id, 'status_change', existing.status, putStatus);
