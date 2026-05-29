@@ -100,8 +100,8 @@ validate(body)
 
 1. If name contains `@` — already a qualified relay name, skip config lookup
 2. Exact match (case-insensitive) against configured peers
-3. Fallback: unique prefix match (e.g., `"bm"` → `"bmo"`)
-4. Qualify for relay: append `@{primaryCommunity}` (e.g., `"bmo"` → `"bmo@relay.example.com"`)
+3. Fallback: unique prefix match (e.g., `"agent"` → `"agent-a"`)
+4. Qualify for relay: append `@{primaryCommunity}` (e.g., `"agent-a"` → `"agent-a@relay.example.com"`)
 
 Returns `{ peer?: PeerConfig, qualified: string }`.
 
@@ -179,7 +179,7 @@ DM success response:
 {
   "ok": true,
   "messageId": "550e8400-...",
-  "target": "bmo",
+  "target": "agent-a",
   "targetType": "dm",
   "route": "lan",
   "status": "delivered",
@@ -195,7 +195,7 @@ Auto-route fallback response (LAN failed, relay succeeded):
 {
   "ok": true,
   "messageId": "...",
-  "target": "bmo",
+  "target": "agent-a",
   "targetType": "dm",
   "route": "relay",
   "status": "delivered",
@@ -318,9 +318,9 @@ _network.on('group-invitation', (inv) => {
 All inbound messages are persisted:
 ```sql
 INSERT INTO messages (from_agent, to_agent, type, body, metadata)
-VALUES ('network:bmo@relay.example.com', 'comms', 'text',
-        '[Network] BMO: hello!',
-        '{"source":"a2a-network","sender":"bmo@relay.example.com","messageId":"...","verified":true}');
+VALUES ('network:agent-a@relay.example.com', 'comms', 'text',
+        '[Network] agent-a: hello!',
+        '{"source":"a2a-network","sender":"agent-a@relay.example.com","messageId":"...","verified":true}');
 ```
 
 ### Delivery to Comms Agent (tmux Injection)
@@ -381,11 +381,11 @@ If `direct` is not set or injection fails:
 agent-comms:
   enabled: true
   peers:
-    - name: bmo
-      host: davids-mac-mini.lan
+    - name: agent-a
+      host: node1.lan
       port: 3847
       ip: 192.168.x.x    # DNS fallback
-    - name: skippy
+    - name: agent-b
       host: 192.168.x.x
       port: 3847
 ```
@@ -394,7 +394,7 @@ agent-comms:
 ```yaml
 network:
   enabled: true
-  endpoint: "https://r2.example.com/agent/p2p"
+  endpoint: "https://node1.example.com/agent/p2p"
   communities:
     - name: home
       primary: https://relay.example.com
