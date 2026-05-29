@@ -55,6 +55,7 @@ import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
 import { createCommsTelegramAdapter, type CommsTelegramAdapter, type TelegramUpdate } from './comms/adapters/telegram.js';
 import { parseApprovalCallback, answerCallbackQuery } from '../comms/approval-card-telegram.js';
 import { resolveGate } from '../comms/approval-gate.js';
+import { initTeamsExtension, shutdownTeamsExtension } from './teams/index.js';
 
 const log = createLogger('agent-extension');
 
@@ -527,6 +528,11 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Register basic extension health check
   registerAgentHealthChecks();
 
+  // ── Teams Bot Framework extension ──────────────────────────
+  // Reads credentials from Keychain; safe to call when Teams is not configured
+  // (logs a warning and returns without registering routes/adapter).
+  await initTeamsExtension();
+
   // Load instance-specific extensions (if instance/ directory exists)
   const instanceResult = await loadInstanceExtensions(config, _server, _scheduler);
   _instanceShutdown = instanceResult.shutdown ?? null;
@@ -558,6 +564,7 @@ async function onShutdown(): Promise<void> {
     unregisterAdapter('telegram');
     _telegramAdapter = null;
   }
+  shutdownTeamsExtension();
   p2pRateLimiter.stop();
   await stopNetworkSDK();
   stopAgentComms();

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.17",
+  "version": "1.0.0",
+  "id": "70db3bc8-52fd-4270-9247-61d53b2ea019",
+  "packageName": "bot.servos.bridget",
+  "developer": {
+    "name": "Servos",
+    "websiteUrl": "https://servos.bot",
+    "privacyUrl": "https://servos.bot/privacy",
+    "termsOfUseUrl": "https://servos.bot/terms"
+  },
+  "name": {
+    "short": "Bridget",
+    "full": "Bridget — Kithkit Agent"
+  },
+  "description": {
+    "short": "Kithkit personal AI agent",
+    "full": "Bridget is a Kithkit-managed personal AI agent. Chat with Bridget directly in Teams."
+  },
+  "icons": {
+    "color": "icon-color.png",
+    "outline": "icon-outline.png"
+  },
+  "accentColor": "#1a1a2e",
+  "bots": [
+    {
+      "botId": "70db3bc8-52fd-4270-9247-61d53b2ea019",
+      "scopes": ["personal", "team", "groupChat"],
+      "supportsFiles": false,
+      "isNotificationOnly": false,
+      "commandLists": [
+        {
+          "scopes": ["personal"],
+          "commands": [
+            {
+              "title": "help",
+              "description": "Show help and available commands"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "permissions": ["identity", "messageTeamMembers"],
+  "validDomains": ["servos.bot", "bridget.servos.bot"]
+}
