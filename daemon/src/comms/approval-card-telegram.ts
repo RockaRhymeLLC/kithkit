@@ -24,7 +24,7 @@ const log = createLogger('approval-card-telegram');
 
 /** Build a human-readable preview card text. */
 function buildCardText(card: ApprovalCard): string {
-  const recipientList = card.recipient.join(', ');
+  const recipientList = escapeHtml(card.recipient.join(', '));
   const expiresAt = new Date(card.expires_at).toLocaleTimeString('en-US', {
     timeZone: 'America/New_York',
     hour: 'numeric',
@@ -35,8 +35,8 @@ function buildCardText(card: ApprovalCard): string {
   return [
     `<b>Outbound send approval required</b>`,
     ``,
-    `Agent: <code>${card.sender_agent}</code>`,
-    `Channel: <code>${card.channel}</code>`,
+    `Agent: <code>${escapeHtml(card.sender_agent)}</code>`,
+    `Channel: <code>${escapeHtml(card.channel)}</code>`,
     `Recipient(s): <code>${recipientList}</code>`,
     `Policy: <code>${card.policy}</code>`,
     `Expires: ${expiresAt}`,

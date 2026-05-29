@@ -46,6 +46,9 @@ export interface GateContext {
   recipient: string[];
   /** Assembled message body — used for hashing and preview */
   content: string;
+  /** Original message text before channel formatting — used for content_hash (see FIX #2).
+   *  MUST be the pre-format raw text so hashes are stable across channel formatters. */
+  rawContent: string;
   /** Agent name: 'bridget', 'bmo', etc. */
   sender_agent: string;
 }
@@ -174,7 +177,7 @@ export function recordSuccessfulSend(agent: string, recipients: string[]): void 
 
 export interface DecisionRow {
   approval_id: string;
-  decision: 'approved' | 'rejected' | 'timeout';
+  decision: 'pending' | 'approved' | 'rejected' | 'timeout';
   decider: 'human' | 'system';
   time_to_decide: number | null;
   content_hash: string;
@@ -210,11 +213,13 @@ function writeDecisionRow(row: DecisionRow): void {
 
 // ── Content redaction ─────────────────────────────────────────────────
 
-/** Simple regex-based credential/PII detector for preview redaction. */
+/** Targeted regex patterns for credential/PII detection in preview redaction.
+ *  Conservative — avoids over-redacting normal prose, URLs, and UUIDs. */
 const REDACT_PATTERNS = [
-  /[a-zA-Z0-9_\-]{20,}/,       // Long alphanumeric tokens (API keys, secrets)
-  /\b[A-Z0-9]{10,}\b/,         // All-caps long tokens
-  /[\w\-]{8,}\.[\w\-]{8,}/,    // Dotted credential-shaped strings
+  /-----BEGIN [A-Z ]+-----/,                        // PEM boundaries (private keys, certs)
+  /\bBearer\s+[A-Za-z0-9\-._~+/]{20,}={0,2}\b/i,  // Bearer <token> in Authorization header
+  /\bAKIA[0-9A-Z]{16}\b/,                           // AWS access key IDs
+  /[A-Za-z0-9+/]{40,}={0,2}(?:[^A-Za-z0-9+/=]|$)/, // Long base64 key blobs (40+ chars)
 ];
 
 function shouldRedactContent(content: string): boolean {
@@ -280,7 +285,7 @@ export async function approvalGate(ctx: GateContext): Promise<boolean> {
   }
 
   const requirement = evaluateRequirement(policy, ctx);
-  const contentHash = hashContent(ctx.content);
+  const contentHash = hashContent(ctx.rawContent);
   const recipientHash = hashRecipientSet(ctx.recipient);
   const createdAt = new Date().toISOString();
   const normalizedPolicy = normalizeApprovalFor(policy.require_approval_for);
@@ -322,7 +327,7 @@ export async function approvalGate(ctx: GateContext): Promise<boolean> {
   // Write pending row first (decided_at = null)
   writeDecisionRow({
     approval_id: approvalId,
-    decision: 'approved',       // placeholder — updated on decision
+    decision: 'pending',        // placeholder — overwritten with 'approved'/'rejected'/'timeout' on resolution
     decider: 'human',            // placeholder — updated on decision
     time_to_decide: null,
     content_hash: contentHash,
@@ -427,6 +432,7 @@ export async function approvalGate(ctx: GateContext): Promise<boolean> {
 export function resolveGate(
   approvalId: string,
   decision: 'approved' | 'rejected',
+  decider: string = 'human',
 ): 'ok' | 'not_found' | 'already_resolved' {
   const gate = _pendingGates.get(approvalId);
   if (!gate) {
@@ -450,9 +456,9 @@ export function resolveGate(
   const db = getDatabase();
   db.prepare(`
     UPDATE approval_decisions
-    SET decision = ?, decider = 'human', decided_at = ?, time_to_decide = ?
+    SET decision = ?, decider = ?, decided_at = ?, time_to_decide = ?
     WHERE approval_id = ? AND decided_at IS NULL
-  `).run(decision, decidedAt, timeToDecide, approvalId);
+  `).run(decision, decider, decidedAt, timeToDecide, approvalId);
 
   // Resolve the waiting promise
   gate.resolve(decision === 'approved');
@@ -502,9 +508,13 @@ export function sweepStaleApprovals(): number {
       log.info(`Swept stale approval`, { approval_id: row.approval_id, channel: row.channel });
     }
   } catch (err) {
-    log.error('Startup sweep failed', {
+    log.error('Startup sweep failed — re-throwing to abort startup (fail-closed)', {
       error: err instanceof Error ? err.message : String(err),
     });
+    // Re-throw to abort daemon startup. The setDegraded() mechanism only blocks
+    // extension routes, not the outbound send path, so it cannot enforce fail-closed
+    // here. Crashing startup is the only safe option when the sweep DB operation fails.
+    throw err;
   }
   return swept;
 }
