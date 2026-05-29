@@ -65,10 +65,21 @@ async function getShortcutToken(): Promise<string | null> {
 
 // ── Telegram types ──────────────────────────────────────────
 
+export interface TelegramCallbackQuery {
+  id: string;
+  from: { id?: number; first_name?: string; is_bot?: boolean };
+  message?: {
+    message_id?: number;
+    chat: { id: number };
+  };
+  data?: string;
+}
+
 export interface TelegramUpdate {
   update_id?: number;
   message?: TelegramMessage;
   message_reaction?: MessageReactionUpdated;
+  callback_query?: TelegramCallbackQuery;
 }
 
 interface TelegramMessage {
