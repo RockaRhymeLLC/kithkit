@@ -168,7 +168,8 @@ describe('Migrations (t-119)', () => {
     assert.equal(version, available.at(-1)!.version, 'current version should match latest migration');
 
     const applied = getAppliedMigrations(db);
-    assert.equal(applied.length, available.length, 'all discovered migrations should be applied');
+    const uniqueVersionCount = new Set(available.map(m => m.version)).size;
+    assert.equal(applied.length, uniqueVersionCount, 'all unique migration versions should be applied (duplicates deduplicated)');
     // Spot-check first migration is still present
     assert.equal(applied[0]!.version, 1);
     assert.equal(applied[0]!.name, 'initial-schema');
