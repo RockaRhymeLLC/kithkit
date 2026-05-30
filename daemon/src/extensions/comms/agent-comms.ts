@@ -316,14 +316,19 @@ export async function handleAgentMessage(
     delivered: persisted.delivered,
   });
 
-  // TODO(#124, #620): ack-semantics slot.
+  // TODO(#124): ack-semantics slot.
   // Sender currently receives ok:true as soon as the DB row is created.
   // Future: a positive ACK should only be returned after confirmed inject
   // (or explicit delivery receipt from the comms session). This requires
-  // a protocol-level change in the LAN message exchange (#620 ten-four ACK
-  // protocol) and the per-message acknowledgement model (#124).
+  // a protocol-level change in the LAN message exchange and the per-message
+  // acknowledgement model (#124).
   // queued:true is an interim observable for callers that want to distinguish
   // persisted-but-not-yet-injected from confirmed delivery.
+  //
+  // #620 observables (delivered):
+  //   - queued:true in this response body — message persisted, session absent
+  //   - dead_letter:true in messages.metadata — message expired its TTL
+  //   - GET /api/messages returns expired:true (derived) for dead-letter rows
 
   return {
     status: 200,

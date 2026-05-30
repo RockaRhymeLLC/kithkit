@@ -234,6 +234,10 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
 
       // Queue for delivery — the message-delivery scheduler task handles tmux injection.
       // Trigger the task immediately so delivery doesn't wait for the next interval tick.
+      // delivered:false = "relay-accepted + DB-persisted, tmux inject not yet confirmed".
+      // If the message ages past the TTL (default 24h), message-delivery will dead-letter
+      // it with dead_letter:true in metadata and expired:true in GET /api/messages.
+      // Full per-message ACK protocol is tracked in #124.
       notifyNewMessage();
       return { messageId: message.id, delivered: false };
     }
