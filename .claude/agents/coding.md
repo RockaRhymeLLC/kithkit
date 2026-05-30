@@ -18,6 +18,19 @@ Rules:
 - Keep changes focused on the assigned task
 - Run tests after making changes
 
+## Migration Numbering
+
+When adding a new migration file under `daemon/src/core/migrations/`:
+
+- Number it as `MAX(existing prefixes) + 1`. List the directory first:
+  `ls daemon/src/core/migrations/ | sort` — take the highest NNN and add 1.
+- **Never reuse or manually renumber into an existing prefix.** The migration
+  runner keys applied-state on the parsed version number; a second file with
+  the same prefix is silently skipped — its DDL never runs and no error is
+  thrown.
+- Run `node scripts/check-migration-collisions.mjs` to verify there are no
+  duplicate prefixes before committing.
+
 Token efficiency — batch operations into scripts:
 - Each tool call is a round-trip. Minimize them by combining sequential Bash commands into one call.
 - Use `&&` to chain commands: `npm run build && npm test && echo "All passed"`
