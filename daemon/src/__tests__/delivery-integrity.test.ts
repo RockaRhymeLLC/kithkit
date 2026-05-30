@@ -32,6 +32,7 @@ import {
   openDatabase,
   _resetDbForTesting,
   query,
+  exec,
 } from '../core/db.js';
 import {
   _setTmuxInjectorForTesting,
@@ -40,6 +41,16 @@ import {
 import { _setCommsSessionExistsForTesting } from '../core/session-bridge.js';
 import { handleAgentMessage } from '../extensions/comms/agent-comms.js';
 import type { AgentMessage } from '../extensions/comms/agent-comms.js';
+import {
+  _deliverNewMessagesForTesting,
+  _resetRetriesForTesting,
+} from '../automation/tasks/message-delivery.js';
+import {
+  _runHeartbeatForTesting,
+  _resetHeartbeatStateForTesting,
+  _setNotifyFnForTesting,
+  _setIsCommsAliveForTesting,
+} from '../automation/tasks/comms-heartbeat.js';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -54,6 +65,10 @@ function setupDb(): void {
 function teardownDb(): void {
   _resetDbForTesting();
   _clearDedupForTesting();
+  _resetRetriesForTesting();
+  _resetHeartbeatStateForTesting();
+  _setNotifyFnForTesting(null);
+  _setIsCommsAliveForTesting(null);
   _setTmuxInjectorForTesting(null);
   _setCommsSessionExistsForTesting(null);
   if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -76,6 +91,8 @@ type MessageRow = {
   to_agent: string;
   type: string;
   body: string;
+  metadata: string | null;
+  processed_at: string | null;
   injected_at: string | null;
 };
 
@@ -288,16 +305,139 @@ describe('DI-009: LAN inbound to_agent is always comms (protocol has no recipien
   });
 });
 
-// ── DI-006: Relay-expiry TTL (stub, #620) ────────────────────
+// ── DI-006: Relay-expiry TTL (#620) ──────────────────────────
 //
 // Relay message with expired TTL — delivery attempted, dead-letter reached.
-// NOT implemented in #585 — stub reserved for #620.
+// Implemented in #620 (age-based expiry replaces count-based MAX_RETRIES).
 
-describe('DI-006: Relay-expiry TTL (stub for #620)', () => {
-  it.skip('relay message with expired ttl → dead-letter (not implemented in #585)', () => {
-    // Stub: #620 will fill in relay TTL/expiry semantics here.
-    // Setup: relay message with ttl that has elapsed
-    // Assert: dead-letter state reached, log.error emitted
+describe('DI-006: Relay-expiry TTL (#620)', () => {
+  beforeEach(setupDb);
+  afterEach(teardownDb);
+
+  it('relay message with expired ttl → dead-letter', async () => {
+    // Insert a message with created_at 25h ago (past the default 24h TTL)
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    exec(
+      `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+       VALUES ('r2d2', 'comms', 'text', 'DI-006 sentinel', ?)`,
+      old,
+    );
+
+    const rows = query<MessageRow>('SELECT * FROM messages WHERE from_agent = ?', 'r2d2');
+    assert.equal(rows.length, 1, 'row should exist before delivery cycle');
+    const msgId = rows[0]!.id;
+
+    // Run delivery cycle with comms session alive but message is TTL-expired
+    const result = await _deliverNewMessagesForTesting({ liveSessions: new Set(['comms']) });
+
+    assert.equal(result.expired, 1, 'should expire 1 TTL-exceeded message');
+    assert.equal(result.delivered, 0, 'should not deliver the expired message');
+
+    // Verify DB dead-letter state
+    const updated = query<MessageRow>('SELECT * FROM messages WHERE id = ?', msgId);
+    assert.equal(updated.length, 1);
+    assert.ok(updated[0]!.processed_at !== null, 'processed_at must be set on expired message');
+
+    const meta = JSON.parse(updated[0]!.metadata!);
+    assert.equal(meta.dead_letter, true, 'metadata must have dead_letter:true');
+    assert.equal(meta.expired, true, 'metadata must have expired:true');
+    assert.equal(meta.reason, 'ttl_exceeded', 'reason must be ttl_exceeded');
+  });
+});
+
+// ── DI-010: Age-based expiry (#620) ──────────────────────────
+//
+// Message is 25h old with no retry count — expires on first delivery cycle.
+// Validates that expiry is based on created_at, not _retryCounts.
+
+describe('DI-010: Age-based expiry — 25h-old message expires on first delivery cycle', () => {
+  beforeEach(setupDb);
+  afterEach(teardownDb);
+
+  it('age-based expiry fires on 25h-old message regardless of retry count', async () => {
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    exec(
+      `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+       VALUES ('relay-peer', 'comms', 'text', 'DI-010 sentinel', ?)`,
+      old,
+    );
+
+    const rows = query<MessageRow>('SELECT * FROM messages WHERE from_agent = ?', 'relay-peer');
+    assert.equal(rows.length, 1);
+    const msgId = rows[0]!.id;
+
+    // No retries counted anywhere — first delivery cycle must expire based on age
+    const result = await _deliverNewMessagesForTesting({ liveSessions: new Set(['comms']) });
+
+    assert.equal(result.expired, 1, 'expired must be 1');
+    assert.equal(result.delivered, 0, 'delivered must be 0');
+
+    const updated = query<MessageRow>('SELECT * FROM messages WHERE id = ?', msgId);
+    assert.ok(updated[0]!.processed_at !== null, 'processed_at must be set');
+    const meta = JSON.parse(updated[0]!.metadata!);
+    assert.equal(meta.dead_letter, true, 'dead_letter must be true');
+  });
+});
+
+// ── DI-011: Daemon restart does not reset expiry clock (#620) ─
+//
+// After _resetRetriesForTesting() (simulates restart), 25h-old message
+// still expires on next delivery cycle (clock is DB created_at, not in-memory).
+
+describe('DI-011: Daemon restart does not reset expiry clock', () => {
+  beforeEach(setupDb);
+  afterEach(teardownDb);
+
+  it('after simulated restart (_resetRetriesForTesting), old message still expires', async () => {
+    const old = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString();
+    exec(
+      `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+       VALUES ('relay-peer', 'comms', 'text', 'DI-011 sentinel', ?)`,
+      old,
+    );
+
+    const msgId = query<MessageRow>('SELECT * FROM messages WHERE from_agent = ?', 'relay-peer')[0]!.id;
+
+    // Simulate daemon restart: clears any in-memory state
+    _resetRetriesForTesting();
+
+    // Delivery cycle after restart must still expire the old message by age
+    const result = await _deliverNewMessagesForTesting({ liveSessions: new Set(['comms']) });
+
+    assert.equal(result.expired, 1, 'expired must be 1 even after simulated restart');
+    assert.equal(result.delivered, 0);
+
+    const updated = query<MessageRow>('SELECT * FROM messages WHERE id = ?', msgId);
+    assert.ok(updated[0]!.processed_at !== null, 'processed_at must be set after restart expiry');
+    const meta = JSON.parse(updated[0]!.metadata!);
+    assert.equal(meta.dead_letter, true);
+  });
+});
+
+// ── DI-012: Comms recovery triggers delivery flush exactly once (#620) ─
+//
+// When comms transitions from dead→alive, heartbeat fires notifyNewMessage()
+// exactly once. On subsequent alive→alive ticks, no flush is triggered.
+
+describe('DI-012: Comms recovery triggers delivery flush exactly once', () => {
+  beforeEach(setupDb);
+  afterEach(teardownDb);
+
+  it('dead→alive transition fires notifyNewMessage once; alive→alive fires zero', async () => {
+    let notifyCallCount = 0;
+    _setNotifyFnForTesting(() => { notifyCallCount++; });
+    _setIsCommsAliveForTesting(() => true); // comms is alive now
+
+    // _resetHeartbeatStateForTesting sets _prevCommsAlive = false (comms was dead)
+    _resetHeartbeatStateForTesting();
+
+    // First tick: dead→alive transition — should flush
+    await _runHeartbeatForTesting();
+    assert.equal(notifyCallCount, 1, 'notifyNewMessage must be called exactly once on dead→alive');
+
+    // Second tick: alive→alive — no flush
+    await _runHeartbeatForTesting();
+    assert.equal(notifyCallCount, 1, 'notifyNewMessage must not be called again on alive→alive');
   });
 });
 
