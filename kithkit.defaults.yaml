@@ -87,6 +87,13 @@ scheduler:
     - name: "orch-stale-task-recovery"
       enabled: true
       interval: "5m"
+      config:
+        # How long (ms) an 'assigned' task may sit without an update before it is
+        # considered stale. Default: 30 minutes (1_800_000 ms).
+        stale_assigned_ms: 1800000
+        # How long (ms) an 'in_progress' task may sit without an update before it
+        # is considered stale. Default: 60 minutes (3_600_000 ms).
+        stale_in_progress_ms: 3600000
 
     - name: self-watchdog
       interval: "5m"
