@@ -12,8 +12,8 @@
  *
  *   OUTBOUND — ChannelAdapter named 'teams'
  *     Implements the ChannelAdapter interface. send() posts a reply Activity
- *     to the Bot Framework connector endpoint using a cached AAD client-
- *     credentials token (scope: https://api.botframework.com/.default).
+ *     to the Bot Framework connector endpoint using the official
+ *     botframework-connector SDK (MicrosoftAppCredentials + ConnectorClient).
  *     Registered with registerAdapter() so POST /api/send with channel='teams'
  *     routes through routeMessage() and therefore through the approval gate.
  *
@@ -23,10 +23,15 @@
  *   token verification against the Bot Framework JWKS. This module implements
  *   the correct approach. See jwt-verify.ts for details.
  *
+ * INBOUND JWT NOTE:
+ *   Inbound JWT validation is intentionally left hand-rolled; CloudAdapter
+ *   migration deferred to v1.1.
+ *
  * CONFIGURATION (kithkit.config.yaml):
  *   channels:
  *     teams:
  *       enabled: true
+ *       tenantId: "<azure-tenant-id>"  # Required for single-tenant bots
  *       # Credentials are read from macOS Keychain at startup:
  *       #   credential-teams-bot-client-id  (also the MicrosoftAppId / bot app id)
  *       #   credential-teams-bot-secret     (bot app password — never logged)
@@ -41,8 +46,10 @@
  */
 
 import http from 'node:http';
+import { MicrosoftAppCredentials, ConnectorClient } from 'botframework-connector';
 import { createLogger } from '../../core/logger.js';
 import { readKeychain } from '../../core/keychain.js';
+import { loadConfig } from '../../core/config.js';
 import { registerRoute } from '../../core/route-registry.js';
 import { registerAdapter, unregisterAdapter } from '../../comms/channel-router.js';
 import { injectToComms } from '../../core/session-bridge.js';
@@ -123,97 +130,29 @@ export function _resetConversationRefsForTesting(): void {
   _conversationRefs.clear();
 }
 
-// ── AAD token cache (outbound auth) ──────────────────────────────────────────
-
-interface TokenCache {
-  accessToken: string;
-  expiresAt: number; // Unix timestamp ms
-}
-
-let _tokenCache: TokenCache | null = null;
-
-const AAD_TOKEN_URL =
-  'https://login.microsoftonline.com/botframework.com/oauth2/v2.0/token';
-const BOT_FRAMEWORK_SCOPE = 'https://api.botframework.com/.default';
-/** Refresh the token 60 seconds before actual expiry. */
-const TOKEN_EXPIRY_BUFFER_MS = 60_000;
-
-/** Retrieve a valid AAD client-credentials token for the Bot Framework.
- *  Caches the token until it is within TOKEN_EXPIRY_BUFFER_MS of expiry.
- *  NEVER logs the token value or the client secret. */
-export async function getAadToken(clientId: string, clientSecret: string): Promise<string> {
-  const now = Date.now();
-  if (_tokenCache && now < _tokenCache.expiresAt - TOKEN_EXPIRY_BUFFER_MS) {
-    return _tokenCache.accessToken;
-  }
-
-  log.debug('Fetching new AAD token for Bot Framework outbound');
-
-  const body = new URLSearchParams({
-    grant_type: 'client_credentials',
-    client_id: clientId,
-    client_secret: clientSecret,
-    scope: BOT_FRAMEWORK_SCOPE,
-  });
-
-  const res = await fetch(AAD_TOKEN_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
-
-  if (!res.ok) {
-    throw new Error(`AAD token request failed: HTTP ${res.status}`);
-  }
-
-  const data = (await res.json()) as {
-    access_token?: string;
-    expires_in?: number;
-    error?: string;
-    error_description?: string;
-  };
-
-  if (!data.access_token) {
-    throw new Error(`AAD token response missing access_token: ${data.error ?? 'unknown error'}`);
-  }
-
-  const expiresInMs = typeof data.expires_in === 'number'
-    ? data.expires_in * 1000
-    : 3600_000; // default 1 hour
-
-  _tokenCache = {
-    accessToken: data.access_token,
-    expiresAt: now + expiresInMs,
-  };
-
-  log.debug('AAD token cached', { expiresIn: `${Math.round(expiresInMs / 1000)}s` });
-  return _tokenCache.accessToken;
-}
-
-/** Reset token cache for testing. */
-export function _resetTokenCacheForTesting(): void {
-  _tokenCache = null;
-}
-
-// ── Outbound Bot Framework send ───────────────────────────────────────────────
+// ── Outbound Bot Framework send (SDK) ─────────────────────────────────────────
 
 /**
- * Post a reply Activity to the Bot Framework connector endpoint.
+ * Post a reply Activity to the Bot Framework connector endpoint using the
+ * official botframework-connector SDK.
+ *
+ * Uses MicrosoftAppCredentials with the correct single-tenant ID so that token
+ * acquisition targets the right AAD tenant (fixes HTTP 400 that occurred with
+ * the previous hand-rolled common-tenant endpoint).
  *
  * @param ref           Conversation reference identifying where to send.
  * @param text          Message text to send.
  * @param clientId      Bot app id (MicrosoftAppId).
  * @param clientSecret  Bot app password (from Keychain — NEVER logged).
+ * @param tenantId      Azure AD tenant ID (channels.teams.tenantId from config).
  */
 export async function sendTeamsActivity(
   ref: ConversationReference,
   text: string,
   clientId: string,
   clientSecret: string,
+  tenantId: string,
 ): Promise<void> {
-  const token = await getAadToken(clientId, clientSecret);
-
-  // Construct the outbound Activity
   const activity = {
     type: 'message',
     text,
@@ -224,39 +163,15 @@ export async function sendTeamsActivity(
     serviceUrl: ref.serviceUrl,
   };
 
-  // Normalize serviceUrl — must not end with slash before appending path
-  const base = ref.serviceUrl.replace(/\/$/, '');
-  const url = `${base}/v3/conversations/${encodeURIComponent(ref.conversationId)}/activities`;
+  const creds = new MicrosoftAppCredentials(clientId, clientSecret, tenantId);
+  const client = new ConnectorClient(creds, { baseUri: ref.serviceUrl });
+  // Cast to any: the activity shape is valid for the Bot Framework API but
+  // ConversationAccount requires isGroup/conversationType/name fields that we
+  // intentionally omit (server accepts partial accounts in outbound activities).
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  await client.conversations.sendToConversation(ref.conversationId, activity as any);
 
-  let res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify(activity),
-  });
-
-  // Retry once on 401 — token may have just expired
-  if (res.status === 401) {
-    log.warn('Outbound Teams: 401, refreshing AAD token and retrying');
-    _tokenCache = null;
-    const freshToken = await getAadToken(clientId, clientSecret);
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${freshToken}`,
-      },
-      body: JSON.stringify(activity),
-    });
-  }
-
-  if (!res.ok) {
-    throw new Error(`Teams outbound failed: HTTP ${res.status} from ${url}`);
-  }
-
-  log.debug('Teams activity sent', { conversationId: ref.conversationId, status: res.status });
+  log.debug('Teams activity sent', { conversationId: ref.conversationId });
 }
 
 // ── ChannelAdapter implementation ─────────────────────────────────────────────
@@ -272,10 +187,12 @@ export class TeamsAdapter implements ChannelAdapter {
 
   private readonly _clientId: string;
   private readonly _clientSecret: string;
+  private readonly _tenantId: string;
 
-  constructor(clientId: string, clientSecret: string) {
+  constructor(clientId: string, clientSecret: string, tenantId: string) {
     this._clientId = clientId;
     this._clientSecret = clientSecret;
+    this._tenantId = tenantId;
   }
 
   /**
@@ -309,7 +226,7 @@ export class TeamsAdapter implements ChannelAdapter {
     }
 
     try {
-      await sendTeamsActivity(ref, message.text, this._clientId, this._clientSecret);
+      await sendTeamsActivity(ref, message.text, this._clientId, this._clientSecret, this._tenantId);
       return true;
     } catch (err) {
       log.error('Teams send failed', {
@@ -480,7 +397,8 @@ let _teamsAdapter: TeamsAdapter | null = null;
  * Initialize the Teams extension.
  * Called by the agent extension during onInit().
  *
- * Reads credentials from Keychain, registers the webhook route and the adapter.
+ * Reads credentials from Keychain and tenantId from config, then registers
+ * the webhook route and the adapter.
  */
 export async function initTeamsExtension(): Promise<void> {
   const clientId = await readKeychain('credential-teams-bot-client-id');
@@ -494,9 +412,18 @@ export async function initTeamsExtension(): Promise<void> {
     return;
   }
 
+  // Read tenantId from channels.teams.tenantId — use cast since core/config.ts's
+  // KithkitConfig does not type the channels block (extensions/config.ts owns that).
+  const cfg = loadConfig() as unknown as { channels?: { teams?: { tenantId?: string } } };
+  const tenantId = cfg.channels?.teams?.tenantId ?? '';
+
+  if (!tenantId) {
+    log.warn('Teams extension: channels.teams.tenantId not configured — outbound auth will use default tenant (likely wrong for single-tenant bots)');
+  }
+
   setBotAppId(clientId);
 
-  _teamsAdapter = new TeamsAdapter(clientId, clientSecret);
+  _teamsAdapter = new TeamsAdapter(clientId, clientSecret, tenantId);
   registerAdapter(_teamsAdapter);
   registerRoute('/api/teams/messages', handleTeamsWebhook);
 
