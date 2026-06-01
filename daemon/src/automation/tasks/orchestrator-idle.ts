@@ -125,7 +125,7 @@ function buildShutdownPrompt(reason: string): string {
     `Shutdown requested: ${reason}`,
     'Please wrap up gracefully:',
     '1. If you have any unsent findings or context, send a final result to comms now:',
-    `   curl -s -X POST http://localhost:${loadConfig().daemon.port}/api/messages -H "Content-Type: application/json" -d '{"from":"orchestrator","to":"comms","type":"result","body":"<any final notes>"}'`,
+    `   curl -s -X POST http://localhost:${loadConfig().daemon.port}/api/messages -H "Content-Type: application/json" -d '{"from":"orchestrator","to":"comms","type":"status","body":"<any final notes>"}'`,
     '2. Then exit by running: exit',
     '',
     'If you are actively working on something, say so — the daemon will check again later.',

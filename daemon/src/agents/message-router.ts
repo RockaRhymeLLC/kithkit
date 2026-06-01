@@ -132,6 +132,18 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
         if (exact.length > 0) {
           const taskId = exact[0]!.id;
 
+          // Guard (#302): require explicit metadata.completion === true (boolean)
+          // or 'true' (string) before auto-completing.  Other values — including
+          // omitted, false, 1, or 'yes' — suppress the write so that shutdown/pause
+          // ack messages do not accidentally lock tasks in a terminal state.
+          const completionFlag = req.metadata?.completion;
+          if (completionFlag !== true && completionFlag !== 'true') {
+            log.warn(
+              'Orchestrator result message missing metadata.completion=true — auto-complete suppressed (fail-safe per #302)',
+              { taskId, from: req.from },
+            );
+          } else {
+
           // Invariant (#266): reject silent ghost-completions.
           // A task must have at least one worker row OR one activity event before
           // it can be auto-completed via a result message.  Tasks with zero workers
@@ -185,6 +197,7 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
               }
             }
           }
+          } // end: metadata.completion === true guard (#302)
         } else {
           log.warn('Orchestrator result message task_id not found or not active — no task auto-completed. Message delivered to comms.', {
             task_id: req.metadata.task_id,
