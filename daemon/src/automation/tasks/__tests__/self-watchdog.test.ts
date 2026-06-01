@@ -15,7 +15,7 @@ import os from 'node:os';
 import { openDatabase, _resetDbForTesting, getDatabase, query, exec } from '../../../core/db.js';
 import { _resetConfigForTesting } from '../../../core/config.js';
 import { getLastActivityTimestamp } from '../helpers/activity-query.js';
-import { fireSelfWatchdogAlert } from '../helpers/alert.js';
+import { fireSelfWatchdogAlert, _setAlertDepsForTesting } from '../helpers/alert.js';
 import { _runForTesting, _setDepsForTesting } from '../self-watchdog.js';
 
 // ── Test setup ────────────────────────────────────────────────
@@ -280,39 +280,24 @@ describe('self-watchdog run() threshold logic', () => {
 
 describe('fireSelfWatchdogAlert three-channel fanout', () => {
   beforeEach(setupDb);
-  afterEach(teardownDb);
-
-  let fetchCalls: Array<{
-    url: string;
-    method: string;
-    body: unknown;
-  }> = [];
-
-  // Mock global fetch
-  const originalFetch = global.fetch;
-  function mockFetch(url: string, opts?: RequestInit): Promise<Response> {
-    fetchCalls.push({
-      url,
-      method: opts?.method ?? 'GET',
-      body: opts?.body ? JSON.parse(String(opts.body)) : undefined,
-    });
-
-    // Return success response
-    return Promise.resolve(
-      new Response(JSON.stringify({}), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    );
-  }
-
-  beforeEach(() => {
-    fetchCalls = [];
-    global.fetch = mockFetch as typeof fetch;
+  afterEach(() => {
+    _setAlertDepsForTesting(null); // restore real channel implementations
+    teardownDb();
   });
 
-  afterEach(() => {
-    global.fetch = originalFetch;
+  interface ChannelCall {
+    channel: 'telegram' | 'tmux' | 'a2a';
+  }
+
+  let channelCalls: ChannelCall[] = [];
+
+  beforeEach(() => {
+    channelCalls = [];
+    _setAlertDepsForTesting({
+      sendViaTelegram: async () => { channelCalls.push({ channel: 'telegram' }); },
+      sendViaTmux: async () => { channelCalls.push({ channel: 'tmux' }); },
+      sendViaA2A: async () => { channelCalls.push({ channel: 'a2a' }); },
+    });
   });
 
   it('fires all three channels on first warn alert', async () => {
@@ -326,10 +311,9 @@ describe('fireSelfWatchdogAlert three-channel fanout', () => {
     });
 
     // At minimum, Telegram should have been attempted
-    assert.ok(fetchCalls.length > 0, 'should attempt at least one fetch call');
-    const telegramCall = fetchCalls.find(c => c.url.includes('/api/send'));
+    assert.ok(channelCalls.length > 0, 'should attempt at least one channel delivery');
+    const telegramCall = channelCalls.find(c => c.channel === 'telegram');
     assert.ok(telegramCall, 'should attempt telegram delivery');
-    assert.strictEqual(telegramCall?.method, 'POST');
   });
 
   it('suppresses duplicate warn alerts within dedup window', async () => {
@@ -342,17 +326,17 @@ describe('fireSelfWatchdogAlert three-channel fanout', () => {
       lastActivityAt: Date.now() - (7 * 3600 * 1000),
     });
 
-    const callsAfterFirst = fetchCalls.length;
-    assert.ok(callsAfterFirst > 0, 'first alert should trigger fetch calls');
+    const callsAfterFirst = channelCalls.length;
+    assert.ok(callsAfterFirst > 0, 'first alert should trigger channel deliveries');
 
     // Second alert immediately after (within dedup window)
-    fetchCalls = [];
+    channelCalls = [];
     await fireSelfWatchdogAlert('warn', {
       idleSeconds: 8 * 3600,
       lastActivityAt: Date.now() - (8 * 3600 * 1000),
     });
 
-    assert.strictEqual(fetchCalls.length, 0, 'second warn alert should be suppressed');
+    assert.strictEqual(channelCalls.length, 0, 'second warn alert should be suppressed');
   });
 
   it('fires again after dedup window expires', async () => {
@@ -371,13 +355,13 @@ describe('fireSelfWatchdogAlert three-channel fanout', () => {
     );
 
     // Assume dedup window is 1 hour (3600s)
-    fetchCalls = [];
+    channelCalls = [];
     await fireSelfWatchdogAlert('warn', {
       idleSeconds: 7 * 3600,
       lastActivityAt: Date.now() - (7 * 3600 * 1000),
     });
 
-    assert.ok(fetchCalls.length > 0, 'alert should fire after dedup window expires');
+    assert.ok(channelCalls.length > 0, 'alert should fire after dedup window expires');
   });
 
   it('treats alert level and warn level as independent for dedup', async () => {
@@ -390,18 +374,18 @@ describe('fireSelfWatchdogAlert three-channel fanout', () => {
       lastActivityAt: Date.now() - (7 * 3600 * 1000),
     });
 
-    const warnCalls = fetchCalls.length;
+    const warnCalls = channelCalls.length;
     assert.ok(warnCalls > 0, 'warn alert should trigger');
 
     // Immediately fire an alert-level alert (should NOT be suppressed)
-    fetchCalls = [];
+    channelCalls = [];
     await fireSelfWatchdogAlert('alert', {
       idleSeconds: 14 * 3600,
       lastActivityAt: Date.now() - (14 * 3600 * 1000),
     });
 
     assert.ok(
-      fetchCalls.length > 0,
+      channelCalls.length > 0,
       'alert-level alert should fire even after recent warn (independent dedup)',
     );
   });
