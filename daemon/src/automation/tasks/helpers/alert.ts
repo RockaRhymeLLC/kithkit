@@ -122,6 +122,21 @@ async function sendViaA2A(message: string, port: number, group: string): Promise
   }
 }
 
+// ── Testability ──────────────────────────────────────────────
+
+interface AlertTestDeps {
+  sendViaTelegram?: (message: string) => Promise<void>;
+  sendViaTmux?: (message: string) => Promise<void>;
+  sendViaA2A?: (message: string, port: number, group: string) => Promise<void>;
+}
+
+let _testDeps: AlertTestDeps | null = null;
+
+/** For unit testing only — inject mock channel implementations. Pass null to restore. */
+export function _setAlertDepsForTesting(deps: AlertTestDeps | null): void {
+  _testDeps = deps;
+}
+
 // ── Public API ───────────────────────────────────────────────
 
 /**
@@ -160,7 +175,7 @@ export async function fireSelfWatchdogAlert(
 
   // Channel 1: Telegram
   try {
-    await sendViaTelegram(message);
+    await (_testDeps?.sendViaTelegram ?? sendViaTelegram)(message);
     log.info('Alert sent via telegram', { level });
   } catch (err) {
     log.warn('Failed to send alert via telegram', {
@@ -170,7 +185,7 @@ export async function fireSelfWatchdogAlert(
 
   // Channel 2: Tmux (comms session)
   try {
-    await sendViaTmux(message);
+    await (_testDeps?.sendViaTmux ?? sendViaTmux)(message);
     log.info('Alert injected to comms tmux session', { level });
   } catch (err) {
     log.debug('Tmux inject skipped or failed', {
@@ -182,7 +197,7 @@ export async function fireSelfWatchdogAlert(
   const a2aGroup = config.daemon.self_watchdog?.a2a_group;
   if (a2aGroup) {
     try {
-      await sendViaA2A(message, port, a2aGroup);
+      await (_testDeps?.sendViaA2A ?? sendViaA2A)(message, port, a2aGroup);
       log.info('Alert sent via A2A', { level, group: a2aGroup });
     } catch (err) {
       log.debug('A2A send skipped or failed', {
