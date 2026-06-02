@@ -21,6 +21,8 @@ RESTART_FLAG="$STATE_DIR/restart-requested"
 
 # Clear restart flag if it exists
 rm -f "$RESTART_FLAG"
+# TRANSITION-ONLY (kithkit#344): also clear legacy .claude flag the dual-poll watches; REMOVE with dual-poll
+rm -f "$BASE_DIR/.claude/state/restart-requested"
 
 # Kill existing session if running
 if session_exists; then

@@ -32,7 +32,8 @@ fi
 # 3. Create restart flag (CWD-independent: source config.sh for absolute STATE_DIR)
 # Walk upward from CWD to find the project root (where scripts/lib/config.sh lives),
 # then source it so STATE_DIR is an absolute path regardless of CWD.
-_d="$PWD"; while [[ "$_d" != "/" && ! -f "$_d/scripts/lib/config.sh" ]]; do _d="${_d%/*}"; done
+_d="$PWD"; while [[ -n "$_d" && "$_d" != "/" && ! -f "$_d/scripts/lib/config.sh" ]]; do _d="${_d%/*}"; done
+if [[ ! -f "$_d/scripts/lib/config.sh" ]]; then echo 'restart: could not locate scripts/lib/config.sh' >&2; exit 1; fi
 source "$_d/scripts/lib/config.sh"
 touch "$STATE_DIR/restart-requested"
 
