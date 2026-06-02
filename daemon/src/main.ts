@@ -33,6 +33,10 @@ import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleMetricsRoute, logRequest } from './api/metrics.js';
 import { handleSelfImprovementRoute } from './api/self-improvement.js';
 import { handleEmailRoute } from './api/email.js';
+import { handleApprovalRoute } from './api/approval.js';
+import { sweepStaleApprovals, registerCardDelivery, approvalGate } from './comms/approval-gate.js';
+import { deliverApprovalCardViaTelegram } from './comms/approval-card-telegram.js';
+import { registerOutboundGate } from './comms/channel-router.js';
 import {
   getExtension,
   isDegraded,
@@ -151,6 +155,25 @@ if (recovery.orphansCleaned > 0 || recovery.failedJobsRecovered > 0) {
     agentsRestarted: recovery.agentsRestarted,
   });
 }
+
+// ── Approval workflow bootstrap ───────────────────────────────
+
+// Sweep any pending approval gates interrupted by the previous daemon run.
+// Per spec (MED-2): daemon restart while gate is pending → resolves DENIED.
+const sweptApprovals = sweepStaleApprovals();
+if (sweptApprovals > 0) {
+  log.warn('Approval gate startup sweep: resolved interrupted approvals as DENIED', {
+    count: sweptApprovals,
+  });
+}
+
+// Wire the Telegram card delivery function into the gate.
+// This must run before any sends are processed, so registration is eager.
+registerCardDelivery(deliverApprovalCardViaTelegram);
+
+// Register the approval gate as the channel-router's outbound gate.
+// The gate is channel-aware: only channels with an approval_policies entry are gated.
+registerOutboundGate((ctx) => approvalGate(ctx));
 
 // ── Comms token bootstrap ────────────────────────────────────
 
@@ -322,6 +345,7 @@ const server = http.createServer((req, res) => {
         () => handleTimerRoute(req, res, url.pathname),
         () => handleSelfImprovementRoute(req, res, url.pathname),
         () => handleEmailRoute(req, res, url.pathname, url.searchParams),
+        () => handleApprovalRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {
         const handled = await handler();

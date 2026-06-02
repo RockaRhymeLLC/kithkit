@@ -185,3 +185,48 @@ self_improvement:
       default: "30d"
       short: "7d"
       evergreen: "never"
+
+# Outbound-send approval policies (approval-workflow.md Phase 2).
+#
+# The approval gate is interposed between channel-router's outbound path and each
+# adapter's transport. Every outbound capability send passes through it.
+#
+# Per-channel policy blocks — key must match the adapter name or capability identifier.
+# If a channel has NO entry here, it is NOT a gated capability (passes through).
+#
+# require_approval_for values:
+#   all                — always require approval before sending (safe default)
+#   first_time_recipient — require only for recipients not yet in agent_sent_recipients
+#   external_only      — require only for recipients outside the tenant's primary domain
+#   never              — bypass gate entirely (escape hatch; all sends still audit-logged)
+#
+# Fail-closed: unrecognized require_approval_for values are treated as 'all'.
+#
+# To override in kithkit.config.yaml (example):
+#
+#   approval_policies:
+#     mail_send:
+#       require_approval_for: all
+#       timeout_minutes: 10
+#     calendar_write:
+#       require_approval_for: all
+#       timeout_minutes: 10
+#     teams_chat_send:
+#       require_approval_for: all
+#       timeout_minutes: 10
+#     # Teams Bot Framework channel — gate all outbound Teams messages:
+#     teams:
+#       require_approval_for: all
+#       timeout_minutes: 10
+#     # Longer window for external recipients:
+#     external_email_send:
+#       require_approval_for: external_only
+#       timeout_minutes: 30
+#     # Escape hatch for known-safe automated flows (still audit-logged):
+#     internal_nightly_report:
+#       require_approval_for: never
+#       timeout_minutes: 10
+#
+# Default: empty — no channels are gated until the operator configures policies.
+# Start with 'all' for any capability that sends outbound communications.
+approval_policies: {}
