@@ -14,7 +14,7 @@ Restart your kithkit session. Use this when:
 
 1. **Save current state** - Run `/save-state` to capture what you're working on
 2. **Notify user** - Let them know restart is happening via the active channel
-3. **Create restart flag** - Write to `.kithkit/state/restart-requested`
+3. **Create restart flag** - Write to the absolute `$STATE_DIR` path (CWD-independent)
 4. **Exit** - The restart-watcher service will detect the flag and restart the session
 
 ## Steps
@@ -29,8 +29,12 @@ if [ -n "$CHANNEL" ] && [ "$CHANNEL" != "silent" ]; then
   echo "Restarting now — be right back!"
 fi
 
-# 3. Create restart flag
-touch .kithkit/state/restart-requested
+# 3. Create restart flag (CWD-independent: source config.sh for absolute STATE_DIR)
+# Walk upward from CWD to find the project root (where scripts/lib/config.sh lives),
+# then source it so STATE_DIR is an absolute path regardless of CWD.
+_d="$PWD"; while [[ "$_d" != "/" && ! -f "$_d/scripts/lib/config.sh" ]]; do _d="${_d%/*}"; done
+source "$_d/scripts/lib/config.sh"
+touch "$STATE_DIR/restart-requested"
 
 # 4. Tell user (terminal)
 echo "Restart requested. Session will restart in ~5 seconds."
