@@ -53,6 +53,9 @@ import { sendMessage } from '../agents/message-router.js';
 import { RateLimiter } from '../core/rate-limiter.js';
 import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
 import { createCommsTelegramAdapter, type CommsTelegramAdapter, type TelegramUpdate } from './comms/adapters/telegram.js';
+import { parseApprovalCallback, answerCallbackQuery } from '../comms/approval-card-telegram.js';
+import { resolveGate } from '../comms/approval-gate.js';
+import { initTeamsExtension, shutdownTeamsExtension } from './teams/index.js';
 
 const log = createLogger('agent-extension');
 
@@ -304,7 +307,45 @@ async function handleTelegramWebhook(
   }
   try {
     const body = await parseBody(req);
-    await _telegramAdapter.handleUpdate(body as TelegramUpdate);
+    const update = body as TelegramUpdate;
+
+    // ── Approval callback_query interception ─────────────────
+    // Inline keyboard button taps from approval cards arrive as callback_query
+    // updates. Intercept them here before forwarding to the regular adapter.
+    if (update.callback_query) {
+      const cq = update.callback_query;
+      const callbackData = cq.data ?? '';
+      const parsed = parseApprovalCallback(callbackData);
+
+      if (parsed) {
+        // This is an approval card callback — resolve the gate
+        const result = resolveGate(parsed.approval_id, parsed.decision);
+
+        let ackText: string;
+        if (result === 'ok') {
+          ackText = parsed.decision === 'approved' ? '✅ Approved — sending now.' : '❌ Rejected — send aborted.';
+          log.info('Approval decision via Telegram inline button', {
+            approval_id: parsed.approval_id,
+            decision: parsed.decision,
+          });
+        } else if (result === 'already_resolved') {
+          ackText = 'This approval has already been decided.';
+        } else {
+          ackText = 'Approval not found or expired.';
+        }
+
+        // Answer callback query to dismiss the Telegram loading spinner
+        answerCallbackQuery(cq.id, ackText).catch(() => {});
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        return true;
+      }
+      // Not an approval callback — fall through to regular handleUpdate
+    }
+    // ── End approval interception ─────────────────────────────
+
+    await _telegramAdapter.handleUpdate(update);
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ ok: true }));
   } catch (err) {
@@ -487,6 +528,11 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Register basic extension health check
   registerAgentHealthChecks();
 
+  // ── Teams Bot Framework extension ──────────────────────────
+  // Reads credentials from Keychain; safe to call when Teams is not configured
+  // (logs a warning and returns without registering routes/adapter).
+  await initTeamsExtension();
+
   // Load instance-specific extensions (if instance/ directory exists)
   const instanceResult = await loadInstanceExtensions(config, _server, _scheduler);
   _instanceShutdown = instanceResult.shutdown ?? null;
@@ -518,6 +564,7 @@ async function onShutdown(): Promise<void> {
     unregisterAdapter('telegram');
     _telegramAdapter = null;
   }
+  shutdownTeamsExtension();
   p2pRateLimiter.stop();
   await stopNetworkSDK();
   stopAgentComms();
