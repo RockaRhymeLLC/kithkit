@@ -4,11 +4,12 @@
  * Tests:
  * (a) JWT validation logic — valid audience passes, wrong audience/issuer/expired fails.
  *     JWKS fetch is mocked to avoid network calls.
- * (b) Outbound activity construction — correct URL + body shape from a conversation reference.
+ * (b) Outbound activity construction — correct conversationId + body shape passed to
+ *     ConnectorClient.conversations.sendToConversation (SDK mock via mock.method).
  * (c) Teams channel is subject to the approval gate (policy-configured channel is gated).
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import os from 'node:os';
@@ -29,7 +30,6 @@ import {
   getConversationRef,
   _resetConversationRefsForTesting,
   sendTeamsActivity,
-  _resetTokenCacheForTesting,
   type ConversationReference,
 } from '../index.js';
 
@@ -47,6 +47,15 @@ import {
 
 import { openDatabase, closeDatabase, _resetDbForTesting } from '../../../core/db.js';
 import { loadConfig, _resetConfigForTesting } from '../../../core/config.js';
+
+// ── SDK class for mocking ─────────────────────────────────────────────────────
+
+// Import Conversations class from sub-path for prototype mocking.
+// The Conversations prototype method is mocked in-process; ConnectorClient
+// instantiates a Conversations with itself as context so the mock intercepts
+// all sendToConversation calls.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const { Conversations } = (await import('botframework-connector/lib/connectorApi/operations/conversations.js')) as any;
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -277,12 +286,12 @@ describe('Teams JWT verification — malformed token rejected', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// (b) OUTBOUND ACTIVITY CONSTRUCTION
+// (b) OUTBOUND ACTIVITY — SDK mock
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('Teams outbound — activity URL and body shape', () => {
-  let capturedRequests: Array<{ url: string; options: RequestInit }> = [];
-  let originalFetch: typeof globalThis.fetch;
+describe('Teams outbound — SDK sendToConversation', () => {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let sendMock: any;
 
   const mockRef: ConversationReference = {
     serviceUrl: 'https://smba.trafficmanager.net/amer/',
@@ -295,89 +304,54 @@ describe('Teams outbound — activity URL and body shape', () => {
   };
 
   beforeEach(() => {
-    _resetTokenCacheForTesting();
-    capturedRequests = [];
-    originalFetch = globalThis.fetch;
-
-    // Mock fetch to capture requests
-    globalThis.fetch = async (url: string | URL | Request, options?: RequestInit): Promise<Response> => {
-      const urlStr = url.toString();
-      capturedRequests.push({ url: urlStr, options: options ?? {} });
-
-      // AAD token endpoint
-      if (urlStr.includes('microsoftonline.com')) {
-        return new Response(JSON.stringify({
-          access_token: 'mock-aad-token-value',
-          expires_in: 3600,
-        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-      }
-
-      // Bot Framework connector endpoint
-      if (urlStr.includes('v3/conversations')) {
-        return new Response(JSON.stringify({ id: 'activity-response-001' }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-
-      throw new Error(`Unexpected fetch URL: ${urlStr}`);
-    };
+    // Stub Conversations.prototype.sendToConversation so no real network calls occur.
+    sendMock = mock.method(
+      Conversations.prototype,
+      'sendToConversation',
+      async () => ({ id: 'mock-activity-response-id' }),
+    );
   });
 
   afterEach(() => {
-    globalThis.fetch = originalFetch;
-    _resetTokenCacheForTesting();
+    sendMock.mock.restore();
+    _resetConversationRefsForTesting();
   });
 
-  it('sends to correct URL: {serviceUrl}/v3/conversations/{conversationId}/activities', async () => {
-    await sendTeamsActivity(mockRef, 'Hello from Bridget!', 'client-id', 'client-secret');
+  it('calls sendToConversation with the correct conversationId', async () => {
+    await sendTeamsActivity(mockRef, 'Hello from Bridget!', 'client-id', 'client-secret', 'tenant-id');
 
-    const outboundReq = capturedRequests.find(r => r.url.includes('v3/conversations'));
-    assert.ok(outboundReq, 'Expected an outbound Teams activity request');
-    // serviceUrl trailing slash removed + path appended
-    const expectedUrl = `https://smba.trafficmanager.net/amer/v3/conversations/${encodeURIComponent('conv-001:abc')}/activities`;
-    assert.equal(outboundReq!.url, expectedUrl);
+    assert.equal(sendMock.mock.calls.length, 1, 'sendToConversation should be called once');
+    const [convId] = sendMock.mock.calls[0].arguments;
+    assert.equal(convId, 'conv-001:abc');
   });
 
-  it('sets Authorization: Bearer <token> header on outbound request', async () => {
-    await sendTeamsActivity(mockRef, 'Test message', 'client-id', 'client-secret');
+  it('calls sendToConversation with correct activity body shape', async () => {
+    await sendTeamsActivity(mockRef, 'Hello Teams!', 'client-id', 'client-secret', 'tenant-id');
 
-    const outboundReq = capturedRequests.find(r => r.url.includes('v3/conversations'));
-    assert.ok(outboundReq);
-    const headers = outboundReq!.options.headers as Record<string, string>;
-    assert.ok(headers['Authorization']?.startsWith('Bearer '), 'Authorization header must start with Bearer');
-    assert.equal(headers['Authorization'], 'Bearer mock-aad-token-value');
-  });
-
-  it('sends correct activity body shape', async () => {
-    await sendTeamsActivity(mockRef, 'Hello Teams!', 'client-id', 'client-secret');
-
-    const outboundReq = capturedRequests.find(r => r.url.includes('v3/conversations'));
-    assert.ok(outboundReq);
-    const body = JSON.parse(outboundReq!.options.body as string) as Record<string, unknown>;
-
-    assert.equal(body.type, 'message');
-    assert.equal(body.text, 'Hello Teams!');
-    assert.deepEqual(body.from, { id: 'bot-id-001', name: 'Bridget' });
-    assert.deepEqual(body.recipient, { id: 'user-id-001', name: 'Marnie' });
-    assert.deepEqual(body.conversation, { id: 'conv-001:abc' });
-    assert.equal(body.channelId, 'msteams');
+    const [, activity] = sendMock.mock.calls[0].arguments;
+    assert.equal(activity.type, 'message');
+    assert.equal(activity.text, 'Hello Teams!');
+    assert.deepEqual(activity.from, { id: 'bot-id-001', name: 'Bridget' });
+    assert.deepEqual(activity.recipient, { id: 'user-id-001', name: 'Marnie' });
+    assert.deepEqual(activity.conversation, { id: 'conv-001:abc' });
+    assert.equal(activity.channelId, 'msteams');
   });
 
   it('TeamsAdapter.send() resolves true on success', async () => {
     _resetConversationRefsForTesting();
     upsertConversationRef(mockRef);
-    const adapter = new TeamsAdapter('client-id', 'client-secret');
+    const adapter = new TeamsAdapter('client-id', 'client-secret', 'tenant-id');
     const result = await adapter.send({ text: 'Hello!', metadata: { conversationId: 'conv-001:abc' } });
     assert.equal(result, true);
-    _resetConversationRefsForTesting();
+    assert.equal(sendMock.mock.calls.length, 1);
   });
 
   it('TeamsAdapter.send() resolves false when no conversation ref available', async () => {
     _resetConversationRefsForTesting();
-    const adapter = new TeamsAdapter('client-id', 'client-secret');
+    const adapter = new TeamsAdapter('client-id', 'client-secret', 'tenant-id');
     const result = await adapter.send({ text: 'No conversation ref' });
     assert.equal(result, false);
+    assert.equal(sendMock.mock.calls.length, 0, 'sendToConversation should not be called');
   });
 
   it('TeamsAdapter.send() uses metadata.conversationId to target specific conversation', async () => {
@@ -386,56 +360,80 @@ describe('Teams outbound — activity URL and body shape', () => {
     upsertConversationRef(mockRef);
     upsertConversationRef(ref2);
 
-    const adapter = new TeamsAdapter('client-id', 'client-secret');
+    const adapter = new TeamsAdapter('client-id', 'client-secret', 'tenant-id');
     await adapter.send({ text: 'Targeted', metadata: { conversationId: 'conv-001:abc' } });
 
-    const outboundReq = capturedRequests.find(r => r.url.includes('v3/conversations'));
-    assert.ok(outboundReq);
-    assert.ok(outboundReq!.url.includes(encodeURIComponent('conv-001:abc')));
-    _resetConversationRefsForTesting();
+    const [convId] = sendMock.mock.calls[0].arguments;
+    assert.equal(convId, 'conv-001:abc', 'Should use the conversationId from metadata');
   });
 
-  it('AAD token is cached across multiple sends', async () => {
+  it('TeamsAdapter.send() resolves false when sendToConversation throws', async () => {
+    sendMock.mock.restore();
+    sendMock = mock.method(
+      Conversations.prototype,
+      'sendToConversation',
+      async () => { throw new Error('Connector error'); },
+    );
+
     _resetConversationRefsForTesting();
     upsertConversationRef(mockRef);
-    const adapter = new TeamsAdapter('client-id', 'client-secret');
-    await adapter.send({ text: 'First', metadata: { conversationId: 'conv-001:abc' } });
-    await adapter.send({ text: 'Second', metadata: { conversationId: 'conv-001:abc' } });
-
-    const aadRequests = capturedRequests.filter(r => r.url.includes('microsoftonline.com'));
-    assert.equal(aadRequests.length, 1, 'AAD token should be fetched once and cached');
-    _resetConversationRefsForTesting();
+    const adapter = new TeamsAdapter('client-id', 'client-secret', 'tenant-id');
+    const result = await adapter.send({ text: 'Error test', metadata: { conversationId: 'conv-001:abc' } });
+    assert.equal(result, false);
   });
 
-  it('refreshes AAD token on 401 from connector', async () => {
-    _resetTokenCacheForTesting();
-    let connectorCallCount = 0;
+  it('tenantId is passed as channelAuthTenant (3rd arg) to MicrosoftAppCredentials', async () => {
+    // Verify tenantId is threaded through to SDK credentials.
+    // AppCredentials stores channelAuthTenant as the .tenant property.
+    // We capture the Conversations instance context to inspect credentials.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capturedCtx: any;
+    sendMock.mock.restore();
+    sendMock = mock.method(
+      Conversations.prototype,
+      'sendToConversation',
+      async function (this: unknown) {
+        capturedCtx = this;
+        return { id: 'mock-id' };
+      },
+    );
 
-    globalThis.fetch = async (url: string | URL | Request, options?: RequestInit): Promise<Response> => {
-      const urlStr = url.toString();
-      capturedRequests.push({ url: urlStr, options: options ?? {} });
+    const expectedTenantId = '12f2ee23-457a-4f1f-a102-db910fc3f866';
+    await sendTeamsActivity(mockRef, 'tenant test', 'client-id', 'client-secret', expectedTenantId);
 
-      if (urlStr.includes('microsoftonline.com')) {
-        return new Response(JSON.stringify({ access_token: 'fresh-token', expires_in: 3600 }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      if (urlStr.includes('v3/conversations')) {
-        connectorCallCount++;
-        if (connectorCallCount === 1) {
-          return new Response('Unauthorized', { status: 401 });
-        }
-        return new Response(JSON.stringify({ id: 'reply-id' }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
-      throw new Error(`Unexpected fetch URL: ${urlStr}`);
-    };
+    assert.ok(capturedCtx, 'sendToConversation context should be captured');
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const creds = (capturedCtx as any).client.credentials;
+    assert.equal(
+      creds.tenant,
+      expectedTenantId,
+      `Expected tenant '${expectedTenantId}' but got '${creds.tenant as string}'`,
+    );
+  });
 
-    await sendTeamsActivity(mockRef, 'Retry test', 'client-id', 'client-secret');
-    assert.equal(connectorCallCount, 2, 'Connector should be called twice (initial 401 + retry)');
+  it('ConnectorClient is constructed with baseUri equal to the conversation ref serviceUrl', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let capturedCtx: any;
+    sendMock.mock.restore();
+    sendMock = mock.method(
+      Conversations.prototype,
+      'sendToConversation',
+      async function (this: unknown) {
+        capturedCtx = this;
+        return { id: 'mock-id' };
+      },
+    );
+
+    await sendTeamsActivity(mockRef, 'baseUri test', 'client-id', 'client-secret', 'tenant-id');
+
+    assert.ok(capturedCtx, 'sendToConversation context should be captured');
+    assert.equal(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (capturedCtx as any).client.baseUri,
+      mockRef.serviceUrl,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      `Expected baseUri '${mockRef.serviceUrl}' but got '${(capturedCtx as any).client.baseUri as string}'`,
+    );
   });
 });
 
