@@ -150,9 +150,19 @@ async function handleAgentP2P(
     }
     // If !secret (keychain locked/unavailable), accept without verification (fail-open)
 
-    await handleIncomingP2P(envelope);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    const persisted = await handleIncomingP2P(envelope);
+    if (!persisted) {
+      // SDK unavailable or handler error — envelope was NOT stored.
+      // Return ok:false so the sender SDK can report 'queued' instead of false 'delivered'.
+      log.warn('P2P message not persisted (SDK unavailable or handler error)', {
+        sender: (envelope as unknown as Record<string, unknown>).sender,
+      });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'Message not persisted' }));
+    } else {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    }
   } catch (err) {
     log.error('P2P endpoint error', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(400, { 'Content-Type': 'application/json' });

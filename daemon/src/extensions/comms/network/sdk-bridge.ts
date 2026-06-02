@@ -230,6 +230,11 @@ export function _resetForTesting(): void {
   _initInFlight = null;
 }
 
+/** Inject a mock network client — for testing only. */
+export function _setNetworkForTesting(mock: A2ANetworkClient): void {
+  _network = mock;
+}
+
 // ── Event Wiring ─────────────────────────────────────────────
 
 function getAgentName(): string {
