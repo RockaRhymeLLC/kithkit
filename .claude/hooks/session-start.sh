@@ -58,6 +58,14 @@ if [ -z "$CURRENT_SESSION" ] || [ "$CURRENT_SESSION" != "$SESSION_NAME" ]; then
   exit 0
 fi
 
+# ── Write comms session ID for send-enforcer session-scope guard ───────────
+# send-enforcer.sh reads this file to confirm it is running inside the comms
+# session before enforcing /api/send delivery. Overwrite on every start so the
+# file always reflects the current live session ID.
+if [ -n "${CLAUDE_SESSION_ID:-}" ]; then
+  printf '%s' "$CLAUDE_SESSION_ID" > "$STATE_DIR/comms-session.txt"
+fi
+
 # ── Comms agent bootstrap ──────────────────────────────────
 
 # Read daemon port from config (default: 3847)
