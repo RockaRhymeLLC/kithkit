@@ -129,12 +129,10 @@ const configWatcher = createConfigWatcher(configPath, config);
 setConfigWatcher(configWatcher);
 setCurrentDbPath(resolvedDbPath);
 setConfigFilePath(configPath);
-configWatcher.onChange((newConfig) => {
+configWatcher.onChange(async (newConfig) => {
   const ext = getExtension();
   if (ext?.onConfigChange) {
-    Promise.resolve(ext.onConfigChange(newConfig)).catch((err) => {
-      log.error('Extension config change handler failed', { error: String(err) });
-    });
+    await Promise.resolve(ext.onConfigChange(newConfig));
   }
 });
 configWatcher.start();
