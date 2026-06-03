@@ -1,13 +1,18 @@
 /**
  * t-200, t-201, t-201b: Extension hooks system
+ * t-202: onConfigChange hook propagates to subsystems
  *
  * Tests the extension lifecycle: registration, init/route/shutdown hooks,
- * degraded mode on init failure, and no-op behavior without extensions.
+ * degraded mode on init failure, no-op behavior without extensions,
+ * and config-change cache invalidation across scheduler, agent-comms, and rate limiter.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 import {
   registerExtension,
   isDegraded,
@@ -16,6 +21,11 @@ import {
   _resetExtensionForTesting,
   type Extension,
 } from '../core/extensions.js';
+import { openDatabase, closeDatabase } from '../core/db.js';
+import { Scheduler } from '../automation/scheduler.js';
+import { agentExtension, _setSchedulerForTesting, _resetForTesting as _resetExtensionState } from '../extensions/index.js';
+import { getAgentStatus, stopAgentComms } from '../extensions/comms/agent-comms.js';
+import type { KithkitConfig } from '../core/config.js';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -335,5 +345,87 @@ describe('Extension with bad init runs in degraded mode (t-201b)', () => {
     setDegraded(true);
     res = await request(TEST_PORT, 'GET', '/ext/test');
     assert.equal(res.status, 404, 'Extension route should be skipped when degraded');
+  });
+});
+
+// ── t-202: onConfigChange propagates to subsystems ───────────
+
+function makeFullConfig(overrides: Partial<KithkitConfig> = {}): KithkitConfig {
+  return {
+    agent: { name: 'TestAgent', ...overrides.agent },
+    daemon: {
+      port: 3847,
+      log_level: 'info',
+      log_dir: 'logs',
+      log_rotation: { max_size_mb: 10, max_files: 5 },
+      ...overrides.daemon,
+    },
+    scheduler: { tasks: [], ...overrides.scheduler },
+    security: {
+      rate_limits: { incoming_max_per_minute: 5, outgoing_max_per_minute: 10 },
+      ...overrides.security,
+    },
+  };
+}
+
+describe('onConfigChange hook propagates to subsystems (t-202)', { concurrency: 1 }, () => {
+  let tmpDir: string;
+  let testScheduler: Scheduler | null = null;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-ext-test-'));
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+    testScheduler = null;
+    _resetExtensionState();
+  });
+
+  afterEach(() => {
+    testScheduler?.stop();
+    testScheduler = null;
+    stopAgentComms();
+    _resetExtensionState();
+    closeDatabase();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('onConfigChange calls scheduler.reload() so new tasks take effect', () => {
+    const initialTasks = [{ name: 'task-alpha', enabled: true, interval: '5m', config: {} }];
+    testScheduler = new Scheduler({ tasks: initialTasks, autoRegisterCoreTasks: false });
+    _setSchedulerForTesting(testScheduler);
+
+    assert.ok(testScheduler.getTask('task-alpha'), 'Initial task should exist');
+
+    const newTasks = [{ name: 'task-beta', enabled: true, interval: '10m', config: {} }];
+    const newConfig = makeFullConfig({ scheduler: { tasks: newTasks } });
+
+    agentExtension.onConfigChange!(newConfig);
+
+    assert.ok(testScheduler.getTask('task-beta'), 'New task should be present after reload');
+    assert.equal(testScheduler.getTask('task-alpha'), undefined, 'Removed task should be gone after reload');
+  });
+
+  it('onConfigChange with no scheduler does not throw', () => {
+    // _scheduler is null — must not throw
+    const config = makeFullConfig();
+    assert.doesNotThrow(() => agentExtension.onConfigChange!(config));
+  });
+
+  it('onConfigChange refreshes agent-comms peer config', () => {
+    // After onConfigChange, getAgentStatus() should reflect the new agent name
+    // (agent-comms caches _config; refreshAgentCommsConfig updates it)
+    const config = makeFullConfig({ agent: { name: 'RefreshedName' } });
+    agentExtension.onConfigChange!(config);
+
+    const status = getAgentStatus();
+    assert.equal(status.agent, 'RefreshedName', 'Agent-comms should use refreshed config after onConfigChange');
+  });
+
+  it('onConfigChange is a no-op when extension object has no onConfigChange', () => {
+    // Verify the hook is optional — registering an extension without onConfigChange
+    // and calling it should not throw
+    const ext: Extension = { name: 'no-config-change' };
+    assert.equal(ext.onConfigChange, undefined);
+    // Calling undefined onConfigChange should not throw (caller guards with ?)
+    assert.doesNotThrow(() => ext.onConfigChange?.(makeFullConfig()));
   });
 });

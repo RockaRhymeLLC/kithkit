@@ -14,15 +14,15 @@ import { ConfigValidationError } from './config.js';
 
 // ── Types ───────────────────────────────────────────────────
 
-export type ConfigChangeCallback = (config: KithkitConfig) => void;
+export type ConfigChangeCallback = (config: KithkitConfig) => Promise<void> | void;
 
 export interface ConfigWatcher {
   /** Start watching for config changes. */
   start(): void;
   /** Stop watching. */
   stop(): void;
-  /** Force an immediate reload (used by POST /config/reload). */
-  reload(): ReloadResult;
+  /** Force an immediate reload (used by POST /config/reload). Awaits all onChange callbacks. */
+  reload(): Promise<ReloadResult>;
   /** Register a callback for config changes. */
   onChange(callback: ConfigChangeCallback): void;
   /** Check if watcher is active. */
@@ -92,7 +92,7 @@ export function createConfigWatcher(
     error: () => {},
   };
 
-  function loadAndApply(): ReloadResult {
+  async function loadAndApply(): Promise<ReloadResult> {
     try {
       if (!fs.existsSync(configPath)) {
         return { success: false, error: 'Config file not found' };
@@ -110,7 +110,7 @@ export function createConfigWatcher(
 
       for (const cb of callbacks) {
         try {
-          cb(newConfig);
+          await Promise.resolve(cb(newConfig));
         } catch (err) {
           log.error('Config change callback error', { error: String(err) });
         }
@@ -167,7 +167,7 @@ export function createConfigWatcher(
       _watching = false;
     },
 
-    reload(): ReloadResult {
+    async reload(): Promise<ReloadResult> {
       return loadAndApply();
     },
 

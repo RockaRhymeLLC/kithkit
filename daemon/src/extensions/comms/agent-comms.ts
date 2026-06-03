@@ -466,3 +466,11 @@ export function stopAgentComms(): void {
   _config = null;
   log.info('Agent comms stopped');
 }
+
+/**
+ * Refresh the agent-comms config in-place after a hot reload.
+ * Updates the cached peer list and other settings without restarting.
+ */
+export function refreshAgentCommsConfig(config: KithkitConfig): void {
+  _config = config as CommsConfig;
+}
