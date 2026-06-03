@@ -21,6 +21,32 @@ import { createLogger } from './logger.js';
 
 const log = createLogger('session-bridge');
 
+// ── Test-runner guard ────────────────────────────────────────
+
+/**
+ * Returns true when the current process is running under any test runner.
+ *
+ * This guard CANNOT be defeated by deleting KITHKIT_SUPPRESS_NOTIFICATIONS
+ * because it relies on env markers set by the test runner itself — not by test
+ * code. It is the defense-in-depth choke point that prevents real tmux
+ * send-keys from firing against live sessions during CI or local test runs.
+ *
+ * Supported runners:
+ *  - Node.js built-in test runner (node --test): sets NODE_TEST_CONTEXT=child
+ *  - Jest: sets JEST_WORKER_ID
+ *  - Vitest: sets VITEST and/or VITEST_WORKER_ID
+ *  - Generic: NODE_ENV=test
+ */
+function isUnderTestRunner(): boolean {
+  return (
+    process.env.NODE_TEST_CONTEXT !== undefined ||  // node --test child process
+    process.env.JEST_WORKER_ID !== undefined ||      // Jest
+    process.env.VITEST !== undefined ||              // Vitest
+    process.env.VITEST_WORKER_ID !== undefined ||   // Vitest worker
+    process.env.NODE_ENV === 'test'                  // Generic test env
+  );
+}
+
 // ── Test helpers ──────────────────────────────────────────────
 /** @internal Exposed for unit testing. */
 export const _testHelpers = {
@@ -177,6 +203,19 @@ export function injectText(
   text: string,
   options?: { name?: string; pressEnter?: boolean; timestamp?: boolean },
 ): boolean {
+  // Production defense-in-depth: refuse real send-keys when running under any
+  // test runner. This guard applies before any session existence check, so it
+  // cannot be bypassed by test code deleting KITHKIT_SUPPRESS_NOTIFICATIONS —
+  // it relies on env markers set by the test runner process itself.
+  //
+  // session-bridge.ts is the lowest choke point for injection from automation
+  // tasks (approval-audit, context-watchdog, etc.). Guarding here prevents
+  // those tasks from flooding live tmux sessions during test runs regardless of
+  // which test-level suppression flags are or are not set.
+  if (isUnderTestRunner() && process.env.KITHKIT_ALLOW_TEST_INJECT !== '1') {
+    return false;
+  }
+
   const session = validateSessionName(options?.name ?? getDefaultSessionName());
   const pressEnter = options?.pressEnter ?? true;
   const addTimestamp = options?.timestamp ?? true;

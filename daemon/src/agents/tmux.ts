@@ -52,6 +52,30 @@ let _injectionAttempts = 0;
 export function _getInjectionAttempts(): number { return _injectionAttempts; }
 export function _resetInjectionAttempts(): void { _injectionAttempts = 0; }
 
+/**
+ * Returns true when the current process is running under any test runner.
+ *
+ * This check is CANNOT be defeated by deleting KITHKIT_SUPPRESS_NOTIFICATIONS
+ * because it relies on env markers set by the test runner itself — not by test
+ * code. It is used as a defense-in-depth guard to prevent real tmux send-keys
+ * from firing against live sessions during CI or local test runs.
+ *
+ * Supported runners:
+ *  - Node.js built-in test runner (node --test): sets NODE_TEST_CONTEXT=child
+ *  - Jest: sets JEST_WORKER_ID
+ *  - Vitest: sets VITEST and/or VITEST_WORKER_ID
+ *  - Generic: NODE_ENV=test
+ */
+function isUnderTestRunner(): boolean {
+  return (
+    process.env.NODE_TEST_CONTEXT !== undefined ||  // node --test child process
+    process.env.JEST_WORKER_ID !== undefined ||      // Jest
+    process.env.VITEST !== undefined ||              // Vitest
+    process.env.VITEST_WORKER_ID !== undefined ||   // Vitest worker
+    process.env.NODE_ENV === 'test'                  // Generic test env
+  );
+}
+
 // ── Message injection ───────────────────────────────────────
 
 /**
@@ -63,6 +87,19 @@ export function injectMessage(agentId: string, text: string): boolean {
     return false; // test-isolation: suppress all live-session tmux injections
   }
   _injectionAttempts++;
+
+  // Production defense-in-depth: refuse real send-keys when running under any
+  // test runner. This guard CANNOT be bypassed by deleting
+  // KITHKIT_SUPPRESS_NOTIFICATIONS — it relies on env markers set by the test
+  // runner itself. _injectionAttempts is incremented above so tests asserting
+  // the attempt counter still pass without any real I/O.
+  //
+  // The only explicit opt-in is KITHKIT_ALLOW_TEST_INJECT=1, which is intended
+  // exclusively for tests that specifically need to assert real-inject behavior
+  // and MUST be paired with a mocked execFileSync to prevent actual tmux I/O.
+  if (isUnderTestRunner() && process.env.KITHKIT_ALLOW_TEST_INJECT !== '1') {
+    return false;
+  }
 
   const session = resolveSession(agentId);
   if (!session) {
