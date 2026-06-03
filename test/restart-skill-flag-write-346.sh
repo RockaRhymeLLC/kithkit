@@ -245,6 +245,21 @@ else
     diff <(echo "$kithkit_block") <(echo "$claude_block") | sed 's/^/    /'
 fi
 
+# ── Scenario (7): Static guard — no BASH_SOURCE / config.sh in flag-write ────
+#
+# NOTE: block= uses `grep -v '^#'` to strip shell-comment lines before analysis.
+# The section header extracted by extract_flag_write includes the marker comment
+# "# 3. Create restart flag (...no BASH_SOURCE / config.sh sourcing)" which
+# contains the literal word BASH_SOURCE as documentation.  Stripping comment
+# lines restricts the guard to actual code — R2's two grep assertions are verbatim.
+
+echo ""
+echo "Scenario (7): Static guard — shipped snippet code contains no BASH_SOURCE or config.sh sourcing"
+
+block="$(extract_flag_write "$KITHKIT_SKILL" | grep -v '^#')"
+echo "$block" | grep -q 'BASH_SOURCE'        && fail 'snippet references BASH_SOURCE (zsh-empty regression)' || pass 'no BASH_SOURCE'
+echo "$block" | grep -qE 'source .*config\.sh' && fail 'snippet sources config.sh (regression)'              || pass 'no config.sh sourcing'
+
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 echo ""
