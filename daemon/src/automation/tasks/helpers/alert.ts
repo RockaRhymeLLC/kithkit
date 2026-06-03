@@ -88,6 +88,17 @@ function buildMessage(
   );
 }
 
+// ── Injectable deps (overridable for testing) ────────────────
+
+type InjectMessageFn = (agentId: string, text: string) => boolean;
+
+let _tmuxInjectMessage: InjectMessageFn | null = null;
+
+/** @internal Override tmux injectMessage for test isolation. Pass null to restore the default (dynamic import). */
+export function _setDepsForTesting(deps: { injectMessage?: InjectMessageFn } | null): void {
+  _tmuxInjectMessage = deps?.injectMessage ?? null;
+}
+
 // ── Three-channel fanout ─────────────────────────────────────
 
 async function sendViaTelegram(message: string): Promise<void> {
@@ -100,6 +111,11 @@ async function sendViaTelegram(message: string): Promise<void> {
 }
 
 async function sendViaTmux(message: string): Promise<void> {
+  const inject = _tmuxInjectMessage;
+  if (inject !== null) {
+    inject('comms', message);
+    return;
+  }
   // Dynamic import — tmux module may fail if tmux is not running
   const { injectMessage } = await import('../../../agents/tmux.js');
   injectMessage('comms', message);
