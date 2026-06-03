@@ -341,6 +341,13 @@ async function gatherReminders(): Promise<string> {
 
   if (!reminders || reminders.length === 0) return 'No reminders.';
 
+  // Allow-list: only include these two Apple Reminders lists in the morning briefing.
+  // "To Do!" includes the trailing exclamation mark deliberately — that is the exact
+  // device-verified list name (Partner's personal To Do list). "Reminders" is the shared list.
+  const ALLOWED_REMINDER_LISTS = new Set(['To Do!', 'Reminders']);
+  reminders = reminders.filter(r => ALLOWED_REMINDER_LISTS.has(r.list));
+  if (reminders.length === 0) return 'No reminders.';
+
   // Format: group by list, show priority and due date
   const byList = new Map<string, AppleReminder[]>();
   for (const r of reminders) {
