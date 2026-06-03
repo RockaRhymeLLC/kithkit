@@ -14,14 +14,16 @@ const log = createLogger('self-watchdog:activity');
 
 /**
  * Each source: table name and the timestamp column to MAX.
- * All five represent real work, not scheduler ticks or keepalives.
+ * All four represent real work, not scheduler ticks or keepalives.
  */
 const ACTIVITY_SOURCES: Array<{ table: string; col: string }> = [
   { table: 'worker_jobs',        col: 'finished_at'  },
   { table: 'tasks',              col: 'updated_at'   },
   { table: 'messages',           col: 'created_at'   },
   { table: 'memories',           col: 'created_at'   },
-  { table: 'todos',              col: 'updated_at'   },
+  // 'todos' removed: all todo rows now live in tasks (kind='todo'); tasks entry above covers them.
+  // Semantic note: tasks MAX covers all kinds, not just kind='todo' — acceptable widening for
+  // this watchdog signal (any task update counts as real daemon work).
 ];
 
 /**
