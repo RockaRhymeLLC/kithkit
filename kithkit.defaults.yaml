@@ -37,6 +37,9 @@ daemon:
 
 scheduler:
   tasks_dirs: []          # Additional directories to scan for external task handler files
+  hot_load_jobs:
+    enabled: true
+    dir: ".kithkit/scheduled-jobs"
   tasks:
     - name: context-watchdog
       interval: "3m"

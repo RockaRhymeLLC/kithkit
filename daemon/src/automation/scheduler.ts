@@ -175,6 +175,32 @@ export class Scheduler {
   }
 
   /**
+   * Dynamically add a task from config without a daemon restart.
+   * Idempotent — if a task with the same name already exists, the call is a no-op.
+   *
+   * Used by JobsWatcher to register hot-loaded agent jobs at runtime.
+   */
+  addTask(config: TaskScheduleConfig): void {
+    if (this._tasks.has(config.name)) return;
+    const task = this._parseTask(config);
+    if (task.enabled && this._started) {
+      task.nextRunAt = this._calculateNextRun(task);
+    }
+    this._tasks.set(config.name, task);
+  }
+
+  /**
+   * Dynamically remove a task and its handler without a daemon restart.
+   * Idempotent — silently succeeds if the task does not exist.
+   *
+   * Used by JobsWatcher when a hot-loaded job file is deleted or replaced.
+   */
+  removeTask(name: string): void {
+    this._tasks.delete(name);
+    this._handlers.delete(name);
+  }
+
+  /**
    * Reload tasks from new config. Adds new tasks, removes deleted ones,
    * updates changed ones. Running tasks are not interrupted.
    */
