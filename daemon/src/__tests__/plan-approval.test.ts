@@ -12,8 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { openDatabase, _resetDbForTesting, query } from '../core/db.js';
-import { handleTaskQueueRoute } from '../api/task-queue.js';
-import { _setEvaluateTaskFnForTesting } from '../api/task-queue.js';
+import { handleTaskQueueRoute, _setEvaluateTaskFnForTesting, _setTmuxInjectorForTesting } from '../api/task-queue.js';
 
 const TEST_PORT = 19871;
 
@@ -57,6 +56,9 @@ function setup(): Promise<void> {
   // Disable retro evaluation for tests
   _setEvaluateTaskFnForTesting(async () => {});
 
+  // Suppress live tmux injections during tests
+  _setTmuxInjectorForTesting(() => false);
+
   server = http.createServer((inReq, res) => {
     const url = new URL(inReq.url ?? '/', `http://localhost:${TEST_PORT}`);
     res.setHeader('X-Timestamp', new Date().toISOString());
@@ -82,6 +84,7 @@ function setup(): Promise<void> {
 
 function teardown(): Promise<void> {
   _setEvaluateTaskFnForTesting(null);
+  _setTmuxInjectorForTesting(null);
   return new Promise<void>((resolve) => {
     _resetDbForTesting();
     if (server?.listening) {
