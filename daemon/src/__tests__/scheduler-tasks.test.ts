@@ -158,8 +158,15 @@ describe('Core scheduler tasks register and execute (t-220)', () => {
 describe('Scheduler tasks use session bridge (t-221)', () => {
   let tmpDir: string;
   let scheduler: Scheduler;
+  let savedSuppress: string | undefined;
 
   beforeEach(() => {
+    // Explicitly suppress live tmux injection for all tests in this block.
+    // approval-audit calls session-bridge injectText which can reach a live COMMS_SESSION
+    // if KITHKIT_SUPPRESS_NOTIFICATIONS is absent. Belt-and-suspenders on
+    // top of the production isUnderTestRunner() guard added to session-bridge.ts.
+    savedSuppress = process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    process.env.KITHKIT_SUPPRESS_NOTIFICATIONS = '1';
     _resetConfigForTesting();
     resetAccessControl();
   });
@@ -169,6 +176,12 @@ describe('Scheduler tasks use session bridge (t-221)', () => {
     _resetConfigForTesting();
     resetAccessControl();
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+    // Restore suppression flag
+    if (savedSuppress === undefined) {
+      delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    } else {
+      process.env.KITHKIT_SUPPRESS_NOTIFICATIONS = savedSuppress;
+    }
   });
 
   it('context-watchdog config has requires_session: true', () => {
