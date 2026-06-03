@@ -14,7 +14,7 @@ Restart your kithkit session. Use this when:
 
 1. **Save current state** - Run `/save-state` to capture what you're working on
 2. **Notify user** - Let them know restart is happening via the active channel
-3. **Create restart flag** - Write to the absolute `$STATE_DIR` path (CWD-independent)
+3. **Create restart flag** - Write to `$KKIT_ROOT/.kithkit/state/restart-requested` (git-root, CWD-independent)
 4. **Exit** - The restart-watcher service will detect the flag and restart the session
 
 ## Steps
@@ -29,13 +29,12 @@ if [ -n "$CHANNEL" ] && [ "$CHANNEL" != "silent" ]; then
   echo "Restarting now — be right back!"
 fi
 
-# 3. Create restart flag (CWD-independent: source config.sh for absolute STATE_DIR)
-# Walk upward from CWD to find the project root (where scripts/lib/config.sh lives),
-# then source it so STATE_DIR is an absolute path regardless of CWD.
-_d="$PWD"; while [[ -n "$_d" && "$_d" != "/" && ! -f "$_d/scripts/lib/config.sh" ]]; do _d="${_d%/*}"; done
-if [[ ! -f "$_d/scripts/lib/config.sh" ]]; then echo 'restart: could not locate scripts/lib/config.sh' >&2; exit 1; fi
-source "$_d/scripts/lib/config.sh"
-touch "$STATE_DIR/restart-requested"
+# 3. Create restart flag (CWD-independent: use git root, no BASH_SOURCE / config.sh sourcing)
+# git rev-parse resolves the repo root from any CWD; falls back to $PWD outside a git repo.
+KKIT_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"
+[ -z "$KKIT_ROOT" ] && KKIT_ROOT="$PWD"
+mkdir -p "$KKIT_ROOT/.kithkit/state"
+touch "$KKIT_ROOT/.kithkit/state/restart-requested"
 
 # 4. Tell user (terminal)
 echo "Restart requested. Session will restart in ~5 seconds."
