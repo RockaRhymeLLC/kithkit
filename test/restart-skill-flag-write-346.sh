@@ -184,7 +184,7 @@ mkdir -p "$subdir"
 # The old buggy path would be: dirname(dirname(dirname(scripts/lib))) = /Users
 # (since LIB_DIR=CWD=repo_root → SCRIPTS_DIR=parent → BASE_DIR=grandparent)
 # For a repo at /tmp/kk-test-XXXX, wrong path would be /tmp/.kithkit/state
-# For the real install at /Users/skippy/KKit-Skippy, wrong path = /Users/.kithkit/state
+# For a real install at /home/user/myproject, wrong path would be /home/user/.kithkit/state
 parent_of_repo="$(dirname "$tmpdir")"
 wrong_flag="$parent_of_repo/../.kithkit/state/restart-requested"
 
