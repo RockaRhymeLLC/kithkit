@@ -152,6 +152,19 @@ function now(): string {
 }
 
 /**
+ * Serialize a DB task row for API responses.
+ * Adds computed fields that are not stored in the database.
+ * - estimate_multiplier: actual_minutes / estimated_minutes, null when either is null or estimated_minutes is 0.
+ */
+function serializeTask(task: UnifiedTask): UnifiedTask & { estimate_multiplier: number | null } {
+  const estimate_multiplier =
+    task.actual_minutes !== null && task.estimated_minutes !== null && task.estimated_minutes !== 0
+      ? task.actual_minutes / task.estimated_minutes
+      : null;
+  return { ...task, estimate_multiplier };
+}
+
+/**
  * Resolve a task by integer id or UUID external_id.
  * Tries integer parse first; falls back to UUID lookup.
  */
@@ -317,7 +330,7 @@ export async function handleUnifiedTasksRoute(
 
       const task = get<UnifiedTask>('tasks', rowid.id)!;
       log.info('Task created', { id: task.id, external_id: task.external_id, kind, title: task.title });
-      json(res, 201, withTimestamp(task));
+      json(res, 201, withTimestamp(serializeTask(task)));
       return true;
     }
 
@@ -392,7 +405,7 @@ export async function handleUnifiedTasksRoute(
           task.id,
         );
         return {
-          ...task,
+          ...serializeTask(task),
           worker_count: workers.length,
           latest_activity: latestActivity[0] ?? null,
         };
@@ -614,7 +627,7 @@ export async function handleUnifiedTasksRoute(
 
       const updated = resolveTask(String(task.id))!;
       log.info('Plan submitted for approval', { taskId: task.id, title: task.title });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(serializeTask(updated)));
       return true;
     }
 
@@ -675,7 +688,7 @@ export async function handleUnifiedTasksRoute(
 
       const updated = resolveTask(String(task.id))!;
       log.info('Plan approved', { taskId: task.id, title: task.title });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(serializeTask(updated)));
       return true;
     }
 
@@ -741,7 +754,7 @@ export async function handleUnifiedTasksRoute(
 
       const updated = resolveTask(String(task.id))!;
       log.info('Plan rejected', { taskId: task.id, title: task.title, reason });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(serializeTask(updated)));
       return true;
     }
 
@@ -786,7 +799,7 @@ export async function handleUnifiedTasksRoute(
 
       const updated = resolveTask(String(task.id))!;
       log.info('Task retried', { id: task.id, retry_count: newRetryCount });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(serializeTask(updated)));
       return true;
     }
 
@@ -848,7 +861,7 @@ export async function handleUnifiedTasksRoute(
 
       const updated = resolveTask(String(task.id))!;
       log.info('Task cancelled', { id: task.id, previous_status: task.status });
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(serializeTask(updated)));
       return true;
     }
 
@@ -865,7 +878,7 @@ export async function handleUnifiedTasksRoute(
       const actions = getTaskActions(task.id);
 
       json(res, 200, withTimestamp({
-        ...task,
+        ...serializeTask(task),
         workers,
         activity: activity.data,
         activity_total: activity.total,
@@ -894,6 +907,21 @@ export async function handleUnifiedTasksRoute(
       if (!task) {
         json(res, 404, withTimestamp({ error: 'Task not found' }));
         return true;
+      }
+
+      // Warn when an integer path param resolves to a kind='todo' row via the shared
+      // auto-increment tasks.id PK.  Callers intending to update a specific todo by
+      // its legacy display-id should use /api/todos/:id (the shim), which resolves
+      // by external_id + kind='todo' and is immune to PK collision.  Direct integer
+      // lookups on /api/tasks mutate whatever row occupies that PK slot — which may
+      // be a migrated todo whose display-id is completely different.
+      const _taskIdAsInt = parseInt(taskId, 10);
+      if (!isNaN(_taskIdAsInt) && String(_taskIdAsInt) === taskId && task.kind === 'todo') {
+        log.warn(
+          `PUT /api/tasks/:id resolved to a kind="todo" row (id=${task.id}). ` +
+          'Callers updating todos should use /api/todos/:id; raw /api/tasks/:id mutates by ' +
+          'internal PK which may collide with todo display ids. See kithkit-internal #1812.',
+        );
       }
 
       const body = await parseBody(req);
@@ -959,7 +987,10 @@ export async function handleUnifiedTasksRoute(
           return true;
         }
 
-        if (!validateTransition(task.status, newStatus)) {
+        // Todo tasks bypass the orchestrator state machine — any valid status is permitted
+        // (mirrors the /api/todos shim behaviour which has no transition enforcement).
+        // Orchestrator tasks remain strictly gated.
+        if (task.kind !== 'todo' && !validateTransition(task.status, newStatus)) {
           json(res, 422, withTimestamp({
             error: `cannot transition from ${task.status} to ${newStatus}`,
             allowed_transitions: allowedTransitions(task.status),
@@ -1248,7 +1279,7 @@ export async function handleUnifiedTasksRoute(
         }
       }
 
-      json(res, 200, withTimestamp(updated));
+      json(res, 200, withTimestamp(serializeTask(updated)));
       return true;
     }
 

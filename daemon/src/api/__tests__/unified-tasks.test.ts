@@ -283,6 +283,65 @@ describe('PUT /api/tasks/:id state machine transitions', { concurrency: 1 }, () 
   });
 });
 
+// ── PUT /api/tasks/:id todo transitions (dogfood bug #1724) ────
+//
+// Regression: canonical PUT was rejecting pending → completed for kind='todo'
+// via the orchestrator state machine, even though the /api/todos shim allows it.
+// Fix: todo tasks bypass the state machine — any valid status is permitted.
+
+describe('PUT /api/tasks/:id todo bypasses state machine', { concurrency: 1 }, () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('allows todo pending → completed directly (bug #1724)', async () => {
+    const createRes = await request('POST', '/api/tasks', {
+      title: 'bug-1724-regression',
+      kind: 'todo',
+      priority: 'low',
+    });
+    assert.equal(createRes.status, 201);
+    const task = JSON.parse(createRes.body);
+    assert.equal(task.status, 'pending');
+
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { status: 'completed' });
+    assert.equal(putRes.status, 200, 'should return 200, not 422');
+    const updated = JSON.parse(putRes.body);
+    assert.equal(updated.status, 'completed');
+    assert.ok(updated.completed_at, 'completed_at should be stamped');
+
+    // GET to confirm DB was updated
+    const getRes = await request('GET', `/api/tasks/${task.id}`);
+    assert.equal(getRes.status, 200);
+    const fetched = JSON.parse(getRes.body);
+    assert.equal(fetched.status, 'completed', 'DB must reflect completed status');
+  });
+
+  it('allows todo pending → in_progress directly', async () => {
+    const createRes = await request('POST', '/api/tasks', {
+      title: 'todo-direct-in-progress',
+      kind: 'todo',
+    });
+    const task = JSON.parse(createRes.body);
+
+    const res = await request('PUT', `/api/tasks/${task.id}`, { status: 'in_progress' });
+    assert.equal(res.status, 200);
+    assert.equal(JSON.parse(res.body).status, 'in_progress');
+  });
+
+  it('orchestrator pending → completed still returns 422', async () => {
+    const createRes = await request('POST', '/api/tasks', {
+      title: 'orch-state-machine-still-enforced',
+      kind: 'orchestrator',
+    });
+    const task = JSON.parse(createRes.body);
+
+    const res = await request('PUT', `/api/tasks/${task.id}`, { status: 'completed', result: 'Done' });
+    assert.equal(res.status, 422, 'orchestrator tasks must still enforce state machine');
+    const body = JSON.parse(res.body);
+    assert.ok(body.error.includes('cannot transition from pending'));
+  });
+});
+
 // ── POST /api/tasks/:id/activity ───────────────────────────────
 
 describe('POST /api/tasks/:id/activity', { concurrency: 1 }, () => {
@@ -378,6 +437,69 @@ describe('Plan approval workflow', { concurrency: 1 }, () => {
     assert.equal(body.status, 'planning');
     assert.equal(body.plan_status, 'rejected');
     assert.ok(body.plan_rejected_reason.includes('Plan is too vague'));
+  });
+});
+
+// ── estimate_multiplier computed field ────────────────────────
+
+describe('estimate_multiplier is computed on read', { concurrency: 1 }, () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('returns null when both minutes fields are null', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'No estimates' });
+    const task = JSON.parse(createRes.body);
+    assert.equal(task.estimate_multiplier, null);
+
+    const getRes = await request('GET', `/api/tasks/${task.id}`);
+    assert.equal(JSON.parse(getRes.body).estimate_multiplier, null);
+  });
+
+  it('returns null when only actual_minutes is set', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'Only actual' });
+    const task = JSON.parse(createRes.body);
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { actual_minutes: 30 });
+    assert.equal(JSON.parse(putRes.body).estimate_multiplier, null);
+  });
+
+  it('returns null when only estimated_minutes is set', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'Only estimated' });
+    const task = JSON.parse(createRes.body);
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { estimated_minutes: 30 });
+    assert.equal(JSON.parse(putRes.body).estimate_multiplier, null);
+  });
+
+  it('returns null when estimated_minutes is 0 (divide-by-zero guard)', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'Zero estimate' });
+    const task = JSON.parse(createRes.body);
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, {
+      estimated_minutes: 0,
+      actual_minutes: 30,
+    });
+    assert.equal(JSON.parse(putRes.body).estimate_multiplier, null);
+  });
+
+  it('computes actual/estimated when both are set', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'Both set' });
+    const task = JSON.parse(createRes.body);
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, {
+      estimated_minutes: 20,
+      actual_minutes: 30,
+    });
+    const body = JSON.parse(putRes.body);
+    assert.equal(body.estimate_multiplier, 1.5);
+  });
+
+  it('appears on GET /api/tasks list', async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'List test' });
+    const task = JSON.parse(createRes.body);
+    await request('PUT', `/api/tasks/${task.id}`, { estimated_minutes: 10, actual_minutes: 20 });
+
+    const listRes = await request('GET', '/api/tasks');
+    const body = JSON.parse(listRes.body);
+    const found = body.data.find((t: { id: number }) => t.id === task.id);
+    assert.ok(found, 'task should appear in list');
+    assert.equal(found.estimate_multiplier, 2);
   });
 });
 

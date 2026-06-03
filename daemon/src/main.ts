@@ -7,6 +7,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { loadConfig, type KithkitConfig } from './core/config.js';
 import { openDatabase, closeDatabase, resolveDbPath, migrateDbIfNeeded } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
@@ -19,6 +20,7 @@ import { recoverFromRestart } from './agents/recovery.js';
 import { cleanupOrphanedResources } from './core/orphan-cleanup.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
+import { issueToken, verifyToken } from './auth/agent-tokens.js';
 import { handleTasksRoute } from './api/tasks.js';
 import { handleUnifiedTasksRoute } from './api/unified-tasks.js';
 import { handleConfigRoute, setConfigWatcher, setCurrentDbPath, setConfigFilePath } from './api/config.js';
@@ -30,6 +32,11 @@ import { handleContactsRoute } from './api/contacts.js';
 import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleMetricsRoute, logRequest } from './api/metrics.js';
 import { handleSelfImprovementRoute } from './api/self-improvement.js';
+import { handleEmailRoute } from './api/email.js';
+import { handleApprovalRoute } from './api/approval.js';
+import { sweepStaleApprovals, registerCardDelivery, approvalGate } from './comms/approval-gate.js';
+import { deliverApprovalCardViaTelegram } from './comms/approval-card-telegram.js';
+import { registerOutboundGate } from './comms/channel-router.js';
 import {
   getExtension,
   isDegraded,
@@ -148,6 +155,68 @@ if (recovery.orphansCleaned > 0 || recovery.failedJobsRecovered > 0) {
     agentsRestarted: recovery.agentsRestarted,
   });
 }
+
+// ── Approval workflow bootstrap ───────────────────────────────
+
+// Sweep any pending approval gates interrupted by the previous daemon run.
+// Per spec (MED-2): daemon restart while gate is pending → resolves DENIED.
+const sweptApprovals = sweepStaleApprovals();
+if (sweptApprovals > 0) {
+  log.warn('Approval gate startup sweep: resolved interrupted approvals as DENIED', {
+    count: sweptApprovals,
+  });
+}
+
+// Wire the Telegram card delivery function into the gate.
+// This must run before any sends are processed, so registration is eager.
+registerCardDelivery(deliverApprovalCardViaTelegram);
+
+// Register the approval gate as the channel-router's outbound gate.
+// The gate is channel-aware: only channels with an approval_policies entry are gated.
+registerOutboundGate((ctx) => approvalGate(ctx));
+
+// ── Comms token bootstrap ────────────────────────────────────
+
+// Ensure a valid comms-role token is written to .kithkit/.comms-token (mode 0600).
+// This token is used by the comms agent to authenticate calls to /api/send.
+// Workers and orchestrators cannot use /api/send — they must escalate via /api/messages.
+(function bootstrapCommsToken() {
+  const tokenPath = path.join(projectDir, '.kithkit', '.comms-token');
+  const tokenDir = path.dirname(tokenPath);
+  try {
+    // Ensure the state directory exists
+    if (!fs.existsSync(tokenDir)) {
+      fs.mkdirSync(tokenDir, { recursive: true });
+    }
+
+    // Check if an existing token file is still valid
+    if (fs.existsSync(tokenPath)) {
+      try {
+        const existingToken = fs.readFileSync(tokenPath, 'utf8').trim();
+        if (existingToken && verifyToken(existingToken)) {
+          // Token file exists and is valid — nothing to do
+          return;
+        }
+      } catch {
+        // Unreadable or invalid — fall through to regenerate
+      }
+    }
+
+    // Issue a new comms token and write it atomically (temp + rename, mode 0600)
+    const newToken = issueToken('comms');
+    const tmpPath = tokenPath + '.tmp.' + process.pid;
+    fs.writeFileSync(tmpPath, newToken, { mode: 0o600 });
+    fs.renameSync(tmpPath, tokenPath);
+    // Tighten permissions on the final file (rename may not preserve mode on all platforms)
+    fs.chmodSync(tokenPath, 0o600);
+    log.info('Comms token initialized', { path: tokenPath });
+  } catch (err) {
+    log.warn('Failed to bootstrap comms token', {
+      path: tokenPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+})();
 
 log.info('Kithkit daemon starting', {
   agent: config.agent.name,
@@ -275,6 +344,8 @@ const server = http.createServer((req, res) => {
         () => handleMetricsRoute(req, res, url.pathname, url.searchParams),
         () => handleTimerRoute(req, res, url.pathname),
         () => handleSelfImprovementRoute(req, res, url.pathname),
+        () => handleEmailRoute(req, res, url.pathname, url.searchParams),
+        () => handleApprovalRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {
         const handled = await handler();

@@ -38,10 +38,31 @@ Do not rationalize. Do not snooze first. Do the work.`;
 
 export interface TodoRow {
   id: string;
+  external_id: string | null;
   title: string;
   status: string;
   priority: string | null;
   snooze_until: string | null;
+}
+
+/**
+ * Compute the user-facing display id for a todo row.
+ *
+ * The tasks table uses an internal auto-increment id that diverges from the
+ * legacy external_id once rows from multiple sources share the same sequence.
+ * All API responses (mapTodoResponse in state.ts) expose external_id as the
+ * public id, falling back to the internal id only when external_id is null.
+ * This function mirrors that logic so reminders cite the same id the human sees
+ * in /api/todos and the /todo skill.
+ *
+ * Exported for unit testing.
+ */
+export function getDisplayId(row: Pick<TodoRow, 'id' | 'external_id'>): number {
+  if (row.external_id != null) {
+    const parsed = parseInt(row.external_id, 10);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return Number(row.id);
 }
 
 export interface ClassifyResult {
@@ -80,9 +101,11 @@ async function run(config: Record<string, unknown> = {}): Promise<void> {
     return;
   }
 
-  // Query all non-done todos from the database
+  // Query all non-done todos from the database.
+  // external_id is selected so getDisplayId() can return the user-facing id
+  // (the same value /api/todos exposes) rather than the internal tasks.id.
   const todos = query<TodoRow>(
-    `SELECT id, title, status, priority, snooze_until FROM tasks WHERE kind = 'todo'
+    `SELECT id, external_id, title, status, priority, snooze_until FROM tasks WHERE kind = 'todo'
      AND status NOT IN ('done', 'completed', 'cancelled')
      ORDER BY
        CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
@@ -98,7 +121,8 @@ async function run(config: Record<string, unknown> = {}): Promise<void> {
     const top = actionable[0]!;
     const snoozedNote = snoozed.length > 0 ? ` (${snoozed.length} snoozed)` : '';
     const blockedNote = blocked.length > 0 ? ` (${blocked.length} blocked)` : '';
-    const suggestion = ` Highest priority: [${top.id}] ${top.title}`;
+    const displayId = getDisplayId(top);
+    const suggestion = ` Highest priority: [${displayId}] ${top.title}`;
 
     log.info(`Reminding about ${actionable.length} actionable todo(s)${snoozedNote}${blockedNote}`);
 

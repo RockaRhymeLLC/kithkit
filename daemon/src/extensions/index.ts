@@ -51,6 +51,11 @@ import { UnifiedA2ARouter } from '../a2a/router.js';
 import { handleA2ARoute, setA2ARouter } from '../a2a/handler.js';
 import { sendMessage } from '../agents/message-router.js';
 import { RateLimiter } from '../core/rate-limiter.js';
+import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
+import { createCommsTelegramAdapter, type CommsTelegramAdapter, type TelegramUpdate } from './comms/adapters/telegram.js';
+import { parseApprovalCallback, answerCallbackQuery } from '../comms/approval-card-telegram.js';
+import { resolveGate } from '../comms/approval-gate.js';
+import { initTeamsExtension, shutdownTeamsExtension } from './teams/index.js';
 
 const log = createLogger('agent-extension');
 
@@ -63,6 +68,7 @@ let _scheduler: Scheduler | null = null;
 let _initialized = false;
 let _instanceShutdown: (() => Promise<void> | void) | null = null;
 let _retryAbortController: AbortController | null = null;
+let _telegramAdapter: CommsTelegramAdapter | null = null;
 
 // ── Route Handlers ──────────────────────────────────────────
 
@@ -144,9 +150,19 @@ async function handleAgentP2P(
     }
     // If !secret (keychain locked/unavailable), accept without verification (fail-open)
 
-    await handleIncomingP2P(envelope);
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ ok: true }));
+    const persisted = await handleIncomingP2P(envelope);
+    if (!persisted) {
+      // SDK unavailable or handler error — envelope was NOT stored.
+      // Return ok:false so the sender SDK can report 'queued' instead of false 'delivered'.
+      log.warn('P2P message not persisted (SDK unavailable or handler error)', {
+        sender: (envelope as unknown as Record<string, unknown>).sender,
+      });
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'Message not persisted' }));
+    } else {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    }
   } catch (err) {
     log.error('P2P endpoint error', { error: err instanceof Error ? err.message : String(err) });
     res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -272,6 +288,84 @@ async function handleHookResponse(
   return true;
 }
 
+async function handleTelegramStatus(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({
+    ok: true,
+    adapter: 'comms-telegram',
+    mode: 'polling',
+  }));
+  return true;
+}
+
+async function handleTelegramWebhook(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'POST') return false;
+  if (!_telegramAdapter) {
+    res.writeHead(503, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'Telegram adapter not initialized' }));
+    return true;
+  }
+  try {
+    const body = await parseBody(req);
+    const update = body as TelegramUpdate;
+
+    // ── Approval callback_query interception ─────────────────
+    // Inline keyboard button taps from approval cards arrive as callback_query
+    // updates. Intercept them here before forwarding to the regular adapter.
+    if (update.callback_query) {
+      const cq = update.callback_query;
+      const callbackData = cq.data ?? '';
+      const parsed = parseApprovalCallback(callbackData);
+
+      if (parsed) {
+        // This is an approval card callback — resolve the gate
+        const result = resolveGate(parsed.approval_id, parsed.decision);
+
+        let ackText: string;
+        if (result === 'ok') {
+          ackText = parsed.decision === 'approved' ? '✅ Approved — sending now.' : '❌ Rejected — send aborted.';
+          log.info('Approval decision via Telegram inline button', {
+            approval_id: parsed.approval_id,
+            decision: parsed.decision,
+          });
+        } else if (result === 'already_resolved') {
+          ackText = 'This approval has already been decided.';
+        } else {
+          ackText = 'Approval not found or expired.';
+        }
+
+        // Answer callback query to dismiss the Telegram loading spinner
+        answerCallbackQuery(cq.id, ackText).catch(() => {});
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        return true;
+      }
+      // Not an approval callback — fall through to regular handleUpdate
+    }
+    // ── End approval interception ─────────────────────────────
+
+    await _telegramAdapter.handleUpdate(update);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
+  } catch (err) {
+    log.error('Telegram webhook error', { error: err instanceof Error ? err.message : String(err) });
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: false, error: 'Invalid update' }));
+  }
+  return true;
+}
+
 // ── Health Checks ───────────────────────────────────────────
 
 function registerAgentHealthChecks(): void {
@@ -344,6 +438,50 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Initialize agent-to-agent comms (LAN + P2P SDK)
   initAgentComms(_config);
 
+  // ── Telegram ─────────────────────────────────────────────
+  const fullConfig = config as KithkitConfig & {
+    channels?: {
+      telegram?: {
+        enabled?: boolean;
+        bot_token?: string;
+        safe_senders?: Array<{ chat_id: number; name: string }>;
+        poll_interval_ms?: number;
+        max_message_length?: number;
+        allowed_chat_ids?: number[];
+      };
+    };
+  };
+  const telegramConfig = fullConfig.channels?.telegram;
+  if (!telegramConfig?.enabled) {
+    log.warn('Telegram not enabled in config (channels.telegram.enabled)');
+  } else if (!telegramConfig.bot_token) {
+    log.error('No bot_token in channels.telegram config');
+  } else {
+    let safeSenders = telegramConfig.safe_senders ?? [];
+    if (safeSenders.length === 0 && telegramConfig.allowed_chat_ids?.length) {
+      safeSenders = telegramConfig.allowed_chat_ids.map((id, i) => ({
+        chat_id: id,
+        name: `User${i + 1}`,
+      }));
+    }
+    try {
+      _telegramAdapter = await createCommsTelegramAdapter({
+        bot_token: telegramConfig.bot_token,
+        safe_senders: safeSenders,
+        poll_interval_ms: telegramConfig.poll_interval_ms ?? 3000,
+        max_message_length: telegramConfig.max_message_length ?? 4000,
+      });
+      registerAdapter(_telegramAdapter);
+      log.info('Telegram adapter registered with channel router');
+    } catch (err) {
+      log.error('Failed to initialize Telegram adapter', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  registerRoute('/telegram', handleTelegramWebhook);
+  registerRoute('/telegram/status', handleTelegramStatus);
+
   // ── Unified A2A Router (PR #136) ─────────────────────────
   const router = new UnifiedA2ARouter({
     config: config as unknown as Record<string, unknown>,
@@ -400,6 +538,11 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Register basic extension health check
   registerAgentHealthChecks();
 
+  // ── Teams Bot Framework extension ──────────────────────────
+  // Reads credentials from Keychain; safe to call when Teams is not configured
+  // (logs a warning and returns without registering routes/adapter).
+  await initTeamsExtension();
+
   // Load instance-specific extensions (if instance/ directory exists)
   const instanceResult = await loadInstanceExtensions(config, _server, _scheduler);
   _instanceShutdown = instanceResult.shutdown ?? null;
@@ -426,6 +569,12 @@ async function onShutdown(): Promise<void> {
   if (_instanceShutdown) {
     await _instanceShutdown();
   }
+  if (_telegramAdapter) {
+    await _telegramAdapter.shutdown();
+    unregisterAdapter('telegram');
+    _telegramAdapter = null;
+  }
+  shutdownTeamsExtension();
   p2pRateLimiter.stop();
   await stopNetworkSDK();
   stopAgentComms();
@@ -459,4 +608,5 @@ export function _resetForTesting(): void {
   _scheduler = null;
   _initialized = false;
   _instanceShutdown = null;
+  _telegramAdapter = null;
 }
