@@ -107,13 +107,29 @@ export function injectMessage(agentId: string, text: string): boolean {
     return false;
   }
 
-  try {
-    // Check if session exists first
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
-      timeout: 5000,
-    });
-  } catch {
-    log.debug('Tmux session not found for message injection', { agentId, session }); // stale session ref expected during orch lifecycle; name-mismatch bug tracked separately
+  // Check if session exists first — use injectable for test isolation
+  const sessionFound = _testingDeps?.sessionExists
+    ? _testingDeps.sessionExists(session)
+    : (() => {
+        try {
+          execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
+            timeout: 5000,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+
+  if (!sessionFound) {
+    // R2 guard: only downgrade to debug when the orchestrator is confirmed gone.
+    // If the orch IS alive but session lookup failed (e.g. name-mismatch, todo #82),
+    // that's a real delivery failure — keep it visible.
+    if (agentId === 'orchestrator' && !isOrchestratorAlive()) {
+      log.debug('Tmux session not found — orchestrator has exited (expected)', { agentId, session });
+    } else {
+      log.warn('Tmux session not found for message injection', { agentId, session });
+    }
     return false;
   }
 
@@ -272,6 +288,7 @@ export function killOrchestratorSession(): boolean {
  * This returns true even when the wrapper is idle-waiting between tasks.
  */
 export function isOrchestratorAlive(): boolean {
+  if (_testingDeps?.isOrchAlive !== undefined) return _testingDeps.isOrchAlive();
   const session = resolveSession('orchestrator')!;
 
   try {
@@ -384,3 +401,24 @@ export function isSessionAlive(agentId: string): boolean {
 
 export function _getCommsSession(): string { return COMMS_SESSION; }
 export function _getOrchestratorSession(): string { return ORCH_SESSION; }
+
+/**
+ * Dependency overrides for unit testing.
+ * - sessionExists: override the tmux has-session check used in injectMessage
+ * - isOrchAlive: override isOrchestratorAlive() return value
+ *
+ * Both must be set together to fully isolate a test: sessionExists controls whether
+ * injectMessage reaches the "not found" branch; isOrchAlive controls whether the
+ * R2 guard treats that as an expected (orch gone) or unexpected (orch alive) failure.
+ */
+interface TmuxTestDeps {
+  sessionExists?: (session: string) => boolean;
+  isOrchAlive?: () => boolean;
+}
+
+let _testingDeps: TmuxTestDeps | null = null;
+
+/** @internal Set dependency overrides for unit tests. Pass null to restore production behaviour. */
+export function _setTmuxDepsForTesting(deps: TmuxTestDeps | null): void {
+  _testingDeps = deps;
+}
