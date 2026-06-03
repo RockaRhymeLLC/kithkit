@@ -316,7 +316,7 @@ Every reply intended for the human MUST be delivered via `POST /api/send` when t
 Terminal text output — typing directly in the Claude Code session — does not reach humans on Telegram, Teams, or Voice channels.
 Failing to call `/api/send` means the human never sees your reply.
 The `send-enforcer.sh` Stop hook checks each turn for a conforming `/api/send` call and emits a warning to stderr when one is absent.
-This rule applies to all comms agents (BMO, Skippy, and any future instances) without exception.
+This rule applies to all comms agent instances without exception.
 
 ## Quality Standards
 

@@ -24,7 +24,7 @@ LOG_FILE="$PROJECT_DIR/logs/send-enforcer.log"
 # The comms session ID is written by session-start.sh at bootstrap time.
 # Known limitation: on first boot before session-start.sh has run, the file
 # won't exist and enforcement is skipped (fail-open for back-compat). This is
-# acceptable because Dave's machine runs exactly one persistent comms session.
+# acceptable because the host runs exactly one persistent comms session.
 COMMS_SESSION_FILE="$PROJECT_DIR/.claude/state/comms-session.txt"
 if [ -f "$COMMS_SESSION_FILE" ]; then
   COMMS_SESSION_ID=$(cat "$COMMS_SESSION_FILE" | tr -d '[:space:]')
