@@ -28,15 +28,18 @@ import {
   extractCommitClaims,
   extractFileLineClaims,
   extractDateClaims,
+  extractTaskClaims,
   extractClaims,
   validatePrClaim,
   validateCommitClaim,
   validateFileLineClaim,
   validateDateClaim,
+  validateTaskClaim,
   runVerification,
   _setExecFnForTesting,
+  _setFetchFnForTesting,
 } from '../fact-verifier.js';
-import type { ExecResult, PrClaim, CommitClaim, FileLineClaim, DateClaim } from '../fact-verifier.js';
+import type { ExecResult, FetchResult, PrClaim, CommitClaim, FileLineClaim, DateClaim, TaskClaim } from '../fact-verifier.js';
 import type { JobRecord } from '../lifecycle.js';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -711,5 +714,233 @@ describe('extractClaims: combined extraction', () => {
   it('returns empty array for text with no recognizable claims', () => {
     const claims = extractClaims('Hello world, all is well, no issues here.');
     assert.equal(claims.length, 0);
+  });
+
+  it('includes task claims when task context word is present', () => {
+    const uuid = 'aabbccdd-0011-2233-4455-667788990000';
+    const claims = extractClaims(`Completed task ${uuid} successfully.`);
+    assert.ok(claims.some(c => c.type === 'task'), 'should have a task claim');
+  });
+});
+
+// ── extractTaskClaims ─────────────────────────────────────────
+
+describe('extractTaskClaims: positive cases', () => {
+  it('extracts dashed UUID with "task" context word before it', () => {
+    const uuid = 'aabbccdd-0011-2233-4455-667788990000';
+    const claims = extractTaskClaims(`Completed task ${uuid} successfully.`);
+    assert.equal(claims.length, 1);
+    assert.equal(claims[0]!.taskId, uuid.toLowerCase());
+    assert.equal(claims[0]!.type, 'task');
+  });
+
+  it('extracts dashed UUID with "task_id" context word before it', () => {
+    const uuid = '11112222-3333-4444-5555-666677778888';
+    const claims = extractTaskClaims(`task_id: ${uuid}`);
+    assert.equal(claims.length, 1);
+    assert.equal(claims[0]!.taskId, uuid.toLowerCase());
+  });
+
+  it('extracts 32-hex no-dash canonical ID with "task" context word', () => {
+    const hex32 = 'aabbccdd00112233445566778899aabb';
+    const claims = extractTaskClaims(`Working on task ${hex32} now.`);
+    assert.equal(claims.length, 1);
+    assert.equal(claims[0]!.taskId, hex32);
+    assert.equal(claims[0]!.type, 'task');
+  });
+
+  it('handles "Task" (capitalized) as context word', () => {
+    const uuid = 'ccccdddd-eeee-ffff-0000-111122223333';
+    const claims = extractTaskClaims(`Task ${uuid} was queued.`);
+    assert.equal(claims.length, 1);
+  });
+
+  it('extracts task ID when "task" appears within the 80-char lookback window', () => {
+    const uuid = 'aaaabbbb-cccc-dddd-eeee-ffff00001111';
+    // 'task' at position 0 (4 chars), UUID at position 76 (= 5 + 70 + 1).
+    // Lookback window: [max(0, 76-80), 76) = [0, 76) — 'task' fully included.
+    const text = `task ${'x'.repeat(70)} ${uuid}`;
+    const claims = extractTaskClaims(text);
+    assert.equal(claims.length, 1);
+  });
+
+  it('deduplicates the same task UUID appearing multiple times', () => {
+    const uuid = '12345678-1234-1234-1234-123456789abc';
+    const claims = extractTaskClaims(`task ${uuid} and task ${uuid} again`);
+    assert.equal(claims.length, 1);
+  });
+});
+
+describe('extractTaskClaims: false-positive guards', () => {
+  it('does NOT extract dashed UUID without task context word', () => {
+    const uuid = 'aabbccdd-0011-2233-4455-667788990000';
+    const claims = extractTaskClaims(`See ${uuid} for reference.`);
+    assert.equal(claims.length, 0);
+  });
+
+  it('does NOT extract 32-hex string without task context word', () => {
+    const hex32 = 'aabbccdd00112233445566778899aabb';
+    const claims = extractTaskClaims(`value is ${hex32} in hex.`);
+    assert.equal(claims.length, 0);
+  });
+
+  it('does NOT extract 40-char hex with task context (full SHA — commit extractor handles those)', () => {
+    // 40-char hex with task context — our 32-hex pattern requires exactly 32 chars (\b boundary)
+    const sha40 = 'aabbccdd00112233445566778899aabbccddeeff';
+    const claims = extractTaskClaims(`task ${sha40} done`);
+    // The 32-hex pattern won't match 40-char hex due to \b boundary at char 33
+    assert.equal(claims.filter(c => c.taskId === sha40.toLowerCase()).length, 0);
+  });
+
+  it('does NOT extract task context word that is too far before the UUID', () => {
+    const uuid = 'aaaabbbb-cccc-dddd-eeee-ffff00001111';
+    // 'task' is 90 chars before the UUID — beyond our 80-char window
+    const text = `task ${'x'.repeat(85)} ${uuid}`;
+    const claims = extractTaskClaims(text);
+    assert.equal(claims.length, 0);
+  });
+});
+
+// ── validateTaskClaim ─────────────────────────────────────────
+
+describe('validateTaskClaim: VERIFIED path', () => {
+  it('returns VERIFIED when daemon returns HTTP 200', async () => {
+    const mockFetch = async (_url: string): Promise<FetchResult> =>
+      ({ status: 200, available: true });
+    const claim: TaskClaim = {
+      type: 'task',
+      raw: 'aabbccdd-0011-2233-4455-667788990000',
+      taskId: 'aabbccdd-0011-2233-4455-667788990000',
+    };
+    const result = await validateTaskClaim(claim, mockFetch);
+    assert.equal(result.verdict, 'VERIFIED');
+    assert.ok(result.reason.includes('200'));
+  });
+});
+
+describe('validateTaskClaim: CONTRADICTED path (planted fabrication)', () => {
+  it('returns CONTRADICTED when daemon returns HTTP 404 (fabricated task ID)', async () => {
+    const mockFetch = async (_url: string): Promise<FetchResult> =>
+      ({ status: 404, available: true });
+    const claim: TaskClaim = {
+      type: 'task',
+      raw: '00000000-dead-beef-0000-000000000000',
+      taskId: '00000000-dead-beef-0000-000000000000',
+    };
+    const result = await validateTaskClaim(claim, mockFetch);
+    assert.equal(result.verdict, 'CONTRADICTED');
+    assert.ok(result.reason.includes('404'), `Reason: ${result.reason}`);
+    assert.ok(result.reason.toLowerCase().includes('fabricat'), `Reason should mention fabrication: ${result.reason}`);
+  });
+});
+
+describe('validateTaskClaim: UNVERIFIABLE path', () => {
+  it('returns UNVERIFIABLE when daemon is not reachable (connection refused)', async () => {
+    const mockFetch = async (_url: string): Promise<FetchResult> =>
+      ({ status: -1, available: false, error: 'ECONNREFUSED' });
+    const claim: TaskClaim = {
+      type: 'task',
+      raw: 'aabbccdd-0011-2233-4455-667788990000',
+      taskId: 'aabbccdd-0011-2233-4455-667788990000',
+    };
+    const result = await validateTaskClaim(claim, mockFetch);
+    assert.equal(result.verdict, 'UNVERIFIABLE');
+    assert.ok(result.reason.toLowerCase().includes('daemon') || result.reason.includes('ECONNREFUSED'));
+  });
+
+  it('returns UNVERIFIABLE for unexpected non-200/404 status (fail-safe)', async () => {
+    const mockFetch = async (_url: string): Promise<FetchResult> =>
+      ({ status: 500, available: true });
+    const claim: TaskClaim = {
+      type: 'task',
+      raw: 'aabbccdd-0011-2233-4455-667788990000',
+      taskId: 'aabbccdd-0011-2233-4455-667788990000',
+    };
+    const result = await validateTaskClaim(claim, mockFetch);
+    assert.equal(result.verdict, 'UNVERIFIABLE');
+    assert.ok(result.reason.includes('500'));
+  });
+});
+
+// ── runVerification: task-ID planted-fabrication integration test ──
+
+describe('runVerification: task-ID planted-fabrication integration test', () => {
+  afterEach(() => {
+    _setFetchFnForTesting(null); // always reset after each test
+  });
+
+  it('quarantines a job containing a fabricated task ID (daemon returns 404)', async () => {
+    /**
+     * This test genuinely exercises extractClaims + validateTaskClaim through
+     * runVerification. Only the HTTP fetch to the daemon is mocked.
+     * The task ID appears with "task" context so extractTaskClaims picks it up,
+     * and the mock 404 causes CONTRADICTED → quarantine.
+     */
+    const fabricatedId = '00000000-dead-beef-0000-000000000000';
+    const fakeResult = `Worker completed task ${fabricatedId} by writing the output.`;
+
+    _setFetchFnForTesting(async (_url: string): Promise<FetchResult> =>
+      ({ status: 404, available: true }),
+    );
+
+    const job = makeJobRecord({ result: fakeResult, status: 'completed' });
+    // Pass a git/gh exec mock that returns UNVERIFIABLE (no other claims in text)
+    const exec = mockExec({}, { stdout: '', stderr: '', exitCode: -1, available: false });
+    const report = await runVerification(job, exec);
+
+    assert.ok(
+      report.quarantined,
+      `Expected quarantined=true. Claims: ${JSON.stringify(report.claims)}`,
+    );
+
+    const taskResult = report.claims.find(r => r.claim.type === 'task');
+    assert.ok(taskResult, 'Expected a task claim result in the report');
+    assert.equal(
+      taskResult!.verdict,
+      'CONTRADICTED',
+      `Task verdict should be CONTRADICTED, got ${taskResult!.verdict}: ${taskResult!.reason}`,
+    );
+    assert.ok(taskResult!.reason.includes('404'), `Reason should include 404: ${taskResult!.reason}`);
+    assert.ok(report.quarantineReason, 'quarantineReason should be set');
+  });
+
+  it('does NOT quarantine a job with a valid task ID (daemon returns 200)', async () => {
+    const validId = 'aabbccdd-0011-2233-4455-667788990000';
+    const fakeResult = `Task ${validId} completed successfully.`;
+
+    _setFetchFnForTesting(async (_url: string): Promise<FetchResult> =>
+      ({ status: 200, available: true }),
+    );
+
+    const job = makeJobRecord({ result: fakeResult, status: 'completed' });
+    const exec = mockExec({}, { stdout: '', stderr: '', exitCode: -1, available: false });
+    const report = await runVerification(job, exec);
+
+    assert.ok(!report.quarantined, `Expected quarantined=false. Report: ${JSON.stringify(report)}`);
+
+    const taskResult = report.claims.find(r => r.claim.type === 'task');
+    assert.ok(taskResult, 'Expected a task claim result in the report');
+    assert.equal(taskResult!.verdict, 'VERIFIED');
+  });
+
+  it('does NOT quarantine when daemon is unreachable (UNVERIFIABLE, not CONTRADICTED)', async () => {
+    const someId = '11112222-3333-4444-5555-666677778888';
+    const fakeResult = `Processed task ${someId}.`;
+
+    _setFetchFnForTesting(async (_url: string): Promise<FetchResult> =>
+      ({ status: -1, available: false, error: 'ECONNREFUSED' }),
+    );
+
+    const job = makeJobRecord({ result: fakeResult, status: 'completed' });
+    const exec = mockExec({}, { stdout: '', stderr: '', exitCode: -1, available: false });
+    const report = await runVerification(job, exec);
+
+    assert.ok(
+      !report.quarantined,
+      `Should not quarantine when daemon unreachable (UNVERIFIABLE). Report: ${JSON.stringify(report)}`,
+    );
+    const taskResult = report.claims.find(r => r.claim.type === 'task');
+    assert.ok(taskResult, 'Expected a task claim result');
+    assert.equal(taskResult!.verdict, 'UNVERIFIABLE');
   });
 });

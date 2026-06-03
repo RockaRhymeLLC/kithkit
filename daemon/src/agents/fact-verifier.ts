@@ -44,7 +44,7 @@ const SUBPROCESS_TIMEOUT_MS = 8_000;
 
 export type Verdict = 'VERIFIED' | 'UNVERIFIABLE' | 'CONTRADICTED';
 
-export type ClaimType = 'pr' | 'commit' | 'file_line' | 'date';
+export type ClaimType = 'pr' | 'commit' | 'file_line' | 'date' | 'task';
 
 export interface PrClaim {
   type: 'pr';
@@ -73,7 +73,14 @@ export interface DateClaim {
   dateStr: string;
 }
 
-export type Claim = PrClaim | CommitClaim | FileLineClaim | DateClaim;
+export interface TaskClaim {
+  type: 'task';
+  raw: string;
+  /** Normalized (lowercase) task ID: dashed UUID or 32-hex canonical form. */
+  taskId: string;
+}
+
+export type Claim = PrClaim | CommitClaim | FileLineClaim | DateClaim | TaskClaim;
 
 export interface ClaimResult {
   claim: Claim;
@@ -134,6 +141,43 @@ function defaultExec(cmd: string, args: string[]): Promise<ExecResult> {
 
 function getExec(): ExecFn {
   return _execFn ?? defaultExec;
+}
+
+// ── Injectable fetch (for testing) ───────────────────────────
+
+/**
+ * Fetch function signature injectable for tests.
+ * url: the full URL to GET
+ * Returns { status, available } where available=false means connection failed.
+ */
+export type FetchResult = { status: number; available: boolean; error?: string };
+export type FetchFn = (url: string) => Promise<FetchResult>;
+
+let _fetchFn: FetchFn | null = null;
+
+/** Override the fetch implementation for tests. Pass null to restore default. */
+export function _setFetchFnForTesting(fn: FetchFn | null): void {
+  _fetchFn = fn;
+}
+
+async function defaultFetch(url: string): Promise<FetchResult> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), SUBPROCESS_TIMEOUT_MS);
+    try {
+      const resp = await fetch(url, { signal: controller.signal });
+      return { status: resp.status, available: true };
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  } catch (err) {
+    // ECONNREFUSED / AbortError / network error → daemon not reachable
+    return { status: -1, available: false, error: String(err) };
+  }
+}
+
+function getFetch(): FetchFn {
+  return _fetchFn ?? defaultFetch;
 }
 
 // ── Claim extractors ─────────────────────────────────────────
@@ -296,6 +340,48 @@ export function extractDateClaims(text: string): DateClaim[] {
 }
 
 /**
+ * Extract orchestrator task ID references from text.
+ *
+ * Supported formats:
+ *   - Dashed UUID (external_id): xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+ *   - 32-hex no-dashes (canonical_task_external_id): xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+ *
+ * Requires the word 'task' or 'task_id' to appear within 80 chars before the ID
+ * to avoid false positives (other hex-like strings, UUIDs from unrelated systems, etc.).
+ * This conservative approach mirrors the short-SHA context-cue requirement.
+ */
+export function extractTaskClaims(text: string): TaskClaim[] {
+  const seen = new Set<string>();
+  const claims: TaskClaim[] = [];
+
+  // Dashed UUID (external_id format): xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  const dashedUuid = /\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b/gi;
+  let m: RegExpExecArray | null;
+  while ((m = dashedUuid.exec(text)) !== null) {
+    const taskId = m[1]!.toLowerCase();
+    if (seen.has(taskId)) continue;
+    const beforeId = text.slice(Math.max(0, m.index - 80), m.index).toLowerCase();
+    if (!/\btask(?:_id)?\b/.test(beforeId)) continue;
+    seen.add(taskId);
+    claims.push({ type: 'task', raw: m[0], taskId });
+  }
+
+  // 32-hex no-dashes (canonical_task_external_id format)
+  // \b ensures we don't match a 32-char prefix of a longer hex string (e.g. 40-char commit SHA)
+  const hexNoDash = /\b([0-9a-f]{32})\b/g;
+  while ((m = hexNoDash.exec(text)) !== null) {
+    const taskId = m[1]!.toLowerCase();
+    if (seen.has(taskId)) continue;
+    const beforeId = text.slice(Math.max(0, m.index - 80), m.index).toLowerCase();
+    if (!/\btask(?:_id)?\b/.test(beforeId)) continue;
+    seen.add(taskId);
+    claims.push({ type: 'task', raw: m[0], taskId });
+  }
+
+  return claims;
+}
+
+/**
  * Extract all claim types from result text.
  */
 export function extractClaims(text: string): Claim[] {
@@ -304,6 +390,7 @@ export function extractClaims(text: string): Claim[] {
     ...extractCommitClaims(text),
     ...extractFileLineClaims(text),
     ...extractDateClaims(text),
+    ...extractTaskClaims(text),
   ];
 }
 
@@ -519,6 +606,63 @@ export async function validateDateClaim(claim: DateClaim): Promise<ClaimResult> 
   }
 }
 
+/**
+ * Validate a task ID claim via the local daemon API.
+ *
+ * GET http://127.0.0.1:3847/api/orchestrator/tasks/:id
+ *
+ * VERIFIED      — daemon returns HTTP 200 (task exists)
+ * CONTRADICTED  — daemon returns HTTP 404 (task not found — likely fabricated)
+ * UNVERIFIABLE  — connection refused, timeout, or unexpected non-200/404 status
+ *
+ * Fail-safe: any error or unexpected status degrades to UNVERIFIABLE, never
+ * to CONTRADICTED. Only an explicit 404 from a reachable daemon triggers
+ * CONTRADICTED, matching the same conservative pattern as the gh/git validators.
+ */
+export async function validateTaskClaim(
+  claim: TaskClaim,
+  fetchFn = getFetch(),
+): Promise<ClaimResult> {
+  const url = `http://127.0.0.1:3847/api/orchestrator/tasks/${claim.taskId}`;
+  let result: FetchResult;
+  try {
+    result = await fetchFn(url);
+  } catch (err) {
+    return { claim, verdict: 'UNVERIFIABLE', reason: `fetch error: ${String(err)}` };
+  }
+
+  if (!result.available) {
+    return {
+      claim,
+      verdict: 'UNVERIFIABLE',
+      reason: `Daemon not reachable: ${result.error ?? 'connection failed'}`,
+    };
+  }
+
+  if (result.status === 200) {
+    return {
+      claim,
+      verdict: 'VERIFIED',
+      reason: `Task ${claim.taskId} confirmed in daemon (HTTP 200)`,
+    };
+  }
+
+  if (result.status === 404) {
+    return {
+      claim,
+      verdict: 'CONTRADICTED',
+      reason: `Task ${claim.taskId} not found in daemon (HTTP 404) — fabricated ID`,
+    };
+  }
+
+  // Any other status (401, 500, etc.) → UNVERIFIABLE (fail-safe, not CONTRADICTED)
+  return {
+    claim,
+    verdict: 'UNVERIFIABLE',
+    reason: `Unexpected daemon response HTTP ${result.status} for task ${claim.taskId}`,
+  };
+}
+
 // ── Core verification logic ───────────────────────────────────
 
 /**
@@ -560,6 +704,7 @@ export async function runVerification(
           case 'commit':    return validateCommitClaim(claim, eFn);
           case 'file_line': return validateFileLineClaim(claim);
           case 'date':      return validateDateClaim(claim);
+          case 'task':      return validateTaskClaim(claim);
         }
       } catch (err) {
         return {
