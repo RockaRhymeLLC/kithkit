@@ -257,16 +257,20 @@ describe('/api/orchestrator/tasks back-compat shim', { concurrency: 1 }, () => {
 // ── Collision-bug regression tests ────────────────────────────
 //
 // These tests directly reproduce the bug that would have been caught at
-// PR #287 review time: tasks.id is a shared auto-increment sequence across
-// both kind='todo' and kind='orchestrator'.  A legacy todo :id (stored as
-// external_id) may happen to equal the tasks.id of an orchestrator row.
-// Before the fix, the shim would return the orchestrator row.
+// tasks.id is a shared auto-increment sequence across both kind='todo' and
+// kind='orchestrator'.  A legacy todo :id (stored as external_id) may happen
+// to equal the tasks.id of an orchestrator row.
+//
+// Native-first update: the shim now tries tasks.id before external_id.
+// The collision test is updated to reflect the approved endgame semantics:
+// /api/todos/N returns the todo at tasks.id=N when one exists (native wins),
+// even if a different todo has external_id='N'.
 
 describe('shim id-collision regression', { concurrency: 1 }, () => {
   beforeEach(setup);
   afterEach(teardown);
 
-  it('GET /api/todos/:id returns the TODO whose external_id matches, not the orch task at that tasks.id', async () => {
+  it('GET /api/todos/:id falls back to external_id when native id is an orch task', async () => {
     // 1. Create an orchestrator task — it occupies tasks.id=1 (first auto-increment slot)
     const orchRes = await makeOrchRequest('POST', '/api/orchestrator/tasks', { title: 'Orch task at id=1' });
     assert.equal(orchRes.status, 201);
@@ -282,15 +286,25 @@ describe('shim id-collision regression', { concurrency: 1 }, () => {
       String(orchIntId),
     );
 
-    // 3. GET /api/todos/<orchIntId> must return the TODO (via external_id='<orchIntId>')
-    //    NOT the orchestrator task that occupies tasks.id=<orchIntId>.
+    // Get the todo's native tasks.id (it's the second row, so >orchIntId)
+    const db = getDatabase();
+    const todoRow = db.prepare(
+      "SELECT id FROM tasks WHERE kind = 'todo' ORDER BY id DESC LIMIT 1",
+    ).get() as { id: number };
+    const todoNativeId = todoRow.id;
+
+    // 3. GET /api/todos/<orchIntId>:
+    //    - Native-first: tasks.id=orchIntId AND kind='todo' → no (orch occupies that slot)
+    //    - Legacy fallback: external_id='orchIntId' AND kind='todo' → finds the todo
+    //    Response id = todo's native tasks.id (not orchIntId — native-first semantics)
     const res = await makeTodoRequest('GET', `/api/todos/${orchIntId}`);
-    assert.equal(res.status, 200, 'should find the todo via external_id lookup');
+    assert.equal(res.status, 200, 'should find the todo via legacy fallback');
     const body = JSON.parse(res.body);
     assert.equal(body.kind, 'todo', 'must return a todo-kind row, not the orchestrator task');
     assert.equal(body.title, 'Legacy todo with same id as orch');
-    assert.equal(body.id, orchIntId, 'response id should be the legacy integer id');
-    assert.equal(body.external_id, null, 'external_id is masked in legacy response');
+    assert.equal(body.id, todoNativeId, 'response id is native tasks.id (not the legacy external_id)');
+    assert.ok(body.id !== orchIntId, 'native id of todo differs from the orch tasks.id slot');
+    assert.equal(body.external_id, null, 'external_id is masked in response');
   });
 
   it('GET /api/orchestrator/tasks/:uuid resolves by external_id, is kind-scoped', async () => {
@@ -322,23 +336,151 @@ describe('shim id-collision regression', { concurrency: 1 }, () => {
     assert.equal(numericRes.status, 404, 'numeric id=1 should 404 — that slot holds a todo, not an orch task');
   });
 
-  it('POST /api/todos response id round-trips via external_id in tasks table', async () => {
-    // POST creates a task, stamps external_id = CAST(tasks.id AS TEXT),
-    // and returns id = parseInt(external_id).  Verify the DB round-trip.
+  it('POST /api/todos leaves external_id NULL (native-first: no stamping on new todos)', async () => {
+    // Native-first: POST no longer stamps external_id = CAST(tasks.id AS TEXT).
+    // The response id equals the native tasks.id directly.
     const res = await makeTodoRequest('POST', '/api/todos', { title: 'Round-trip check' });
     assert.equal(res.status, 201);
     const body = JSON.parse(res.body);
-    const legacyId: number = body.id;
-    assert.ok(typeof legacyId === 'number', 'POST should return integer id');
+    const nativeId: number = body.id;
+    assert.ok(typeof nativeId === 'number', 'POST should return integer id');
 
-    // Query the tasks table: there must be a kind='todo' row with external_id = CAST(legacyId AS TEXT)
+    // DB must NOT have external_id set for a brand-new todo (native-first change)
     const db = getDatabase();
     const row = db.prepare(
-      "SELECT external_id FROM tasks WHERE external_id = ? AND kind = 'todo'",
-    ).get(String(legacyId)) as { external_id: string } | undefined;
+      "SELECT id, external_id FROM tasks WHERE id = ? AND kind = 'todo'",
+    ).get(nativeId) as { id: number; external_id: string | null } | undefined;
 
-    assert.ok(row !== undefined, 'tasks row must have external_id set after POST');
-    assert.equal(parseInt(row!.external_id, 10), legacyId, 'external_id must equal the legacy integer id');
+    assert.ok(row !== undefined, 'tasks row must exist after POST');
+    assert.equal(row!.external_id, null, 'external_id must be NULL for new todos (no stamping)');
+    assert.equal(row!.id, nativeId, 'tasks.id must equal the returned response id');
+  });
+});
+
+// ── Native-first todo id lookup tests ─────────────────────────
+//
+// These tests verify the native-first resolveLegacyTodoId behavior:
+// tasks.id lookup (kind='todo') takes precedence over external_id fallback.
+// This fixes the case where todos with NULL external_id returned 404.
+
+describe('native-first todo id lookup', { concurrency: 1 }, () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('GET /api/todos/:id resolves by native tasks.id when external_id IS NULL', async () => {
+    // Simulate a todo with external_id IS NULL (e.g. created before migration stamping).
+    const db = getDatabase();
+    db.prepare(
+      `INSERT INTO tasks (kind, title, status, priority, tags, created_at, updated_at)
+       VALUES ('todo', 'Todo with null external_id', 'pending', 'medium', '[]', datetime('now'), datetime('now'))`,
+    ).run();
+    const row = db.prepare(
+      "SELECT id FROM tasks WHERE kind = 'todo' ORDER BY id DESC LIMIT 1",
+    ).get() as { id: number };
+    const nativeId = row.id;
+
+    const res = await makeTodoRequest('GET', `/api/todos/${nativeId}`);
+    assert.equal(res.status, 200, 'native id with NULL external_id must return 200');
+    const body = JSON.parse(res.body);
+    assert.equal(body.id, nativeId, 'response id must be native tasks.id');
+    assert.equal(body.title, 'Todo with null external_id');
+    assert.equal(body.external_id, null, 'external_id is masked');
+  });
+
+  it('legacy external_id fallback resolves correctly when native tasks.id is absent', async () => {
+    // Insert a todo with an explicit external_id that doesn't match its native id.
+    // This simulates a pre-migration row where external_id != tasks.id.
+    const db = getDatabase();
+    db.prepare(
+      `INSERT INTO tasks (external_id, kind, title, status, priority, tags, created_at, updated_at)
+       VALUES ('9999', 'todo', 'Legacy external_id todo', 'pending', 'medium', '[]', datetime('now'), datetime('now'))`,
+    ).run();
+    const nativeRow = db.prepare(
+      "SELECT id FROM tasks WHERE external_id = '9999' AND kind = 'todo'",
+    ).get() as { id: number };
+    const nativeId = nativeRow.id;
+
+    // Lookup by the legacy display id (9999) — native lookup for tasks.id=9999 fails
+    // (no todo there); fallback finds the row via external_id='9999'.
+    const res = await makeTodoRequest('GET', '/api/todos/9999');
+    assert.equal(res.status, 200, 'legacy fallback must resolve external_id=9999');
+    const body = JSON.parse(res.body);
+    assert.equal(body.id, nativeId, 'response id is the todo native tasks.id (not 9999)');
+    assert.equal(body.title, 'Legacy external_id todo');
+  });
+
+  it('response id always equals native tasks.id (external_id no longer drives display id)', async () => {
+    const res = await makeTodoRequest('POST', '/api/todos', { title: 'Native id display check' });
+    assert.equal(res.status, 201);
+    const body = JSON.parse(res.body);
+    const responseId: number = body.id;
+
+    const db = getDatabase();
+    const dbRow = db.prepare(
+      "SELECT id FROM tasks WHERE id = ? AND kind = 'todo'",
+    ).get(responseId) as { id: number } | undefined;
+    assert.ok(dbRow !== undefined, 'task row must exist with native id');
+    assert.equal(dbRow!.id, responseId, 'response id must equal native tasks.id');
+  });
+
+  it('collision: native-first returns todo at tasks.id=N even when another todo has external_id=N', async () => {
+    // Set up: two todos
+    //   todo A: native tasks.id=A, external_id pointing at idB (legacy mapping)
+    //   todo B: native tasks.id=B, external_id=NULL  (new-style)
+    // GET /api/todos/B → native-first: finds todo B (tasks.id=B, kind='todo') → returns B
+
+    const db = getDatabase();
+    db.prepare(
+      `INSERT INTO tasks (kind, title, status, priority, tags, created_at, updated_at)
+       VALUES ('todo', 'Todo A', 'pending', 'medium', '[]', datetime('now'), datetime('now'))`,
+    ).run();
+    const rowA = db.prepare(
+      "SELECT id FROM tasks WHERE title = 'Todo A' AND kind = 'todo'",
+    ).get() as { id: number };
+    const idA = rowA.id;
+
+    db.prepare(
+      `INSERT INTO tasks (kind, title, status, priority, tags, created_at, updated_at)
+       VALUES ('todo', 'Todo B', 'pending', 'medium', '[]', datetime('now'), datetime('now'))`,
+    ).run();
+    const rowB = db.prepare(
+      "SELECT id FROM tasks WHERE title = 'Todo B' AND kind = 'todo'",
+    ).get() as { id: number };
+    const idB = rowB.id;
+
+    // Update todo A's external_id to point at idB (simulating a legacy collision)
+    db.prepare('UPDATE tasks SET external_id = ? WHERE id = ?').run(String(idB), idA);
+
+    // Native-first: GET /api/todos/<idB> → tasks.id=idB AND kind='todo' → todo B wins
+    const res = await makeTodoRequest('GET', `/api/todos/${idB}`);
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.title, 'Todo B', 'native-first must return todo B, not todo A whose external_id points here');
+    assert.equal(body.id, idB, 'response id is native tasks.id of the winning row');
+
+    // Confirm todo A is reachable via its own native id
+    const resA = await makeTodoRequest('GET', `/api/todos/${idA}`);
+    assert.equal(resA.status, 200);
+    const bodyA = JSON.parse(resA.body);
+    assert.equal(bodyA.title, 'Todo A');
+    assert.equal(bodyA.id, idA);
+  });
+
+  it('new todo creation leaves external_id NULL in the tasks table', async () => {
+    const res = await makeTodoRequest('POST', '/api/todos', {
+      title: 'Brand new todo',
+      priority: 'low',
+    });
+    assert.equal(res.status, 201);
+    const body = JSON.parse(res.body);
+
+    const db = getDatabase();
+    const row = db.prepare(
+      "SELECT external_id FROM tasks WHERE id = ? AND kind = 'todo'",
+    ).get(body.id) as { external_id: string | null } | undefined;
+
+    assert.ok(row !== undefined, 'row must exist');
+    assert.equal(row!.external_id, null, 'new todos must NOT have external_id stamped');
   });
 });
 
