@@ -53,6 +53,28 @@ export const TERMINAL_STATUSES: readonly TaskStatus[] = [
 ];
 
 /**
+ * Common user-friendly status aliases that we accept on input and normalize to
+ * the canonical enum value before validation. Case-insensitive on the input.
+ *
+ * Issue #211: kithkit todo/task API should accept the natural-language forms
+ * users actually type. Pure API-boundary normalization — schema and DB rows
+ * always carry the canonical value.
+ *
+ * NOTE: 'blocked' → 'on_hold' was considered, but 'on_hold' is not a valid
+ * status and 'blocked' is already canonical, so no alias is needed there.
+ */
+const STATUS_ALIASES: Readonly<Record<string, TaskStatus>> = {
+  done: 'completed',
+  wip: 'in_progress',
+};
+
+export function normalizeStatusAlias(raw: unknown): unknown {
+  if (typeof raw !== 'string') return raw;
+  const lookup = STATUS_ALIASES[raw.toLowerCase()];
+  return lookup ?? raw;
+}
+
+/**
  * Private map of all valid transitions.
  * Each key is a "from" status; the value is the set of statuses it may
  * transition to.  Terminal statuses either have no outgoing edges at all

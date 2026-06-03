@@ -21,6 +21,7 @@ import { loadConfig } from '../core/config.js';
 import { loadContext } from '../core/context-loader.js';
 import { storeMemoryInternal } from './memory.js';
 import { createLogger } from '../core/logger.js';
+import { normalizeStatusAlias } from '../core/task-state-machine.js';
 
 const log = createLogger('state-api');
 
@@ -265,9 +266,7 @@ export async function handleStateRoute(
           json(res, 400, withTimestamp({ error: `invalid priority (must be ${VALID_PRIORITIES.join('/')})` }));
           return true;
         }
-        // Normalize legacy 'done' status to 'completed'
-        let putStatus = body.status as string | undefined;
-        if (putStatus === 'done') putStatus = 'completed';
+        let putStatus = normalizeStatusAlias(body.status as string | undefined) as string | undefined;
         if (putStatus && !VALID_TODO_STATUSES.includes(putStatus)) {
           json(res, 400, withTimestamp({ error: `invalid status (must be ${VALID_TODO_STATUSES.join('/')})` }));
           return true;
