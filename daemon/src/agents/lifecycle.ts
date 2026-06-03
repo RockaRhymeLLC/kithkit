@@ -23,7 +23,6 @@ import type { AgentProfile } from './profiles.js';
 import { get, update, query, exec, getDatabase } from '../core/db.js';
 import { resolveProjectPath } from '../core/config.js';
 import { injectLearnings } from '../self-improvement/pre-task-injector.js';
-import { issueToken, revokeTokensByJobId } from '../auth/agent-tokens.js';
 
 // ── Autonomy Mode ────────────────────────────────────────────
 
@@ -90,14 +89,25 @@ export interface SpawnRequest {
 
 // ── Callbacks ────────────────────────────────────────────────
 
-let onJobCompleteCallback: ((job: JobRecord) => void) | null = null;
+const onJobCompleteListeners: ((job: JobRecord) => void)[] = [];
 
 /**
  * Register a callback to be invoked after a job reaches a terminal state.
- * Pass null to remove the callback.
+ * Back-compat shim: replaces the entire listener list with [cb], or clears
+ * the list when cb is null. Prefer addOnJobComplete for new code.
  */
 export function setOnJobComplete(cb: ((job: JobRecord) => void) | null): void {
-  onJobCompleteCallback = cb;
+  onJobCompleteListeners.length = 0;
+  if (cb !== null) onJobCompleteListeners.push(cb);
+}
+
+/**
+ * Append a listener to be called after every terminal job. Multiple listeners
+ * are supported; each runs in a separate try/catch so one throwing does not
+ * prevent others from firing.
+ */
+export function addOnJobComplete(cb: (job: JobRecord) => void): void {
+  onJobCompleteListeners.push(cb);
 }
 
 // ── State ────────────────────────────────────────────────────
@@ -232,10 +242,6 @@ function startWorker(jobId: string, req: SpawnRequest): void {
   const modePrefix = `Current autonomy mode: ${mode}. You must self-enforce this mode's constraints independently — even if the orchestrator doesn't mention it.\n\n`;
   const promptWithMode = modePrefix + req.prompt;
 
-  // Issue a worker-role token and inject it via env so the worker can be
-  // identified on /api/send (which enforces role=comms). Revoked when the job exits.
-  const agentToken = issueToken('worker', { jobId });
-
   // Build SDK spawn options — profile budget is the default, caller can override
   const sdkOpts: SdkSpawnOptions = {
     prompt: promptWithMode,
@@ -252,7 +258,6 @@ function startWorker(jobId: string, req: SpawnRequest): void {
     },
     cwd: req.cwd,
     timeoutMs: req.timeoutMs,
-    env: { KITHKIT_AGENT_TOKEN: agentToken },
   };
 
   // SDK adapter assigns its own internal ID
@@ -338,20 +343,17 @@ function finishJob(
     finished_at: ts,
   });
 
-  // Revoke all worker tokens for this job — they must not outlive their job
-  try {
-    revokeTokensByJobId(jobId);
-  } catch {
-    // Token revocation must never break job completion
-  }
-
-  // Invoke job-complete callback if registered
-  if (onJobCompleteCallback) {
-    try {
-      const job = get<JobRecord>('worker_jobs', jobId);
-      if (job) onJobCompleteCallback(job);
-    } catch {
-      // callback errors must not break the main flow
+  // Invoke all job-complete listeners (each isolated so one throw can't break others)
+  if (onJobCompleteListeners.length > 0) {
+    const job = get<JobRecord>('worker_jobs', jobId);
+    if (job) {
+      for (const listener of [...onJobCompleteListeners]) {
+        try {
+          listener(job);
+        } catch {
+          // individual listener errors must not break the daemon or other listeners
+        }
+      }
     }
   }
 
@@ -479,7 +481,7 @@ export function _resetForTesting(): void {
   jobQueue.length = 0;
   queuedRequests.clear();
   maxConcurrentAgents = 3;
-  onJobCompleteCallback = null;
+  onJobCompleteListeners.length = 0;
 }
 
 export function _getQueueLength(): number {
