@@ -24,6 +24,7 @@ import { execFile } from 'node:child_process';
 import { query } from '../../core/db.js';
 import { loadConfig } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
+import { routeMessage } from '../../comms/channel-router.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('daily-digest');
@@ -326,26 +327,14 @@ function formatDigest(sections: DigestSection[], date: string): string {
  * use its default routing.
  */
 async function sendDigest(message: string, channels?: string[]): Promise<void> {
-  const config = loadConfig();
-  const port = (config as unknown as Record<string, Record<string, unknown>>)?.daemon?.port ?? 3847;
-
-  const payload: Record<string, unknown> = {
-    message,
-    parse_mode: 'HTML',
-  };
-  if (channels && channels.length > 0) {
-    payload.channels = channels;
-  }
-  const body = JSON.stringify(payload);
-
-  const result = await fetchLocal(`http://127.0.0.1:${port}/api/send`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body,
-  });
-
-  if (!result.ok) {
-    throw new Error(`Send API returned ${result.status}`);
+  // Call routeMessage directly — in-process, no HTTP hop, no auth token needed.
+  const results = await routeMessage(
+    { text: message },
+    channels && channels.length > 0 ? channels : undefined,
+  );
+  const allFailed = Object.keys(results).length > 0 && Object.values(results).every(v => v === false);
+  if (allFailed) {
+    throw new Error('All delivery channels failed');
   }
 }
 
@@ -379,14 +368,6 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timer);
   }
-}
-
-async function fetchLocal(
-  url: string,
-  init: RequestInit,
-): Promise<{ ok: boolean; status: number }> {
-  const resp = await fetch(url, init);
-  return { ok: resp.ok, status: resp.status };
 }
 
 // ── Main ─────────────────────────────────────────────────────

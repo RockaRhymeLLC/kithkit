@@ -23,6 +23,7 @@ import type { AgentProfile } from './profiles.js';
 import { get, update, query, exec, getDatabase } from '../core/db.js';
 import { resolveProjectPath } from '../core/config.js';
 import { injectLearnings } from '../self-improvement/pre-task-injector.js';
+import { issueToken, revokeTokensByJobId } from '../auth/agent-tokens.js';
 
 // ── Autonomy Mode ────────────────────────────────────────────
 
@@ -231,6 +232,10 @@ function startWorker(jobId: string, req: SpawnRequest): void {
   const modePrefix = `Current autonomy mode: ${mode}. You must self-enforce this mode's constraints independently — even if the orchestrator doesn't mention it.\n\n`;
   const promptWithMode = modePrefix + req.prompt;
 
+  // Issue a worker-role token and inject it via env so the worker can be
+  // identified on /api/send (which enforces role=comms). Revoked when the job exits.
+  const agentToken = issueToken('worker', { jobId });
+
   // Build SDK spawn options — profile budget is the default, caller can override
   const sdkOpts: SdkSpawnOptions = {
     prompt: promptWithMode,
@@ -247,6 +252,7 @@ function startWorker(jobId: string, req: SpawnRequest): void {
     },
     cwd: req.cwd,
     timeoutMs: req.timeoutMs,
+    env: { KITHKIT_AGENT_TOKEN: agentToken },
   };
 
   // SDK adapter assigns its own internal ID
@@ -331,6 +337,13 @@ function finishJob(
     cost_usd: sdkState?.costUsd ?? 0,
     finished_at: ts,
   });
+
+  // Revoke all worker tokens for this job — they must not outlive their job
+  try {
+    revokeTokensByJobId(jobId);
+  } catch {
+    // Token revocation must never break job completion
+  }
 
   // Invoke job-complete callback if registered
   if (onJobCompleteCallback) {

@@ -125,7 +125,7 @@ function buildShutdownPrompt(reason: string): string {
     `Shutdown requested: ${reason}`,
     'Please wrap up gracefully:',
     '1. If you have any unsent findings or context, send a final result to comms now:',
-    `   curl -s -X POST http://localhost:${loadConfig().daemon.port}/api/messages -H "Content-Type: application/json" -d '{"from":"orchestrator","to":"comms","type":"result","body":"<any final notes>"}'`,
+    `   curl -s -X POST http://localhost:${loadConfig().daemon.port}/api/messages -H "Content-Type: application/json" -d '{"from":"orchestrator","to":"comms","type":"status","body":"<any final notes>"}'`,
     '2. Then exit by running: exit',
     '',
     'If you are actively working on something, say so — the daemon will check again later.',
@@ -341,7 +341,7 @@ function checkTaskTimeouts(): void {
 
   // Check pending/assigned tasks older than 5 minutes
   const stalePending = query<{ id: string; title: string; status: string; created_at: string; assigned_at: string | null }>(
-    `SELECT id, title, status, created_at, assigned_at FROM orchestrator_tasks WHERE status IN ('pending', 'assigned')`,
+    `SELECT external_id AS id, title, status, created_at, assigned_at FROM tasks WHERE kind = 'orchestrator' AND status IN ('pending', 'assigned')`,
   );
   for (const task of stalePending) {
     const refTime = task.assigned_at ?? task.created_at;
@@ -358,7 +358,7 @@ function checkTaskTimeouts(): void {
 
   // Check in_progress tasks with no recent updates
   const activeTaskRows = query<{ id: string; title: string; updated_at: string }>(
-    `SELECT id, title, updated_at FROM orchestrator_tasks WHERE status = 'in_progress'`,
+    `SELECT external_id AS id, title, updated_at FROM tasks WHERE kind = 'orchestrator' AND status = 'in_progress'`,
   );
   for (const task of activeTaskRows) {
     const lastUpdate = new Date(task.updated_at).getTime();
@@ -408,8 +408,8 @@ async function run(config: Record<string, unknown>): Promise<void> {
   const slaMinutes = typeof rawSla === 'number' ? rawSla : DEFAULT_SLA_MINUTES;
   const slaThreshold = new Date(Date.now() - slaMinutes * 60 * 1000).toISOString();
   const stalePlans = query<{ id: string; title: string; plan_submitted_at: string }>(
-    `SELECT id, title, plan_submitted_at FROM orchestrator_tasks
-     WHERE status = 'awaiting_approval' AND plan_status = 'submitted'
+    `SELECT external_id AS id, title, plan_submitted_at FROM tasks
+     WHERE kind = 'orchestrator' AND status = 'awaiting_approval' AND plan_status = 'submitted'
      AND plan_submitted_at < ?`,
     slaThreshold,
   );
@@ -472,7 +472,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
         "SELECT COUNT(*) as count FROM worker_jobs WHERE status IN ('queued', 'running')",
       );
       const awaitingDuringGrace = query<{ count: number }>(
-        "SELECT COUNT(*) as count FROM orchestrator_tasks WHERE status = 'awaiting_approval'",
+        "SELECT COUNT(*) as count FROM tasks WHERE kind = 'orchestrator' AND status = 'awaiting_approval'",
       );
       if ((activeJobsDuringGrace[0]?.count ?? 0) > 0 || (awaitingDuringGrace[0]?.count ?? 0) > 0) {
         log.info('Grace period expired but live work detected — extending grace period', {
@@ -541,8 +541,8 @@ async function run(config: Record<string, unknown>): Promise<void> {
 
     // Check for pending tasks that need a fresh orchestrator
     const pendingForRespawn = query<{ count: number; id: string; title: string; description: string }>(
-      `SELECT COUNT(*) as count, MIN(id) as id, MIN(title) as title, MIN(description) as description
-       FROM orchestrator_tasks WHERE status = 'pending'`,
+      `SELECT COUNT(*) as count, MIN(external_id) AS id, MIN(title) as title, MIN(description) as description
+       FROM tasks WHERE kind = 'orchestrator' AND status = 'pending'`,
     );
     const pendingCount = pendingForRespawn[0]?.count ?? 0;
     if (pendingCount > 0) {
@@ -555,7 +555,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
     // Also respawn if tasks are awaiting approval — the orch must be alive to handle
     // the human's approve/reject decision when it arrives.
     const awaitingApprovalOnDeath = query<{ count: number }>(
-      "SELECT COUNT(*) as count FROM orchestrator_tasks WHERE status = 'awaiting_approval'",
+      "SELECT COUNT(*) as count FROM tasks WHERE kind = 'orchestrator' AND status = 'awaiting_approval'",
     );
     const awaitingApprovalCount = awaitingApprovalOnDeath[0]?.count ?? 0;
     if (awaitingApprovalCount > 0) {
@@ -590,7 +590,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
     // started. Claude won't pick these up on its own — inject a soft nudge so it
     // knows to check the queue when its current work is done.
     const pendingWhileActive = query<{ count: number }>(
-      `SELECT COUNT(*) as count FROM orchestrator_tasks WHERE status = 'pending'`,
+      `SELECT COUNT(*) as count FROM tasks WHERE kind = 'orchestrator' AND status = 'pending'`,
     );
     const pendingWhileActiveCount = pendingWhileActive[0]?.count ?? 0;
     if (pendingWhileActiveCount > 0) {
@@ -621,7 +621,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
   // The orchestrator must remain alive to handle the human's approve/reject response.
   // Shutting it down here leaves the task in limbo with no process to receive the decision.
   const awaitingApprovalRows = query<{ count: number }>(
-    "SELECT COUNT(*) as count FROM orchestrator_tasks WHERE status = 'awaiting_approval'",
+    "SELECT COUNT(*) as count FROM tasks WHERE kind = 'orchestrator' AND status = 'awaiting_approval'",
   );
   if ((awaitingApprovalRows[0]?.count ?? 0) > 0) {
     log.debug('Tasks awaiting plan approval — deferring idle shutdown', {
@@ -701,8 +701,8 @@ async function run(config: Record<string, unknown>): Promise<void> {
   // This covers the case where a task arrived while Claude was active and the
   // orchestrator went idle before the message-delivery cycle injected it.
   const pendingTaskRows = query<{ count: number; title: string }>(
-    `SELECT COUNT(*) as count, MIN(title) as title FROM orchestrator_tasks
-     WHERE status = 'pending'`,
+    `SELECT COUNT(*) as count, MIN(title) as title FROM tasks
+     WHERE kind = 'orchestrator' AND status = 'pending'`,
   );
   const pendingTaskCount = pendingTaskRows[0]?.count ?? 0;
   if (pendingTaskCount > 0) {

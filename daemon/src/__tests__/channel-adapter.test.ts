@@ -13,6 +13,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { openDatabase, _resetDbForTesting } from '../core/db.js';
 import { handleSendRoute } from '../api/send.js';
+import { issueToken } from '../auth/agent-tokens.js';
 import {
   registerAdapter,
   unregisterAdapter,
@@ -83,6 +84,7 @@ function request(
   method: string,
   urlPath: string,
   body?: unknown,
+  extraHeaders?: Record<string, string>,
 ): Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const opts: http.RequestOptions = {
@@ -94,6 +96,7 @@ function request(
       headers: {
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         'Connection': 'close',
+        ...extraHeaders,
       },
     };
     const r = http.request(opts, (res) => {
@@ -110,12 +113,15 @@ function request(
 
 let server: http.Server;
 let tmpDir: string;
+// comms token issued per test suite (refreshed by setupHttp)
+let testCommsToken = '';
 
 function setupHttp(): Promise<void> {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-channel-'));
   _resetDbForTesting();
   _resetForTesting();
   openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+  testCommsToken = issueToken('comms');
 
   server = http.createServer((inReq, res) => {
     const url = new URL(inReq.url ?? '/', `http://localhost:${TEST_PORT}`);
@@ -205,10 +211,11 @@ describe('Multi-channel routing works (t-146)', () => {
     registerAdapter(telegram);
     registerAdapter(email);
 
-    const res = await request('POST', '/api/send', {
-      message: 'Hello',
-      channels: ['telegram', 'email'],
-    });
+    const res = await request(
+      'POST', '/api/send',
+      { message: 'Hello', channels: ['telegram', 'email'] },
+      { 'X-Agent-Token': testCommsToken },
+    );
 
     assert.equal(res.status, 200);
     const body = JSON.parse(res.body);
@@ -225,10 +232,11 @@ describe('Multi-channel routing works (t-146)', () => {
     registerAdapter(telegram);
     registerAdapter(email);
 
-    const res = await request('POST', '/api/send', {
-      message: 'Telegram only',
-      channels: ['telegram'],
-    });
+    const res = await request(
+      'POST', '/api/send',
+      { message: 'Telegram only', channels: ['telegram'] },
+      { 'X-Agent-Token': testCommsToken },
+    );
 
     assert.equal(res.status, 200);
     assert.equal(telegram.sentMessages.length, 1);
@@ -241,9 +249,11 @@ describe('Multi-channel routing works (t-146)', () => {
     registerAdapter(telegram);
     registerAdapter(email);
 
-    const res = await request('POST', '/api/send', {
-      message: 'Broadcast',
-    });
+    const res = await request(
+      'POST', '/api/send',
+      { message: 'Broadcast' },
+      { 'X-Agent-Token': testCommsToken },
+    );
 
     assert.equal(res.status, 200);
     assert.equal(telegram.sentMessages.length, 1);
@@ -404,8 +414,87 @@ describe('POST /api/send validation', () => {
   afterEach(teardownHttp);
 
   it('requires message field', async () => {
-    const res = await request('POST', '/api/send', {});
+    const res = await request(
+      'POST', '/api/send', {},
+      { 'X-Agent-Token': testCommsToken },
+    );
     assert.equal(res.status, 400);
     assert.ok(JSON.parse(res.body).error.includes('message'));
+  });
+});
+
+describe('POST /api/send — role gate (auth tests)', () => {
+  beforeEach(setupHttp);
+  afterEach(teardownHttp);
+
+  it('no X-Agent-Token header → 401', async () => {
+    const res = await request('POST', '/api/send', { message: 'hello' });
+    assert.equal(res.status, 401);
+    assert.ok(JSON.parse(res.body).error.includes('X-Agent-Token'));
+  });
+
+  it('invalid token → 401', async () => {
+    const res = await request(
+      'POST', '/api/send',
+      { message: 'hello' },
+      { 'X-Agent-Token': 'notarealtoken1234567890' },
+    );
+    assert.equal(res.status, 401);
+    assert.ok(JSON.parse(res.body).error.includes('Invalid or revoked'));
+  });
+
+  it('worker-role token → 403 with escalation message', async () => {
+    const workerToken = issueToken('worker', { jobId: 'test-job-1' });
+    const res = await request(
+      'POST', '/api/send',
+      { message: 'hello from worker' },
+      { 'X-Agent-Token': workerToken },
+    );
+    assert.equal(res.status, 403);
+    const body = JSON.parse(res.body);
+    assert.ok(body.error.includes('Workers and orchestrators cannot send'));
+    assert.equal(body.role, 'worker');
+  });
+
+  it('comms-role token → 200, message routes normally', async () => {
+    const adapter = createMockAdapter('telegram');
+    registerAdapter(adapter);
+
+    const res = await request(
+      'POST', '/api/send',
+      { message: 'comms delivery', channels: ['telegram'] },
+      { 'X-Agent-Token': testCommsToken },
+    );
+    assert.equal(res.status, 200);
+    assert.equal(adapter.sentMessages.length, 1);
+    assert.equal(adapter.sentMessages[0].text, 'comms delivery');
+  });
+
+  it('revoked comms token → 401', async () => {
+    const { revokeToken } = await import('../auth/agent-tokens.js');
+    revokeToken(testCommsToken);
+
+    const res = await request(
+      'POST', '/api/send',
+      { message: 'should be blocked' },
+      { 'X-Agent-Token': testCommsToken },
+    );
+    assert.equal(res.status, 401);
+    assert.ok(JSON.parse(res.body).error.includes('Invalid or revoked'));
+  });
+});
+
+describe('routeMessage() internal call still works (smoke test)', () => {
+  beforeEach(() => { _resetForTesting(); });
+  afterEach(() => { _resetForTesting(); });
+
+  it('routeMessage delivers without HTTP', async () => {
+    const adapter = createMockAdapter('telegram');
+    registerAdapter(adapter);
+
+    const results = await routeMessage({ text: 'direct call' }, ['telegram']);
+    assert.equal(results.telegram, true);
+    assert.equal(adapter.sentMessages.length, 1);
+    assert.equal(adapter.sentMessages[0].text, 'direct call');
   });
 });

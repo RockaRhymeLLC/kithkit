@@ -28,7 +28,7 @@ For each task:
 3. Work notes: `PUT /api/orchestrator/tasks/:id` with `{"work_notes":"<note>","append_work_notes":true}`
 4. Do the work — decompose into subtasks, delegate to workers, synthesize results
 5. Complete: `PUT /api/orchestrator/tasks/:id` with `{"status":"completed","result":"<summary>"}`
-6. Report: `POST /api/messages` with `{"from":"orchestrator","to":"comms","type":"result","body":"<result>","metadata":{"task_id":"<id>"}}`
+6. Report: `POST /api/messages` with `{"from":"orchestrator","to":"comms","type":"result","body":"<result>","metadata":{"task_id":"<id>","completion":true}}`
 
 If the task fails:
 - `PUT /api/orchestrator/tasks/:id` with `{"status":"failed","result":"<what went wrong>"}`

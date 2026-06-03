@@ -6,7 +6,8 @@
   "description": "Personal AI assistant framework — install, configure identity, go.",
   "workspaces": [
     "daemon",
-    "cli"
+    "cli",
+    ".a2a-sdk/packages/sdk"
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
@@ -23,6 +24,8 @@
     "url": "https://github.com/RockaRhymeLLC/kithkit.git"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.3.0",
     "minimatch": "^10.2.4",
     "typescript": "^5.9.3"

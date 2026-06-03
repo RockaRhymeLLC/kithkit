@@ -138,6 +138,29 @@ export interface CapsConfig {
   pulse_warn_threshold_ms?: number;
 }
 
+// ── Approval policies ─────────────────────────────────────────
+
+/**
+ * Per-capability approval policy entry.
+ * require_approval_for values:
+ *   all                — always require approval (safe default)
+ *   first_time_recipient — require only for recipients not yet in agent_sent_recipients
+ *   external_only      — require only for recipients outside the tenant's primary domain
+ *   never              — bypass gate entirely (escape hatch; use with explicit justification)
+ *
+ * Unrecognized values are treated as 'all' (fail-closed).
+ */
+export interface ApprovalPolicyEntry {
+  require_approval_for: string;  // 'all' | 'first_time_recipient' | 'external_only' | 'never'
+  /** Gate timeout in minutes. Default: 10. */
+  timeout_minutes: number;
+}
+
+/** Map of capability/channel identifier → policy entry. */
+export interface ApprovalPolicies {
+  [channel: string]: ApprovalPolicyEntry;
+}
+
 export interface KithkitConfig {
   agent: AgentConfig;
   tmux?: TmuxConfig;
@@ -154,6 +177,12 @@ export interface KithkitConfig {
   email?: EmailConfig;
   calendar?: CalendarConfig;
   self_improvement?: Record<string, unknown>;
+  /**
+   * Outbound-send approval policies, keyed by channel/capability identifier.
+   * If a channel has no entry, it is not gated (passes through).
+   * See approval-workflow.md for the full spec.
+   */
+  approval_policies?: ApprovalPolicies;
 }
 
 // ── Defaults ─────────────────────────────────────────────────

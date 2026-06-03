@@ -18,8 +18,8 @@ function createMockDeps(overrides?: Partial<RouterDeps>): RouterDeps {
       'agent-comms': {
         enabled: true,
         peers: [
-          { name: 'bmo', host: 'davids-mac-mini.lan', port: 3847, ip: '192.0.2.169' },
-          { name: 'r2d2', host: 'host-b.lan', port: 3847 },
+          { name: 'agent-a', host: 'node-a.lan', port: 3847, ip: '10.0.0.1' },
+          { name: 'agent-c', host: 'node-b.lan', port: 3847 },
         ],
       },
       network: {
@@ -37,7 +37,7 @@ function createMockDeps(overrides?: Partial<RouterDeps>): RouterDeps {
 
 function validDMRequest() {
   return {
-    to: 'bmo',
+    to: 'agent-a',
     payload: { type: 'text', text: 'hello' },
   };
 }
@@ -62,7 +62,7 @@ describe('A2A Router — Validation', () => {
     const result = router.validate(validDMRequest());
     assert.equal(result.valid, true);
     if (result.valid) {
-      assert.equal(result.request.to, 'bmo');
+      assert.equal(result.request.to, 'agent-a');
       assert.equal(result.request.payload.type, 'text');
     }
   });
@@ -77,7 +77,7 @@ describe('A2A Router — Validation', () => {
 
   it('3. Both to and group present -> INVALID_TARGET', () => {
     const result = router.validate({
-      to: 'bmo',
+      to: 'agent-a',
       group: 'some-group',
       payload: { type: 'text' },
     });
@@ -98,7 +98,7 @@ describe('A2A Router — Validation', () => {
   });
 
   it('5. Missing payload -> INVALID_REQUEST', () => {
-    const result = router.validate({ to: 'bmo' });
+    const result = router.validate({ to: 'agent-a' });
     assert.equal(result.valid, false);
     if (!result.valid) {
       assert.equal(result.code, A2A_ERROR_CODES.INVALID_REQUEST);
@@ -107,7 +107,7 @@ describe('A2A Router — Validation', () => {
 
   it('6. Payload without type -> INVALID_REQUEST', () => {
     const result = router.validate({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { text: 'hello' },
     });
     assert.equal(result.valid, false);
@@ -118,7 +118,7 @@ describe('A2A Router — Validation', () => {
 
   it('7. payload.type not a string -> INVALID_REQUEST', () => {
     const result = router.validate({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 42 },
     });
     assert.equal(result.valid, false);
@@ -129,7 +129,7 @@ describe('A2A Router — Validation', () => {
 
   it('8. Invalid route value -> INVALID_ROUTE', () => {
     const result = router.validate({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text' },
       route: 'pigeon',
     });
@@ -162,23 +162,23 @@ describe('A2A Router — Peer Resolution', () => {
   });
 
   it('10. Bare name found in config -> returns peer + qualified name', () => {
-    const result = router.resolvePeer('bmo');
+    const result = router.resolvePeer('agent-a');
     assert.ok(result.peer);
-    assert.equal(result.peer.name, 'bmo');
-    assert.equal(result.qualified, 'bmo@home');
+    assert.equal(result.peer.name, 'agent-a');
+    assert.equal(result.qualified, 'agent-a@home');
   });
 
-  it('11. Case-insensitive match (BMO -> bmo)', () => {
-    const result = router.resolvePeer('BMO');
+  it('11. Case-insensitive match (AGENT-A -> agent-a)', () => {
+    const result = router.resolvePeer('AGENT-A');
     assert.ok(result.peer);
-    assert.equal(result.peer.name, 'bmo');
-    assert.equal(result.qualified, 'bmo@home');
+    assert.equal(result.peer.name, 'agent-a');
+    assert.equal(result.qualified, 'agent-a@home');
   });
 
-  it('12. Qualified name (bmo@relay.example.com) -> skips config lookup', () => {
-    const result = router.resolvePeer('bmo@relay.example.com');
+  it('12. Qualified name (agent-a@relay.example.com) -> skips config lookup', () => {
+    const result = router.resolvePeer('agent-a@relay.example.com');
     assert.equal(result.peer, undefined);
-    assert.equal(result.qualified, 'bmo@relay.example.com');
+    assert.equal(result.qualified, 'agent-a@relay.example.com');
   });
 
   it('13. Unknown bare name -> no peer, still returns qualified name for relay', () => {
@@ -187,15 +187,15 @@ describe('A2A Router — Peer Resolution', () => {
     assert.equal(result.qualified, 'unknown-agent@home');
   });
 
-  it('Prefix matching: "bm" resolves to "bmo" peer', () => {
-    const result = router.resolvePeer('bm');
+  it('Prefix matching: "agent-a" resolves to "agent-a" peer', () => {
+    const result = router.resolvePeer('agent-a');
     assert.ok(result.peer);
-    assert.equal(result.peer.name, 'bmo');
-    assert.equal(result.qualified, 'bmo@home');
+    assert.equal(result.peer.name, 'agent-a');
+    assert.equal(result.qualified, 'agent-a@home');
   });
 
   it('Prefix matching: ambiguous prefix does not resolve', () => {
-    // Both "bmo" and "r2d2" don't share a prefix with "b" that would be ambiguous,
+    // Both "agent-a" and "agent-c" don't share a prefix with "b" that would be ambiguous,
     // but let's use a router with peers that do share a prefix
     const deps = createMockDeps({
       config: {
@@ -318,7 +318,7 @@ describe('A2A Router — Routing', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hi' },
       route: 'lan',
     });
@@ -337,7 +337,7 @@ describe('A2A Router — Routing', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hi' },
       route: 'lan',
     });
@@ -356,7 +356,7 @@ describe('A2A Router — Routing', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hi' },
       route: 'relay',
     });
@@ -376,7 +376,7 @@ describe('A2A Router — Routing', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hi' },
       route: 'relay',
     });
@@ -439,7 +439,7 @@ describe('A2A Router — Routing', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hi' },
       route: 'relay',
     });
@@ -482,7 +482,7 @@ describe('A2A Router — Logging', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hello' },
       route: 'relay',
     });
@@ -596,7 +596,7 @@ describe('A2A Router — Spec Bug Fixes', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hi', from: 'evil', messageId: 'spoofed-id', timestamp: 'spoofed-ts' },
     });
 
@@ -611,7 +611,7 @@ describe('A2A Router — Spec Bug Fixes', () => {
     const deps = createMockDeps();
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo@relay.example.com',
+      to: 'agent-a@relay.example.com',
       payload: { type: 'text', text: 'hi' },
       route: 'lan',
     });
@@ -631,7 +631,7 @@ describe('A2A Router — Spec Bug Fixes', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hi' },
       route: 'relay',
     });
@@ -649,7 +649,7 @@ describe('A2A Router — Spec Bug Fixes', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hi' },
       route: 'lan',
     });
@@ -666,7 +666,7 @@ describe('A2A Router — Spec Bug Fixes', () => {
     });
     const router = new UnifiedA2ARouter(deps);
     const result = await router.send({
-      to: 'bmo',
+      to: 'agent-a',
       payload: { type: 'text', text: 'hi' },
       route: 'lan',
     });

@@ -419,10 +419,10 @@ describe('Orchestrator idle: liveness check', () => {
       last_activity: new Date(Date.now() - 15 * 60_000).toISOString(),
     });
 
-    // Insert a pending orchestrator task
+    // Insert a pending orchestrator task into the unified tasks table
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('test-task-idle-1', 'Fix the login bug', 'description', 'pending', 0, ?, ?)`,
+      `INSERT INTO tasks (external_id, kind, title, description, status, priority, created_at, updated_at)
+       VALUES ('test-task-idle-1', 'orchestrator', 'Fix the login bug', 'description', 'pending', 'low', ?, ?)`,
       new Date().toISOString(), new Date().toISOString(),
     );
 
@@ -461,10 +461,10 @@ describe('Orchestrator idle: awaiting_approval guard (#106)', () => {
       last_activity: new Date(Date.now() - 15 * 60_000).toISOString(),
     });
 
-    // Insert a task in awaiting_approval state
+    // Insert a task in awaiting_approval state into the unified tasks table
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('approval-guard-1', 'Plan awaiting approval', null, 'awaiting_approval', 0, ?, ?)`,
+      `INSERT INTO tasks (external_id, kind, title, status, priority, created_at, updated_at)
+       VALUES ('approval-guard-1', 'orchestrator', 'Plan awaiting approval', 'awaiting_approval', 'low', ?, ?)`,
       new Date().toISOString(), new Date().toISOString(),
     );
 
@@ -518,8 +518,8 @@ describe('Orchestrator idle: awaiting_approval guard (#106)', () => {
     });
 
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('grace-approval-1', 'Grace approval task', null, 'awaiting_approval', 0, ?, ?)`,
+      `INSERT INTO tasks (external_id, kind, title, status, priority, created_at, updated_at)
+       VALUES ('grace-approval-1', 'orchestrator', 'Grace approval task', 'awaiting_approval', 'low', ?, ?)`,
       new Date().toISOString(), new Date().toISOString(),
     );
 
@@ -541,8 +541,8 @@ describe('Orchestrator idle: awaiting_approval guard (#106)', () => {
     });
 
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('awaiting-respawn-1', 'Plan pending approval', 'details', 'awaiting_approval', 0, ?, ?)`,
+      `INSERT INTO tasks (external_id, kind, title, description, status, priority, created_at, updated_at)
+       VALUES ('awaiting-respawn-1', 'orchestrator', 'Plan pending approval', 'details', 'awaiting_approval', 'low', ?, ?)`,
       new Date().toISOString(), new Date().toISOString(),
     );
 
@@ -568,13 +568,13 @@ describe('Orchestrator idle: awaiting_approval guard (#106)', () => {
     });
 
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('both-pending-1', 'Pending task', 'do it', 'pending', 0, ?, ?)`,
+      `INSERT INTO tasks (external_id, kind, title, description, status, priority, created_at, updated_at)
+       VALUES ('both-pending-1', 'orchestrator', 'Pending task', 'do it', 'pending', 'low', ?, ?)`,
       new Date().toISOString(), new Date().toISOString(),
     );
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('both-awaiting-1', 'Approval task', 'waiting', 'awaiting_approval', 0, ?, ?)`,
+      `INSERT INTO tasks (external_id, kind, title, description, status, priority, created_at, updated_at)
+       VALUES ('both-awaiting-1', 'orchestrator', 'Approval task', 'waiting', 'awaiting_approval', 'low', ?, ?)`,
       new Date().toISOString(), new Date().toISOString(),
     );
 
@@ -605,10 +605,10 @@ describe('Orchestrator idle: respawn for pending tasks when dead (#121)', () => 
       cleanupSessionDirs: () => 0,
     });
 
-    // Insert a pending orchestrator task
+    // Insert a pending orchestrator task into the unified tasks table
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('respawn-task-1', 'Deploy the widget', 'Deploy widget to prod', 'pending', 0, ?, ?)`,
+      `INSERT INTO tasks (external_id, kind, title, description, status, priority, created_at, updated_at)
+       VALUES ('respawn-task-1', 'orchestrator', 'Deploy the widget', 'Deploy widget to prod', 'pending', 'low', ?, ?)`,
       new Date().toISOString(), new Date().toISOString(),
     );
 
@@ -687,8 +687,8 @@ describe('Orchestrator idle: respawn for pending tasks when dead (#121)', () => 
     });
 
     exec(
-      `INSERT INTO orchestrator_tasks (id, title, description, status, priority, created_at, updated_at)
-       VALUES ('respawn-task-2', 'Another task', 'Do something', 'pending', 0, ?, ?)`,
+      `INSERT INTO tasks (external_id, kind, title, description, status, priority, created_at, updated_at)
+       VALUES ('respawn-task-2', 'orchestrator', 'Another task', 'Do something', 'pending', 'low', ?, ?)`,
       new Date().toISOString(), new Date().toISOString(),
     );
 

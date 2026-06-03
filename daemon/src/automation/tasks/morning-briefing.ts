@@ -21,6 +21,7 @@ import path from 'node:path';
 import { query } from '../../core/db.js';
 import { loadConfig, getProjectDir } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
+import { routeMessage } from '../../comms/channel-router.js';
 import { fetchTodayEvents } from './caldav-client.js';
 import type { Scheduler } from '../scheduler.js';
 
@@ -340,6 +341,13 @@ async function gatherReminders(): Promise<string> {
 
   if (!reminders || reminders.length === 0) return 'No reminders.';
 
+  // Allow-list: only include these two Apple Reminders lists in the morning briefing.
+  // "To Do!" includes the trailing exclamation mark deliberately — that is the exact
+  // device-verified list name (Partner's personal To Do list). "Reminders" is the shared list.
+  const ALLOWED_REMINDER_LISTS = new Set(['To Do!', 'Reminders']);
+  reminders = reminders.filter(r => ALLOWED_REMINDER_LISTS.has(r.list));
+  if (reminders.length === 0) return 'No reminders.';
+
   // Format: group by list, show priority and due date
   const byList = new Map<string, AppleReminder[]>();
   for (const r of reminders) {
@@ -420,29 +428,16 @@ async function sendBriefing(
   channels?: string[],
   telegramChatId?: string,
 ): Promise<void> {
-  const config = loadConfig();
-  const port = (config as unknown as Record<string, Record<string, unknown>>)?.daemon?.port ?? 3847;
-
-  const payload: Record<string, unknown> = {
-    message,
-    parse_mode: 'HTML',
-  };
-  if (channels && channels.length > 0) {
-    payload.channels = channels;
-  }
-  // Allow targeting a specific Telegram chat (e.g., Partner's DM vs Dave's group)
-  if (telegramChatId) {
-    payload.metadata = { chatId: telegramChatId };
-  }
-
-  const resp = await fetch(`http://127.0.0.1:${port}/api/send`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  if (!resp.ok) {
-    throw new Error(`Send API returned ${resp.status}`);
+  // Call routeMessage directly — in-process, no HTTP hop, no auth token needed.
+  // Allow targeting a specific Telegram chat (e.g., Partner's DM vs Dave's group).
+  const metadata: Record<string, unknown> = telegramChatId ? { chatId: telegramChatId } : {};
+  const results = await routeMessage(
+    { text: message, ...(Object.keys(metadata).length > 0 ? { metadata } : {}) },
+    channels && channels.length > 0 ? channels : undefined,
+  );
+  const allFailed = Object.keys(results).length > 0 && Object.values(results).every(v => v === false);
+  if (allFailed) {
+    throw new Error('All delivery channels failed');
   }
 }
 

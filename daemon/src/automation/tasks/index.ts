@@ -23,6 +23,7 @@ import { register as registerDailyDigest } from './daily-digest.js';
 import { register as registerMorningBriefing } from './morning-briefing.js';
 import { register as registerKkitReflection } from './kkit-reflection.js';
 import { register as registerSelfWatchdog } from './self-watchdog.js';
+import { register as registerOrchStaleTaskRecovery } from './orch-stale-task-recovery.js';
 export { loadExternalTasks, type LoadResult } from './external-loader.js';
 
 /**
@@ -45,6 +46,7 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'morning-briefing', register: registerMorningBriefing },
     { name: 'kkit-reflection', register: registerKkitReflection },
     { name: 'self-watchdog', register: registerSelfWatchdog },
+    { name: 'orch-stale-task-recovery', register: registerOrchStaleTaskRecovery },
   ];
 
   for (const { name, register } of registrations) {
