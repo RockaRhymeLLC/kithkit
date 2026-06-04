@@ -100,31 +100,45 @@ const KNOWN_TODO_PUT_FIELDS = new Set([
 // ── Shim helpers ─────────────────────────────────────────────
 
 /**
- * Resolve a legacy todo :id (the integer from the old todos table, now stored
- * as tasks.external_id) to the internal tasks.id (auto-increment integer that
- * is NOT equal to the legacy id once the shared sequence diverges).
+ * Resolve a todo :id URL segment to the internal tasks.id.
  *
- * Returns null when no kind='todo' row with external_id = legacyId exists.
- * Callers MUST return 404 on null — do NOT fall back to tasks.id lookup,
- * as that path resurrects the collision bug where tasks.id=N might belong
- * to an orchestrator-kind row.
+ * Native-first lookup (instance parity):
+ *   1. Try native tasks.id first: SELECT id WHERE id=N AND kind='todo'.
+ *      This handles todos with NULL external_id (created after migration before
+ *      the stamp was in place) and becomes the sole lookup path after stale
+ *      external_id values are eventually wiped.
+ *   2. Legacy fallback: SELECT id WHERE external_id=N AND kind='todo'.
+ *      Transitional — retained for backwards compatibility.
+ *
+ * Collision semantics: when N matches both a native tasks.id (kind='todo')
+ * AND a legacy external_id mapping to a different row, the native row wins.
+ *
+ * Returns null → callers MUST respond 404.
  */
 function resolveLegacyTodoId(legacyId: string): number | null {
   const db = getDatabase();
-  const row = db.prepare(
+  // Native-first: only attempt when legacyId is a clean positive integer string.
+  const nativeCandidate = parseInt(legacyId, 10);
+  if (!isNaN(nativeCandidate) && String(nativeCandidate) === legacyId) {
+    const nativeRow = db.prepare(
+      "SELECT id FROM tasks WHERE id = ? AND kind = 'todo'",
+    ).get(nativeCandidate) as { id: number } | undefined;
+    if (nativeRow) return nativeRow.id;
+  }
+  // Legacy fallback: external_id lookup (transitional).
+  const legacyRow = db.prepare(
     "SELECT id FROM tasks WHERE external_id = ? AND kind = 'todo'",
   ).get(legacyId) as { id: number } | undefined;
-  return row?.id ?? null;
+  return legacyRow?.id ?? null;
 }
 
 /**
- * Map a unified tasks row to the legacy todo response shape:
- * - id: legacy integer (parseInt(external_id) when set, else tasks.id)
+ * Map a unified tasks row to the todo response shape:
+ * - id: native tasks.id (always — removes the external_id display logic)
  * - external_id: masked as null to preserve legacy API contract
  */
 function mapTodoResponse(row: Todo): Record<string, unknown> {
-  const legacyId = row.external_id != null ? parseInt(row.external_id, 10) : row.id;
-  return { ...(row as unknown as Record<string, unknown>), id: legacyId, external_id: null };
+  return { ...(row as unknown as Record<string, unknown>), external_id: null };
 }
 
 const execFileAsync = promisify(execFile);
@@ -206,13 +220,10 @@ export async function handleStateRoute(
       if (body.tags) data.tags = JSON.stringify(body.tags);
 
       const todo = insert<Todo>('tasks', data);
-      // Immediately stamp external_id = String(tasks.id) so legacy callers can
-      // resolve the returned integer id back to this row via external_id lookup.
-      // (Migrated todos get their external_id from migration 025; new ones get it here.)
-      exec('UPDATE tasks SET external_id = ? WHERE id = ?', String(todo.id), todo.id);
+      // Native-first: do NOT stamp external_id on new todos — native tasks.id is the
+      // display id from here on.  Existing migrated todos retain their external_id
+      // for legacy fallback until they are eventually wiped.
       logTodoAction(todo.id, 'created', null, null, `Created with title: ${todo.title}`);
-      // todo was read before the UPDATE so external_id is still null — mapTodoResponse
-      // falls back to tasks.id which equals parseInt(CAST(id AS TEXT)), same value.
       json(res, 201, withTimestamp(mapTodoResponse(todo)));
       return true;
     }
@@ -328,8 +339,7 @@ export async function handleStateRoute(
           try {
             const todoTitle = (updated!.title || '').substring(0, 100);
             const todoDesc = (updated!.description || '').substring(0, 150);
-            const legacyTodoId = updated!.external_id != null ? parseInt(updated!.external_id, 10) : updated!.id;
-            const content = `Completed todo #${legacyTodoId}: ${todoTitle}${todoDesc ? ' — ' + todoDesc : ''}`;
+            const content = `Completed todo #${updated!.id}: ${todoTitle}${todoDesc ? ' — ' + todoDesc : ''}`;
             await storeMemoryInternal({
               content,
               category: 'event',
