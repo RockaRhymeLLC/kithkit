@@ -8,8 +8,12 @@ kickstarts within 10 minutes.
 ## Install
 
 ```bash
-# 1. Substitute the real repo path into the template
-sed 's|__REPO_PATH__|/path/to/your/kithkit-repo|g' \
+# 1. Substitute the real repo path AND your daemon's launchd label into the template
+#    __REPO_PATH__    — absolute path to your kithkit repo checkout
+#    __LAUNCHD_LABEL__ — the launchd label of your daemon plist (e.g. com.assistant.daemon)
+sed \
+    -e 's|__REPO_PATH__|/path/to/your/kithkit-repo|g' \
+    -e 's|__LAUNCHD_LABEL__|com.assistant.daemon|g' \
     scripts/launchd/com.kithkit.daemon-watchdog.plist \
     > ~/Library/LaunchAgents/com.kithkit.daemon-watchdog.plist
 
@@ -34,10 +38,13 @@ rm ~/Library/LaunchAgents/com.kithkit.daemon-watchdog.plist
 
 ```bash
 # Healthy path (daemon running):
-bash scripts/daemon-watchdog.sh --dry-run
+bash scripts/daemon-watchdog.sh --dry-run --label com.assistant.daemon
 
 # Failure path (wrong port):
-bash scripts/daemon-watchdog.sh --dry-run --health-url http://localhost:59999/health
+bash scripts/daemon-watchdog.sh --dry-run --label com.assistant.daemon --health-url http://localhost:59999/health
+
+# Alternatively, set the label via environment variable:
+KITHKIT_LAUNCHD_LABEL=com.assistant.daemon bash scripts/daemon-watchdog.sh --dry-run
 ```
 
 ## Logs
@@ -62,5 +69,5 @@ To reset manually, delete `logs/watchdog-state` and restart the daemon:
 
 ```bash
 rm logs/watchdog-state
-launchctl kickstart -k gui/$(id -u)/com.assistant.daemon
+launchctl kickstart -k gui/$(id -u)/<your-daemon-label>
 ```
