@@ -36,6 +36,7 @@ import {
   sendViaLAN,
   logCommsEntry,
   setRouter,
+  refreshAgentCommsConfig,
 } from './comms/agent-comms.js';
 import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P, getNetworkClient } from './comms/network/sdk-bridge.js';
 import { registerWithRelay } from './comms/network/registration.js';
@@ -428,8 +429,30 @@ async function registerWithRetry(config: AgentConfig, signal: AbortSignal): Prom
 
 // ── Extension Implementation ────────────────────────────────
 
+function onConfigChange(config: KithkitConfig): void {
+  // Update P2P rate limiter
+  const inMax = config.security?.rate_limits?.incoming_max_per_minute;
+  if (typeof inMax === 'number') {
+    p2pRateLimiter.reload(inMax, 60_000);
+    log.info('P2P rate limiter reloaded', { incomingMaxPerMinute: inMax });
+  }
+
+  // Reload scheduler tasks so new/removed/updated tasks take effect
+  if (_scheduler) {
+    _scheduler.reload(config.scheduler?.tasks ?? []);
+    log.info('Scheduler reloaded', { taskCount: config.scheduler?.tasks?.length ?? 0 });
+  }
+
+  // Refresh agent-comms peer config so peer list changes take effect
+  refreshAgentCommsConfig(config);
+  log.info('Agent-comms config refreshed');
+}
+
 async function onInit(config: KithkitConfig, _server: http.Server): Promise<void> {
   _config = asAgentConfig(config);
+
+  // Sync P2P rate limiter to configured incoming limit
+  onConfigChange(config);
 
   // Start P2P rate limiter cleanup
   p2pRateLimiter.startCleanup();
@@ -606,11 +629,16 @@ export const agentExtension: Extension = {
   name: 'agent',
   onInit,
   onShutdown,
+  onConfigChange,
 };
 
 // For testing
 export function _getStateForTesting() {
   return { config: _config, scheduler: _scheduler, initialized: _initialized };
+}
+
+export function _setSchedulerForTesting(s: Scheduler | null): void {
+  _scheduler = s;
 }
 
 export function _resetForTesting(): void {

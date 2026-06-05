@@ -65,7 +65,7 @@ export async function handleConfigRoute(
       }
     }
 
-    const result: ReloadResult = _watcher.reload();
+    const result: ReloadResult = await _watcher.reload();
 
     if (result.success) {
       json(res, 200, withTimestamp({ message: 'Config reloaded successfully' }));
