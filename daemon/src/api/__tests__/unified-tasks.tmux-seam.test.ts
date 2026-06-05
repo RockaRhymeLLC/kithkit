@@ -24,6 +24,7 @@
  *   - task cancellation → _injectMessage('comms', ...)        (/cancel)
  *   - terminal status   → _injectMessage('comms', ...)        (PUT status=completed)
  *   - progress activity → _injectMessage('comms', ...)        (POST /activity progress)
+ *   - retry alert       → _injectMessage('comms', ...)        (POST /retry, newRetryCount≥2)
  *
  * Each "stub intercepts" test asserts:
  *   (a) stub was called ≥ 1 time (the seam is wired correctly), AND
@@ -272,6 +273,36 @@ describe('unified-tasks tmux seam (#353 follow-up)', () => {
 
     assert.ok(stub.count() > 0,
       `expected stub to be called for progress-activity notification, got ${stub.count()}`);
+    assert.equal(_getInjectionAttempts(), 0,
+      `expected 0 real tmux injection attempts, got ${_getInjectionAttempts()}`);
+  });
+
+  // ── Retry alert (newRetryCount ≥ 2) ─────────────────────────
+
+  it('retry alert (≥2 failures) — stub intercepts; real injectMessage not called', async () => {
+    // Build up retry_count to 1 before the alerting retry.
+    // First fail + retry: newRetryCount = 1 (below threshold — no notification emitted).
+    const id = await createTodoTask('retry-alert-test');
+
+    const fail1 = await request('PUT', `/api/tasks/${id}`, { status: 'failed', error: 'first failure' });
+    assert.equal(fail1.status, 200, `fail1: ${fail1.body}`);
+
+    const retry1 = await request('POST', `/api/tasks/${id}/retry`);
+    assert.equal(retry1.status, 200, `retry1 (silent — count=1): ${retry1.body}`);
+
+    // Second failure — task is back to pending after retry1, so we can PUT → failed again.
+    const fail2 = await request('PUT', `/api/tasks/${id}`, { status: 'failed', error: 'second failure' });
+    assert.equal(fail2.status, 200, `fail2: ${fail2.body}`);
+
+    // Install stub just before the alerting retry so the counter is clean.
+    const stub = installStub();
+
+    // Second retry: newRetryCount = 2 (≥ 2) — fires the retry-alert _injectMessage.
+    const retry2 = await request('POST', `/api/tasks/${id}/retry`);
+    assert.equal(retry2.status, 200, `retry2 (alert — count=2): ${retry2.body}`);
+
+    assert.ok(stub.count() > 0,
+      `expected stub to be called for retry-alert notification, got ${stub.count()}`);
     assert.equal(_getInjectionAttempts(), 0,
       `expected 0 real tmux injection attempts, got ${_getInjectionAttempts()}`);
   });
