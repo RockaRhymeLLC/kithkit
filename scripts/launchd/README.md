@@ -34,6 +34,35 @@ launchctl unload ~/Library/LaunchAgents/com.kithkit.daemon-watchdog.plist
 rm ~/Library/LaunchAgents/com.kithkit.daemon-watchdog.plist
 ```
 
+## Upgrading an existing install
+
+> **Required after pulling this branch.** Every already-loaded watchdog plist was
+> installed from the pre-#374 template, which had no `--label` argument in
+> `ProgramArguments`.  After pulling, the running plist calls the watchdog
+> without `--label`, so the script falls back to the literal `__LAUNCHD_LABEL__`
+> placeholder as the kickstart target.  That label does not exist, meaning
+> **daemon protection is silently OFF** and a kickstart-failed message is logged
+> on every 2-minute cycle.  **Skip this migration and your watchdog runs dead.**
+
+```bash
+# 1. Unload the existing watchdog plist
+launchctl unload ~/Library/LaunchAgents/com.kithkit.daemon-watchdog.plist
+
+# 2. Re-substitute both placeholders into the updated template
+#    (same sed command as fresh install — regenerates the plist with --label)
+sed \
+    -e 's|__REPO_PATH__|/path/to/your/kithkit-repo|g' \
+    -e 's|__LAUNCHD_LABEL__|com.assistant.daemon|g' \
+    scripts/launchd/com.kithkit.daemon-watchdog.plist \
+    > ~/Library/LaunchAgents/com.kithkit.daemon-watchdog.plist
+
+# 3. Load the updated plist
+launchctl load ~/Library/LaunchAgents/com.kithkit.daemon-watchdog.plist
+```
+
+Replace `/path/to/your/kithkit-repo` and `com.assistant.daemon` with the same
+values you used at initial install time.
+
 ## Manual test (dry-run)
 
 ```bash
