@@ -1,5 +1,6 @@
 /**
- * Tests for tmux.ts — session name helpers and notification suppression.
+ * Tests for tmux.ts — session name helpers, notification suppression,
+ * and injectMessage log-level guard.
  *
  * The buildOrchestratorWrapperScript function was removed in the v2 orchestrator
  * cutover (replaced by --agent orchestrator). These tests cover the remaining
@@ -8,12 +9,17 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import os from 'node:os';
+import path from 'node:path';
+import fs from 'node:fs';
+import { initLogger, _resetLoggerForTesting } from '../core/logger.js';
 import {
   _getCommsSession,
   _getOrchestratorSession,
   injectMessage,
   _getInjectionAttempts,
   _resetInjectionAttempts,
+  _setTmuxDepsForTesting,
 } from '../agents/tmux.js';
 
 // ── Session name helpers ──────────────────────────────────────
@@ -130,5 +136,71 @@ describe('Production guard — blocks real tmux I/O under test runner (regressio
     // The guard must return false, proving no real execFileSync('tmux', 'send-keys')
     // was issued. If result is true, a real send-keys fired against the live session.
     assert.equal(result, false, 'production guard must block injection under test runner');
+  });
+});
+
+// ── injectMessage: log-level guard (R2 safety) ───────────────
+
+/**
+ * Verify the R2 guard: injectMessage should only downgrade to debug when
+ * the orchestrator is confirmed gone. If it's alive but session lookup
+ * fails, that's a real delivery failure and must stay warn.
+ */
+describe('injectMessage log level for missing session (R2 guard)', () => {
+  let logDir: string;
+
+  function readLogEntries(): Array<{ level: string; msg: string; data?: Record<string, unknown> }> {
+    const logFile = path.join(logDir, 'daemon.log');
+    if (!fs.existsSync(logFile)) return [];
+    const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean);
+    return lines
+      .map(l => { try { return JSON.parse(l); } catch { return null; } })
+      .filter((e): e is { level: string; msg: string; data?: Record<string, unknown> } => e !== null);
+  }
+
+  beforeEach(() => {
+    logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-tmux-test-'));
+    // Capture debug level so we can verify the downgrade
+    initLogger({ logDir, minLevel: 'debug' });
+  });
+
+  afterEach(() => {
+    _setTmuxDepsForTesting(null);
+    _resetLoggerForTesting({ logDir: os.tmpdir(), minLevel: 'info' });
+    fs.rmSync(logDir, { recursive: true, force: true });
+  });
+
+  it('logs debug (not warn) when orch session not found and orchestrator is gone', () => {
+    _setTmuxDepsForTesting({
+      sessionExists: () => false,   // simulate: tmux has-session fails
+      isOrchAlive: () => false,     // orchestrator is confirmed gone
+    });
+
+    const result = injectMessage('orchestrator', 'test nudge');
+    assert.equal(result, false, 'should return false when session not found');
+
+    const entries = readLogEntries();
+    const debugEntries = entries.filter(e => e.level === 'debug' && e.msg.includes('orchestrator has exited'));
+    const warnEntries = entries.filter(e => e.level === 'warn' && e.msg.includes('session not found'));
+
+    assert.ok(debugEntries.length > 0, `expected debug log when orch is gone, got: ${JSON.stringify(entries)}`);
+    assert.equal(warnEntries.length, 0, `should not warn when orch is gone (stale ref), got: ${JSON.stringify(warnEntries)}`);
+  });
+
+  it('logs warn when orch session not found but orchestrator appears alive (real delivery failure)', () => {
+    _setTmuxDepsForTesting({
+      sessionExists: () => false,   // simulate: tmux has-session fails
+      isOrchAlive: () => true,      // orchestrator is alive (e.g. name-mismatch scenario)
+    });
+
+    const result = injectMessage('orchestrator', 'test nudge');
+    assert.equal(result, false, 'should return false when session not found');
+
+    const entries = readLogEntries();
+    const warnEntries = entries.filter(e => e.level === 'warn' && e.msg.includes('session not found'));
+    const debugDowngrade = entries.filter(e => e.level === 'debug' && e.msg.includes('orchestrator has exited'));
+
+    assert.ok(warnEntries.length > 0, `expected warn log when orch is alive but session not found, got: ${JSON.stringify(entries)}`);
+    assert.equal(debugDowngrade.length, 0, `should not silently downgrade when orch is alive, got: ${JSON.stringify(debugDowngrade)}`);
   });
 });
