@@ -477,10 +477,24 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     };
   };
   const telegramConfig = fullConfig.channels?.telegram;
+  // INSTANCE-LAYER FIX (#1991 post-deploy, fleet-impacting): secrets live in
+  // the macOS Keychain on this fleet, never in config. Upstream's
+  // createCommsTelegramAdapter expects bot_token in config, which silently
+  // disabled TG outbound after the merge. Fall back to Keychain
+  // (credential-telegram-bot), matching pre-merge createTelegramAdapter()
+  // behavior. Upstream issue filed: token sourcing should be pluggable.
+  let telegramBotToken = telegramConfig?.bot_token;
+  if (telegramConfig?.enabled && !telegramBotToken) {
+    try {
+      telegramBotToken = (await readKeychain('credential-telegram-bot')) ?? undefined;
+    } catch {
+      // fall through to the error below
+    }
+  }
   if (!telegramConfig?.enabled) {
     log.warn('Telegram not enabled in config (channels.telegram.enabled)');
-  } else if (!telegramConfig.bot_token) {
-    log.error('No bot_token in channels.telegram config');
+  } else if (!telegramBotToken) {
+    log.error('No bot_token in channels.telegram config or Keychain (credential-telegram-bot)');
   } else {
     let safeSenders = telegramConfig.safe_senders ?? [];
     if (safeSenders.length === 0 && telegramConfig.allowed_chat_ids?.length) {
@@ -491,7 +505,7 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
     }
     try {
       _telegramAdapter = await createCommsTelegramAdapter({
-        bot_token: telegramConfig.bot_token,
+        bot_token: telegramBotToken,
         safe_senders: safeSenders,
         poll_interval_ms: telegramConfig.poll_interval_ms ?? 3000,
         max_message_length: telegramConfig.max_message_length ?? 4000,
@@ -572,9 +586,13 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   registerAgentHealthChecks();
 
   // ── Teams Bot Framework extension ──────────────────────────
-  // Reads credentials from Keychain; safe to call when Teams is not configured
-  // (logs a warning and returns without registering routes/adapter).
-  await initTeamsExtension();
+  // INSTANCE-LAYER FIX (#1991 post-deploy, fleet-impacting): upstream's
+  // initTeamsExtension() registers /api/teams/messages from Keychain creds,
+  // colliding with this instance's M365 teams-adapter (which owns the live
+  // conversation references) and killing the whole M365 init. On boxes with
+  // the M365 extension, M365 owns the Teams route — skip the upstream init.
+  // Upstream issue filed: initTeamsExtension needs coexistence/route-dedupe.
+  // await initTeamsExtension();  // disabled — M365 teams-adapter owns /api/teams/messages on this instance
 
   // Load instance-specific extensions (if instance/ directory exists)
   const instanceResult = await loadInstanceExtensions(config, _server, _scheduler);
