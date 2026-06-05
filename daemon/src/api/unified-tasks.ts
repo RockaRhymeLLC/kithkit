@@ -13,7 +13,7 @@ import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { query, exec, get, getDatabase } from '../core/db.js';
-import { injectMessage } from '../agents/tmux.js';
+import { injectMessage as defaultInjectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { storeMemoryInternal } from './memory.js';
 import { evaluateTask as _evaluateTask } from '../self-improvement/retro-evaluator.js';
@@ -27,7 +27,21 @@ import {
 } from '../core/task-state-machine.js';
 import type { TaskStatus } from '../core/task-state-machine.js';
 
-// Injectable for testing
+// ── Tmux injection (injectable for testing) ──────────────────
+// unified-tasks.ts has multiple notification-emitter call sites (plan-decision,
+// plan-approval, task-lifecycle, outcome, retry alerts). Wrapping the injector
+// in a seam mirrors the pattern established in task-queue.ts (#306) and lets
+// regression tests verify suppression without touching the real tmux session.
+
+type TmuxInjectorFn = (agentId: string, text: string) => boolean;
+let _injectMessage: TmuxInjectorFn = defaultInjectMessage;
+
+/** @internal Override tmux injector for test isolation. Pass null to restore the default. */
+export function _setTmuxInjectorForTesting(fn: TmuxInjectorFn | null): void {
+  _injectMessage = fn ?? defaultInjectMessage;
+}
+
+// ── Retro eval injection (injectable for testing) ─────────────
 let _evalFn: (taskId: string) => Promise<void> = _evaluateTask;
 export function _setEvaluateTaskFnForTesting(fn: ((taskId: string) => Promise<void>) | null): void {
   _evalFn = fn ?? _evaluateTask;
@@ -473,7 +487,7 @@ export async function handleUnifiedTasksRoute(
       // For progress updates, forward to comms immediately
       if (type === 'progress') {
         const prefix = stage ? `${stage}: ` : '';
-        injectMessage('comms', `[task ${task.title}] ${prefix}${body.message}`);
+        _injectMessage('comms', `[task ${task.title}] ${prefix}${body.message}`);
       }
 
       const entry = query<TaskActivity>(
@@ -621,7 +635,7 @@ export async function handleUnifiedTasksRoute(
       }
 
       try {
-        injectMessage('comms', notifyBody);
+        _injectMessage('comms', notifyBody);
       } catch (e) {
         log.warn('Failed to inject plan submission notification to comms', { taskId: task.id, error: String(e) });
       }
@@ -682,7 +696,7 @@ export async function handleUnifiedTasksRoute(
       }
 
       try {
-        injectMessage('orchestrator', approveMsg);
+        _injectMessage('orchestrator', approveMsg);
       } catch (e) {
         log.warn('Failed to inject plan approval notification to orchestrator', { taskId: task.id, error: String(e) });
       }
@@ -748,7 +762,7 @@ export async function handleUnifiedTasksRoute(
       }
 
       try {
-        injectMessage('orchestrator', rejectMsg);
+        _injectMessage('orchestrator', rejectMsg);
       } catch (e) {
         log.warn('Failed to inject plan rejection notification to orchestrator', { taskId: task.id, error: String(e) });
       }
@@ -795,7 +809,7 @@ export async function handleUnifiedTasksRoute(
 
       // Alert comms after 2 consecutive failures
       if (newRetryCount >= 2) {
-        injectMessage('comms', `[task alert] "${task.title}" has failed ${newRetryCount} times and is being retried (attempt ${newRetryCount + 1})`);
+        _injectMessage('comms', `[task alert] "${task.title}" has failed ${newRetryCount} times and is being retried (attempt ${newRetryCount + 1})`);
       }
 
       const updated = resolveTask(String(task.id))!;
@@ -858,7 +872,7 @@ export async function handleUnifiedTasksRoute(
         log.warn('Failed to auto-notify comms of cancellation', { taskId: task.id, error: String(err) });
       }
 
-      injectMessage('comms', `[task cancelled] ${task.title.slice(0, 100)}`);
+      _injectMessage('comms', `[task cancelled] ${task.title.slice(0, 100)}`);
 
       const updated = resolveTask(String(task.id))!;
       log.info('Task cancelled', { id: task.id, previous_status: task.status });
@@ -1239,7 +1253,7 @@ export async function handleUnifiedTasksRoute(
           log.warn('Failed to auto-notify comms', { taskId: task.id, error: String(err) });
         }
 
-        injectMessage('comms', `[task ${targetStatus}] ${updated.title.slice(0, 100)}`);
+        _injectMessage('comms', `[task ${targetStatus}] ${updated.title.slice(0, 100)}`);
       }
 
       // Auto-store completion memory
