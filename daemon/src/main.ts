@@ -131,6 +131,12 @@ const configWatcher = createConfigWatcher(configPath, config);
 setConfigWatcher(configWatcher);
 setCurrentDbPath(resolvedDbPath);
 setConfigFilePath(configPath);
+configWatcher.onChange(async (newConfig) => {
+  const ext = getExtension();
+  if (ext?.onConfigChange) {
+    await Promise.resolve(ext.onConfigChange(newConfig));
+  }
+});
 configWatcher.start();
 log.info('Config watcher started', { path: configPath });
 
