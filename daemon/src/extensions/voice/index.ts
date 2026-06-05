@@ -245,6 +245,23 @@ async function handleSTT(
   return true;
 }
 
+/**
+ * Resolve the reply channel for a voice transcription.
+ *
+ * VTT input is a transcription modality, not a channel. When the active
+ * channel can't carry text replies (terminal/silent), fall back to the last
+ * text channel that handled an inbound message. Never calls setChannel —
+ * the active channel file is left untouched.
+ *
+ * Exported for direct testing of the resolution logic.
+ */
+export function resolveReplyChannel(activeChannel: AgentChannel): AgentChannel {
+  if (activeChannel === 'terminal' || activeChannel === 'silent') {
+    return getLastActiveChannel();
+  }
+  return activeChannel;
+}
+
 async function handleTranscribe(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -304,26 +321,10 @@ async function handleTranscribe(
 
     log.info('Voice pipeline: STT complete', { text: sttText });
 
-    // VTT input is a transcription modality, not a channel. Decouple voice
-    // arrival from active-channel selection: leave the active channel alone,
-    // and resolve the *reply destination* by reading last-active text channel
-    // when the active channel can't carry text replies (terminal/silent).
-    //
-    // This fixes #393 + the May 2026 Teams regression where a voice prompt
-    // sent while Dave was conversing on Teams would silently flip the channel
-    // to Telegram (the default fallback in getLastActiveChannel) for all
-    // subsequent replies.
     const activeChannel = getChannel();
-    let replyChannel: AgentChannel;
+    const replyChannel = resolveReplyChannel(activeChannel);
     if (activeChannel === 'terminal' || activeChannel === 'silent') {
-      // Active channel can't deliver a reply by itself — fall through to the
-      // last text channel that handled an inbound message (telegram/teams/etc).
-      // Do NOT setChannel() — leave the active channel as-is so non-voice flows
-      // continue to behave the way the user set them.
-      replyChannel = getLastActiveChannel();
       log.info('Voice input: active channel cannot carry replies; routing voice to last-active text channel', { activeChannel, replyChannel });
-    } else {
-      replyChannel = activeChannel;
     }
 
     if (replyChannel === 'voice') {

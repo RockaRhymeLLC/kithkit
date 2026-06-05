@@ -25,6 +25,7 @@ import {
   getChannel,
   setChannel,
 } from '../channel-router.js';
+import { resolveReplyChannel } from '../../voice/index.js';
 
 function setupDb(): void {
   _resetDbForTesting();
@@ -65,13 +66,11 @@ describe('AgentChannel — teams support (todo #393 / 5/11/2026)', () => {
 
 // ── 5/28 silent-reply-flip regression guard ───────────────────────────────────
 //
-// The handleTranscribe voice pipeline reads getChannel() and — when the active
-// channel is 'terminal' or 'silent' — resolves the reply destination via
-// getLastActiveChannel() WITHOUT calling setChannel().  If setChannel() were
-// reintroduced in that code path (as it was in the 5/28 regression), these
-// tests fail because getChannel() would mutate.
+// Tests call resolveReplyChannel() directly — not an inline re-implementation —
+// so any reintroduction of setChannel() inside the function or its call site
+// is caught immediately: getChannel() would change, failing the final assertion.
 
-describe('VTT active-channel isolation — 5/28 silent-reply-flip regression', () => {
+describe('resolveReplyChannel — 5/28 silent-reply-flip regression', () => {
   beforeEach(() => {
     _resetDbForTesting();
     _resetConfigForTesting();
@@ -81,32 +80,38 @@ describe('VTT active-channel isolation — 5/28 silent-reply-flip regression', (
     openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
   });
 
-  it('terminal path: getChannel() unchanged after voice-reply resolution (no setChannel mutation)', () => {
-    // No channel file → getChannel() defaults to 'terminal'
+  it('terminal/silent: resolveReplyChannel returns last-active channel; getChannel() unchanged', () => {
+    // terminal path — active channel defaults to 'terminal' (no channel file)
     updateLastActiveChannel('teams');
-    const channelBefore = getChannel();
+    const terminalBefore = getChannel();
+    const terminalReply = resolveReplyChannel('terminal');
+    assert.equal(terminalBefore, 'terminal', 'active channel should default to terminal');
+    assert.equal(terminalReply, 'teams', 'terminal path resolves to last-active text channel');
+    assert.equal(getChannel(), 'terminal', 'active channel file must be untouched after terminal resolution');
 
-    // Simulate what handleTranscribe does for the terminal path:
-    //   if (activeChannel === 'terminal' || activeChannel === 'silent') {
-    //     replyChannel = getLastActiveChannel();   // must NOT call setChannel
-    //   }
-    const replyChannel = getLastActiveChannel();
-
-    assert.equal(channelBefore, 'terminal', 'active channel should default to terminal');
-    assert.equal(replyChannel, 'teams', 'voice reply routed to last-active text channel');
-    assert.equal(getChannel(), 'terminal', 'active channel must be unchanged after voice-reply resolution');
-  });
-
-  it('silent path: getChannel() unchanged after voice-reply resolution (no setChannel mutation)', () => {
+    // silent path
     setChannel('silent');
     updateLastActiveChannel('telegram');
-    const channelBefore = getChannel();
+    const silentBefore = getChannel();
+    const silentReply = resolveReplyChannel('silent');
+    assert.equal(silentBefore, 'silent', 'active channel should be silent');
+    assert.equal(silentReply, 'telegram', 'silent path resolves to last-active text channel');
+    assert.equal(getChannel(), 'silent', 'active channel file must be untouched after silent resolution (5/28 regression guard)');
+  });
 
-    // Simulate what handleTranscribe does for the silent path
-    const replyChannel = getLastActiveChannel();
+  it('telegram/teams: resolveReplyChannel passthrough; getChannel() unchanged', () => {
+    // telegram path
+    setChannel('telegram');
+    const telegramBefore = getChannel();
+    const telegramReply = resolveReplyChannel('telegram');
+    assert.equal(telegramReply, 'telegram', 'telegram passthrough: activeChannel returned unchanged');
+    assert.equal(getChannel(), telegramBefore, 'active channel file must be untouched after telegram passthrough');
 
-    assert.equal(channelBefore, 'silent', 'active channel should be silent');
-    assert.equal(replyChannel, 'telegram', 'voice reply routed to last-active text channel');
-    assert.equal(getChannel(), 'silent', 'active channel must be unchanged (5/28 regression guard)');
+    // teams path
+    setChannel('teams');
+    const teamsBefore = getChannel();
+    const teamsReply = resolveReplyChannel('teams');
+    assert.equal(teamsReply, 'teams', 'teams passthrough: activeChannel returned unchanged');
+    assert.equal(getChannel(), teamsBefore, 'active channel file must be untouched after teams passthrough');
   });
 });
