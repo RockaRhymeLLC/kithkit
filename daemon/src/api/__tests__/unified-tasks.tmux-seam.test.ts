@@ -29,9 +29,9 @@
  *   (a) stub was called ≥ 1 time (the seam is wired correctly), AND
  *   (b) _injectionAttempts === 0 (the real tmux.ts function was NOT called).
  *
- * The final "guard-fallback" test removes the seam and asserts that
- * the #353 guard inside defaultInjectMessage still prevents real I/O
- * (evidenced by _injectionAttempts > 0 with no execFileSync side effects).
+ * The final "guard-fallback" test removes the seam and confirms that the
+ * outer KITHKIT_SUPPRESS_NOTIFICATIONS layer prevents real I/O
+ * (asserts _injectionAttempts === 0; does NOT exercise the #353 isUnderTestRunner guard).
  */
 
 import { describe, it, before, after } from 'node:test';
