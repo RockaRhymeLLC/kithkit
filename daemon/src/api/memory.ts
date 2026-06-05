@@ -117,6 +117,7 @@ export function _resetVectorForTesting(): void {
 
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { syncToPeers } from '../self-improvement/memory-sync.js';
+import { isCanaryOrFixtureContent, logSkippedFixtureContent } from './memory-fixture-guard.js';
 
 function extractId(pathname: string, prefix: string): string | null {
   if (!pathname.startsWith(prefix + '/')) return null;
@@ -385,6 +386,15 @@ export async function handleMemoryRoute(
 
       if (body.type && !VALID_TYPES.includes(body.type as string)) {
         json(res, 400, withTimestamp({ error: `type must be ${VALID_TYPES.join(', ')}` }));
+        return true;
+      }
+
+      // Defense-in-depth: skip canary/fixture content before it reaches the store.
+      // Catches test-fixture content that leaks into auto-extraction pipelines
+      // (memory-extraction.sh, transcript-review.sh) — kithkit#301.
+      if (isCanaryOrFixtureContent(body.content as string)) {
+        logSkippedFixtureContent(body.content as string, body.source as string | undefined);
+        json(res, 200, withTimestamp({ action: 'skipped_fixture_content', message: 'Content matched canary/test-fixture pattern and was not stored' }));
         return true;
       }
 
