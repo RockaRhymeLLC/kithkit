@@ -17,6 +17,7 @@
 
 import { query } from '../../core/db.js';
 import { loadConfig } from '../../core/config.js';
+import { sendToHuman } from './helpers/send-to-human.js';
 import type { Scheduler } from '../scheduler.js';
 
 interface TodoRow {
@@ -83,21 +84,21 @@ export async function run(config: Record<string, unknown> = {}): Promise<void> {
 
   const message = lines.join('\n');
 
-  // Deliver via daemon send API
+  // Deliver via the sanctioned scheduler-send helper (in-process router
+  // first, HTTP+daemon-token fallback). Auth-family fix 2026-06-05: the bare
+  // fetch here 401'd against the #290 role gate.
   const cfg = loadConfig();
-  // TODO: read from config
   const port = (cfg as unknown as Record<string, Record<string, unknown>>)?.daemon?.port ?? 3847;
 
-  const payload: Record<string, unknown> = { message };
+  const payload: { message: string; channel?: string } = { message };
   if (channel) {
     payload.channel = channel;
   }
 
-  await globalThis.fetch(`http://127.0.0.1:${port}/api/send`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  const result = await sendToHuman(payload, Number(port));
+  if (!result.ok) {
+    throw new Error(`stale-todo-surfacing delivery failed (${result.status}): ${result.error ?? ''}`);
+  }
 }
 
 /**
