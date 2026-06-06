@@ -4,6 +4,8 @@
  * Verifies that the lint script:
  *   - PASSES (exit 0) on a clean set of migration files with unique prefixes
  *   - FAILS  (exit 1) when a duplicate prefix is planted
+ *   - FAILS  (exit 1) for padding-inconsistent prefixes (e.g. "016" vs "16")
+ *     because the runner normalises via parseInt — so both map to version 16.
  *
  * Uses temporary directories so no real migration files are touched.
  */
@@ -127,5 +129,58 @@ describe('check-migration-collisions lint', () => {
   it('exits 2 when the migrations directory does not exist', () => {
     const result = runLint('/tmp/does-not-exist-kkit-mig-test');
     assert.equal(result.status, 2);
+  });
+
+  // ── Padding-normalisation regression cases (R2 review finding, PR #333) ──
+
+  it('fails (exit 1) when 016-a.sql and 16-b.sql are both present — padding-inconsistent collision', () => {
+    touch(
+      tmpDir,
+      '016-add-feature.sql',
+      '16-duplicate-feature.sql',   // same version (16) via parseInt
+    );
+
+    const result = runLint(tmpDir);
+
+    assert.equal(
+      result.status,
+      1,
+      `Expected exit 1 for padding-inconsistent pair, got ${result.status}.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+    );
+    assert.match(result.stderr, /FAIL/, 'Expected "FAIL" in stderr');
+    assert.match(result.stderr, /016-add-feature\.sql/, 'Expected padded filename in stderr');
+    assert.match(result.stderr, /16-duplicate-feature\.sql/, 'Expected unpadded filename in stderr');
+    assert.match(result.stderr, /16/, 'Expected normalised version 16 in stderr');
+  });
+
+  it('passes (exit 0) when 016-a.sql is present alone — single zero-padded file is fine', () => {
+    touch(tmpDir, '016-add-feature.sql');
+
+    const result = runLint(tmpDir);
+
+    assert.equal(
+      result.status,
+      0,
+      `Expected exit 0 for lone padded file, got ${result.status}.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+    );
+    assert.match(result.stdout, /OK/);
+  });
+
+  it('passes (exit 0) for mixed-padding files that parse to distinct version numbers (01, 2, 003)', () => {
+    touch(
+      tmpDir,
+      '01-alpha.sql',    // version 1
+      '2-bravo.sql',     // version 2
+      '003-charlie.sql', // version 3
+    );
+
+    const result = runLint(tmpDir);
+
+    assert.equal(
+      result.status,
+      0,
+      `Expected exit 0 when padded prefixes resolve to distinct versions, got ${result.status}.\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
+    );
+    assert.match(result.stdout, /OK/);
   });
 });
