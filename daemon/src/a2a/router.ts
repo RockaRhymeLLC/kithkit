@@ -77,7 +77,9 @@ export class UnifiedA2ARouter {
     this.peers = agentComms?.peers ?? [];
 
     const networkConfig = deps.config.network as { communities?: Array<{ name: string; primary: string }> } | undefined;
-    // Use the relay hostname (not community name) for qualified names — SDK resolves by hostname
+    // Use the relay hostname (not community name) for qualified names — SDK resolves by hostname.
+    // PR #197: CommunityRelayManager.hostnameMap is keyed by new URL(config.primary).hostname,
+    // so the @-part of a qualified name must be the relay URL hostname, not the community name.
     const primaryUrl = networkConfig?.communities?.[0]?.primary;
     try {
       this.primaryCommunity = primaryUrl ? new URL(primaryUrl).hostname : null;
@@ -368,7 +370,7 @@ export class UnifiedA2ARouter {
       };
     }
 
-    // Auto: try relay first, fall back to LAN
+    // Auto: try relay first (primary per Dave directive — relay is PRIMARY, LAN is fallback).
     const relayAttempt = await this.attemptRelay(qualified, request.payload, messageId);
     attempts.push(relayAttempt);
 
@@ -521,6 +523,18 @@ export class UnifiedA2ARouter {
     payload: A2ASendRequest['payload'],
     messageId: string,
   ): Promise<DeliveryAttempt> {
+    // Guard: require the agent-comms secret before attempting LAN delivery.
+    // Without it the receiving peer cannot authenticate the message.
+    const secret = await this.deps.getAgentCommsSecret();
+    if (!secret) {
+      return {
+        route: 'lan',
+        status: 'failed',
+        error: 'Agent comms secret not found in Keychain',
+        latencyMs: 0,
+      };
+    }
+
     // Build the AgentMessage by flattening payload fields
     // Strip reserved fields from remainingPayload to prevent spoofing
     const { type, text, from: _from, messageId: _mid, timestamp: _ts, ...remainingPayload } = payload;
