@@ -17,7 +17,7 @@ import { Socket } from 'node:net';
 import { openDatabase, _resetDbForTesting } from '../core/db.js';
 import { _resetConfigForTesting, loadConfig } from '../core/config.js';
 import { initLogger } from '../core/logger.js';
-import { handleSelftestRoute } from '../api/selftest.js';
+import { handleSelftestRoute, _setLaunchctlExecForTesting } from '../api/selftest.js';
 
 // ── Mock HTTP helpers ────────────────────────────────────────────────────────
 
@@ -277,5 +277,137 @@ describe('Selftest route handler', { concurrency: 1 }, () => {
     const routerCheck = body.checks.find((c: { name: string }) => c.name === 'channel-router');
     assert.ok(routerCheck, 'channel-router check should be present');
     assert.equal(routerCheck.status, 'skip', 'channel-router check should skip when no adapters are registered');
+  });
+
+  // ── launchd_agent check — regression tests for #345 ──────────────────────
+  //
+  // These tests PIN the domain-aware behavior introduced in #345.
+  // They MUST go RED if the check is reverted to a domain-blind probe such as:
+  //   - bare `launchctl list | grep <label>`
+  //   - fs.accessSync on ~/Library/LaunchAgents/<label>.plist
+  //
+  // Mutation-killing assertion: the mock asserts that the command issued to
+  // child_process targets `gui/<uid>/<label>`. Any domain-blind revert will
+  // either not call execFile at all (file-existence path) or will call it with
+  // wrong arguments (launchctl list path) — both cause the test to fail.
+  //
+  // On non-macOS the check skips unconditionally; assertions are skipped there too.
+
+  it('launchd_agent check skips when daemon.launchd_label is not configured', async () => {
+    // beforeEach writes config WITHOUT launchd_label — skip is the expected outcome
+    const req = createMockReq('GET', '/api/selftest');
+    const res = createMockRes();
+    await handleSelftestRoute(req, res, '/api/selftest');
+
+    const body = JSON.parse(res._body);
+    const launchdCheck = body.checks.find((c: { name: string }) => c.name === 'launchd_agent');
+    assert.ok(launchdCheck, 'launchd_agent check should be present in every selftest response');
+    assert.equal(
+      launchdCheck.status,
+      'skip',
+      'launchd_agent check should skip when daemon.launchd_label is not configured',
+    );
+  });
+
+  it('launchd_agent check issues domain-aware launchctl print command and passes on zero exit', async () => {
+    // Configure daemon.launchd_label so the check runs
+    const TEST_LABEL = 'com.test.daemon';
+    _resetConfigForTesting();
+    fs.writeFileSync(
+      path.join(tmpDir, 'kithkit.config.yaml'),
+      `agent:\n  name: test-agent\ndaemon:\n  log_dir: logs\n  launchd_label: ${TEST_LABEL}\n`,
+    );
+    loadConfig(tmpDir);
+
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 0;
+    let capturedCmd: string | undefined;
+    let capturedArgs: string[] | undefined;
+
+    _setLaunchctlExecForTesting(async (cmd, args) => {
+      capturedCmd = cmd;
+      capturedArgs = [...args];
+      return { stdout: '', stderr: '' }; // exit 0 = agent is registered
+    });
+
+    try {
+      const req = createMockReq('GET', '/api/selftest');
+      const res = createMockRes();
+      await handleSelftestRoute(req, res, '/api/selftest');
+
+      const body = JSON.parse(res._body);
+      const launchdCheck = body.checks.find((c: { name: string }) => c.name === 'launchd_agent');
+      assert.ok(launchdCheck, 'launchd_agent check should be present');
+
+      if (process.platform === 'darwin') {
+        // Mutation-killing: must call launchctl with `print gui/<uid>/<label>`
+        assert.ok(
+          capturedCmd !== undefined,
+          'launchctl exec must have been called (revert to file-existence probe would break this)',
+        );
+        assert.equal(capturedCmd, 'launchctl', 'must invoke launchctl binary');
+        assert.ok(
+          Array.isArray(capturedArgs) && capturedArgs.includes('print'),
+          `must use launchctl print (not list); args: ${JSON.stringify(capturedArgs)}`,
+        );
+        assert.ok(
+          Array.isArray(capturedArgs) && capturedArgs.some(a => a.startsWith(`gui/${uid}/`)),
+          `must target gui/${uid}/... user GUI domain; args: ${JSON.stringify(capturedArgs)}`,
+        );
+        assert.ok(
+          Array.isArray(capturedArgs) && capturedArgs.includes(`gui/${uid}/${TEST_LABEL}`),
+          `must target gui/${uid}/${TEST_LABEL} exactly; args: ${JSON.stringify(capturedArgs)}`,
+        );
+        assert.equal(
+          launchdCheck.status,
+          'pass',
+          'check should pass when launchctl print exits zero',
+        );
+      } else {
+        // Non-macOS: check must skip regardless
+        assert.equal(launchdCheck.status, 'skip', 'launchd_agent check should skip on non-macOS');
+      }
+    } finally {
+      _setLaunchctlExecForTesting(null); // always restore
+    }
+  });
+
+  it('launchd_agent check reports fail when launchctl print exits non-zero (agent absent)', async () => {
+    // Only meaningful on macOS where the check actually executes
+    if (process.platform !== 'darwin') return;
+
+    const TEST_LABEL = 'com.test.daemon';
+    _resetConfigForTesting();
+    fs.writeFileSync(
+      path.join(tmpDir, 'kithkit.config.yaml'),
+      `agent:\n  name: test-agent\ndaemon:\n  log_dir: logs\n  launchd_label: ${TEST_LABEL}\n`,
+    );
+    loadConfig(tmpDir);
+
+    _setLaunchctlExecForTesting(async () => {
+      // Simulate launchctl print exiting non-zero (agent not in GUI domain)
+      const err = new Error('launchctl: Could not find service "com.test.daemon" in domain for port gui/501');
+      (err as NodeJS.ErrnoException).code = 'ERR_CHILD_PROCESS';
+      throw err;
+    });
+
+    try {
+      const req = createMockReq('GET', '/api/selftest');
+      const res = createMockRes();
+      await handleSelftestRoute(req, res, '/api/selftest');
+
+      const body = JSON.parse(res._body);
+      const launchdCheck = body.checks.find((c: { name: string }) => c.name === 'launchd_agent');
+      assert.ok(launchdCheck, 'launchd_agent check should be present');
+      assert.equal(
+        launchdCheck.status,
+        'fail',
+        // This assertion catches the #345 regression: a domain-blind probe
+        // (file-existence or bare launchctl list) would return pass/skip here,
+        // not fail, even though the agent is absent from the GUI domain.
+        'check must report fail when launchctl print exits non-zero — domain-blind revert would break this assertion',
+      );
+    } finally {
+      _setLaunchctlExecForTesting(null); // always restore
+    }
   });
 });

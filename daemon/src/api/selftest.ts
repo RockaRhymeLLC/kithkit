@@ -29,6 +29,28 @@ import { listAdapters } from '../comms/channel-router.js';
 
 const execFileAsync = promisify(execFile);
 
+// ── Injectable launchctl exec (overridable for testing) ──────
+
+/**
+ * Narrow exec signature: only used for `launchctl print` calls.
+ * We care only about the exit code (success ⟹ agent registered; throws ⟹ not registered).
+ */
+type LaunchctlExecFn = (
+  cmd: string,
+  args: ReadonlyArray<string>,
+  opts?: { timeout?: number },
+) => Promise<unknown>;
+
+let _launchctlExec: LaunchctlExecFn = execFileAsync;
+
+/**
+ * @internal Override the launchctl exec for testing.
+ * Pass `null` to restore the real execFileAsync.
+ */
+export function _setLaunchctlExecForTesting(fn: LaunchctlExecFn | null): void {
+  _launchctlExec = fn ?? execFileAsync;
+}
+
 // ── Types ────────────────────────────────────────────────────
 
 type CheckStatus = 'pass' | 'fail' | 'skip';
@@ -245,6 +267,45 @@ async function checkChannelRouter(): Promise<CheckOutcome> {
   return { status: 'pass', message: `Adapters: ${adapters.join(', ')}` };
 }
 
+/**
+ * 12. launchd_agent — verify the daemon's launchd service is registered in
+ *     the current user's GUI domain (`gui/<uid>/<label>`).
+ *
+ * Uses `launchctl print gui/${uid}/${label}` which exits 0 iff the service is
+ * registered. A non-zero exit (agent absent, unloaded, or never installed) is
+ * reported as fail.
+ *
+ * WHY: bare `launchctl list | grep <label>` is domain-blind — it does not see
+ * agents that were loaded via `launchctl bootstrap gui/<uid>` and will return a
+ * false-negative for a live agent running in the user GUI domain (#345).
+ *
+ * Skips on non-macOS or when `daemon.launchd_label` is not configured.
+ */
+async function checkLaunchdAgent(): Promise<CheckOutcome> {
+  if (process.platform !== 'darwin') {
+    return { status: 'skip', message: 'Not macOS' };
+  }
+
+  const config = loadConfig();
+  const label = config.daemon.launchd_label;
+  if (!label) {
+    return { status: 'skip', message: 'daemon.launchd_label not configured' };
+  }
+
+  const uid = process.getuid?.() ?? 0;
+  const domain = `gui/${uid}/${label}`;
+
+  try {
+    await _launchctlExec('launchctl', ['print', domain], { timeout: 5000 });
+    return { status: 'pass', message: `Agent registered: ${domain}` };
+  } catch {
+    return {
+      status: 'fail',
+      message: `Daemon launchd agent not registered in ${domain} — run scripts/install-service.sh`,
+    };
+  }
+}
+
 // ── Route handler ────────────────────────────────────────────
 
 /**
@@ -270,6 +331,7 @@ export async function handleSelftestRoute(
     nodeResult,
     gitResult,
     channelRouterResult,
+    launchdAgentResult,
   ] = await Promise.all([
     runCheck('daemon', checkDaemon),
     runCheck('database', checkDatabase),
@@ -281,6 +343,7 @@ export async function handleSelftestRoute(
     runCheck('node', checkNode),
     runCheck('git', checkGit),
     runCheck('channel-router', checkChannelRouter),
+    runCheck('launchd_agent', checkLaunchdAgent),
   ]);
 
   // comms_session depends on tmux result
@@ -301,6 +364,7 @@ export async function handleSelftestRoute(
     nodeResult,
     gitResult,
     channelRouterResult,
+    launchdAgentResult,
   ];
 
   // Compute summary
