@@ -16,13 +16,15 @@
  * Alert channels: telegram, tmux (comms session), A2A (configured group, optional).
  * Dedup window: 1 hour by default (daemon.self_watchdog.dedup_window_seconds).
  *
- * Channel survivability note: Telegram delivery routes through POST /api/send on the
- * daemon's own HTTP server; A2A delivery routes through POST /api/a2a/send on the
- * same HTTP server. Both channels share the daemon's HTTP listener as their failure
- * domain — if the HTTP listener hangs or crashes, both fail silently in their
- * try/catch. Only the tmux injectMessage path is truly out-of-band. The three-channel
- * fanout is designed for the motivating zombie scenario where the scheduler is ticking
- * and the HTTP listener is alive but no real work is being processed.
+ * Channel survivability note: Telegram delivery delegates to alert.ts
+ * sendViaTelegram → routeMessage() in-process (no HTTP hop, not gated by the
+ * /api/send auth gate — see alert.ts:4-13). A2A delivery routes through
+ * POST /api/a2a/send on the daemon's own HTTP server. A2A shares the HTTP
+ * listener as its failure domain — if the listener hangs or crashes, it fails
+ * silently in its try/catch. Only the tmux injectMessage path is truly
+ * out-of-band. The three-channel fanout is designed for the motivating zombie
+ * scenario where the scheduler is ticking and the HTTP listener is alive but no
+ * real work is being processed.
  */
 
 import { createLogger } from '../../core/logger.js';
