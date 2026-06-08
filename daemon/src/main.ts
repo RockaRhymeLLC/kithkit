@@ -58,6 +58,7 @@ import {
   type HealthCheckFn,
 } from './core/extended-status.js';
 import { createConfigWatcher } from './core/config-watcher.js';
+import { bootstrapCommsToken, assertCommsTokenReady } from './auth/comms-token.js';
 
 export const VERSION = '0.1.0';
 
@@ -155,6 +156,15 @@ if (recovery.orphansCleaned > 0 || recovery.failedJobsRecovered > 0) {
     agentsRestarted: recovery.agentsRestarted,
   });
 }
+
+// ── Comms token bootstrap ────────────────────────────────────
+// Ensure a valid comms-role token is written to .kithkit/.comms-token (mode 0600).
+// This token is used by the comms agent to authenticate calls to /api/send.
+// Workers and orchestrators cannot use /api/send — they must escalate via /api/messages.
+// Re-added in kkit#388: this minter was silently dropped in the #1991 merge (4564d7dc).
+bootstrapCommsToken(projectDir, log);
+// Fail-loud guard: abort startup if the token is still absent/invalid after bootstrap.
+assertCommsTokenReady(path.join(projectDir, '.kithkit', '.comms-token'), log);
 
 // ── Fact verifier bootstrap ───────────────────────────────────
 
