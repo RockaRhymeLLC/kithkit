@@ -39,6 +39,8 @@ DRY_RUN=false
 #   3. __LAUNCHD_LABEL__ template placeholder (substituted at install time via sed,
 #      same mechanism as __REPO_PATH__ in com.kithkit.daemon-watchdog.plist)
 LAUNCHD_LABEL="${KITHKIT_LAUNCHD_LABEL:-__LAUNCHD_LABEL__}"
+LABEL_OVERRIDE=false
+[[ -n "${KITHKIT_LAUNCHD_LABEL:-}" ]] && LABEL_OVERRIDE=true
 LAUNCHD_UID="$(id -u)"
 
 # Circuit breaker settings
@@ -100,6 +102,7 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             LAUNCHD_LABEL="$2"
+            LABEL_OVERRIDE=true
             shift 2
             ;;
         --help|-h)
@@ -366,6 +369,17 @@ do_kickstart() {
     local cmd_label cmd_uid
     cmd_label="$LAUNCHD_LABEL"
     cmd_uid="$LAUNCHD_UID"
+
+    # Fail loud if the install-time placeholder was never substituted.
+    # The string is split across two literals so sed's install-time substitution
+    # (s/__LAUNCHD_LABEL__/.../g) does NOT match and accidentally replace this guard.
+    local _ph; _ph="__LAUNCHD""_LABEL__"
+    if [[ "$cmd_label" == "$_ph" ]] && [[ "$LABEL_OVERRIDE" == "false" ]]; then
+        local _msg; _msg="FATAL: launchd label not configured — ${_ph} placeholder was never substituted. Re-run the install sed substitution or pass --label <label>."
+        log_event "$_msg"
+        echo "$_msg" >&2
+        exit 1
+    fi
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_event "DRY-RUN would-kickstart: launchctl kickstart -k gui/${cmd_uid}/${cmd_label}"
