@@ -39,6 +39,8 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 |----------|---------|
 | `GET /health` | Health check (status, uptime, version) |
 | `GET /status` | Quick status (agent name, uptime) |
+| `GET /health/extended` | Extended health (includes extension status) |
+| `GET /status/extended` | Extended status with diagnostics |
 | `POST /api/agents/spawn` | Spawn a worker with a profile and prompt |
 | `GET /api/agents` | List all agents |
 | `GET /api/agents/:id` | Get agent details |
@@ -51,6 +53,7 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `GET /api/calendar` | List calendar events |
 | `POST /api/calendar` | Create a calendar event |
 | `GET /api/usage` | Aggregate token/cost stats |
+| `GET /api/usage/history` | Daily usage history (cached) |
 | `POST /api/messages` | Send inter-agent message |
 | `GET /api/messages?agent=X` | Get message history |
 | `POST /api/send` | Deliver message through channel router |
@@ -68,15 +71,14 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `POST /api/orchestrator/tasks/:id/activity` | Post an activity entry to a task |
 | `GET /api/orchestrator/tasks/:id/activity` | Get task activity log (paginated) |
 | `POST /api/orchestrator/tasks/:id/workers` | Assign a worker job to a task |
-| `POST /api/config/reload` | Hot-reload config from disk |
-| `POST /api/a2a/send` | Send A2A message (DM or group) with auto/relay/LAN routing |
 | `GET /api/contacts` | List contacts (filter by type, role, tag) |
 | `POST /api/contacts` | Create a contact |
 | `GET /api/contacts/search` | Search contacts across fields |
+| `POST /api/a2a/send` | Send A2A message (DM or group) with auto/relay/LAN routing |
 | `GET /api/selftest` | Comprehensive system health check |
-| `GET /api/usage/history` | Daily usage history (cached) |
 | `GET /api/metrics` | Aggregated API request metrics |
 | `POST /api/metrics/ingest` | Receive batched metrics from remote agents |
+| `POST /api/config/reload` | Hot-reload config from disk |
 
 See `docs/api-reference.md` for full request/response details.
 
@@ -275,34 +277,6 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - The comms agent is the only agent that talks to humans
 - Workers MUST NOT call `/api/send`. The daemon enforces this with 403.
 
-### 10-4 Acknowledgment Rule
-
-Every message between agents must be explicitly acknowledged. When you receive a task, instruction, or informational message from another agent (peer A2A, orchestrator, or worker), respond with a brief acknowledgment confirming:
-
-1. **You received it** — "10-4" or "Acknowledged" (proves delivery)
-2. **You understood it** — one sentence summarizing what you'll do (proves comprehension)
-3. **You'll act on it** — when you expect to start or complete it (proves commitment)
-
-**Examples:**
-- "10-4 — will wrap the injectMessage calls in try/catch across all three handlers. Starting now."
-- "Acknowledged — spec review for the ack protocol. I'll have feedback within 10 minutes."
-- "10-4 — passing the build results to comms. Done."
-
-**What requires a 10-4:**
-- Task assignments from the orchestrator
-- A2A DMs from peer agents
-- Result messages from workers (orchestrator must ack)
-- Escalation confirmations (orchestrator → comms)
-
-**What does NOT require a 10-4:**
-- Ack messages themselves (no ack-of-ack)
-- Status broadcasts to groups (unless they contain a direct ask)
-- System notifications from the daemon
-
-**Failure mode:** If you receive a message and don't 10-4 within 60 seconds, the sender should assume delivery failed and retry. If two retries get no ack, escalate to the human.
-
-This is a behavioral protocol — agents follow it by convention today. Infrastructure support (automatic ack tracking, timeout detection) is planned separately.
-
 ### Channel Delivery
 
 - Use `POST /api/send` to deliver messages to the human
@@ -317,30 +291,6 @@ Terminal text output — typing directly in the Claude Code session — does not
 Failing to call `/api/send` means the human never sees your reply.
 The `send-enforcer.sh` Stop hook checks each turn for a conforming `/api/send` call and emits a warning to stderr when one is absent.
 This rule applies to all comms agent instances without exception.
-
-## Quality Standards
-
-### Code
-
-- Read existing code before modifying it
-- Follow project conventions (TypeScript, ESM, Node.js 22+)
-- Write tests for new functionality
-- Keep changes focused on the assigned task
-- Always quote URLs in `curl` commands (single or double quotes). In zsh, unquoted `?` and `&` characters trigger glob expansion and break the command. Example: `curl 'http://localhost:3847/api/messages?agent=X&limit=20'`
-
-### Communication
-
-- Be concise and direct
-- Match your tone to your identity file
-- Structure complex information clearly
-- Proactively flag issues and share relevant context
-
-### Workmanship
-
-- Prefer accuracy over speed
-- Verify your work before reporting completion
-- Clean up after yourself (temp files, stale state)
-- Track what you commit to and follow through
 
 ### Pivot Rule
 - If two attempts at the same approach fail, pivot to a different strategy immediately. Don't keep hammering.
@@ -421,3 +371,27 @@ These words are fine for opinions ("I think this approach is better") but red fl
 | "That person's name is probably..." | Look it up. Check the email header, directory, or contact record. Never guess names. |
 | "The file is at X path" | Verify it exists before depending on it. Files get moved, renamed, or emptied. |
 | "The error must be caused by X" | Read the actual error message or log. Don't diagnose from memory — diagnose from evidence. |
+
+## Quality Standards
+
+### Code
+
+- Read existing code before modifying it
+- Follow project conventions (TypeScript, ESM, Node.js 22+)
+- Write tests for new functionality
+- Keep changes focused on the assigned task
+- Always quote URLs in `curl` commands (single or double quotes). In zsh, unquoted `?` and `&` characters trigger glob expansion and break the command. Example: `curl 'http://localhost:3847/api/messages?agent=X&limit=20'`
+
+### Communication
+
+- Be concise and direct
+- Match your tone to your identity file
+- Structure complex information clearly
+- Proactively flag issues and share relevant context
+
+### Workmanship
+
+- Prefer accuracy over speed
+- Verify your work before reporting completion
+- Clean up after yourself (temp files, stale state)
+- Track what you commit to and follow through
