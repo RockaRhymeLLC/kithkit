@@ -6,7 +6,7 @@
 # minutes under its own launchd plist (com.kithkit.daemon-watchdog).
 #
 # Usage:
-#   daemon-watchdog.sh [--dry-run] [--health-url <url>] [--help]
+#   daemon-watchdog.sh [--dry-run] [--health-url <url>] [--label <launchd-label>] [--help]
 #
 # Exit codes:
 #   0  Daemon healthy, kickstart succeeded, or --dry-run ran cleanly
@@ -33,7 +33,14 @@ STATE_TMP="$LOGS_DIR/watchdog-state.tmp.$$"
 # ---------------------------------------------------------------------------
 HEALTH_URL="http://localhost:3847/health"
 DRY_RUN=false
-LAUNCHD_LABEL="com.assistant.daemon"
+# LAUNCHD_LABEL: resolved in order of precedence:
+#   1. --label <label> CLI flag (set below in argument parsing)
+#   2. KITHKIT_LAUNCHD_LABEL env var
+#   3. __LAUNCHD_LABEL__ template placeholder (substituted at install time via sed,
+#      same mechanism as __REPO_PATH__ in com.kithkit.daemon-watchdog.plist)
+LAUNCHD_LABEL="${KITHKIT_LAUNCHD_LABEL:-__LAUNCHD_LABEL__}"
+LABEL_OVERRIDE=false
+[[ -n "${KITHKIT_LAUNCHD_LABEL:-}" ]] && LABEL_OVERRIDE=true
 LAUNCHD_UID="$(id -u)"
 
 # Circuit breaker settings
@@ -52,10 +59,13 @@ Checks the Kithkit daemon health endpoint and kickstarts it via launchd
 if unresponsive.  Implements a circuit breaker to prevent restart storms.
 
 Options:
-  --dry-run           Log what would happen but do not call launchctl
-  --health-url <url>  Override the default health URL
-                      (default: http://localhost:3847/health)
-  --help              Show this message and exit 0
+  --dry-run             Log what would happen but do not call launchctl
+  --health-url <url>    Override the default health URL
+                        (default: http://localhost:3847/health)
+  --label <label>       launchd service label to kickstart
+                        (overrides KITHKIT_LAUNCHD_LABEL env var and the
+                        __LAUNCHD_LABEL__ template placeholder)
+  --help                Show this message and exit 0
 
 Exit codes:
   0  Daemon healthy, kickstart succeeded, or --dry-run ran cleanly
@@ -84,6 +94,15 @@ while [[ $# -gt 0 ]]; do
                 exit 1
             fi
             HEALTH_URL="$2"
+            shift 2
+            ;;
+        --label)
+            if [[ -z "${2:-}" ]]; then
+                echo "Error: --label requires a value" >&2
+                exit 1
+            fi
+            LAUNCHD_LABEL="$2"
+            LABEL_OVERRIDE=true
             shift 2
             ;;
         --help|-h)
@@ -350,6 +369,17 @@ do_kickstart() {
     local cmd_label cmd_uid
     cmd_label="$LAUNCHD_LABEL"
     cmd_uid="$LAUNCHD_UID"
+
+    # Fail loud if the install-time placeholder was never substituted.
+    # The string is split across two literals so sed's install-time substitution
+    # (s/__LAUNCHD_LABEL__/.../g) does NOT match and accidentally replace this guard.
+    local _ph; _ph="__LAUNCHD""_LABEL__"
+    if [[ "$cmd_label" == "$_ph" ]] && [[ "$LABEL_OVERRIDE" == "false" ]]; then
+        local _msg; _msg="FATAL: launchd label not configured — ${_ph} placeholder was never substituted. Re-run the install sed substitution or pass --label <label>."
+        log_event "$_msg"
+        echo "$_msg" >&2
+        exit 1
+    fi
 
     if [[ "$DRY_RUN" == "true" ]]; then
         log_event "DRY-RUN would-kickstart: launchctl kickstart -k gui/${cmd_uid}/${cmd_label}"
