@@ -524,3 +524,68 @@ describe('DELETE /api/tasks/:id removes task', { concurrency: 1 }, () => {
     assert.equal(getRes.status, 404);
   });
 });
+
+// ── PUT /api/tasks/:id status alias normalization (#211) ────────
+
+describe('PUT /api/tasks/:id status alias normalization', { concurrency: 1 }, () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it("'done' alias stores as 'completed' (orch task via full state-machine path)", async () => {
+    const createRes = await request('POST', '/api/tasks', {
+      title: 'alias-done-test',
+      kind: 'orchestrator',
+    });
+    assert.equal(createRes.status, 201);
+    const task = JSON.parse(createRes.body);
+
+    // Advance to assigned → in_progress
+    await request('PUT', `/api/tasks/${task.id}`, { status: 'assigned', assigned_to: 'orch' });
+    await request('PUT', `/api/tasks/${task.id}`, { status: 'in_progress' });
+
+    // Now use alias 'done'
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { status: 'done', result: 'Finished' });
+    assert.equal(putRes.status, 200, "'done' should be accepted");
+    assert.equal(JSON.parse(putRes.body).status, 'completed', "stored status must be 'completed'");
+
+    // Confirm via GET
+    const getRes = await request('GET', `/api/tasks/${task.id}`);
+    assert.equal(JSON.parse(getRes.body).status, 'completed', "GET must also return 'completed'");
+  });
+
+  it("'wip' alias stores as 'in_progress' (todo task)", async () => {
+    const createRes = await request('POST', '/api/tasks', {
+      title: 'alias-wip-test',
+      kind: 'todo',
+    });
+    const task = JSON.parse(createRes.body);
+
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { status: 'wip' });
+    assert.equal(putRes.status, 200, "'wip' should be accepted");
+    assert.equal(JSON.parse(putRes.body).status, 'in_progress', "stored status must be 'in_progress'");
+
+    const getRes = await request('GET', `/api/tasks/${task.id}`);
+    assert.equal(JSON.parse(getRes.body).status, 'in_progress', "GET must also return 'in_progress'");
+  });
+
+  it("alias lookup is case-insensitive: 'DONE' → 'completed'", async () => {
+    const createRes = await request('POST', '/api/tasks', {
+      title: 'alias-case-test',
+      kind: 'todo',
+    });
+    const task = JSON.parse(createRes.body);
+
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { status: 'DONE' });
+    assert.equal(putRes.status, 200, "'DONE' should be accepted");
+    assert.equal(JSON.parse(putRes.body).status, 'completed');
+  });
+
+  it("unknown status still returns HTTP 400", async () => {
+    const createRes = await request('POST', '/api/tasks', { title: 'bad-status-test', kind: 'todo' });
+    const task = JSON.parse(createRes.body);
+
+    const putRes = await request('PUT', `/api/tasks/${task.id}`, { status: 'bogus' });
+    assert.equal(putRes.status, 400, "unrecognised alias should still return 400");
+    assert.ok(JSON.parse(putRes.body).error.includes('invalid status'));
+  });
+});

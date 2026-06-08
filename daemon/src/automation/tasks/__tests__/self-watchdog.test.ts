@@ -2,7 +2,7 @@
  * Self-Watchdog Unit Tests
  *
  * Covers:
- *   - activity-query.ts: timestamp aggregation from five sources
+ *   - activity-query.ts: timestamp aggregation from four sources
  *   - self-watchdog.ts run(): idle threshold logic
  *   - alert.ts: three-channel fanout with dedup
  */
@@ -64,7 +64,7 @@ function teardownDb(): void {
 // ── Helper: seed a single activity record ──────────────────────
 
 interface SeedActivityOpts {
-  table: 'worker_jobs' | 'orchestrator_tasks' | 'messages' | 'memories' | 'todos';
+  table: 'worker_jobs' | 'orchestrator_tasks' | 'messages' | 'memories' | 'tasks';
   timestamp: string; // ISO format
 }
 
@@ -110,11 +110,11 @@ function seedActivity(opts: SeedActivityOpts): void {
       ).run('test memory', opts.timestamp, opts.timestamp);
       break;
 
-    case 'todos':
+    case 'tasks':
       db.prepare(
-        `INSERT INTO todos (title, status, updated_at, created_at)
-         VALUES (?, 'pending', ?, ?)`,
-      ).run('test todo', opts.timestamp, now);
+        `INSERT INTO tasks (kind, title, status, priority, tags, updated_at, created_at)
+         VALUES ('todo', 'test todo', 'pending', 'medium', '[]', ?, ?)`,
+      ).run(opts.timestamp, now);
       break;
   }
 }
@@ -125,7 +125,7 @@ describe('getLastActivityTimestamp', () => {
   beforeEach(setupDb);
   afterEach(teardownDb);
 
-  it('returns null when all five sources are empty', async () => {
+  it('returns null when all four sources are empty', async () => {
     const result = await getLastActivityTimestamp();
     assert.strictEqual(result, null, 'should return null when no activity exists');
   });
@@ -149,7 +149,7 @@ describe('getLastActivityTimestamp', () => {
 
     seedActivity({ table: 'worker_jobs', timestamp: ts1 });
     seedActivity({ table: 'messages', timestamp: ts2 });
-    seedActivity({ table: 'todos', timestamp: ts3 });
+    seedActivity({ table: 'tasks', timestamp: ts3 });
 
     const result = await getLastActivityTimestamp();
     assert.ok(result !== null, 'should return a timestamp');

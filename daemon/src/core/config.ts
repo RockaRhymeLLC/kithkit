@@ -43,10 +43,19 @@ export interface DaemonConfig {
   db_path?: string;  // Optional override for database file location
 }
 
+export interface HotLoadJobsConfig {
+  /** Whether the jobs-watcher is enabled. Defaults to true. */
+  enabled?: boolean;
+  /** Directory to watch for hot-loaded job files. Defaults to `.kithkit/scheduled-jobs`. */
+  dir?: string;
+}
+
 export interface SchedulerConfig {
   tasks: TaskScheduleConfig[];
   /** Additional directories to scan for external task handler files at boot. */
   tasks_dirs?: string[];
+  /** Hot-load agent-specific scheduled jobs without daemon restart. */
+  hot_load_jobs?: HotLoadJobsConfig;
 }
 
 export interface TaskScheduleConfig {

@@ -24,6 +24,8 @@ import { register as registerMorningBriefing } from './morning-briefing.js';
 import { register as registerKkitReflection } from './kkit-reflection.js';
 import { register as registerSelfWatchdog } from './self-watchdog.js';
 import { register as registerOrchStaleTaskRecovery } from './orch-stale-task-recovery.js';
+import { register as registerStaleTodoArchive } from './stale-todo-archive.js';
+import { register as registerStaleTodoSurfacing } from './stale-todo-surfacing.js';
 export { loadExternalTasks, type LoadResult } from './external-loader.js';
 
 /**
@@ -47,6 +49,8 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'kkit-reflection', register: registerKkitReflection },
     { name: 'self-watchdog', register: registerSelfWatchdog },
     { name: 'orch-stale-task-recovery', register: registerOrchStaleTaskRecovery },
+    { name: 'stale-todo-archive', register: registerStaleTodoArchive },
+    { name: 'stale-todo-surfacing', register: registerStaleTodoSurfacing },
   ];
 
   for (const { name, register } of registrations) {

@@ -46,18 +46,18 @@ describe('Config hot-reload via file watching (t-162)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('reload() loads updated config from disk', () => {
+  it('reload() loads updated config from disk', async () => {
     const initial = makeConfig({ agent: { name: 'Initial' } });
     watcher = createConfigWatcher(configPath, initial);
 
     // Write new config
     fs.writeFileSync(configPath, yaml.dump({ agent: { name: 'Updated' }, daemon: { port: 4000 } }));
 
-    const result = watcher.reload();
+    const result = await watcher.reload();
     assert.equal(result.success, true);
   });
 
-  it('onChange callback fires on reload', () => {
+  it('onChange callback fires on reload', async () => {
     const initial = makeConfig();
     watcher = createConfigWatcher(configPath, initial);
 
@@ -70,7 +70,7 @@ describe('Config hot-reload via file watching (t-162)', () => {
     });
 
     fs.writeFileSync(configPath, yaml.dump({ agent: { name: 'CallbackTest' }, daemon: { port: 3847 } }));
-    watcher.reload();
+    await watcher.reload();
 
     assert.ok(callbackFired, 'Callback should fire');
     assert.ok(receivedConfig);
@@ -93,16 +93,16 @@ describe('Config hot-reload via file watching (t-162)', () => {
     assert.ok(!watcher.isWatching());
   });
 
-  it('POST /config/reload returns 200 on success', () => {
+  it('POST /config/reload returns 200 on success', async () => {
     const initial = makeConfig();
     watcher = createConfigWatcher(configPath, initial);
 
-    const result = watcher.reload();
+    const result = await watcher.reload();
     assert.equal(result.success, true);
     assert.equal(result.error, undefined);
   });
 
-  it('multiple onChange callbacks all fire', () => {
+  it('multiple onChange callbacks all fire', async () => {
     const initial = makeConfig();
     watcher = createConfigWatcher(configPath, initial);
 
@@ -111,9 +111,26 @@ describe('Config hot-reload via file watching (t-162)', () => {
     watcher.onChange(() => { count++; });
 
     fs.writeFileSync(configPath, yaml.dump({ agent: { name: 'Multi' }, daemon: { port: 3847 } }));
-    watcher.reload();
+    await watcher.reload();
 
     assert.equal(count, 2, 'Both callbacks should fire');
+  });
+
+  it('async onChange callback is awaited before reload() resolves', async () => {
+    const initial = makeConfig();
+    watcher = createConfigWatcher(configPath, initial);
+
+    const order: string[] = [];
+    watcher.onChange(async () => {
+      await new Promise<void>(resolve => setTimeout(resolve, 10));
+      order.push('callback');
+    });
+
+    fs.writeFileSync(configPath, yaml.dump({ agent: { name: 'AsyncTest' }, daemon: { port: 3847 } }));
+    await watcher.reload();
+    order.push('after-reload');
+
+    assert.deepEqual(order, ['callback', 'after-reload'], 'Async callback must complete before reload() resolves');
   });
 });
 
@@ -133,19 +150,19 @@ describe('Invalid config change does not crash daemon (t-163)', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('invalid YAML keeps previous config', () => {
+  it('invalid YAML keeps previous config', async () => {
     const initial = makeConfig({ agent: { name: 'Good' } });
     watcher = createConfigWatcher(configPath, initial);
 
     // Write invalid YAML
     fs.writeFileSync(configPath, ': : : not valid yaml {{{{');
 
-    const result = watcher.reload();
+    const result = await watcher.reload();
     assert.equal(result.success, false);
     assert.ok(result.error, 'Should have error message');
   });
 
-  it('invalid config values keep previous config', () => {
+  it('invalid config values keep previous config', async () => {
     const initial = makeConfig();
     watcher = createConfigWatcher(configPath, initial);
 
@@ -155,33 +172,33 @@ describe('Invalid config change does not crash daemon (t-163)', () => {
       daemon: { port: 999999 },
     }));
 
-    const result = watcher.reload();
+    const result = await watcher.reload();
     assert.equal(result.success, false);
     assert.ok(result.error?.includes('port'), 'Error should mention port');
   });
 
-  it('empty config file keeps previous config', () => {
+  it('empty config file keeps previous config', async () => {
     const initial = makeConfig();
     watcher = createConfigWatcher(configPath, initial);
 
     fs.writeFileSync(configPath, '');
 
-    const result = watcher.reload();
+    const result = await watcher.reload();
     assert.equal(result.success, false);
     assert.ok(result.error);
   });
 
-  it('missing config file returns error', () => {
+  it('missing config file returns error', async () => {
     const initial = makeConfig();
     const missingPath = path.join(tmpDir, 'nonexistent.yaml');
     watcher = createConfigWatcher(missingPath, initial);
 
-    const result = watcher.reload();
+    const result = await watcher.reload();
     assert.equal(result.success, false);
     assert.ok(result.error?.includes('not found'));
   });
 
-  it('callback error does not crash watcher', () => {
+  it('callback error does not crash watcher', async () => {
     const initial = makeConfig();
     watcher = createConfigWatcher(configPath, initial);
 
@@ -191,7 +208,21 @@ describe('Invalid config change does not crash daemon (t-163)', () => {
     });
 
     // Reload should still succeed (callback error caught)
-    const result = watcher.reload();
+    const result = await watcher.reload();
+    assert.equal(result.success, true);
+  });
+
+  it('async callback rejection does not crash watcher', async () => {
+    const initial = makeConfig();
+    watcher = createConfigWatcher(configPath, initial);
+
+    // Register an async callback that rejects
+    watcher.onChange(async () => {
+      throw new Error('Async callback explosion');
+    });
+
+    // Reload should still succeed (async callback error caught)
+    const result = await watcher.reload();
     assert.equal(result.success, true);
   });
 });

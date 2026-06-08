@@ -52,6 +52,7 @@ import { readKeychain } from '../../core/keychain.js';
 import { loadConfig } from '../../core/config.js';
 import { registerRoute } from '../../core/route-registry.js';
 import { registerAdapter, unregisterAdapter } from '../../comms/channel-router.js';
+import { updateLastActiveChannel } from '../comms/channel-router.js';
 import { injectToComms } from '../../core/session-bridge.js';
 import { parseBody } from '../../api/helpers.js';
 import { verifyBotFrameworkJwt } from './jwt-verify.js';
@@ -368,6 +369,10 @@ export async function handleTeamsWebhook(
     res.end(JSON.stringify({ ok: true }));
     return true;
   }
+
+  // Record Teams as the last active text channel (for voice response routing).
+  // Mirrors telegram's inbound updateLastActiveChannel call.
+  updateLastActiveChannel('teams');
 
   const injected = `[Teams: ${senderName}]: ${messageText}`;
 

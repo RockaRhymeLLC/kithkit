@@ -17,7 +17,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { openDatabase, _resetDbForTesting, exec, getDatabase } from '../../core/db.js';
 import { loadConfig, _resetConfigForTesting } from '../../core/config.js';
-import { handleTaskQueueRoute, _setEvaluateTaskFnForTesting } from '../task-queue.js';
+import { handleTaskQueueRoute, _setEvaluateTaskFnForTesting, _setTmuxInjectorForTesting } from '../task-queue.js';
 import {
   _setSpawnFnForTesting,
   _setProfilesDirForTesting,
@@ -81,6 +81,8 @@ let profilesDir: string;
 
 function setup(): Promise<void> {
   _resetConfigForTesting();
+  // Suppress live tmux injections during tests
+  _setTmuxInjectorForTesting(() => false);
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-retro-integ-'));
   profilesDir = path.join(tmpDir, 'agents');
   fs.mkdirSync(profilesDir, { recursive: true });
@@ -114,6 +116,7 @@ function setup(): Promise<void> {
 
 function teardown(): Promise<void> {
   _setEvaluateTaskFnForTesting(null);
+  _setTmuxInjectorForTesting(null);
   _setSpawnFnForTesting(null);
   _setProfilesDirForTesting(null);
   _resetConfigForTesting();
