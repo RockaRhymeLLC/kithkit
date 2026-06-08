@@ -269,6 +269,32 @@ Device-code delegated auth REPLACES all client-secret and basic-auth (username/p
 
 **Identity (no user-email field in v1 convention)**: The 4-field convention deliberately omits a user-email entry. The signed-in identity is always discoverable via Graph's `/me` endpoint using the delegated token — no separate Keychain slot needed. Recipes that previously stored `credential-graph-user-email` for convenience should drop it on migration.
 
+## Migrating from legacy credential names
+
+If you ran an earlier BMO-pattern M365/Outlook setup, your Keychain entries predate the standardized `credential-m365-*` convention used throughout this recipe. Migrate by **adding** the new-convention entries (read your existing secret, write it under the new name); you can remove the legacy entries once verified. Nothing reads the legacy names after migration.
+
+| Legacy BMO-pattern name | New standardized name | Scope | Notes |
+|---|---|---|---|
+| `outlook-imap-oauth2-access-token` | `credential-m365-access-<agent>` | per-agent | Short-lived; optional to migrate (re-minted from refresh). |
+| `outlook-imap-oauth2-refresh-token` | `credential-m365-refresh-<agent>` | per-agent | **Load-bearing** — the long-lived token; migrate this. |
+| `credential-outlook-<account>-access-token` | `credential-m365-access-<agent>` | per-agent | Per-account → per-agent; pick the agent that owns the mailbox. |
+| `credential-outlook-<account>-refresh-token` | `credential-m365-refresh-<agent>` | per-agent | Load-bearing. |
+| app client ID (config/inline or `credential-teams-bot-client-id`) | `credential-m365-app-client-id` | shared/fleet | One app registration per fleet; `-a "shared"`. |
+| app tenant ID (config/inline) | `credential-m365-app-tenant-id` | shared/fleet | `-a "shared"`. |
+
+**Migration one-liner per token** (read legacy → write new; example for a refresh token):
+
+```bash
+AGENT="bridget"
+REFRESH=$(security find-generic-password -s "outlook-imap-oauth2-refresh-token" -w)
+security add-generic-password -s "credential-m365-refresh-${AGENT}" -a "${AGENT}" -w "${REFRESH}"
+# verify, then optionally remove the legacy entry:
+security find-generic-password -s "credential-m365-refresh-${AGENT}" -w >/dev/null && echo "migrated ✓"
+# security delete-generic-password -s "outlook-imap-oauth2-refresh-token"   # only after confirming everything reads the new name
+```
+
+> **Order matters**: migrate `refresh` (and the shared `app-client-id` / `app-tenant-id`) **before** restarting the daemon on the new convention — `access` regenerates from `refresh` automatically, but a missing refresh token forces a full re-auth.
+
 ---
 
 ## 4. Capabilities
