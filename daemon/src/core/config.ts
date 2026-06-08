@@ -41,6 +41,13 @@ export interface DaemonConfig {
   lan?: LanConfig;
   self_watchdog?: SelfWatchdogConfig;
   db_path?: string;  // Optional override for database file location
+  /**
+   * macOS launchd label for the daemon service (e.g. "com.assistant.daemon").
+   * When set, the selftest launchd_agent check verifies the agent is registered
+   * in the current user's GUI domain via `launchctl print gui/<uid>/<label>`.
+   * Omit to skip the launchd_agent selftest check.
+   */
+  launchd_label?: string;
 }
 
 export interface HotLoadJobsConfig {
