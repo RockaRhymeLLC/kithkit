@@ -12,6 +12,13 @@ permissions:
   contents: read
 
 jobs:
+  config-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Warn if INSTANCE_REPOS is unset or empty
+        if: vars.INSTANCE_REPOS == ''
+        run: echo "::warning::INSTANCE_REPOS is unset/empty — fleet upstream-sync was NOT dispatched"
+
   notify-downstream:
     runs-on: ubuntu-latest
     # Only dispatch on actual pushes, not PR merges that re-trigger.
