@@ -185,6 +185,14 @@ else
     fail "--label with no value: exited 0 (expected non-zero usage error)"
 fi
 
+stderr_out="$(env PATH="$tmpdir/bin:$PATH" \
+    bash "$tmpdir/scripts/daemon-watchdog.sh" --label 2>&1 >/dev/null)" || true
+if echo "$stderr_out" | grep -q "requires a value"; then
+    pass "--label with no value: correct error message on stderr"
+else
+    fail "--label with no value: error message not found (got: $stderr_out)"
+fi
+
 cleanup "$tmpdir"
 
 # ── Scenario (6): Unsubstituted placeholder -> fail-loud ─────────────────────
