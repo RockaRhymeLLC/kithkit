@@ -222,8 +222,32 @@ describe('A2A Router — Peer Resolution', () => {
 // ── Routing (tests 14–25) ───────────────────────────────────
 
 describe('A2A Router — Routing', () => {
-  it('14. Auto route DM: LAN succeeds -> route: "lan", one attempt', async () => {
+  it('14. Auto route DM: relay succeeds -> route: "relay", one attempt', async () => {
+    // Per Dave directive: relay is PRIMARY, LAN is fallback. Auto-routing tries relay first.
+    // When relay succeeds on the first attempt, only one attempt is recorded.
     const deps = createMockDeps({
+      getNetworkClient: () => ({
+        send: async () => ({ status: 'delivered' as const, messageId: 'relay-1' }),
+        sendToGroup: async () => ({ messageId: 'g1', delivered: [], queued: [], failed: [] }),
+      }),
+    });
+    const router = new UnifiedA2ARouter(deps);
+    const result = await router.send(validDMRequest());
+
+    assert.equal(result.ok, true);
+    if (result.ok) {
+      assert.equal(result.route, 'relay');
+      assert.equal(result.attempts.length, 1);
+      assert.equal(result.attempts[0].route, 'relay');
+      assert.equal(result.attempts[0].status, 'success');
+    }
+  });
+
+  it('15. Auto route DM: relay fails, LAN succeeds -> route: "lan", two attempts', async () => {
+    // Per Dave directive: relay is PRIMARY, LAN is fallback. Auto-routing tries relay first.
+    // When relay fails (Network SDK not available) and LAN succeeds, two attempts are recorded.
+    const deps = createMockDeps({
+      // getNetworkClient defaults to () => null — relay fails with "Network SDK not available"
       sendViaLAN: async () => ({ ok: true }),
       getAgentCommsSecret: async () => 'test-secret',
     });
@@ -233,31 +257,10 @@ describe('A2A Router — Routing', () => {
     assert.equal(result.ok, true);
     if (result.ok) {
       assert.equal(result.route, 'lan');
-      assert.equal(result.attempts.length, 1);
-      assert.equal(result.attempts[0].route, 'lan');
-      assert.equal(result.attempts[0].status, 'success');
-    }
-  });
-
-  it('15. Auto route DM: LAN fails, relay succeeds -> route: "relay", two attempts', async () => {
-    const deps = createMockDeps({
-      sendViaLAN: async () => ({ ok: false, error: 'Connection refused' }),
-      getNetworkClient: () => ({
-        send: async () => ({ status: 'delivered' as const, messageId: 'relay-1' }),
-        sendToGroup: async () => ({ messageId: 'g1', delivered: [], queued: [], failed: [] }),
-      }),
-      getAgentCommsSecret: async () => 'test-secret',
-    });
-    const router = new UnifiedA2ARouter(deps);
-    const result = await router.send(validDMRequest());
-
-    assert.equal(result.ok, true);
-    if (result.ok) {
-      assert.equal(result.route, 'relay');
       assert.equal(result.attempts.length, 2);
-      assert.equal(result.attempts[0].route, 'lan');
+      assert.equal(result.attempts[0].route, 'relay');
       assert.equal(result.attempts[0].status, 'failed');
-      assert.equal(result.attempts[1].route, 'relay');
+      assert.equal(result.attempts[1].route, 'lan');
       assert.equal(result.attempts[1].status, 'success');
     }
   });
