@@ -12,10 +12,19 @@ permissions:
   contents: read
 
 jobs:
+  config-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Warn if INSTANCE_REPOS is unset or empty
+        if: vars.INSTANCE_REPOS == ''
+        run: echo "::warning::INSTANCE_REPOS is unset/empty — fleet upstream-sync was NOT dispatched"
+
   notify-downstream:
     runs-on: ubuntu-latest
-    # Only dispatch on actual pushes, not PR merges that re-trigger
-    if: github.event_name == 'push'
+    # Only dispatch on actual pushes, not PR merges that re-trigger.
+    # Skip entirely when INSTANCE_REPOS is unset — an empty matrix is a GHA
+    # failure, not a no-op, so we must guard at the job level.
+    if: github.event_name == 'push' && vars.INSTANCE_REPOS != ''
     strategy:
       matrix:
         repo: ${{ fromJSON(vars.INSTANCE_REPOS || '[]') }}
