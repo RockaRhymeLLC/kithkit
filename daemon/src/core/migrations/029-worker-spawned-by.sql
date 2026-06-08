@@ -1,0 +1,18 @@
+-- Add spawned_by and spawner_notified_at columns to worker_jobs.
+--
+-- Background: migration 011 was written as a no-op under the mistaken belief
+-- that a "005-worker-spawned-by.sql" had already created these columns.
+-- That file never existed (005 is memory-access-tracking.sql).  As a result,
+-- fresh databases lack both columns, breaking ~11 tests and any code that
+-- INSERTs or SELECTs spawned_by / spawner_notified_at.
+--
+-- This migration adds the missing columns.  It uses the --safe-alter: directive
+-- so the runner catches "duplicate column name" errors gracefully — making the
+-- migration safe on EXISTING databases where the columns may have been added
+-- manually or by a prior patch.
+--
+-- spawned_by TEXT            — agent that spawned the job (e.g. 'comms')
+-- spawner_notified_at TEXT   — ISO-8601 timestamp of when the spawner was
+--                              notified of job completion; NULL until notified.
+--safe-alter: worker_jobs ADD COLUMN spawned_by TEXT
+--safe-alter: worker_jobs ADD COLUMN spawner_notified_at TEXT
