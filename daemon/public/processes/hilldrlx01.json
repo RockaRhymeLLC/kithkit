@@ -1,0 +1,269 @@
+{
+  "hostname": "hilldrlx01",
+  "online": true,
+  "uptime": "05:50:01 up 77 days, 13:59,  1 user,  load average: 0.69, 0.66, 0.70",
+  "load": [
+    0.69,
+    0.66,
+    0.7
+  ],
+  "mem_total_mb": 9914,
+  "mem_used_mb": 3058,
+  "mem_pct": 31,
+  "disk_used": "23G",
+  "disk_total": "457G",
+  "disk_pct": 6,
+  "processes": [
+    {
+      "user": "root",
+      "pid": 2369487,
+      "cpu": 83.3,
+      "mem": 0.3,
+      "vsz_kb": 93248,
+      "rss_kb": 35360,
+      "stat": "R",
+      "command": "php -c /snap/nextcloud/53086/config/php /snap/nextcloud/53086/htdocs/occ -n status --output=json"
+    },
+    {
+      "user": "marvho",
+      "pid": 2369312,
+      "cpu": 38.2,
+      "mem": 0.1,
+      "vsz_kb": 21556,
+      "rss_kb": 12720,
+      "stat": "Ss",
+      "command": "/usr/lib/systemd/systemd --user"
+    },
+    {
+      "user": "root",
+      "pid": 2369414,
+      "cpu": 25,
+      "mem": 0,
+      "vsz_kb": 5396,
+      "rss_kb": 3220,
+      "stat": "S",
+      "command": "jq -R fromjson? | .installed"
+    },
+    {
+      "user": "root",
+      "pid": 7760,
+      "cpu": 3.7,
+      "mem": 3,
+      "vsz_kb": 1621216,
+      "rss_kb": 305340,
+      "stat": "Ssl",
+      "command": "/snap/microk8s/8565/kubelite --scheduler-args-file=/var/snap/microk8s/8565/args/kube-scheduler --controller-manager-args-file=/var/snap/microk8s/8565/args/kube-controller-manager --proxy-args-file=/var/snap/microk8s/8565/args/kube-proxy --kubelet-args-file=/var/snap/microk8s/8565/args/kubelet --apiserver-args-file=/var/snap/microk8s/8565/args/kube-apiserver --kubeconfig-file=/var/snap/microk8s/8565/credentials/client.config --start-control-plane=true"
+    },
+    {
+      "user": "root",
+      "pid": 1363,
+      "cpu": 1.5,
+      "mem": 2.7,
+      "vsz_kb": 1546832,
+      "rss_kb": 282824,
+      "stat": "Ssl",
+      "command": "/snap/microk8s/8565/bin/k8s-dqlite --storage-dir=/var/snap/microk8s/8565/var/kubernetes/backend/ --listen=unix:///var/snap/microk8s/8565/var/kubernetes/backend/kine.sock:12379"
+    },
+    {
+      "user": "root",
+      "pid": 23706,
+      "cpu": 1.3,
+      "mem": 0.5,
+      "vsz_kb": 2051280,
+      "rss_kb": 57628,
+      "stat": "Sl",
+      "command": "calico-node -felix"
+    },
+    {
+      "user": "root",
+      "pid": 4908,
+      "cpu": 1,
+      "mem": 0.3,
+      "vsz_kb": 598416,
+      "rss_kb": 38320,
+      "stat": "Sl",
+      "command": "mongod --dbpath /var/snap/wekan/common --logpath /dev/null --journal --bind_ip 127.0.0.1 --port 27019 --quiet"
+    },
+    {
+      "user": "root",
+      "pid": 1258351,
+      "cpu": 0.9,
+      "mem": 1.9,
+      "vsz_kb": 3128048,
+      "rss_kb": 195964,
+      "stat": "Sl",
+      "command": "mongod --config=/var/snap/rocketchat-server/1781/mongod.conf --fork --syslog"
+    },
+    {
+      "user": "root",
+      "pid": 1259055,
+      "cpu": 0.9,
+      "mem": 6.1,
+      "vsz_kb": 13859748,
+      "rss_kb": 620232,
+      "stat": "Sl",
+      "command": "node /snap/rocketchat-server/1781/main.js"
+    },
+    {
+      "user": "root",
+      "pid": 2369305,
+      "cpu": 0.8,
+      "mem": 0.1,
+      "vsz_kb": 14736,
+      "rss_kb": 10544,
+      "stat": "Ss",
+      "command": "sshd: marvho [priv]"
+    },
+    {
+      "user": "root",
+      "pid": 1,
+      "cpu": 0.8,
+      "mem": 0.1,
+      "vsz_kb": 24792,
+      "rss_kb": 15976,
+      "stat": "Ss",
+      "command": "/usr/lib/systemd/systemd --system --deserialize=127"
+    },
+    {
+      "user": "root",
+      "pid": 7541,
+      "cpu": 0.5,
+      "mem": 0.2,
+      "vsz_kb": 2374852,
+      "rss_kb": 28508,
+      "stat": "Ssl",
+      "command": "/snap/microk8s/8565/bin/containerd --config /var/snap/microk8s/8565/args/containerd.toml --root /var/snap/microk8s/common/var/lib/containerd --state /var/snap/microk8s/common/run/containerd --address /var/snap/microk8s/common/run/containerd.sock"
+    },
+    {
+      "user": "root",
+      "pid": 1976806,
+      "cpu": 0.4,
+      "mem": 2.9,
+      "vsz_kb": 2148752,
+      "rss_kb": 299940,
+      "stat": "Sl",
+      "command": "/snap/nextcloud/53086/bin/mysqld --defaults-file=/snap/nextcloud/53086/my.cnf --basedir=/snap/nextcloud/53086 --datadir=/var/snap/nextcloud/53086/mysql --plugin-dir=/snap/nextcloud/53086/lib64/plugin --user=root --lc-messages-dir=/snap/nextcloud/53086/share --log-error=../logs/mysql_errors.log --pid-file=/tmp/pids/mysql.pid --socket=/tmp/sockets/mysql.sock"
+    },
+    {
+      "user": "root",
+      "pid": 1976263,
+      "cpu": 0.4,
+      "mem": 0,
+      "vsz_kb": 131156,
+      "rss_kb": 8608,
+      "stat": "Sl",
+      "command": "redis-server unixsocket:/tmp/sockets/redis.sock"
+    },
+    {
+      "user": "root",
+      "pid": 3224683,
+      "cpu": 0.3,
+      "mem": 0.4,
+      "vsz_kb": 2072864,
+      "rss_kb": 47612,
+      "stat": "Ssl",
+      "command": "/snap/snapd/current/usr/lib/snapd/snapd"
+    },
+    {
+      "user": "root",
+      "pid": 14464,
+      "cpu": 0.1,
+      "mem": 0.1,
+      "vsz_kb": 764912,
+      "rss_kb": 19356,
+      "stat": "Ssl",
+      "command": "/coredns -conf /etc/coredns/Corefile"
+    },
+    {
+      "user": "root",
+      "pid": 9326,
+      "cpu": 0.1,
+      "mem": 0,
+      "vsz_kb": 1236368,
+      "rss_kb": 8280,
+      "stat": "Sl",
+      "command": "/snap/microk8s/8565/bin/containerd-shim-runc-v2 -namespace k8s.io -id 5f46a034f431e1d01192ef282770dcb21742816d23094599d1ea05d5174d6d9b -address /var/snap/microk8s/common/run/containerd.sock"
+    },
+    {
+      "user": "root",
+      "pid": 14237,
+      "cpu": 0.1,
+      "mem": 0,
+      "vsz_kb": 1236368,
+      "rss_kb": 8300,
+      "stat": "Sl",
+      "command": "/snap/microk8s/8565/bin/containerd-shim-runc-v2 -namespace k8s.io -id 3032d15d5176aa0b8281c7927252638335cdef42b6912e195718f3387e73d62b -address /var/snap/microk8s/common/run/containerd.sock"
+    },
+    {
+      "user": "root",
+      "pid": 17,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[rcu_preempt]"
+    },
+    {
+      "user": "root",
+      "pid": 1150926,
+      "cpu": 0,
+      "mem": 0.6,
+      "vsz_kb": 943020,
+      "rss_kb": 69736,
+      "stat": "Ssl",
+      "command": "/usr/bin/python3 /usr/bin/fail2ban-server -xf start"
+    },
+    {
+      "user": "root",
+      "pid": 1150626,
+      "cpu": 0,
+      "mem": 0.6,
+      "vsz_kb": 107980,
+      "rss_kb": 63276,
+      "stat": "S<s",
+      "command": "/usr/lib/systemd/systemd-journald"
+    },
+    {
+      "user": "root",
+      "pid": 2040,
+      "cpu": 0,
+      "mem": 0.3,
+      "vsz_kb": 1179400,
+      "rss_kb": 38516,
+      "stat": "Sl",
+      "command": "/snap/prometheus/86/bin/prometheus --config.file /var/snap/prometheus/86/prometheus.yml --storage.tsdb.path=/var/snap/prometheus/common"
+    },
+    {
+      "user": "root",
+      "pid": 1417517,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 8400,
+      "rss_kb": 3512,
+      "stat": "Ss",
+      "command": "bash /snap/microk8s/8565/apiservice-kicker"
+    },
+    {
+      "user": "root",
+      "pid": 3912987,
+      "cpu": 0,
+      "mem": 1.1,
+      "vsz_kb": 2468492,
+      "rss_kb": 113516,
+      "stat": "Sl",
+      "command": "/snap/wekan/1999/bin/node --stack-size=65500 main.js"
+    },
+    {
+      "user": "root",
+      "pid": 1150628,
+      "cpu": 0,
+      "mem": 0.1,
+      "vsz_kb": 470008,
+      "rss_kb": 15452,
+      "stat": "Ssl",
+      "command": "/usr/libexec/udisks2/udisksd"
+    }
+  ],
+  "collected_at": "2026-04-25T05:50:01.876Z"
+}

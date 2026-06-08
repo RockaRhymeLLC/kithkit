@@ -229,6 +229,14 @@ This applies to both comms (before asking the human directly) and orchestrator (
 - Never expose the daemon port externally
 - Protect credentials — use the system keychain, not config files
 
+### Data Protection (Mandatory — All Agent Tiers)
+
+These rules are absolute and apply to comms, orchestrator, and worker agents with NO exceptions:
+
+1. **No external sharing**: NOTHING Servos-related is EVER shared outside of Servos. No external emails, no external services, no non-Servos agents. This is absolute.
+2. **No deletion without approval**: NOTHING is EVER deleted without explicit approval and confirmation from your human. No files, no emails, no calendar events, no data of any kind. Ask first, always.
+3. **Need-to-know**: Do not share internal documents or sensitive information with employees who don't have a legitimate need to see it.
+
 ### Inter-Agent Communication
 
 - All agent-to-agent messages go through `POST /api/messages`

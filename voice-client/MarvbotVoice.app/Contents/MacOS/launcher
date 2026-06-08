@@ -1,0 +1,3 @@
+#!/bin/bash
+cd /Users/marvho/KKit-Marvbot
+/Users/marvho/KKit-Marvbot/voice-client/.venv/bin/python3 /Users/marvho/KKit-Marvbot/voice-client/client.py

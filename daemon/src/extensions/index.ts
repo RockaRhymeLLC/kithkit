@@ -43,6 +43,9 @@ import { handleNetworkRoute } from './comms/network/api.js';
 import type { WireEnvelope } from './comms/network/sdk-types.js';
 import { registerCoreTasks } from '../automation/tasks/index.js';
 import { commsSessionExists } from '../core/session-bridge.js';
+import { isVoicePending, resolveVoicePending } from './comms/channel-router.js';
+import { registerAdapter } from '../comms/channel-router.js';
+import type { ChannelAdapter, OutboundMessage, InboundMessage, Verbosity, ChannelCapabilities } from '../comms/adapter.js';
 import { enableVectorSearch } from '../api/memory.js';
 import { readKeychain } from '../core/keychain.js';
 import { parseBody } from '../api/helpers.js';
@@ -270,6 +273,37 @@ async function handleHookResponse(
   return true;
 }
 
+/**
+ * Voice channel adapter — delivers messages to the voice pending callback.
+ * When the comms agent sends a response via /api/send with channel:'voice',
+ * this adapter resolves the /voice/converse request waiting for a response.
+ */
+class VoiceChannelAdapter implements ChannelAdapter {
+  readonly name = 'voice';
+
+  async send(message: OutboundMessage): Promise<boolean> {
+    if (isVoicePending()) {
+      resolveVoicePending(message.text);
+      log.info('Voice adapter: delivered response to voice pipeline', { chars: message.text.length });
+      return true;
+    }
+    log.debug('Voice adapter: no voice pending, message dropped', { chars: message.text.length });
+    return true; // Don't report as failure — voice channel is best-effort
+  }
+
+  async receive(): Promise<InboundMessage[]> {
+    return []; // Inbound handled by /voice/converse endpoint
+  }
+
+  formatMessage(text: string, _verbosity: Verbosity): string {
+    return text; // No formatting needed for voice
+  }
+
+  capabilities(): ChannelCapabilities {
+    return { markdown: false, images: false, buttons: false, html: false, maxLength: 500 };
+  }
+}
+
 // ── Health Checks ───────────────────────────────────────────
 
 function registerAgentHealthChecks(): void {
@@ -377,6 +411,10 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 
   // Register basic extension health check
   registerAgentHealthChecks();
+
+  // Register voice channel adapter (resolves /voice/converse requests)
+  registerAdapter(new VoiceChannelAdapter());
+  log.info('Voice channel adapter registered');
 
   // Load instance-specific extensions (if instance/ directory exists)
   const instanceResult = await loadInstanceExtensions(config, _server, _scheduler);

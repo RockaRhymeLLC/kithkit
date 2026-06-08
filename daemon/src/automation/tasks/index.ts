@@ -22,6 +22,9 @@ import { register as registerMetricsAggregation } from './api-metrics-aggregatio
 import { register as registerDailyDigest } from './daily-digest.js';
 import { register as registerMorningBriefing } from './morning-briefing.js';
 import { register as registerKkitReflection } from './kkit-reflection.js';
+import { register as registerWeeklyEmailSummary } from './weekly-email-summary.js';
+import { register as registerMeetingPrep } from './meeting-prep.js';
+import { register as registerCaRfoForward } from './ca-rfo-forward.js';
 export { loadExternalTasks, type LoadResult } from './external-loader.js';
 
 /**
@@ -43,6 +46,9 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'daily-digest', register: registerDailyDigest },
     { name: 'morning-briefing', register: registerMorningBriefing },
     { name: 'kkit-reflection', register: registerKkitReflection },
+    { name: 'weekly-email-summary', register: registerWeeklyEmailSummary },
+    { name: 'meeting-prep', register: registerMeetingPrep },
+    { name: 'ca-rfo-forward', register: registerCaRfoForward },
   ];
 
   for (const { name, register } of registrations) {

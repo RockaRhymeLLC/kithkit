@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <title>DIR Knowledge Base — Servos</title>
+  <link rel="stylesheet" href="/portal/dir/styles.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     LOGIN SCREEN
+     ═══════════════════════════════════════════════════════════ -->
+<div id="login-screen" class="hidden">
+
+  <div class="login-card">
+
+    <div class="login-brand">
+      <span class="brand-wordmark">SERVOS</span>
+      <span class="brand-sub">Internal Knowledge Base</span>
+    </div>
+
+    <hr class="login-divider" />
+
+    <p class="login-title">California DIR Portal</p>
+
+    <form id="login-form" novalidate>
+
+      <div class="form-group">
+        <label for="email-input">Work Email</label>
+        <input
+          type="email"
+          id="email-input"
+          name="email"
+          placeholder="you@servos.io"
+          autocomplete="email"
+          spellcheck="false"
+        />
+        <span class="error-msg" id="email-error"></span>
+      </div>
+
+      <div class="form-group">
+        <label for="password-input">Portal Password</label>
+        <input
+          type="password"
+          id="password-input"
+          name="password"
+          placeholder="Enter portal password"
+          autocomplete="current-password"
+        />
+        <span class="error-msg" id="password-error"></span>
+      </div>
+
+      <button type="submit" id="login-btn" class="btn-login">Sign In</button>
+
+    </form>
+
+    <p class="login-footer">
+      Access restricted to Servos employees. Contact your team lead for credentials.
+    </p>
+
+  </div>
+
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAIN APP SCREEN
+     ═══════════════════════════════════════════════════════════ -->
+<div id="app-screen" class="hidden">
+
+  <!-- Header -->
+  <header id="app-header">
+    <span class="header-logo">SERVOS</span>
+    <span class="header-title">California DIR Account Knowledge Base</span>
+    <div class="header-actions">
+      <button id="logout-btn" class="btn-logout">Sign Out</button>
+    </div>
+  </header>
+
+  <!-- DIR Banner -->
+  <div id="dir-banner">
+    <div class="banner-seal" aria-label="California State Seal (placeholder)">
+      CA<br>State<br>Seal
+    </div>
+    <div class="banner-dir-logo" aria-label="California DIR Logo (placeholder)">
+      CA<br>DIR
+    </div>
+    <div class="banner-text">
+      <h1>California Department of Industrial Relations</h1>
+      <p>Account Intelligence &amp; Engagement Reference — Servos Internal Use Only</p>
+    </div>
+    <span class="banner-updated" id="banner-updated"></span>
+  </div>
+
+  <!-- Main Layout -->
+  <div id="main-layout">
+
+    <!-- Sidebar Navigation -->
+    <nav id="sidebar" aria-label="Knowledge base sections">
+      <div class="sidebar-label">Sections</div>
+      <div id="nav-list" role="menu">
+        <!-- Populated by app.js -->
+      </div>
+      <div class="sidebar-label" style="margin-top:16px;">Resources</div>
+      <div class="nav-item" id="qa-nav-item">
+        <span class="nav-icon">💬</span>Ask a Question
+      </div>
+    </nav>
+
+    <!-- Content Area -->
+    <main id="content-area">
+
+      <!-- Search -->
+      <div class="search-wrapper">
+        <span class="search-icon" aria-hidden="true">&#x1F50D;</span>
+        <input
+          type="search"
+          id="search-input"
+          placeholder="Search knowledge base…"
+          aria-label="Search knowledge base"
+        />
+      </div>
+
+      <!-- Search notice (shown when no results in current section) -->
+      <div id="search-results-notice" class="hidden" role="status"></div>
+
+      <!-- Section Card -->
+      <div class="section-card" id="section-card">
+        <div class="section-card-header">
+          <div class="section-icon" id="section-icon" aria-hidden="true">🏛️</div>
+          <h2 id="section-title">Account Overview</h2>
+        </div>
+        <div class="section-body" id="section-body">
+          <div class="loading-placeholder">
+            <div class="spinner"></div>
+            Loading knowledge base…
+          </div>
+        </div>
+      </div>
+
+      <!-- Q&A Panel -->
+      <div class="qa-card" id="qa-panel">
+        <div class="qa-card-header">
+          <h3>Ask the Knowledge Base</h3>
+          <span class="qa-badge">Coming Soon</span>
+        </div>
+        <div class="qa-input-row">
+          <textarea
+            id="qa-input"
+            placeholder="Type a question about the California DIR account… (e.g., Who is the key contact for procurement?)"
+            aria-label="Ask a question"
+          ></textarea>
+          <button id="ask-btn" class="btn-ask">Ask</button>
+        </div>
+        <p class="qa-coming-soon">
+          &#x1F916; AI-powered Q&amp;A is coming soon. Questions will be answered using the full knowledge base.
+        </p>
+      </div>
+
+    </main>
+
+  </div><!-- /#main-layout -->
+
+</div><!-- /#app-screen -->
+
+
+<!-- Toast Notification -->
+<div id="toast" role="status" aria-live="polite"></div>
+
+
+<script src="/portal/dir/app.js"></script>
+<script>
+  // Wire the Q&A nav item in the sidebar to scroll to the Q&A panel
+  document.addEventListener('DOMContentLoaded', () => {
+    const qaNavItem = document.getElementById('qa-nav-item');
+    if (qaNavItem) {
+      qaNavItem.addEventListener('click', () => {
+        document.getElementById('qa-panel')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+
+    // Populate banner last-updated date from JSON once loaded
+    // (done reactively in app.js via loadKnowledgeBase → sets #banner-updated)
+  });
+</script>
+
+</body>
+</html>

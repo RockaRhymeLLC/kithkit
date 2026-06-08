@@ -163,5 +163,12 @@
         ]
       }
     ]
+  },
+  "permissions": {
+    "allow": [
+      ".*"
+    ],
+    "deny": [],
+    "defaultMode": "bypassPermissions"
   }
 }

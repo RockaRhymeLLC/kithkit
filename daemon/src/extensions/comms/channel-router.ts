@@ -162,6 +162,16 @@ export function isVoicePending(): boolean {
   return _voicePendingCallback !== null;
 }
 
+/** Invoke the voice-pending callback with a response and clear it. Returns true if delivered. */
+export function resolveVoicePending(text: string): boolean {
+  if (!_voicePendingCallback) return false;
+  const cb = _voicePendingCallback;
+  _voicePendingCallback = null;
+  log.info('Voice-pending resolved via /api/send', { chars: text.length });
+  cb(text);
+  return true;
+}
+
 // ── Response hook ────────────────────────────────────────────
 
 /** Register a one-shot response hook (fires after normal routing). */
@@ -194,10 +204,14 @@ export function sendDirectTelegram(text: string): boolean {
  * Maps the agent's channel.txt to kithkit adapter dispatch.
  */
 export function routeOutgoingMessage(text: string, thinking?: string): void {
-  // Clear voice-pending (voice input defaults to active channel for faster delivery)
+  // If a voice-pending callback is registered (/voice/converse waiting for response),
+  // deliver the response to it and return — don't route through the normal channel.
   if (_voicePendingCallback) {
+    const cb = _voicePendingCallback;
     _voicePendingCallback = null;
-    log.info('Voice-pending cleared, routing via normal channel');
+    log.info('Voice-pending callback invoked, delivering response to voice client', { chars: text.length });
+    cb(text);
+    return;
   }
 
   const channel = getChannel();

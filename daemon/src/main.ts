@@ -5,6 +5,7 @@
  */
 
 import http from 'node:http';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, type KithkitConfig } from './core/config.js';
@@ -29,6 +30,11 @@ import { handleContactsRoute } from './api/contacts.js';
 import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleMetricsRoute, logRequest } from './api/metrics.js';
 import { handleSelfImprovementRoute } from './api/self-improvement.js';
+import { handleCitationAskRoute, setKnowledgeBasePath } from './api/citation-ask.js';
+import { handleCitationFilesRoute } from './api/citation-files.js';
+import { handleSnjAskRoute } from './api/snj-ask.js';
+import { handleSnjFilesRoute } from './api/snj-files.js';
+import { readKeychain } from './core/keychain.js';
 import {
   getExtension,
   isDegraded,
@@ -56,6 +62,7 @@ import {
   type HealthCheckFn,
 } from './core/extended-status.js';
 import { createConfigWatcher } from './core/config-watcher.js';
+import { issueToken, verifyToken } from './auth/agent-tokens.js';
 
 export const VERSION = '0.1.0';
 
@@ -135,6 +142,9 @@ log.info('Config watcher started', { path: configPath });
 // Wire up agent profiles directory
 setProfilesDir(path.resolve(projectDir, '.kithkit', 'agents'));
 
+// Wire up Citation S550 knowledge base path
+setKnowledgeBasePath(path.resolve(projectDir, 'daemon', 'public', 'portal', 'citation', 'data', 'knowledge-base.json'));
+
 // Configure tmux session management
 configureTmux({ projectDir });
 
@@ -154,6 +164,117 @@ log.info('Kithkit daemon starting', {
   projectDir,
   version: VERSION,
 });
+
+// ── Comms token bootstrap ────────────────────────────────────
+
+// Ensure a valid comms-role token is written to .kithkit/.comms-token (mode 0600).
+// This token is used by the comms agent to authenticate calls to /api/send.
+// Workers and orchestrators cannot use /api/send — they must escalate via /api/messages.
+(function bootstrapCommsToken() {
+  const tokenPath = path.join(projectDir, '.kithkit', '.comms-token');
+  const tokenDir = path.dirname(tokenPath);
+  try {
+    // Ensure the state directory exists
+    if (!fs.existsSync(tokenDir)) {
+      fs.mkdirSync(tokenDir, { recursive: true });
+    }
+
+    // Check if an existing token file is still valid
+    if (fs.existsSync(tokenPath)) {
+      try {
+        const existingToken = fs.readFileSync(tokenPath, 'utf8').trim();
+        if (existingToken && verifyToken(existingToken)) {
+          // Token file exists and is valid — nothing to do
+          return;
+        }
+      } catch {
+        // Unreadable or invalid — fall through to regenerate
+      }
+    }
+
+    // Issue a new comms token and write it atomically (temp + rename, mode 0600)
+    const newToken = issueToken('comms');
+    const tmpPath = tokenPath + '.tmp.' + process.pid;
+    fs.writeFileSync(tmpPath, newToken, { mode: 0o600 });
+    fs.renameSync(tmpPath, tokenPath);
+    // Tighten permissions on the final file (rename may not preserve mode on all platforms)
+    fs.chmodSync(tokenPath, 0o600);
+    log.info('Comms token initialized', { path: tokenPath });
+  } catch (err) {
+    log.warn('Failed to bootstrap comms token', {
+      path: tokenPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+})();
+
+// ── Citation Portal Auth ──────────────────────────────────────
+//
+// Behavior: if credential-citation-portal-password is absent from Keychain,
+// access is DENIED (fail-closed). This differs from the pdfsearch extension
+// which fails-open when no password is configured. Fail-closed is the chosen
+// behavior here because the citation portal contains private aviation
+// maintenance records. Set the keychain entry to enable access.
+//
+// undefined  = not yet fetched (will fetch on first request)
+// null       = keychain returned nothing → DENY (fail-closed)
+// string     = password fetched → require Basic auth match
+
+let _citationPortalSecret: string | null | undefined = undefined;
+
+async function getCitationPortalSecret(): Promise<string | null> {
+  if (_citationPortalSecret === undefined) {
+    _citationPortalSecret = await readKeychain('credential-citation-portal-password');
+    if (_citationPortalSecret === null) {
+      log.warn('Citation portal: credential-citation-portal-password not found in Keychain — portal LOCKED (fail-closed)');
+    } else {
+      log.info('Citation portal: password auth enabled');
+    }
+  }
+  return _citationPortalSecret;
+}
+
+function checkCitationAuth(req: http.IncomingMessage, secret: string): boolean {
+  const authHeader = req.headers['authorization'] ?? '';
+  if (!authHeader.startsWith('Basic ')) return false;
+
+  const b64 = authHeader.slice(6);
+  const decoded = Buffer.from(b64, 'base64').toString('utf8');
+  const colon = decoded.indexOf(':');
+  const suppliedPass = colon >= 0 ? decoded.slice(colon + 1) : decoded;
+
+  const secretBuf = Buffer.from(secret, 'utf8');
+  const suppliedBuf = Buffer.from(suppliedPass, 'utf8');
+
+  // timingSafeEqual requires equal lengths; length check is unavoidably non-constant-time
+  if (suppliedBuf.length !== secretBuf.length) return false;
+
+  return crypto.timingSafeEqual(secretBuf, suppliedBuf);
+}
+
+// ── SNJ Portal Auth ───────────────────────────────────────────
+//
+// Behavior mirrors the citation portal: fail-closed when keychain entry is absent.
+// The SNJ portal (N98RJ) is gated behind Basic Auth using the tail number as password.
+// Set credential-snj-portal-password in the system keychain to enable access.
+//
+// undefined  = not yet fetched (will fetch on first request)
+// null       = keychain returned nothing → DENY (fail-closed)
+// string     = password fetched → require Basic auth match
+
+let _snjPortalSecret: string | null | undefined = undefined;
+
+async function getSnjPortalSecret(): Promise<string | null> {
+  if (_snjPortalSecret === undefined) {
+    _snjPortalSecret = await readKeychain('credential-snj-portal-password');
+    if (_snjPortalSecret === null) {
+      log.warn('SNJ portal: credential-snj-portal-password not found in Keychain — portal LOCKED (fail-closed)');
+    } else {
+      log.info('SNJ portal: password auth enabled');
+    }
+  }
+  return _snjPortalSecret;
+}
 
 // ── HTTP Server ──────────────────────────────────────────────
 
@@ -181,6 +302,18 @@ const server = http.createServer((req, res) => {
     res.writeHead(204, {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+      'Access-Control-Max-Age': '86400',
+    });
+    res.end();
+    return;
+  }
+
+  // CORS preflight for portal API routes
+  if (req.method === 'OPTIONS' && url.pathname.startsWith('/portal/')) {
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
       'Access-Control-Allow-Headers': 'Content-Type',
       'Access-Control-Max-Age': '86400',
     });
@@ -279,6 +412,52 @@ const server = http.createServer((req, res) => {
       }
     }
 
+    // Citation portal auth guard — covers /portal/citation and all paths beneath it
+    // (API routes, static files, data/ JSON). Fail-closed: denies access when the
+    // keychain entry is absent. See getCitationPortalSecret() for behavior rationale.
+    if (url.pathname === '/portal/citation' || url.pathname.startsWith('/portal/citation/')) {
+      const secret = await getCitationPortalSecret();
+      if (!secret || !checkCitationAuth(req, secret)) {
+        res.writeHead(401, {
+          'Content-Type': 'text/plain',
+          'WWW-Authenticate': 'Basic realm="Citation Portal"',
+        });
+        res.end('Authentication required');
+        return;
+      }
+    }
+
+    // Portal routes — Citation S550 Knowledge Base Q&A
+    if (url.pathname.startsWith('/portal/citation/api/')) {
+      const handled = await handleCitationAskRoute(req, res, url.pathname);
+      if (handled) return;
+      const handledFile = await handleCitationFilesRoute(req, res, url.pathname, url.searchParams);
+      if (handledFile) return;
+    }
+
+    // SNJ portal auth guard — covers /portal/snj and all paths beneath it
+    // (API routes, static files, data/ JSON). Fail-closed: denies access when the
+    // keychain entry is absent. Password = N98RJ tail number (credential-snj-portal-password).
+    if (url.pathname === '/portal/snj' || url.pathname.startsWith('/portal/snj/')) {
+      const secret = await getSnjPortalSecret();
+      if (!secret || !checkCitationAuth(req, secret)) {
+        res.writeHead(401, {
+          'Content-Type': 'text/plain',
+          'WWW-Authenticate': 'Basic realm="SNJ Portal"',
+        });
+        res.end('Authentication required');
+        return;
+      }
+    }
+
+    // Portal routes — N98RJ AT-6/SNJ Knowledge Base Q&A
+    if (url.pathname.startsWith('/portal/snj/api/')) {
+      const handled = await handleSnjAskRoute(req, res, url.pathname);
+      if (handled) return;
+      const handledFile = await handleSnjFilesRoute(req, res, url.pathname, url.searchParams);
+      if (handledFile) return;
+    }
+
     // Registered routes (from registerRoute(), checked before 404, skipped if degraded)
     if (!isDegraded()) {
       const routeHandled = await matchRoute(req, res, url.pathname, url.searchParams);
@@ -298,8 +477,14 @@ const server = http.createServer((req, res) => {
       const filePath = path.join(projectDir, 'daemon', 'public', safePath === '/' ? 'index.html' : safePath);
       if (filePath.startsWith(path.join(projectDir, 'daemon', 'public'))) {
         try {
-          const stat = fs.statSync(filePath);
-          if (stat.isFile()) {
+          let resolvedPath = filePath;
+          const stat = fs.statSync(resolvedPath);
+          if (stat.isDirectory()) {
+            resolvedPath = path.join(resolvedPath, 'index.html');
+            if (!fs.existsSync(resolvedPath)) throw new Error('no index');
+          }
+          if (fs.statSync(resolvedPath).isFile()) {
+            const filePath = resolvedPath;
             const extname = path.extname(filePath).toLowerCase();
             const mimeTypes: Record<string, string> = {
               '.html': 'text/html',

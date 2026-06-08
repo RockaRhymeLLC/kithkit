@@ -93,6 +93,33 @@ export interface AgentCommsConfig {
   peers?: PeerConfig[];
 }
 
+// ── M365 Config ──────────────────────────────────────────────
+
+export interface M365ExtensionConfig {
+  enabled: boolean;
+  agentEmail: string;
+  scopes?: string[];
+}
+
+// ── IMAP Config ───────────────────────────────────────────────
+
+export interface ImapAccountConfig {
+  name: string;           // e.g. 'icloud', 'altron'
+  keychainPrefix: string; // used to read credential-imap-{prefix}-*
+  enabled: boolean;
+}
+
+export interface ImapExtensionConfig {
+  enabled: boolean;
+  accounts?: ImapAccountConfig[];
+}
+
+// ── Spotify Config ────────────────────────────────────────────
+
+export interface SpotifyExtensionConfig {
+  enabled: boolean;
+}
+
 // ── Integrations Config ─────────────────────────────────────
 
 export interface BrowserbaseConfig {
@@ -125,6 +152,9 @@ export interface AgentConfig extends KithkitConfig {
   network?: NetworkConfig;
   'agent-comms'?: AgentCommsConfig;
   integrations?: IntegrationsConfig;
+  m365?: M365ExtensionConfig;
+  imap?: ImapExtensionConfig;
+  spotify?: SpotifyExtensionConfig;
 }
 
 /**

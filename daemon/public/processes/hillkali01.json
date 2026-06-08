@@ -1,0 +1,269 @@
+{
+  "hostname": "hillkali01",
+  "online": true,
+  "uptime": "05:50:00 up 47 days, 15:07,  2 users,  load average: 0.00, 0.00, 0.00",
+  "load": [
+    0,
+    0,
+    0
+  ],
+  "mem_total_mb": 16215,
+  "mem_used_mb": 1035,
+  "mem_pct": 6,
+  "disk_used": "20G",
+  "disk_total": "469G",
+  "disk_pct": 5,
+  "processes": [
+    {
+      "user": "root",
+      "pid": 4117731,
+      "cpu": 6.2,
+      "mem": 0,
+      "vsz_kb": 22816,
+      "rss_kb": 12448,
+      "stat": "Ss",
+      "command": "sshd-session: kali [priv]"
+    },
+    {
+      "user": "kali",
+      "pid": 1417,
+      "cpu": 0.2,
+      "mem": 0.1,
+      "vsz_kb": 288000,
+      "rss_kb": 32624,
+      "stat": "Sl",
+      "command": "/usr/lib/aarch64-linux-gnu/xfce4/panel/wrapper-2.0 /usr/lib/aarch64-linux-gnu/xfce4/panel/plugins/libgenmon.so 15 16777230 genmon Generic Monitor Show output of a command."
+    },
+    {
+      "user": "root",
+      "pid": 926,
+      "cpu": 0.1,
+      "mem": 0.7,
+      "vsz_kb": 504976,
+      "rss_kb": 128784,
+      "stat": "Ssl+",
+      "command": "/usr/lib/xorg/Xorg :0 -seat seat0 -auth /var/run/lightdm/root/:0 -nolisten tcp vt7 -novtswitch"
+    },
+    {
+      "user": "kali",
+      "pid": 1358,
+      "cpu": 0,
+      "mem": 0.7,
+      "vsz_kb": 594144,
+      "rss_kb": 117648,
+      "stat": "Sl",
+      "command": "xfwm4"
+    },
+    {
+      "user": "kali",
+      "pid": 1633,
+      "cpu": 0,
+      "mem": 0.3,
+      "vsz_kb": 455392,
+      "rss_kb": 55920,
+      "stat": "Sl",
+      "command": "/usr/bin/python3 /usr/bin/blueman-tray"
+    },
+    {
+      "user": "root",
+      "pid": 906,
+      "cpu": 0,
+      "mem": 0.2,
+      "vsz_kb": 383040,
+      "rss_kb": 43776,
+      "stat": "Ssl",
+      "command": "/usr/bin/python3 /usr/bin/fail2ban-server -xf start"
+    },
+    {
+      "user": "root",
+      "pid": 4011896,
+      "cpu": 0,
+      "mem": 0.1,
+      "vsz_kb": 341120,
+      "rss_kb": 21360,
+      "stat": "Ssl",
+      "command": "/usr/sbin/NetworkManager --no-daemon"
+    },
+    {
+      "user": "root",
+      "pid": 18,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[rcu_preempt]"
+    },
+    {
+      "user": "root",
+      "pid": 4108221,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/0:2-events_power_efficient]"
+    },
+    {
+      "user": "message+",
+      "pid": 749,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 10784,
+      "rss_kb": 6240,
+      "stat": "Ss",
+      "command": "/usr/bin/dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only"
+    },
+    {
+      "user": "root",
+      "pid": 4116139,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/0:0-events]"
+    },
+    {
+      "user": "root",
+      "pid": 1,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 25328,
+      "rss_kb": 16144,
+      "stat": "Ss",
+      "command": "/usr/lib/systemd/systemd --system --deserialize=40"
+    },
+    {
+      "user": "root",
+      "pid": 4099858,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/0:1-mm_percpu_wq]"
+    },
+    {
+      "user": "root",
+      "pid": 4091405,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/u16:1-v3d_render]"
+    },
+    {
+      "user": "root",
+      "pid": 4112850,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/u16:2-v3d_render]"
+    },
+    {
+      "user": "root",
+      "pid": 4104604,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/2:3-events]"
+    },
+    {
+      "user": "root",
+      "pid": 4107051,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/u16:0-v3d_bin]"
+    },
+    {
+      "user": "kali",
+      "pid": 1480,
+      "cpu": 0,
+      "mem": 0.2,
+      "vsz_kb": 592800,
+      "rss_kb": 46368,
+      "stat": "Sl",
+      "command": "nm-applet"
+    },
+    {
+      "user": "root",
+      "pid": 586,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I<",
+      "command": "[kworker/u21:2-hci0]"
+    },
+    {
+      "user": "root",
+      "pid": 4101893,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/1:1-events]"
+    },
+    {
+      "user": "kali",
+      "pid": 1488,
+      "cpu": 0,
+      "mem": 0.2,
+      "vsz_kb": 296784,
+      "rss_kb": 39488,
+      "stat": "Sl",
+      "command": "xfce4-screensaver"
+    },
+    {
+      "user": "kali",
+      "pid": 1388,
+      "cpu": 0,
+      "mem": 0.3,
+      "vsz_kb": 525264,
+      "rss_kb": 58752,
+      "stat": "Sl",
+      "command": "xfce4-panel"
+    },
+    {
+      "user": "root",
+      "pid": 93,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I<",
+      "command": "[kworker/u21:0-brcmf_wq/mmc1:0001:1]"
+    },
+    {
+      "user": "root",
+      "pid": 4105561,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/3:2-events]"
+    },
+    {
+      "user": "root",
+      "pid": 4009579,
+      "cpu": 0,
+      "mem": 0.3,
+      "vsz_kb": 96160,
+      "rss_kb": 62944,
+      "stat": "Ss",
+      "command": "/usr/lib/systemd/systemd-journald"
+    }
+  ],
+  "collected_at": "2026-04-25T05:50:00.898Z"
+}

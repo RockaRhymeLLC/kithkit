@@ -383,6 +383,81 @@ async function handleTranscribe(
   return true;
 }
 
+async function handleConverse(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  _pathname: string,
+  _searchParams: URLSearchParams,
+): Promise<boolean> {
+  if (req.method !== 'POST') return false;
+  if (!checkVoiceEnabled(res)) return true;
+
+  if (isVoicePending()) {
+    res.writeHead(429, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Another voice request is in progress' }));
+    return true;
+  }
+
+  const body = await parseBody(req);
+  let text: string;
+  try {
+    const data = JSON.parse(body) as { text?: string };
+    text = data.text?.trim() ?? '';
+  } catch {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+    return true;
+  }
+
+  if (!text) {
+    res.writeHead(400, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: "'text' is required and must be non-empty" }));
+    return true;
+  }
+
+  try {
+    // Save and restore the current channel so voice doesn't hijack it permanently
+    const previousChannel = getChannel();
+    setChannel('voice');
+
+    const responseText = await new Promise<string>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        clearVoicePending();
+        setChannel(previousChannel);
+        reject(new Error('Agent did not respond within timeout'));
+      }, VOICE_RESPONSE_TIMEOUT_MS);
+
+      registerVoicePending((response: string) => {
+        clearTimeout(timeout);
+        setChannel(previousChannel);
+        resolve(response);
+      });
+
+      const injected = injectText(`[Voice — reply via /api/send channel:voice] ${text}`);
+      if (!injected) {
+        clearTimeout(timeout);
+        clearVoicePending();
+        setChannel(previousChannel);
+        reject(new Error('Failed to inject text into agent session'));
+      }
+    });
+
+    log.info('Voice converse: response received', { inputChars: text.length, responseChars: responseText.length });
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ response: responseText }));
+  } catch (err) {
+    clearVoicePending();
+    const msg = err instanceof Error ? err.message : String(err);
+    log.error('Voice converse error', { error: msg });
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: msg }));
+    }
+  }
+  return true;
+}
+
 async function handleSpeak(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -571,6 +646,7 @@ function registerVoiceRoutes(): void {
   registerRoute('/voice/status', handleStatus);
   registerRoute('/voice/stt', handleSTT);
   registerRoute('/voice/transcribe', handleTranscribe);
+  registerRoute('/voice/converse', handleConverse);
   registerRoute('/voice/speak', handleSpeak);
   registerRoute('/voice/notify', handleNotify);
 }

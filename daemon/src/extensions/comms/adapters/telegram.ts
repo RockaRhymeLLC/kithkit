@@ -883,15 +883,44 @@ export class TelegramAdapter implements ChannelAdapter {
       return;
     }
 
-    // Voice/audio — download and transcribe (STT integration deferred to s-m27)
+    // Voice/audio — download, convert, and transcribe via whisper-cli
     if (msg.voice || msg.audio) {
       const fileId = msg.voice?.file_id ?? msg.audio!.file_id;
       const ext = msg.voice ? 'ogg' : (msg.audio!.file_name?.split('.').pop() ?? 'mp3');
       const filename = `voice_${Date.now()}.${ext}`;
       const localPath = await downloadTelegramFile(token, fileId, filename);
       if (localPath) {
-        // STT transcription is wired in s-m27 (voice extensions) — for now, notify user
-        await telegramSend('(Voice message received — voice transcription not yet wired in v2. Please send as text.)', replyChatId);
+        try {
+          const { convertToWav, cleanupTemp } = await import('../../voice/audio-utils.js');
+          const { transcribe, isHallucination } = await import('../../voice/stt.js');
+          const wavPath = await convertToWav(localPath);
+          try {
+            const text = await transcribe(wavPath);
+            if (isHallucination(text)) {
+              await telegramSend('(Voice message was too short or unclear to transcribe. Please try again.)', replyChatId);
+            } else {
+              // Process transcribed text as a normal message
+              log.info('Voice transcribed', { text: text.substring(0, 100), duration: msg.voice?.duration });
+              const voiceText = `[Voice] ${text.trim()}`;
+              updateLastActiveChannel('telegram');
+              if (commsSessionExists()) {
+                injectToComms(`[Telegram] ${firstName}: ${voiceText}`);
+              } else {
+                _pendingMessages.push({ text: voiceText, senderId: replyChatId, replyChatId, firstName });
+                if (!_sessionStarting) {
+                  _sessionStarting = true;
+                  startSession();
+                  _sessionStarting = false;
+                }
+              }
+            }
+          } finally {
+            cleanupTemp(wavPath);
+          }
+        } catch (err) {
+          log.error('Voice transcription failed', { error: err instanceof Error ? err.message : String(err) });
+          await telegramSend('(Could not transcribe voice message. Please send as text.)', replyChatId);
+        }
       }
     }
   }

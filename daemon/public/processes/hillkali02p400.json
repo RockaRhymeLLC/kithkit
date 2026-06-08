@@ -1,0 +1,269 @@
+{
+  "hostname": "hillkali02p400",
+  "online": true,
+  "uptime": "05:50:00 up  2:35,  2 users,  load average: 0.00, 0.00, 0.00",
+  "load": [
+    0,
+    0,
+    0
+  ],
+  "mem_total_mb": 3794,
+  "mem_used_mb": 765,
+  "mem_pct": 20,
+  "disk_used": "20G",
+  "disk_total": "59G",
+  "disk_pct": 36,
+  "processes": [
+    {
+      "user": "kali",
+      "pid": 3084,
+      "cpu": 200,
+      "mem": 0,
+      "vsz_kb": 9384,
+      "rss_kb": 3724,
+      "stat": "R",
+      "command": "ps aux --sort=-%cpu"
+    },
+    {
+      "user": "root",
+      "pid": 3068,
+      "cpu": 26.3,
+      "mem": 0.2,
+      "vsz_kb": 23208,
+      "rss_kb": 11564,
+      "stat": "Ss",
+      "command": "sshd-session: kali [priv]"
+    },
+    {
+      "user": "root",
+      "pid": 764,
+      "cpu": 0.1,
+      "mem": 4.5,
+      "vsz_kb": 534340,
+      "rss_kb": 177188,
+      "stat": "Ssl+",
+      "command": "/usr/lib/xorg/Xorg :0 -seat seat0 -auth /var/run/lightdm/root/:0 -nolisten tcp vt7 -novtswitch"
+    },
+    {
+      "user": "kali",
+      "pid": 1540,
+      "cpu": 0.1,
+      "mem": 1.2,
+      "vsz_kb": 446380,
+      "rss_kb": 48420,
+      "stat": "Sl",
+      "command": "/usr/bin/python3 /usr/bin/blueman-tray"
+    },
+    {
+      "user": "lightdm",
+      "pid": 1826,
+      "cpu": 0.1,
+      "mem": 4.9,
+      "vsz_kb": 940416,
+      "rss_kb": 191860,
+      "stat": "Ssl",
+      "command": "/usr/sbin/lightdm-gtk-greeter"
+    },
+    {
+      "user": "root",
+      "pid": 743,
+      "cpu": 0,
+      "mem": 1,
+      "vsz_kb": 862300,
+      "rss_kb": 39588,
+      "stat": "Ssl",
+      "command": "/usr/bin/python3 /usr/bin/fail2ban-server -xf start"
+    },
+    {
+      "user": "message+",
+      "pid": 580,
+      "cpu": 0,
+      "mem": 0.1,
+      "vsz_kb": 9904,
+      "rss_kb": 6108,
+      "stat": "Ss",
+      "command": "/usr/bin/dbus-daemon --system --address=systemd: --nofork --nopidfile --systemd-activation --syslog-only"
+    },
+    {
+      "user": "root",
+      "pid": 625,
+      "cpu": 0,
+      "mem": 0.4,
+      "vsz_kb": 340912,
+      "rss_kb": 19088,
+      "stat": "Ssl",
+      "command": "/usr/sbin/NetworkManager --no-daemon"
+    },
+    {
+      "user": "kali",
+      "pid": 1255,
+      "cpu": 0,
+      "mem": 1.2,
+      "vsz_kb": 509744,
+      "rss_kb": 46744,
+      "stat": "Sl",
+      "command": "/usr/lib/aarch64-linux-gnu/xfce4/panel/wrapper-2.0 /usr/lib/aarch64-linux-gnu/xfce4/panel/plugins/libwhiskermenu.so 1 16777223 whiskermenu Whisker Menu Show a menu to easily access installed applications"
+    },
+    {
+      "user": "root",
+      "pid": 1,
+      "cpu": 0,
+      "mem": 0.3,
+      "vsz_kb": 24792,
+      "rss_kb": 14596,
+      "stat": "Ss",
+      "command": "/sbin/init"
+    },
+    {
+      "user": "root",
+      "pid": 654,
+      "cpu": 0,
+      "mem": 0.2,
+      "vsz_kb": 18432,
+      "rss_kb": 11476,
+      "stat": "Ss",
+      "command": "/usr/sbin/wpa_supplicant -u -s -O DIR=/run/wpa_supplicant GROUP=netdev"
+    },
+    {
+      "user": "kali",
+      "pid": 1199,
+      "cpu": 0,
+      "mem": 4.3,
+      "vsz_kb": 730712,
+      "rss_kb": 170932,
+      "stat": "Sl",
+      "command": "xfwm4"
+    },
+    {
+      "user": "kali",
+      "pid": 1373,
+      "cpu": 0,
+      "mem": 1.1,
+      "vsz_kb": 591704,
+      "rss_kb": 43424,
+      "stat": "Sl",
+      "command": "nm-applet"
+    },
+    {
+      "user": "root",
+      "pid": 1710,
+      "cpu": 0,
+      "mem": 2.5,
+      "vsz_kb": 448948,
+      "rss_kb": 99396,
+      "stat": "Ssl+",
+      "command": "/usr/lib/xorg/Xorg :1 -seat seat0 -auth /var/run/lightdm/root/:1 -nolisten tcp vt8 -novtswitch"
+    },
+    {
+      "user": "kali",
+      "pid": 1250,
+      "cpu": 0,
+      "mem": 1.9,
+      "vsz_kb": 589876,
+      "rss_kb": 73916,
+      "stat": "Sl",
+      "command": "xfdesktop"
+    },
+    {
+      "user": "kali",
+      "pid": 1293,
+      "cpu": 0,
+      "mem": 1.5,
+      "vsz_kb": 686088,
+      "rss_kb": 61932,
+      "stat": "Sl",
+      "command": "/usr/bin/python3 /usr/bin/blueman-applet"
+    },
+    {
+      "user": "root",
+      "pid": 2886,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/0:3-events]"
+    },
+    {
+      "user": "kali",
+      "pid": 1237,
+      "cpu": 0,
+      "mem": 1.3,
+      "vsz_kb": 455608,
+      "rss_kb": 53244,
+      "stat": "Sl",
+      "command": "xfce4-panel"
+    },
+    {
+      "user": "root",
+      "pid": 3064,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/0:0-events]"
+    },
+    {
+      "user": "kali",
+      "pid": 1590,
+      "cpu": 0,
+      "mem": 4.3,
+      "vsz_kb": 1140356,
+      "rss_kb": 167160,
+      "stat": "Sl",
+      "command": "/usr/bin/qterminal"
+    },
+    {
+      "user": "root",
+      "pid": 366,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I<",
+      "command": "[kworker/u9:1-brcmf_wq/mmc1:0001:1]"
+    },
+    {
+      "user": "root",
+      "pid": 2614,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/2:0-events]"
+    },
+    {
+      "user": "root",
+      "pid": 2433,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/1:2-events]"
+    },
+    {
+      "user": "kali",
+      "pid": 1261,
+      "cpu": 0,
+      "mem": 0.7,
+      "vsz_kb": 278632,
+      "rss_kb": 28800,
+      "stat": "Sl",
+      "command": "/usr/lib/aarch64-linux-gnu/xfce4/panel/wrapper-2.0 /usr/lib/aarch64-linux-gnu/xfce4/panel/plugins/libgenmon.so 15 16777230 genmon Generic Monitor Show output of a command."
+    },
+    {
+      "user": "root",
+      "pid": 14,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[rcu_preempt]"
+    }
+  ],
+  "collected_at": "2026-04-25T05:50:00.946Z"
+}

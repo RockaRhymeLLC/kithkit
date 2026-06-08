@@ -1,0 +1,38 @@
+# Marvbot Voice Client Configuration
+daemon_url: "http://localhost:3847"
+client_id: "voice-client-1"
+client_port: 7331
+
+# Audio settings
+audio:
+  sample_rate: 16000
+  channels: 1
+  chunk_size: 1024
+  silence_threshold: 0.01
+  silence_timeout: 1.5
+
+# Push-to-talk
+ptt:
+  enabled: true
+  key: "right_cmd"
+
+# Wake word (disabled for now — Phase 2.5)
+wake_word:
+  enabled: false
+
+# Chime / confirmation flow
+chime:
+  enabled: true
+  timeout: 5
+  confirmation_phrases:
+    - "yeah"
+    - "yes"
+    - "what's up"
+    - "go ahead"
+    - "sure"
+  rejection_phrases:
+    - "not now"
+    - "later"
+    - "no"
+    - "busy"
+    - "stop"

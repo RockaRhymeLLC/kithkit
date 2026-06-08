@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="description" content="Citation S550 Knowledge Base — Owner, Operator, and Pilot reference for the Cessna Citation S/II (1980-1990)" />
+  <title>Citation S550 Knowledge Base</title>
+  <link rel="stylesheet" href="/portal/citation/styles.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════
+     LOGIN SCREEN
+     ═══════════════════════════════════════════════════════════ -->
+<div id="login-screen" class="hidden">
+
+  <div class="login-card">
+
+    <!-- Aircraft icon -->
+    <div class="login-aircraft">
+      <div class="aircraft-icon" aria-hidden="true">✈️</div>
+    </div>
+
+    <!-- Brand -->
+    <div class="login-brand">
+      <span class="brand-title">Citation S550 Knowledge Base</span>
+      <span class="brand-subtitle">Owner &middot; Operator &middot; Pilot Reference &mdash; 1980&ndash;1990 S/II</span>
+    </div>
+
+    <hr class="login-divider" />
+
+    <form id="login-form" novalidate>
+      <div class="form-group">
+        <label for="name-input">Your Name <span style="font-weight:400;text-transform:none;letter-spacing:0;color:var(--text-light)">(optional)</span></label>
+        <input
+          type="text"
+          id="name-input"
+          name="name"
+          placeholder="e.g. Capt. Smith"
+          autocomplete="name"
+          spellcheck="false"
+          maxlength="60"
+        />
+        <span class="name-hint">No password required — enter your name or leave blank.</span>
+      </div>
+
+      <button type="submit" id="enter-btn" class="btn-enter">Enter Knowledge Base</button>
+    </form>
+
+    <p class="login-disclaimer">
+      Reference resource for Cessna Citation S550 (Model S550) owners, operators, and pilots.<br>
+      Always verify information against official documentation.
+    </p>
+
+  </div>
+
+</div><!-- /#login-screen -->
+
+
+<!-- ═══════════════════════════════════════════════════════════
+     MAIN APP SCREEN
+     ═══════════════════════════════════════════════════════════ -->
+<div id="app-screen" class="hidden">
+
+  <!-- ── Header ──────────────────────────────────────────── -->
+  <header id="app-header" role="banner">
+
+    <div class="header-brand">
+      <div class="header-aircraft-badge" aria-hidden="true">✈️</div>
+      <div class="header-brand-text">
+        <span class="header-model">Citation S550</span>
+        <span class="header-name">S/II · 1980–1990</span>
+      </div>
+    </div>
+
+    <span class="header-title">Knowledge Base &amp; Reference</span>
+
+    <div class="header-actions">
+      <span class="header-user" id="header-user"></span>
+      <button id="exit-btn" class="btn-exit">Exit</button>
+    </div>
+
+  </header>
+
+  <!-- ── Citation Banner ─────────────────────────────────── -->
+  <div id="citation-banner" role="region" aria-label="Citation S550 overview">
+
+    <div class="banner-emblem" aria-label="Citation S/II aircraft icon">✈️</div>
+
+    <div class="banner-info">
+      <h1 class="banner-title">Cessna Citation S/II</h1>
+      <p class="banner-subtitle">
+        Model S550 &nbsp;·&nbsp; Owner, Operator &amp; Pilot Reference &nbsp;·&nbsp;
+        Pratt &amp; Whitney Canada JT15D-4B
+      </p>
+    </div>
+
+    <div class="banner-meta">
+      <span class="banner-badge">S550</span>
+      <span class="banner-updated" id="banner-updated"></span>
+    </div>
+
+  </div>
+
+  <!-- ── Main Layout ─────────────────────────────────────── -->
+  <div id="main-layout">
+
+    <!-- Sidebar Navigation -->
+    <nav id="sidebar" aria-label="Knowledge base sections">
+      <div class="sidebar-label">Sections</div>
+      <div id="nav-list" role="menu">
+        <!-- Populated by app.js -->
+      </div>
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-label">Tools</div>
+    </nav>
+
+    <!-- Content Area -->
+    <main id="content-area" role="main">
+
+      <!-- Search bar -->
+      <div class="search-wrapper" role="search">
+        <span class="search-icon" aria-hidden="true">&#x1F50D;</span>
+        <input
+          type="search"
+          id="search-input"
+          placeholder="Search knowledge base — specs, ADs, systems, procedures…"
+          aria-label="Search knowledge base"
+          autocomplete="off"
+          spellcheck="false"
+        />
+      </div>
+
+      <!-- Search notice -->
+      <div id="search-results-notice" class="hidden" role="status" aria-live="polite"></div>
+
+      <!-- Section content card -->
+      <div class="section-card" id="section-card">
+        <div class="section-card-header">
+          <div class="section-icon-wrap" id="section-icon-wrap" aria-hidden="true">✈️</div>
+          <h2 id="section-title">Aircraft Overview</h2>
+        </div>
+        <div class="section-body" id="section-body">
+          <div class="loading-placeholder">
+            <div class="spinner" aria-hidden="true"></div>
+            Loading knowledge base&hellip;
+          </div>
+        </div>
+      </div>
+
+      <!-- ── AI Q&A Panel ──────────────────────────────── -->
+      <div class="qa-panel" id="qa-panel" role="region" aria-label="AI Q&amp;A">
+
+        <div class="qa-panel-header">
+          <span aria-hidden="true" style="font-size:16px">🤖</span>
+          <h3>Ask Anything About the Citation S550</h3>
+          <span class="qa-status-badge" id="qa-status-badge">AI Powered</span>
+          <button
+            id="qa-clear-btn"
+            title="Clear conversation history"
+            style="margin-left:auto;background:none;border:none;color:rgba(255,255,255,0.45);cursor:pointer;font-size:12px;padding:2px 6px;border-radius:4px;transition:color 150ms"
+            onmouseover="this.style.color='rgba(255,255,255,0.80)'"
+            onmouseout="this.style.color='rgba(255,255,255,0.45)'"
+          >Clear</button>
+        </div>
+
+        <!-- Chat history -->
+        <div class="qa-history" id="qa-history" role="log" aria-live="polite" aria-label="Conversation history"></div>
+
+        <!-- Input area -->
+        <div class="qa-input-area">
+          <div class="qa-input-row">
+            <textarea
+              id="qa-input"
+              placeholder="Ask anything about the Citation S550… e.g. What is the max cruise altitude? What engines does it use? Ctrl+Enter to send."
+              aria-label="Ask a question about the Citation S550"
+              rows="2"
+              spellcheck="true"
+              maxlength="2000"
+            ></textarea>
+            <button id="ask-btn" class="btn-ask" aria-label="Submit question">Ask</button>
+          </div>
+          <p class="qa-disclaimer">
+            <span class="qa-disclaimer-icon" aria-hidden="true">⚠️</span>
+            AI-generated responses &mdash; always verify with official documentation,
+            the AFM, and a certificated mechanic before acting on any information.
+          </p>
+        </div>
+
+      </div><!-- /.qa-panel -->
+
+    </main>
+
+  </div><!-- /#main-layout -->
+
+</div><!-- /#app-screen -->
+
+
+<!-- Toast notification -->
+<div id="toast" role="status" aria-live="polite"></div>
+
+
+<script src="/portal/citation/app.js"></script>
+
+</body>
+</html>

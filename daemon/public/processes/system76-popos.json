@@ -1,0 +1,269 @@
+{
+  "hostname": "pop-os",
+  "online": true,
+  "uptime": "01:50:01 up 5 days,  7:34,  2 users,  load average: 0.00, 0.01, 0.00",
+  "load": [
+    0,
+    0.01,
+    0
+  ],
+  "mem_total_mb": 63874,
+  "mem_used_mb": 7665,
+  "mem_pct": 12,
+  "disk_used": "672G",
+  "disk_total": "1.8T",
+  "disk_pct": 39,
+  "processes": [
+    {
+      "user": "marvho",
+      "pid": 251519,
+      "cpu": 100,
+      "mem": 0,
+      "vsz_kb": 409720,
+      "rss_kb": 12588,
+      "stat": "Rsl",
+      "command": "/usr/bin/wireplumber"
+    },
+    {
+      "user": "marvho",
+      "pid": 251498,
+      "cpu": 55.5,
+      "mem": 0,
+      "vsz_kb": 20652,
+      "rss_kb": 12040,
+      "stat": "Ss",
+      "command": "/usr/lib/systemd/systemd --user"
+    },
+    {
+      "user": "marvho",
+      "pid": 251516,
+      "cpu": 33.3,
+      "mem": 0,
+      "vsz_kb": 111476,
+      "rss_kb": 9012,
+      "stat": "Ssl",
+      "command": "/usr/bin/pipewire"
+    },
+    {
+      "user": "root",
+      "pid": 251494,
+      "cpu": 3.5,
+      "mem": 0,
+      "vsz_kb": 14780,
+      "rss_kb": 10524,
+      "stat": "SNs",
+      "command": "sshd: marvho [priv]"
+    },
+    {
+      "user": "wloving",
+      "pid": 242547,
+      "cpu": 3.3,
+      "mem": 0.2,
+      "vsz_kb": 2156732,
+      "rss_kb": 172148,
+      "stat": "S<l+",
+      "command": "cosmic-comp"
+    },
+    {
+      "user": "wloving",
+      "pid": 243824,
+      "cpu": 2.6,
+      "mem": 0.6,
+      "vsz_kb": 1308472,
+      "rss_kb": 433956,
+      "stat": "SNl",
+      "command": "Telegram --"
+    },
+    {
+      "user": "wloving",
+      "pid": 251285,
+      "cpu": 1.8,
+      "mem": 0.4,
+      "vsz_kb": 19810496,
+      "rss_kb": 322792,
+      "stat": "SNsl",
+      "command": "openclaw-gateway"
+    },
+    {
+      "user": "wloving",
+      "pid": 1558,
+      "cpu": 0.3,
+      "mem": 0,
+      "vsz_kb": 1262412,
+      "rss_kb": 39184,
+      "stat": "SNsl",
+      "command": "/usr/local/bin/cloudflared tunnel run marvho-p2p"
+    },
+    {
+      "user": "avahi",
+      "pid": 994,
+      "cpu": 0.3,
+      "mem": 0,
+      "vsz_kb": 10068,
+      "rss_kb": 6092,
+      "stat": "SNs",
+      "command": "avahi-daemon: running [pop-os.local]"
+    },
+    {
+      "user": "wloving",
+      "pid": 242613,
+      "cpu": 0.3,
+      "mem": 0.1,
+      "vsz_kb": 2350236,
+      "rss_kb": 91408,
+      "stat": "SNl+",
+      "command": "cosmic-panel"
+    },
+    {
+      "user": "root",
+      "pid": 251491,
+      "cpu": 0.2,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/1:2-mm_percpu_wq]"
+    },
+    {
+      "user": "wloving",
+      "pid": 242636,
+      "cpu": 0.1,
+      "mem": 0.1,
+      "vsz_kb": 1627276,
+      "rss_kb": 116476,
+      "stat": "SNl+",
+      "command": "cosmic-greeter"
+    },
+    {
+      "user": "root",
+      "pid": 1260,
+      "cpu": 0.1,
+      "mem": 0,
+      "vsz_kb": 742728,
+      "rss_kb": 53096,
+      "stat": "SNsl",
+      "command": "/usr/bin/python3 /usr/bin/fail2ban-server -xf start"
+    },
+    {
+      "user": "root",
+      "pid": 990,
+      "cpu": 0.1,
+      "mem": 0,
+      "vsz_kb": 698816,
+      "rss_kb": 20160,
+      "stat": "SNsl",
+      "command": "/usr/sbin/NetworkManager --no-daemon"
+    },
+    {
+      "user": "root",
+      "pid": 251482,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/6:0-events]"
+    },
+    {
+      "user": "root",
+      "pid": 251438,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/2:1-events]"
+    },
+    {
+      "user": "wloving",
+      "pid": 242637,
+      "cpu": 0,
+      "mem": 0.1,
+      "vsz_kb": 2555728,
+      "rss_kb": 68560,
+      "stat": "SNl+",
+      "command": "cosmic-files-applet"
+    },
+    {
+      "user": "root",
+      "pid": 996,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 76792,
+      "rss_kb": 6472,
+      "stat": "SNs",
+      "command": "/usr/bin/system76-power daemon"
+    },
+    {
+      "user": "root",
+      "pid": 15,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[rcu_preempt]"
+    },
+    {
+      "user": "cups-br+",
+      "pid": 247815,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 432980,
+      "rss_kb": 28880,
+      "stat": "SNsl",
+      "command": "/usr/sbin/cups-browsed"
+    },
+    {
+      "user": "wloving",
+      "pid": 246119,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 1434840,
+      "rss_kb": 34352,
+      "stat": "SNl+",
+      "command": "cosmic-applet-bluetooth"
+    },
+    {
+      "user": "wloving",
+      "pid": 242577,
+      "cpu": 0,
+      "mem": 0.1,
+      "vsz_kb": 560660,
+      "rss_kb": 85332,
+      "stat": "SNl+",
+      "command": "Xwayland :1 -verbose -rootless -terminate -wm 65 -displayfd 72 -listenfd 69 -listenfd 70"
+    },
+    {
+      "user": "root",
+      "pid": 250441,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/6:2-mm_percpu_wq]"
+    },
+    {
+      "user": "root",
+      "pid": 250051,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/2:2-display_unordered]"
+    },
+    {
+      "user": "root",
+      "pid": 251122,
+      "cpu": 0,
+      "mem": 0,
+      "vsz_kb": 0,
+      "rss_kb": 0,
+      "stat": "I",
+      "command": "[kworker/0:3-cgroup_free]"
+    }
+  ],
+  "collected_at": "2026-04-25T05:50:01.021Z"
+}
