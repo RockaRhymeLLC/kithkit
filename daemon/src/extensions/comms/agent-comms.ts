@@ -80,6 +80,31 @@ export function getPeerIpOverride(peerName: string): string | null {
   return entry.ip;
 }
 
+// ── Peer State Tracking ───────────────────────────────────────
+/**
+ * Tracks peer reachability state as observed by the heartbeat task.
+ * Distinguished states:
+ *   idle                  — peer is reachable via direct LAN path
+ *   unknown               — non-mDNS peer send failed (original behaviour)
+ *   unreachable           — mDNS peer unreachable via both .lan DNS AND relay
+ *   local-dns-indeterminate — .lan DNS probe failed but relay confirmed peer alive;
+ *                             peer is healthy, local DNS path is broken
+ */
+export interface PeerState {
+  status: 'idle' | 'unknown' | 'unreachable' | 'local-dns-indeterminate';
+  updatedAt: number;
+}
+
+const _peerStates = new Map<string, PeerState>();
+
+export function updatePeerState(peerName: string, state: PeerState): void {
+  _peerStates.set(peerName.toLowerCase(), state);
+}
+
+export function getPeerState(peerName: string): PeerState | undefined {
+  return _peerStates.get(peerName.toLowerCase());
+}
+
 // ── Peer Lookup ──────────────────────────────────────────────
 export function getPeerByName(name: string): PeerConfig | undefined {
   const peers = (_config as CommsConfig)?.['agent-comms']?.peers ?? [];
@@ -464,6 +489,7 @@ export function initAgentComms(config: KithkitConfig): void {
 
 export function stopAgentComms(): void {
   _config = null;
+  _peerStates.clear();
   log.info('Agent comms stopped');
 }
 
