@@ -10,6 +10,8 @@
     <array>
         <string>/bin/bash</string>
         <string>__REPO_PATH__/scripts/daemon-watchdog.sh</string>
+        <string>--label</string>
+        <string>__LAUNCHD_LABEL__</string>
     </array>
 
     <!-- Run every 120 seconds (2 minutes) -->
