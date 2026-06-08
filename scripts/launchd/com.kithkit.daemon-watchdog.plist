@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.kithkit.daemon-watchdog</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__REPO_PATH__/scripts/daemon-watchdog.sh</string>
+        <string>--label</string>
+        <string>__LAUNCHD_LABEL__</string>
+    </array>
+
+    <!-- Run every 120 seconds (2 minutes) -->
+    <key>StartInterval</key>
+    <integer>120</integer>
+
+    <!-- Run once immediately when loaded -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Working directory — script derives all paths from $0, but this
+         ensures launchd does not leave PWD as / when the script runs -->
+    <key>WorkingDirectory</key>
+    <string>__REPO_PATH__</string>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_PATH__/logs/watchdog-stdout.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>__REPO_PATH__/logs/watchdog-stderr.log</string>
+
+    <!-- No KeepAlive — StartInterval handles the cadence.
+         The watchdog process should exit after each check. -->
+</dict>
+</plist>

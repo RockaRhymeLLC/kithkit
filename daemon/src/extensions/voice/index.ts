@@ -36,10 +36,10 @@ import {
   clearVoicePending,
   isVoicePending,
   getChannel,
-  setChannel,
   startTypingIndicator,
   getLastActiveChannel,
 } from '../comms/channel-router.js';
+import type { AgentChannel } from '../comms/channel-router.js';
 
 const log = createLogger('voice-server');
 
@@ -245,6 +245,23 @@ async function handleSTT(
   return true;
 }
 
+/**
+ * Resolve the reply channel for a voice transcription.
+ *
+ * VTT input is a transcription modality, not a channel. When the active
+ * channel can't carry text replies (terminal/silent), fall back to the last
+ * text channel that handled an inbound message. Never calls setChannel —
+ * the active channel file is left untouched.
+ *
+ * Exported for direct testing of the resolution logic.
+ */
+export function resolveReplyChannel(activeChannel: AgentChannel): AgentChannel {
+  if (activeChannel === 'terminal' || activeChannel === 'silent') {
+    return getLastActiveChannel();
+  }
+  return activeChannel;
+}
+
 async function handleTranscribe(
   req: http.IncomingMessage,
   res: http.ServerResponse,
@@ -304,16 +321,13 @@ async function handleTranscribe(
 
     log.info('Voice pipeline: STT complete', { text: sttText });
 
-    let channel = getChannel();
-    if (channel === 'terminal' || channel === 'silent') {
-      // Route voice response to the last active text channel instead of hardcoding telegram
-      const lastActive = getLastActiveChannel();
-      setChannel(lastActive);
-      channel = lastActive;
-      log.info('Voice input: channel was terminal/silent, switched to last active channel', { lastActive });
+    const activeChannel = getChannel();
+    const replyChannel = resolveReplyChannel(activeChannel);
+    if (activeChannel === 'terminal' || activeChannel === 'silent') {
+      log.info('Voice input: active channel cannot carry replies; routing voice to last-active text channel', { activeChannel, replyChannel });
     }
 
-    if (channel === 'voice') {
+    if (replyChannel === 'voice') {
       const responseText = await new Promise<string>((resolve, reject) => {
         const timeout = setTimeout(() => {
           clearVoicePending();
@@ -354,20 +368,20 @@ async function handleTranscribe(
       });
       res.end(responseAudio);
     } else {
-      if (channel === 'telegram' || channel === 'telegram-verbose') {
+      if (replyChannel === 'telegram' || replyChannel === 'telegram-verbose') {
         startTypingIndicator();
       }
 
-      const injected = injectText(`[Voice → ${channel}] ${sttText}`);
+      const injected = injectText(`[Voice → ${replyChannel}] ${sttText}`);
       if (!injected) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Failed to inject text into Claude session' }));
         return true;
       }
 
-      log.info('Voice pipeline: text injected, response via channel', { text: sttText, channel });
+      log.info('Voice pipeline: text injected, response via channel', { text: sttText, replyChannel, activeChannel });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ text: sttText, responseChannel: channel }));
+      res.end(JSON.stringify({ text: sttText, responseChannel: replyChannel, activeChannel }));
     }
   } catch (err) {
     clearVoicePending();

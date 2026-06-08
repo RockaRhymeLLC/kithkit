@@ -37,6 +37,9 @@ daemon:
 
 scheduler:
   tasks_dirs: []          # Additional directories to scan for external task handler files
+  hot_load_jobs:
+    enabled: true
+    dir: ".kithkit/scheduled-jobs"
   tasks:
     - name: context-watchdog
       interval: "3m"
@@ -100,6 +103,22 @@ scheduler:
       enabled: true
       config:
         requires_session: false
+
+    - name: stale-todo-archive
+      cron: "0 2 * * *"
+      enabled: true
+      config:
+        stale_days: 14
+        title_prefixes: ["FYI:", "Reminder:", "Maintenance:"]
+        dry_run: true
+
+    - name: stale-todo-surfacing
+      cron: "0 9 * * 1"
+      enabled: true
+      config:
+        pending_days: 14
+        in_progress_days: 7
+        max_items: 20
 
     - name: kkit-reflection
       cron: "0 3 * * *"

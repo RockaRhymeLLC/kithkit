@@ -27,10 +27,21 @@ import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { query, exec, getDatabase } from '../core/db.js';
-import { injectMessage } from '../agents/tmux.js';
+import { injectMessage as defaultInjectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
+
+// ── Tmux injection (injectable for testing) ──────────────────
+
+type TmuxInjectorFn = (agentId: string, text: string) => boolean;
+let _injectMessage: TmuxInjectorFn = defaultInjectMessage;
+
+/** @internal Override tmux injector for test isolation. Pass null to restore the default. */
+export function _setTmuxInjectorForTesting(fn: TmuxInjectorFn | null): void {
+  _injectMessage = fn ?? defaultInjectMessage;
+}
 import { storeMemoryInternal } from './memory.js';
 import { evaluateTask as _evaluateTask } from '../self-improvement/retro-evaluator.js';
+import { normalizeStatusAlias } from '../core/task-state-machine.js';
 
 // Injectable for testing — allows tests to mock evaluateTask without spawning real workers
 let _evalFn: (taskId: string) => Promise<void> = _evaluateTask;
@@ -493,7 +504,7 @@ export async function handleTaskQueueRoute(
       // For progress updates, forward to comms session immediately
       if (type === 'progress') {
         const prefix = stage ? `${stage}: ` : '';
-        injectMessage('comms', `[task ${task.title}] ${prefix}${body.message}`);
+        _injectMessage('comms', `[task ${task.title}] ${prefix}${body.message}`);
       }
 
       const entry = query<TaskActivity>(
@@ -578,7 +589,7 @@ export async function handleTaskQueueRoute(
 
       // Alert comms after 2 consecutive failures
       if (newRetryCount >= 2) {
-        injectMessage('comms', `[task alert] "${task.title}" has failed ${newRetryCount} times and is being retried (attempt ${newRetryCount + 1})`);
+        _injectMessage('comms', `[task alert] "${task.title}" has failed ${newRetryCount} times and is being retried (attempt ${newRetryCount + 1})`);
       }
 
       const updated = getTask(taskId)!;
@@ -687,7 +698,7 @@ export async function handleTaskQueueRoute(
 
       // Also inject directly into comms tmux session for immediate visibility
       try {
-        injectMessage('comms', notifyBody);
+        _injectMessage('comms', notifyBody);
       } catch (e) {
         log.warn('Failed to inject plan submission notification to comms', { taskId, error: String(e) });
       }
@@ -744,7 +755,7 @@ export async function handleTaskQueueRoute(
       }
 
       try {
-        injectMessage('orchestrator', approveMsg);
+        _injectMessage('orchestrator', approveMsg);
       } catch (e) {
         log.warn('Failed to inject plan approval notification to orchestrator', { taskId, error: String(e) });
       }
@@ -806,7 +817,7 @@ export async function handleTaskQueueRoute(
       }
 
       try {
-        injectMessage('orchestrator', rejectMsg);
+        _injectMessage('orchestrator', rejectMsg);
       } catch (e) {
         log.warn('Failed to inject plan rejection notification to orchestrator', { taskId, error: String(e) });
       }
@@ -901,6 +912,7 @@ export async function handleTaskQueueRoute(
       let targetAssignee = task.assigned_to;
 
       if (body.status !== undefined) {
+        body.status = normalizeStatusAlias(body.status);
         const newStatus = body.status as TaskStatus;
         if (!VALID_STATUSES.includes(newStatus)) {
           json(res, 400, withTimestamp({ error: `invalid status: ${body.status}` }));
@@ -1073,7 +1085,7 @@ export async function handleTaskQueueRoute(
         }
 
         // Also inject directly into comms tmux session for immediate visibility
-        injectMessage('comms', `[task ${updates.status}] ${updated.title.slice(0, 100)}`);
+        _injectMessage('comms', `[task ${updates.status}] ${updated.title.slice(0, 100)}`);
       }
 
       // Auto-store completion memory when a task is marked completed with a result

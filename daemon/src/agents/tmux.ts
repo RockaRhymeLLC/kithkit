@@ -52,6 +52,30 @@ let _injectionAttempts = 0;
 export function _getInjectionAttempts(): number { return _injectionAttempts; }
 export function _resetInjectionAttempts(): void { _injectionAttempts = 0; }
 
+/**
+ * Returns true when the current process is running under any test runner.
+ *
+ * This check is CANNOT be defeated by deleting KITHKIT_SUPPRESS_NOTIFICATIONS
+ * because it relies on env markers set by the test runner itself — not by test
+ * code. It is used as a defense-in-depth guard to prevent real tmux send-keys
+ * from firing against live sessions during CI or local test runs.
+ *
+ * Supported runners:
+ *  - Node.js built-in test runner (node --test): sets NODE_TEST_CONTEXT=child
+ *  - Jest: sets JEST_WORKER_ID
+ *  - Vitest: sets VITEST and/or VITEST_WORKER_ID
+ *  - Generic: NODE_ENV=test
+ */
+function isUnderTestRunner(): boolean {
+  return (
+    process.env.NODE_TEST_CONTEXT !== undefined ||  // node --test child process
+    process.env.JEST_WORKER_ID !== undefined ||      // Jest
+    process.env.VITEST !== undefined ||              // Vitest
+    process.env.VITEST_WORKER_ID !== undefined ||   // Vitest worker
+    process.env.NODE_ENV === 'test'                  // Generic test env
+  );
+}
+
 // ── Message injection ───────────────────────────────────────
 
 /**
@@ -64,19 +88,48 @@ export function injectMessage(agentId: string, text: string): boolean {
   }
   _injectionAttempts++;
 
+  // Production defense-in-depth: refuse real send-keys when running under any
+  // test runner. This guard CANNOT be bypassed by deleting
+  // KITHKIT_SUPPRESS_NOTIFICATIONS — it relies on env markers set by the test
+  // runner itself. _injectionAttempts is incremented above so tests asserting
+  // the attempt counter still pass without any real I/O.
+  //
+  // The only explicit opt-in is KITHKIT_ALLOW_TEST_INJECT=1, which is intended
+  // exclusively for tests that specifically need to assert real-inject behavior
+  // and MUST be paired with a mocked execFileSync to prevent actual tmux I/O.
+  if (isUnderTestRunner() && process.env.KITHKIT_ALLOW_TEST_INJECT !== '1') {
+    return false;
+  }
+
   const session = resolveSession(agentId);
   if (!session) {
     log.warn('No tmux session mapping for agent', { agentId });
     return false;
   }
 
-  try {
-    // Check if session exists first
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
-      timeout: 5000,
-    });
-  } catch {
-    log.warn('Tmux session not found for message injection', { agentId, session });
+  // Check if session exists first — use injectable for test isolation
+  const sessionFound = _testingDeps?.sessionExists
+    ? _testingDeps.sessionExists(session)
+    : (() => {
+        try {
+          execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
+            timeout: 5000,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+
+  if (!sessionFound) {
+    // R2 guard: only downgrade to debug when the orchestrator is confirmed gone.
+    // If the orch IS alive but session lookup failed (e.g. name-mismatch, todo #82),
+    // that's a real delivery failure — keep it visible.
+    if (agentId === 'orchestrator' && !isOrchestratorAlive()) {
+      log.debug('Tmux session not found — orchestrator has exited (expected)', { agentId, session });
+    } else {
+      log.warn('Tmux session not found for message injection', { agentId, session });
+    }
     return false;
   }
 
@@ -235,6 +288,7 @@ export function killOrchestratorSession(): boolean {
  * This returns true even when the wrapper is idle-waiting between tasks.
  */
 export function isOrchestratorAlive(): boolean {
+  if (_testingDeps?.isOrchAlive !== undefined) return _testingDeps.isOrchAlive();
   const session = resolveSession('orchestrator')!;
 
   try {
@@ -347,3 +401,24 @@ export function isSessionAlive(agentId: string): boolean {
 
 export function _getCommsSession(): string { return COMMS_SESSION; }
 export function _getOrchestratorSession(): string { return ORCH_SESSION; }
+
+/**
+ * Dependency overrides for unit testing.
+ * - sessionExists: override the tmux has-session check used in injectMessage
+ * - isOrchAlive: override isOrchestratorAlive() return value
+ *
+ * Both must be set together to fully isolate a test: sessionExists controls whether
+ * injectMessage reaches the "not found" branch; isOrchAlive controls whether the
+ * R2 guard treats that as an expected (orch gone) or unexpected (orch alive) failure.
+ */
+interface TmuxTestDeps {
+  sessionExists?: (session: string) => boolean;
+  isOrchAlive?: () => boolean;
+}
+
+let _testingDeps: TmuxTestDeps | null = null;
+
+/** @internal Set dependency overrides for unit tests. Pass null to restore production behaviour. */
+export function _setTmuxDepsForTesting(deps: TmuxTestDeps | null): void {
+  _testingDeps = deps;
+}

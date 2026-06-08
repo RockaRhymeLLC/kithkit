@@ -36,6 +36,12 @@ export interface Extension {
 
   /** Called during graceful shutdown, before server.close(). */
   onShutdown?(): Promise<void>;
+
+  /**
+   * Called after a successful config reload (/api/config/reload or file-watch).
+   * Allows the extension to update any state cached from config at init time.
+   */
+  onConfigChange?(config: KithkitConfig): Promise<void> | void;
 }
 
 // ── State ───────────────────────────────────────────────────

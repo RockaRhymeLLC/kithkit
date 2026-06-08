@@ -28,7 +28,7 @@ const log = createLogger('channel-router');
 
 // ── Types ────────────────────────────────────────────────────
 
-export type AgentChannel = 'terminal' | 'telegram' | 'telegram-verbose' | 'silent' | 'voice';
+export type AgentChannel = 'terminal' | 'telegram' | 'telegram-verbose' | 'silent' | 'voice' | 'teams';
 type MessageHandler = (text: string) => void;
 
 // ── State ────────────────────────────────────────────────────
@@ -45,7 +45,7 @@ const CHANNEL_FILE_REL = '.kithkit/state/channel.txt';
 export function getChannel(): AgentChannel {
   try {
     const content = fs.readFileSync(resolveProjectPath(CHANNEL_FILE_REL), 'utf8').trim();
-    if (['terminal', 'telegram', 'telegram-verbose', 'silent', 'voice'].includes(content)) {
+    if (['terminal', 'telegram', 'telegram-verbose', 'silent', 'voice', 'teams'].includes(content)) {
       return content as AgentChannel;
     }
   } catch { /* missing file */ }
@@ -67,7 +67,10 @@ export function setChannel(channel: AgentChannel): void {
 // Voice input does NOT update this — voice is an input method, not a channel.
 // Used by the voice pipeline to route responses to the right text channel.
 
-const TEXT_CHANNELS: AgentChannel[] = ['telegram', 'telegram-verbose', 'terminal'];
+// 'teams' is included so that comms agents wired to Microsoft Teams can register
+// inbound activity as the last-active text channel — and have the voice pipeline
+// respect that when routing voice transcriptions back to a reply channel.
+const TEXT_CHANNELS: AgentChannel[] = ['telegram', 'telegram-verbose', 'terminal', 'teams'];
 
 /**
  * Update last_active_channel when an inbound message arrives from a text channel.
