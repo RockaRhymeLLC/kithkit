@@ -37,7 +37,7 @@ function makeLanConfig(relayPort = 3847): KithkitConfig {
     'agent-comms': {
       enabled: true,
       peers: [
-        { name: 'bmo', host: 'bmo-mini.lan', port: 3847 },
+        { name: 'bmo', host: 'agent-b.lan', port: 3847 },
       ],
     },
     scheduler: { tasks: [] },
@@ -53,7 +53,7 @@ function makeNonMdnsConfig(): KithkitConfig {
     'agent-comms': {
       enabled: true,
       peers: [
-        { name: 'bmo', host: '192.168.1.50', port: 3847 },
+        { name: 'bmo', host: '192.0.2.50', port: 3847 },
       ],
     },
     scheduler: { tasks: [] },
@@ -96,7 +96,7 @@ function makeCommsMock(sendOk: boolean) {
 
 describe('t-310: isMdnsHost classifies hostnames', () => {
   it('returns true for .lan hostnames', () => {
-    assert.equal(isMdnsHost('bmo-mini.lan'), true);
+    assert.equal(isMdnsHost('agent-b.lan'), true);
     assert.equal(isMdnsHost('peer.lan'), true);
     assert.equal(isMdnsHost('device.something.lan'), true);
   });
@@ -107,13 +107,13 @@ describe('t-310: isMdnsHost classifies hostnames', () => {
   });
 
   it('returns false for IP addresses', () => {
-    assert.equal(isMdnsHost('192.168.1.1'), false);
+    assert.equal(isMdnsHost('192.0.2.1'), false);
     assert.equal(isMdnsHost('10.0.0.50'), false);
   });
 
   it('returns false for regular domain names', () => {
     assert.equal(isMdnsHost('peer.example.com'), false);
-    assert.equal(isMdnsHost('relay.bmobot.ai'), false);
+    assert.equal(isMdnsHost('relay.example.com'), false);
     assert.equal(isMdnsHost('localhost'), false);
   });
 });
