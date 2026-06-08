@@ -76,9 +76,12 @@ if [ "$UNINSTALL" = true ]; then
         if [ "$DRY_RUN" = true ]; then
             echo "[dry-run] Would unload and remove: $plist_dest"
         else
-            if launchctl list | grep -q "^.*[[:space:]]${label}$" 2>/dev/null; then
+            # Domain-aware check: query the user GUI domain directly.
+            # Bare `launchctl list | grep` is domain-blind and misses agents
+            # loaded via `launchctl bootstrap gui/<uid>` (#345).
+            if launchctl print "gui/$(id -u)/${label}" > /dev/null 2>&1; then
                 echo "  Unloading $label..."
-                launchctl unload "$plist_dest" 2>/dev/null || true
+                launchctl bootout "gui/$(id -u)" "$plist_dest" 2>/dev/null || true
             fi
             if [ -f "$plist_dest" ]; then
                 echo "  Removing $plist_dest"
