@@ -32,6 +32,9 @@ const SCAN_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
  * Peers currently in the "local-DNS-indeterminate" state: send failed via
  * .lan DNS but the peer was confirmed reachable via relay.  This is a
  * DISTINCT flag from "peer-actually-unreachable" (where both paths fail).
+ *
+ * Wired into updatePeerState so the distinction is externally observable
+ * (e.g. in the extended-status endpoint and dashboards).
  */
 const _localDnsIndeterminate = new Set<string>();
 
@@ -47,38 +50,37 @@ function shouldScan(peerName: string): boolean {
  * Returns true when the host is an mDNS hostname (.lan / .local) that is
  * resolved by the local router/DNS and therefore susceptible to a local
  * DNS outage on our machine independent of the peer's actual health.
+ *
+ * Exported so it can be unit-tested directly.
  */
-function isMdnsHost(host: string): boolean {
+export function isMdnsHost(host: string): boolean {
   return host.endsWith('.lan') || host.endsWith('.local');
 }
 
-/**
- * Probe the peer via the A2A relay by POSTing to our local daemon's
- * /api/a2a/send endpoint with route:relay.  Returns true when the relay
- * confirms delivery (ok:true).
- *
- * This is intentionally a separate HTTP round-trip to localhost so that it
- * uses a completely independent code path from the LAN probe.
- */
-async function probeViaRelay(peerName: string, daemonPort: number): Promise<boolean> {
-  try {
-    const body = JSON.stringify({
-      to: peerName,
-      payload: { type: 'status', status: 'dns-fallback-probe' },
-      route: 'relay',
-    });
-    const resp = await fetch(`http://127.0.0.1:${daemonPort}/api/a2a/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!resp.ok) return false;
-    const data = await resp.json() as { ok?: boolean };
-    return data.ok === true;
-  } catch {
-    return false;
-  }
+// ── Injectable deps (for testing) ────────────────────────────────────────────
+// These follow the _setXForTesting pattern used elsewhere in the codebase
+// (e.g. _setTmuxInjectorForTesting in message-router.ts).
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let _commsOverride: any | null = null;
+let _fetchOverride: typeof fetch | null = null;
+let _loadConfigOverride: (() => ReturnType<typeof loadConfig>) | null = null;
+let _scanForPeersOverride: ((port: number) => Promise<Map<string, string>>) | null = null;
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function _setCommsForTesting(c: any | null): void { _commsOverride = c; }
+export function _setFetchForTesting(f: typeof fetch | null): void { _fetchOverride = f; }
+export function _setLoadConfigForTesting(fn: (() => ReturnType<typeof loadConfig>) | null): void { _loadConfigOverride = fn; }
+export function _setScanForPeersForTesting(fn: ((port: number) => Promise<Map<string, string>>) | null): void { _scanForPeersOverride = fn; }
+
+/** Reset all module state between tests. */
+export function _resetForTesting(): void {
+  _commsOverride = null;
+  _fetchOverride = null;
+  _loadConfigOverride = null;
+  _scanForPeersOverride = null;
+  _localDnsIndeterminate.clear();
+  _lastScan.clear();
 }
 
 interface PeerConfig {
@@ -92,8 +94,39 @@ interface AgentCommsConfig {
   peers?: PeerConfig[];
 }
 
+/**
+ * Probe the peer via the A2A relay by POSTing to our local daemon's
+ * /api/a2a/send endpoint with route:relay.  Returns true when the relay
+ * confirms delivery (ok:true).
+ *
+ * This is intentionally a separate HTTP round-trip to localhost so that it
+ * uses a completely independent code path from the LAN probe.
+ */
+async function probeViaRelay(peerName: string, daemonPort: number): Promise<boolean> {
+  const effectiveFetch = _fetchOverride ?? fetch;
+  try {
+    const body = JSON.stringify({
+      to: peerName,
+      payload: { type: 'status', status: 'dns-fallback-probe' },
+      route: 'relay',
+    });
+    const resp = await effectiveFetch(`http://127.0.0.1:${daemonPort}/api/a2a/send`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!resp.ok) return false;
+    const data = await resp.json() as { ok?: boolean };
+    return data.ok === true;
+  } catch {
+    return false;
+  }
+}
+
 async function run(): Promise<void> {
-  const config = loadConfig();
+  const effectiveLoadConfig = _loadConfigOverride ?? loadConfig;
+  const config = effectiveLoadConfig();
   const agentComms = (config as unknown as Record<string, unknown>)['agent-comms'] as AgentCommsConfig | undefined;
 
   if (!agentComms?.enabled) {
@@ -107,16 +140,22 @@ async function run(): Promise<void> {
     return;
   }
 
-  // Dynamic import — agent-comms module may not exist if the extension isn't installed
+  // Dynamic import — agent-comms module may not exist if the extension isn't installed.
+  // In tests, _commsOverride bypasses the dynamic import entirely.
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let comms: any;
-  try {
-    comms = await import('../../extensions/comms/agent-comms.js');
-  } catch {
-    log.debug('Agent-comms module not available, skipping heartbeat');
-    return;
+  if (_commsOverride !== null) {
+    comms = _commsOverride;
+  } else {
+    try {
+      comms = await import('../../extensions/comms/agent-comms.js');
+    } catch {
+      log.debug('Agent-comms module not available, skipping heartbeat');
+      return;
+    }
   }
 
+  const effectiveScan = _scanForPeersOverride ?? scanForPeers;
   const daemonPort = config.daemon.port;
 
   let sent = 0;
@@ -149,8 +188,13 @@ async function run(): Promise<void> {
 
           if (relayOk) {
             // Peer is alive — our local .lan DNS path is broken, not the peer.
-            // Record the indeterminate state and do NOT increment `failed`.
+            // Record the indeterminate state (wired into updatePeerState so the
+            // distinction is externally observable) and do NOT increment `failed`.
             _localDnsIndeterminate.add(peer.name.toLowerCase());
+            comms.updatePeerState?.(peer.name, {
+              status: 'local-dns-indeterminate',
+              updatedAt: Date.now(),
+            });
             log.warn(`${peer.name}: local .lan DNS probe failed but peer confirmed reachable via relay — NOT marking peer down`, {
               localDnsFailed: true,
               host: peer.host,
@@ -162,7 +206,7 @@ async function run(): Promise<void> {
             // next heartbeat can reach it directly without DNS.
             if (shouldScan(peer.name)) {
               try {
-                const discovered = await scanForPeers(peer.port ?? 3847);
+                const discovered = await effectiveScan(peer.port ?? 3847);
                 const newIP = discovered.get(peer.name.toLowerCase());
                 if (newIP) {
                   comms.setPeerIpOverride?.(peer.name, newIP);
@@ -193,7 +237,7 @@ async function run(): Promise<void> {
             // ARP scan to check whether peer has moved to a new IP.
             if (shouldScan(peer.name)) {
               try {
-                const discovered = await scanForPeers(peer.port ?? 3847);
+                const discovered = await effectiveScan(peer.port ?? 3847);
                 const newIP = discovered.get(peer.name.toLowerCase());
                 if (newIP) {
                   comms.setPeerIpOverride?.(peer.name, newIP);
@@ -217,7 +261,7 @@ async function run(): Promise<void> {
 
           // Attempt LAN discovery to find peer at a new IP
           if (shouldScan(peer.name)) {
-            const discovered = await scanForPeers(peer.port ?? 3847);
+            const discovered = await effectiveScan(peer.port ?? 3847);
             const newIP = discovered.get(peer.name.toLowerCase());
             if (newIP) {
               comms.setPeerIpOverride?.(peer.name, newIP);
@@ -239,7 +283,7 @@ async function run(): Promise<void> {
       // Attempt LAN discovery to find peer at a new IP
       if (shouldScan(peer.name)) {
         try {
-          const discovered = await scanForPeers(peer.port ?? 3847);
+          const discovered = await effectiveScan(peer.port ?? 3847);
           const newIP = discovered.get(peer.name.toLowerCase());
           if (newIP) {
             comms.setPeerIpOverride?.(peer.name, newIP);
@@ -257,6 +301,11 @@ async function run(): Promise<void> {
   if (sent > 0 || failed > 0) {
     log.info('Heartbeat cycle complete', { sent, failed, total: peers.length });
   }
+}
+
+/** Exposed for testing — triggers the heartbeat run() directly. */
+export function _runForTesting(): Promise<void> {
+  return run();
 }
 
 export function register(scheduler: Scheduler): void {
