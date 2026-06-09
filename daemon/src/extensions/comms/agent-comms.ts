@@ -286,6 +286,23 @@ export async function handleAgentMessage(
   };
 }
 
+// ── Peer Host Resolver ───────────────────────────────────────
+/**
+ * Build the ordered list of addresses to try when reaching a peer.
+ * Priority: env override (highest) → static .ip → .host (lowest / fallback).
+ * If .ip is unset the resolver falls through to .host automatically (#785b).
+ *
+ * Exported for unit-testing the resolution order without spawning curl.
+ */
+export function buildPeerHosts(peer: PeerConfig, overrideIP: string | null): string[] {
+  const hosts: string[] = [];
+  if (overrideIP) hosts.push(overrideIP);
+  // IP-primary: prefer static .ip address; fall back to .host if .ip is unset (#785b)
+  if (peer.ip && peer.ip !== overrideIP) hosts.push(peer.ip);
+  if (peer.host && peer.host !== peer.ip && peer.host !== overrideIP) hosts.push(peer.host);
+  return hosts;
+}
+
 // ── LAN Send (curl) ──────────────────────────────────────────
 export async function sendViaLAN(
   peer: PeerConfig,
@@ -294,10 +311,7 @@ export async function sendViaLAN(
 ): Promise<Record<string, unknown>> {
   const payload = JSON.stringify(msg);
   const overrideIP = getPeerIpOverride(peer.name);
-  const hosts: string[] = [];
-  if (overrideIP) hosts.push(overrideIP);
-  if (peer.host && peer.host !== overrideIP) hosts.push(peer.host);
-  if (peer.ip && peer.ip !== peer.host && peer.ip !== overrideIP) hosts.push(peer.ip);
+  const hosts = buildPeerHosts(peer, overrideIP);
 
   // Compute HMAC signature if shared secret is available
   let signatureHeaders: string[] = [];
