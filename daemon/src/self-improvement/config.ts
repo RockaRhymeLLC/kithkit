@@ -43,9 +43,9 @@ export interface SelfImprovementConfig {
 // ── Defaults ─────────────────────────────────────────────────
 
 const DEFAULTS: SelfImprovementConfig = {
-  enabled: false,
+  enabled: true,
   retro: {
-    enabled: false,
+    enabled: true,
     triggers: { on_error: true, on_correction: true, on_retry: true },
     max_learnings_per_retro: 5,
     retro_all_terminal: false,

@@ -1110,12 +1110,13 @@ export async function handleTaskQueueRoute(
         const globalAll = _sic.retro.retro_all_terminal;
         // Pass the external_id (UUID) to the retro evaluator which still uses orchestrator_tasks
         const evalId = updated.external_id ?? String(updated.id);
+        log.debug('[retro] triggering retro evaluation for task', { taskId, targetStatus });
         if (perTaskRetro || globalAll) {
           // Force evaluation regardless of error/retry signals
-          _evalFn(evalId).catch(err => log.warn('Retro evaluation (forced) failed', { taskId, error: String(err) }));
+          _evalFn(evalId).catch(err => log.error('Retro evaluation (forced) failed', { taskId, error: String(err) }));
         } else {
           // Standard signal-based evaluation
-          _evalFn(evalId).catch(err => log.warn('Retro evaluation failed', { taskId, error: String(err) }));
+          _evalFn(evalId).catch(err => log.error('Retro evaluation failed', { taskId, error: String(err) }));
         }
       }
 

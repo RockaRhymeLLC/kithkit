@@ -151,9 +151,9 @@ security:
     outgoing_max_per_minute: 10
 
 self_improvement:
-  enabled: false
+  enabled: true
   retro:
-    enabled: false
+    enabled: true
     triggers:
       on_error: true
       on_correction: true

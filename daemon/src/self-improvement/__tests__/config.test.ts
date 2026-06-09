@@ -23,16 +23,16 @@ describe('getSelfImprovementConfig', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('returns enabled=false when no config files exist', () => {
+  it('returns enabled=true when no config files exist', () => {
     loadConfig(tmpDir);
     const si = getSelfImprovementConfig();
-    assert.equal(si.enabled, false);
+    assert.equal(si.enabled, true);
   });
 
-  it('returns all subsystems disabled by default', () => {
+  it('returns retro enabled by default, other subsystems disabled', () => {
     loadConfig(tmpDir);
     const si = getSelfImprovementConfig();
-    assert.equal(si.retro.enabled, false);
+    assert.equal(si.retro.enabled, true);
     assert.equal(si.transcript_review.enabled, false);
     assert.equal(si.correction_trigger.enabled, false);
     assert.equal(si.pre_task_injection.enabled, false);
@@ -79,16 +79,16 @@ describe('getSelfImprovementConfig', () => {
     assert.deepEqual(si.memory_sync.peers, []);
   });
 
-  it('user config enabled=true overrides default', () => {
+  it('user config enabled=false overrides default', () => {
     fs.writeFileSync(
       path.join(tmpDir, 'kithkit.config.yaml'),
-      'self_improvement:\n  enabled: true\n',
+      'self_improvement:\n  enabled: false\n',
     );
     loadConfig(tmpDir);
     const si = getSelfImprovementConfig();
-    assert.equal(si.enabled, true);
+    assert.equal(si.enabled, false);
     // Other defaults still present
-    assert.equal(si.retro.enabled, false);
+    assert.equal(si.retro.enabled, true);
   });
 
   it('user config partial override merges with defaults', () => {
@@ -109,7 +109,7 @@ describe('getSelfImprovementConfig', () => {
     assert.equal(si.retro.max_learnings_per_retro, 10);
     // Unchanged defaults preserved
     assert.equal(si.retro.triggers.on_error, true);
-    assert.equal(si.transcript_review.enabled, false);
+    assert.equal(si.transcript_review.enabled, false);  // transcript_review default is still false
     assert.equal(si.pre_task_injection.max_memories_injected, 10);
   });
 
@@ -136,8 +136,8 @@ describe('getSelfImprovementConfig', () => {
     );
     loadConfig(tmpDir);
     const si = getSelfImprovementConfig();
-    assert.equal(si.enabled, false);
-    assert.equal(si.retro.enabled, false);
+    assert.equal(si.enabled, true);
+    assert.equal(si.retro.enabled, true);
     assert.equal(si.lifecycle.consolidation_threshold, 0.85);
     assert.equal(si.lifecycle.category_cap, 50);
   });

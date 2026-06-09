@@ -12,8 +12,10 @@ import { openDatabase, _resetDbForTesting, exec } from '../../core/db.js';
 import {
   shouldTriggerRetro,
   spawnRetro,
+  harvestRetroResults,
   _setSpawnFnForTesting,
   _setProfilesDirForTesting,
+  _setFetchFnForTesting,
 } from '../retro-evaluator.js';
 import {
   spawnWorkerJob,
@@ -195,7 +197,11 @@ describe('shouldTriggerRetro returns false when self_improvement disabled', () =
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('returns false when self_improvement.enabled is false (default)', () => {
+  it('returns false when self_improvement.enabled is explicitly set to false', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'kithkit.config.yaml'),
+      'self_improvement:\n  enabled: false\n',
+    );
     loadConfig(tmpDir);
     const task = makeTask({ error: 'Some error', retry_count: 2 });
     assert.equal(shouldTriggerRetro(task), false);
@@ -393,6 +399,56 @@ describe('spawnRetro constructs correct prompt with task context', () => {
     assert.ok(req.prompt.includes('Task completed by orch'), 'Prompt should include orch result');
     assert.ok(req.prompt.includes('corrected'), 'Prompt should include comms_outcome');
     assert.ok(req.prompt.includes('user said it was wrong'), 'Prompt should include comms_corrections');
+  });
+});
+
+// ── harvestRetroResults endpoint wiring tests ─────────────────
+
+describe('harvestRetroResults POSTs learnings to /api/memory/store', () => {
+  afterEach(() => {
+    _setFetchFnForTesting(null);
+  });
+
+  it('calls /api/memory/store (not /api/memory) when learnings are present', async () => {
+    const capturedPostUrls: string[] = [];
+
+    const fakeFetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const urlStr = String(url);
+      // Respond to pollJobCompletion status poll
+      if (urlStr.includes('/api/agents/') && urlStr.includes('/status')) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: 'completed',
+            result: JSON.stringify({
+              learnings: [
+                { content: 'Use structured logging for better debugging', category: 'procedural', tags: ['retro'] },
+              ],
+            }),
+          }),
+          text: async () => '',
+        } as Response;
+      }
+      // Capture memory-related POST calls
+      if (init?.method === 'POST' || !init?.method) {
+        capturedPostUrls.push(urlStr);
+      }
+      return {
+        ok: true,
+        json: async () => ({ id: 1 }),
+        text: async () => '{"id":1}',
+      } as Response;
+    };
+
+    _setFetchFnForTesting(fakeFetch as typeof fetch);
+    await harvestRetroResults('test-job-123', 'task-abc-456');
+
+    const memoryCalls = capturedPostUrls.filter(u => u.includes('/api/memory'));
+    assert.ok(memoryCalls.length > 0, 'should have made at least one memory POST call');
+    assert.ok(
+      memoryCalls.every(u => u.endsWith('/api/memory/store')),
+      `all memory calls must end with /api/memory/store — got: ${JSON.stringify(memoryCalls)}`,
+    );
   });
 });
 
