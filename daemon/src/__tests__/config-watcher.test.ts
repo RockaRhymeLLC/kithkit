@@ -1,6 +1,7 @@
 /**
  * t-162: Config hot-reload via file watching
  * t-163: Invalid config change doesn't crash daemon
+ * t-370: reload() must preserve defaults-only keys (fix for #370/#749)
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -224,5 +225,75 @@ describe('Invalid config change does not crash daemon (t-163)', () => {
     // Reload should still succeed (async callback error caught)
     const result = await watcher.reload();
     assert.equal(result.success, true);
+  });
+});
+
+describe('reload() preserves defaults-only keys — regression #370/#749 (t-370)', () => {
+  // Mutation-kill test: if the defaults deep-merge is removed from the reload path,
+  // this test goes RED because tools.tmux_path (a DEFAULTS-only key) will be undefined
+  // in the config delivered to the onChange callback.
+
+  let tmpDir: string;
+  let configPath: string;
+  let watcher: ConfigWatcher;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-watcher-370-'));
+    configPath = path.join(tmpDir, 'kithkit.config.yaml');
+    // Minimal config — intentionally omits the entire `tools` section
+    // (and other sections that live only in DEFAULTS).
+    fs.writeFileSync(
+      configPath,
+      yaml.dump({
+        agent: { name: 'ReloadTest' },
+        daemon: { port: 3847, log_level: 'info', log_dir: 'logs', log_rotation: { max_size_mb: 10, max_files: 5 } },
+        scheduler: { tasks: [] },
+        security: { rate_limits: { incoming_max_per_minute: 5, outgoing_max_per_minute: 10 } },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    watcher?.stop();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('reloaded config carries tools.tmux_path default even when tools is absent from config file', async () => {
+    const initial = makeConfig();
+    watcher = createConfigWatcher(configPath, initial);
+
+    let receivedConfig: KithkitConfig | null = null;
+    watcher.onChange((cfg) => { receivedConfig = cfg; });
+
+    const result = await watcher.reload();
+
+    assert.equal(result.success, true, 'reload() must succeed');
+    assert.ok(receivedConfig, 'onChange callback must fire');
+    // tools.tmux_path comes exclusively from DEFAULTS — it is not written to the
+    // config file above.  Without the deep-merge fix this is undefined (RED).
+    assert.equal(
+      (receivedConfig as KithkitConfig).tools?.tmux_path,
+      '/opt/homebrew/bin/tmux',
+      'defaults-only key tools.tmux_path must survive hot-reload (regression #370/#749)',
+    );
+  });
+
+  it('reloaded config carries voice.max_tts_chars default even when voice is absent from config file', async () => {
+    const initial = makeConfig();
+    watcher = createConfigWatcher(configPath, initial);
+
+    let receivedConfig: KithkitConfig | null = null;
+    watcher.onChange((cfg) => { receivedConfig = cfg; });
+
+    const result = await watcher.reload();
+
+    assert.equal(result.success, true);
+    assert.ok(receivedConfig);
+    // voice block is also DEFAULTS-only — a second independent mutation kill.
+    assert.equal(
+      (receivedConfig as KithkitConfig).voice?.max_tts_chars,
+      500,
+      'defaults-only key voice.max_tts_chars must survive hot-reload',
+    );
   });
 });

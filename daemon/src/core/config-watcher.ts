@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import type { KithkitConfig } from './config.js';
-import { ConfigValidationError } from './config.js';
+import { ConfigValidationError, mergeWithDefaults } from './config.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -32,44 +32,6 @@ export interface ConfigWatcher {
 export interface ReloadResult {
   success: boolean;
   error?: string;
-}
-
-// ── Validation (reuse from config.ts pattern) ───────────────
-
-const VALID_LOG_LEVELS = ['debug', 'info', 'warn', 'error'];
-
-function validateConfig(config: unknown): KithkitConfig {
-  if (!config || typeof config !== 'object') {
-    throw new ConfigValidationError('Config must be an object');
-  }
-
-  const cfg = config as Record<string, unknown>;
-
-  // Validate agent section
-  const agent = cfg.agent as Record<string, unknown> | undefined;
-  if (agent) {
-    if (typeof agent.name === 'string' && agent.name.length === 0) {
-      throw new ConfigValidationError('Invalid agent.name: must be a non-empty string');
-    }
-  }
-
-  // Validate daemon section
-  const daemon = cfg.daemon as Record<string, unknown> | undefined;
-  if (daemon) {
-    if (daemon.port !== undefined) {
-      if (typeof daemon.port !== 'number' || !Number.isInteger(daemon.port)) {
-        throw new ConfigValidationError(`Invalid daemon.port: expected integer`);
-      }
-      if (daemon.port < 1 || daemon.port > 65535) {
-        throw new ConfigValidationError(`Invalid daemon.port: ${daemon.port} (must be 1–65535)`);
-      }
-    }
-    if (daemon.log_level !== undefined && !VALID_LOG_LEVELS.includes(daemon.log_level as string)) {
-      throw new ConfigValidationError(`Invalid daemon.log_level: "${daemon.log_level}"`);
-    }
-  }
-
-  return config as unknown as KithkitConfig;
 }
 
 // ── ConfigWatcher ───────────────────────────────────────────
@@ -105,7 +67,7 @@ export function createConfigWatcher(
         return { success: false, error: 'Config file is empty or invalid YAML' };
       }
 
-      const newConfig = validateConfig(parsed);
+      const newConfig = mergeWithDefaults(parsed as Record<string, unknown>, path.dirname(configPath));
       _config = newConfig;
 
       for (const cb of callbacks) {

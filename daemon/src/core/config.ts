@@ -296,6 +296,35 @@ let _config: KithkitConfig | null = null;
 let _projectDir = '';
 
 /**
+ * Merge a raw parsed config object with DEFAULTS (and optionally kithkit.defaults.yaml),
+ * then validate.  Shared by the initial loadConfig path and the hot-reload (loadAndApply)
+ * path so both paths are guaranteed identical merge semantics — fixing the bug where
+ * POST /api/config/reload dropped defaults-only keys on every reload.
+ *
+ * @param parsed     - Raw object from yaml.load()
+ * @param projectDir - Directory to look for kithkit.defaults.yaml.
+ *                     Defaults to _projectDir (set by loadConfig) or cwd.
+ */
+export function mergeWithDefaults(
+  parsed: Record<string, unknown>,
+  projectDir?: string,
+): KithkitConfig {
+  const dir = projectDir ?? (_projectDir || process.cwd());
+  let defaults: Record<string, unknown> = DEFAULTS as unknown as Record<string, unknown>;
+
+  const defaultsPath = path.join(dir, 'kithkit.defaults.yaml');
+  if (fs.existsSync(defaultsPath)) {
+    const raw = fs.readFileSync(defaultsPath, 'utf8');
+    const fileDefaults = (yaml.load(raw) as Record<string, unknown>) ?? {};
+    defaults = deepMerge(DEFAULTS as unknown as Record<string, unknown>, fileDefaults);
+  }
+
+  const merged = deepMerge(defaults, parsed) as unknown as KithkitConfig;
+  validate(merged);
+  return merged;
+}
+
+/**
  * Parse an interval string like "3m", "15m", "1h", "30s" into milliseconds.
  */
 export function parseInterval(interval: string): number {
@@ -323,30 +352,14 @@ export function loadConfig(projectDir?: string): KithkitConfig {
   const dir = projectDir ?? process.cwd();
   _projectDir = dir;
 
-  let userConfig: Partial<KithkitConfig> = {};
-
-  // Try user config first
+  let userConfig: Record<string, unknown> = {};
   const userConfigPath = path.join(dir, 'kithkit.config.yaml');
   if (fs.existsSync(userConfigPath)) {
     const raw = fs.readFileSync(userConfigPath, 'utf8');
-    userConfig = (yaml.load(raw) as Partial<KithkitConfig>) ?? {};
+    userConfig = (yaml.load(raw) as Record<string, unknown>) ?? {};
   }
 
-  // Try shipped defaults
-  let defaults: Record<string, unknown> = DEFAULTS as unknown as Record<string, unknown>;
-  const defaultsPath = path.join(dir, 'kithkit.defaults.yaml');
-  if (fs.existsSync(defaultsPath)) {
-    const raw = fs.readFileSync(defaultsPath, 'utf8');
-    const parsed = (yaml.load(raw) as Record<string, unknown>) ?? {};
-    defaults = deepMerge(DEFAULTS as unknown as Record<string, unknown>, parsed);
-  }
-
-  _config = deepMerge(
-    defaults,
-    userConfig as Record<string, unknown>,
-  ) as unknown as KithkitConfig;
-
-  validate(_config);
+  _config = mergeWithDefaults(userConfig, dir);
   return _config;
 }
 
