@@ -25,6 +25,13 @@ export const TMUX_SOCKET = `${_tmuxTmpDir}/tmux-${process.getuid?.() ?? 501}/def
 const COMMS_SESSION = 'comms1';
 const ORCH_SESSION = 'orch1';
 
+/**
+ * Pattern that matches any orchestrator session name.
+ * Used by isOrchestratorAlive() for independent detection — NOT keyed to ORCH_SESSION.
+ * Matches: 'orch', 'orch1', 'orch2', 'orch123', etc.
+ */
+export const ORCH_SESSION_PATTERN = /^orch\d*$/;
+
 /** Maximum characters allowed in a single tmux send-keys injection. */
 const MAX_INJECT_LENGTH = 4000;
 
@@ -284,21 +291,28 @@ export function killOrchestratorSession(): boolean {
 }
 
 /**
- * Check if the orchestrator session exists (alive = session running).
- * This returns true even when the wrapper is idle-waiting between tasks.
+ * Check if an orchestrator session is alive — independently of the ORCH_SESSION constant.
+ *
+ * The old implementation checked `has-session -t =orch1`, which hardcoded equality to
+ * ORCH_SESSION. If the real orchestrator session was named anything else (e.g. 'orch2'),
+ * it would silently return the wrong answer (fix for kithkit#752, fast-follow to #255).
+ *
+ * This implementation scans ALL sessions on the project socket and matches against
+ * ORCH_SESSION_PATTERN. A session-name mismatch is now DETECTABLE — not silently
+ * mis-reported as "dead" when the orchestrator is actually alive.
+ *
+ * The true/false contract is preserved; _testingDeps.isOrchAlive override is unchanged.
  */
 export function isOrchestratorAlive(): boolean {
   if (_testingDeps?.isOrchAlive !== undefined) return _testingDeps.isOrchAlive();
-  const session = resolveSession('orchestrator')!;
 
-  try {
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
-      timeout: 5000,
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  // Independent detection: list ALL sessions on this socket and match against
+  // the orchestrator pattern. listSessions() handles tmux not running (returns []).
+  const sessions = _testingDeps?.listSessions
+    ? _testingDeps.listSessions()
+    : listSessions();
+
+  return sessions.some(name => ORCH_SESSION_PATTERN.test(name));
 }
 
 /**
@@ -406,14 +420,20 @@ export function _getOrchestratorSession(): string { return ORCH_SESSION; }
  * Dependency overrides for unit testing.
  * - sessionExists: override the tmux has-session check used in injectMessage
  * - isOrchAlive: override isOrchestratorAlive() return value
+ * - listSessions: override the session list used by isOrchestratorAlive() independent detection
  *
- * Both must be set together to fully isolate a test: sessionExists controls whether
- * injectMessage reaches the "not found" branch; isOrchAlive controls whether the
- * R2 guard treats that as an expected (orch gone) or unexpected (orch alive) failure.
+ * Both sessionExists and isOrchAlive must be set together to fully isolate a test:
+ * sessionExists controls whether injectMessage reaches the "not found" branch; isOrchAlive
+ * controls whether the R2 guard treats that as an expected (orch gone) or unexpected
+ * (orch alive) failure.
+ *
+ * listSessions is used to test isOrchestratorAlive() directly (without bypassing it via
+ * isOrchAlive) — e.g. to verify that a session named 'orch2' is correctly detected.
  */
 interface TmuxTestDeps {
   sessionExists?: (session: string) => boolean;
   isOrchAlive?: () => boolean;
+  listSessions?: () => string[];
 }
 
 let _testingDeps: TmuxTestDeps | null = null;
