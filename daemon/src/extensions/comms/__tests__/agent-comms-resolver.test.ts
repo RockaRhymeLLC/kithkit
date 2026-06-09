@@ -18,17 +18,17 @@ describe('buildPeerHosts — ip-before-host resolver (#785b)', () => {
    */
   it('returns .ip before .host when both are set', () => {
     const peer: PeerConfig = {
-      name: 'r2d2',
-      host: 'chrissys-mini.local',
+      name: 'peer-a',
+      host: 'peer-a.local',
       port: 3847,
-      ip: '192.168.12.243',
+      ip: '192.0.2.243',
     };
 
     const hosts = buildPeerHosts(peer, null);
 
     // .ip is first — any other ordering is a regression
-    assert.equal(hosts[0], '192.168.12.243', '.ip must be first address tried');
-    assert.equal(hosts[1], 'chrissys-mini.local', '.host must be the fallback');
+    assert.equal(hosts[0], '192.0.2.243', '.ip must be first address tried');
+    assert.equal(hosts[1], 'peer-a.local', '.host must be the fallback');
     assert.equal(hosts.length, 2);
   });
 
@@ -64,17 +64,17 @@ describe('buildPeerHosts — ip-before-host resolver (#785b)', () => {
    */
   it('places env override before .ip and .host', () => {
     const peer: PeerConfig = {
-      name: 'bmo',
-      host: 'davids-mac-mini.lan',
+      name: 'peer-b',
+      host: 'peer-b.lan',
       port: 3847,
-      ip: '192.168.12.169',
+      ip: '192.0.2.169',
     };
 
-    const hosts = buildPeerHosts(peer, '10.0.0.1');
+    const hosts = buildPeerHosts(peer, '198.51.100.1');
 
-    assert.equal(hosts[0], '10.0.0.1', 'override must be first');
-    assert.equal(hosts[1], '192.168.12.169', '.ip must be second');
-    assert.equal(hosts[2], 'davids-mac-mini.lan', '.host must be third');
+    assert.equal(hosts[0], '198.51.100.1', 'override must be first');
+    assert.equal(hosts[1], '192.0.2.169', '.ip must be second');
+    assert.equal(hosts[2], 'peer-b.lan', '.host must be third');
     assert.equal(hosts.length, 3);
   });
 
@@ -85,14 +85,14 @@ describe('buildPeerHosts — ip-before-host resolver (#785b)', () => {
   it('deduplicates when .ip and .host are identical', () => {
     const peer: PeerConfig = {
       name: 'dup-peer',
-      host: '192.168.12.100',
+      host: '192.0.2.100',
       port: 3847,
-      ip: '192.168.12.100',
+      ip: '192.0.2.100',
     };
 
     const hosts = buildPeerHosts(peer, null);
 
     assert.equal(hosts.length, 1, 'no duplicate when .ip === .host');
-    assert.equal(hosts[0], '192.168.12.100');
+    assert.equal(hosts[0], '192.0.2.100');
   });
 });
