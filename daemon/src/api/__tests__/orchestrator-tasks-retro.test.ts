@@ -26,14 +26,13 @@ import {
 const TEST_PORT = 19872;
 
 const RETRO_PROFILE_MD = `---
-name: retro
-description: Post-task retrospective analysis worker
+name: retro-light
+description: Lightweight post-task retrospective worker
 tools: [Read, Grep]
 disallowedTools: [Bash, Edit, Write, NotebookEdit]
 model: haiku
 permissionMode: bypassPermissions
-maxTurns: 15
-effort: medium
+maxTurns: 8
 ---
 
 You are a retrospective analysis worker.
@@ -86,7 +85,7 @@ function setup(): Promise<void> {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-retro-integ-'));
   profilesDir = path.join(tmpDir, 'agents');
   fs.mkdirSync(profilesDir, { recursive: true });
-  fs.writeFileSync(path.join(profilesDir, 'retro.md'), RETRO_PROFILE_MD);
+  fs.writeFileSync(path.join(profilesDir, 'retro-light.md'), RETRO_PROFILE_MD);
   _resetDbForTesting();
   openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
   loadConfig(tmpDir); // default config — self_improvement disabled

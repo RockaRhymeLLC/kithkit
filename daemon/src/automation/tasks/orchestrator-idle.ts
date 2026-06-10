@@ -29,6 +29,7 @@ import { sendMessage } from '../../agents/message-router.js';
 import { createLogger } from '../../core/logger.js';
 import { logActivity, getActivity } from '../../api/activity.js';
 import type { Scheduler } from '../scheduler.js';
+import { evaluateTask as _evaluateTask } from '../../self-improvement/retro-evaluator.js';
 
 const log = createLogger('orchestrator-idle');
 
@@ -39,6 +40,7 @@ let killOrchestratorSession = _killOrchestratorSession;
 let injectMessage = _injectMessage;
 let spawnOrchestratorSession = _spawnOrchestratorSession;
 let cleanupSessionDirs = _cleanupSessionDirs;
+let evaluateTask: (taskId: string) => Promise<void> = _evaluateTask;
 
 /**
  * Dump post-mortem state to the orchestrator's session directory.
@@ -146,16 +148,19 @@ function cleanupZombieTasks(): number {
       `UPDATE tasks SET status = 'failed', error = 'orchestrator_died', completed_at = ?, updated_at = ? WHERE kind = 'orchestrator' AND external_id = ?`,
       ts, ts, task.id,
     );
-    // TODO(PR-C): migrate orchestrator_task_activity to unified activity log
+    exec(
+      `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
+       SELECT id, 'daemon', 'note', 'cleanup', ?, ?
+       FROM tasks WHERE kind = 'orchestrator' AND external_id = ?`,
+      `Task failed: orchestrator died while task was ${task.status}`, ts, task.id,
+    );
+    // Fire-and-forget retro evaluation — orchestrator death is one of the most
+    // instructive failure modes, and these tasks previously never got a retro
+    // because they bypass the normal PUT /tasks/:id completion path.
+    // evaluateTask self-gates on self_improvement config and never throws.
     try {
-      exec(
-        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
-         VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
-        task.id, `Task failed: orchestrator died while task was ${task.status}`, ts,
-      );
-    } catch {
-      // FK constraint — task_id references tasks.external_id after migration, not orchestrator_tasks.id
-    }
+      void evaluateTask(task.id);
+    } catch { /* best-effort — cleanup must not be interrupted */ }
   }
   if (zombies.length > 0) {
     log.warn('Cleaned up zombie tasks after orchestrator death', { count: zombies.length, taskIds: zombies.map(t => t.id) });
@@ -200,16 +205,16 @@ function cleanupOrphanedTasks(): number {
       `UPDATE tasks SET status = 'failed', error = 'orchestrator_restarted', completed_at = ?, updated_at = ? WHERE kind = 'orchestrator' AND external_id = ?`,
       ts, ts, task.id,
     );
-    // TODO(PR-C): migrate orchestrator_task_activity to unified activity log
+    exec(
+      `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
+       SELECT id, 'daemon', 'note', 'cleanup', ?, ?
+       FROM tasks WHERE kind = 'orchestrator' AND external_id = ?`,
+      `Task failed: orchestrator restarted while task was ${task.status}`, ts, task.id,
+    );
+    // Fire-and-forget retro evaluation (see cleanupZombieTasks for rationale).
     try {
-      exec(
-        `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
-         VALUES (?, 'daemon', 'note', 'cleanup', ?, ?)`,
-        task.id, `Task failed: orchestrator restarted while task was ${task.status}`, ts,
-      );
-    } catch {
-      // FK constraint — task_id references tasks.external_id after migration, not orchestrator_tasks.id
-    }
+      void evaluateTask(task.id);
+    } catch { /* best-effort — cleanup must not be interrupted */ }
   }
   if (orphans.length > 0) {
     log.info('Cleaned up orphaned tasks from previous orchestrator instance', {
@@ -811,6 +816,7 @@ export function _setDepsForTesting(deps: {
   injectMessage?: (target: string, text: string) => boolean;
   spawnOrchestratorSession?: () => string | null;
   cleanupSessionDirs?: (maxAgeDays?: number) => number;
+  evaluateTask?: (taskId: string) => Promise<void>;
 } | null): void {
   if (deps === null) {
     isOrchestratorAlive = _isOrchestratorAlive;
@@ -818,6 +824,7 @@ export function _setDepsForTesting(deps: {
     injectMessage = _injectMessage;
     spawnOrchestratorSession = _spawnOrchestratorSession;
     cleanupSessionDirs = _cleanupSessionDirs;
+    evaluateTask = _evaluateTask;
     return;
   }
   if (deps.isOrchestratorAlive) isOrchestratorAlive = deps.isOrchestratorAlive;
@@ -825,4 +832,5 @@ export function _setDepsForTesting(deps: {
   if (deps.injectMessage) injectMessage = deps.injectMessage;
   if (deps.spawnOrchestratorSession) spawnOrchestratorSession = deps.spawnOrchestratorSession;
   if (deps.cleanupSessionDirs) cleanupSessionDirs = deps.cleanupSessionDirs;
+  if (deps.evaluateTask) evaluateTask = deps.evaluateTask;
 }

@@ -8,6 +8,7 @@ import { spawnWorkerJob } from '../agents/lifecycle.js';
 import { query, exec } from '../core/db.js';
 import { loadProfiles } from '../agents/profiles.js';
 import { resolveProjectPath, loadConfig } from '../core/config.js';
+import { extractDeltaLesson } from './retro/extract-from-delta.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('retro-evaluator');
@@ -275,29 +276,30 @@ export function shouldTriggerRetro(task: OrchestratorTask & { workers?: WorkerJo
 
   const triggers = cfg.retro.triggers;
 
-  const hasError = !!(task.error);
-  const retryCount = task.retry_count;
-  const failedWorkers = task.workers?.filter(w => w.status === 'failed' && w.error).length ?? 0;
-
   // Check: error field set
-  if (triggers.on_error && hasError) {
-    log.debug('[retro] trigger conditions met, spawning retro worker', { taskId: task.external_id, reason: 'on_error' });
+  if (triggers.on_error && task.error) {
     return true;
   }
 
   // Check: retry_count > 0
-  if (triggers.on_retry && retryCount > 0) {
-    log.debug('[retro] trigger conditions met, spawning retro worker', { taskId: task.external_id, reason: 'on_retry' });
+  if (triggers.on_retry && task.retry_count > 0) {
     return true;
   }
 
   // Check: workers with error status
-  if (triggers.on_error && failedWorkers > 0) {
-    log.debug('[retro] trigger conditions met, spawning retro worker', { taskId: task.external_id, reason: 'failed_workers' });
+  if (triggers.on_error && task.workers && task.workers.some(w => w.status === 'failed' && w.error)) {
     return true;
   }
 
-  log.debug('[retro] no trigger conditions matched for task', { taskId: task.external_id, hasError, retryCount, failedWorkers });
+  // Check: comms marked the outcome corrected/redirected — direct human feedback
+  // that the orch's self-assessment diverged from the user-visible outcome.
+  if (
+    triggers.on_correction &&
+    (task.comms_outcome === 'corrected' || task.comms_outcome === 'redirected')
+  ) {
+    return true;
+  }
+
   return false;
 }
 
@@ -308,17 +310,29 @@ export function shouldTriggerRetro(task: OrchestratorTask & { workers?: WorkerJo
 export async function spawnRetro(
   task: OrchestratorTask & { workers?: WorkerJob[]; activity?: TaskActivity[] },
 ): Promise<string> {
-  log.debug('[retro] spawning retro worker for task', { taskId: task.external_id });
   const profilesDir = profilesDirOverride ?? resolveProjectPath('.claude', 'agents');
   const profiles = loadProfiles(profilesDir);
-  const profile = profiles.get('retro');
+  // Prefer the full retro profile; fall back to retro-light so an install
+  // that ships only one variant degrades gracefully instead of never
+  // running retros (retro-ingest already treats both as retro profiles).
+  const profile = profiles.get('retro') ?? profiles.get('retro-light');
   if (!profile) {
-    throw new Error('retro agent profile not found in .claude/agents/retro.md');
+    throw new Error(`retro/retro-light agent profile not found in ${profilesDir}`);
+  }
+  if (profile.name === 'retro-light') {
+    log.warn('spawnRetro: "retro" profile not found — falling back to "retro-light"');
   }
 
   const activityLog = (task.activity ?? [])
     .map(a => `[${a.created_at}] ${a.agent} (${a.type}${a.stage ? `/${a.stage}` : ''}): ${a.message}`)
     .join('\n');
+
+  // Structured orch-vs-comms divergence signal (extract-from-delta).
+  const deltaLesson = extractDeltaLesson({
+    result: task.result,
+    comms_outcome: task.comms_outcome ?? null,
+    comms_corrections: task.comms_corrections ?? null,
+  });
 
   const prompt = [
     '## Post-Task Retrospective',
@@ -344,6 +358,8 @@ export async function spawnRetro(
     activityLog || '(no activity recorded)',
     '```',
     '',
+    `Outcome delta: ${deltaLesson ?? '(none detected)'}`,
+    '',
     'Analyze the above task. If comms_outcome differs from the orch-internal outcome (e.g. orch completed but comms marked corrected), treat that delta as a high-signal lesson. Extract up to 5 actionable learnings that would help future agents perform better. Output your findings as JSON as instructed in your profile.',
   ].join('\n');
 
@@ -363,10 +379,17 @@ export async function spawnRetro(
  * and spawns if warranted. Non-blocking — errors are caught and logged.
  */
 export async function evaluateTask(taskId: string, _db?: unknown): Promise<void> {
-  log.debug('[retro] evaluateTask called for task', { taskId });
   try {
-    const taskRows = query<OrchestratorTask>('SELECT * FROM tasks WHERE external_id = ?', taskId);
-    const task = taskRows[0];
+    let task = query<OrchestratorTask>('SELECT * FROM tasks WHERE external_id = ?', taskId)[0];
+    if (!task && /^\d+$/.test(taskId)) {
+      // Fallback: resolve by internal integer id. The task-queue PUT handler
+      // passes String(updated.id) when a task has no external_id — without
+      // this fallback that path could never resolve (same NULL-external_id
+      // class as the sn-todo-link fix in 4d734c0e). external_id is tried
+      // first; real external_ids are UUIDs, so numeric collision is not a
+      // practical concern.
+      task = query<OrchestratorTask>('SELECT * FROM tasks WHERE id = ?', Number(taskId))[0];
+    }
     if (!task) {
       log.warn(`evaluateTask: task ${taskId} not found`);
       return;
@@ -409,10 +432,10 @@ export async function evaluateTask(taskId: string, _db?: unknown): Promise<void>
       log.warn(`Failed to log retro activity for task ${taskId}: ${String(actErr)}`);
     }
 
-    // Harvest learnings from the retro worker — non-blocking
-    harvestRetroResults(jobId, taskId).catch(err => {
-      log.warn(`harvestRetroResults failed for task ${taskId}: ${String(err)}`);
-    });
+    // Learning harvest is handled by the retro-ingest.ts addOnJobComplete
+    // listener registered at daemon startup — no direct harvest call needed
+    // here. harvestRetroResults() is still exported for backfill / manual use.
+    log.info(`Spawned retro worker ${jobId} for task ${taskId}`);
   } catch (err) {
     log.error(`evaluateTask failed for ${taskId}: ${String(err)}`);
   }
