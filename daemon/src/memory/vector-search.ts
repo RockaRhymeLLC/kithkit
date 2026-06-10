@@ -20,11 +20,27 @@ const log = createLogger('memory:vector-search');
 
 const require = createRequire(import.meta.url);
 
+// ── Backfill test hook ────────────────────────────────────────
+
+type GenerateEmbeddingFn = (text: string) => Promise<Float32Array>;
+let _generateEmbeddingFnForTesting: GenerateEmbeddingFn | null = null;
+
+/**
+ * Override the embedding generation function used inside backfillEmbeddings.
+ * Allows tests to inject per-row failures for mutation-killing coverage.
+ * Pass null to restore default behavior.
+ */
+export function _setGenerateEmbeddingFnForTesting(fn: GenerateEmbeddingFn | null): void {
+  _generateEmbeddingFnForTesting = fn;
+}
+
+// ─────────────────────────────────────────────────────────────
+
 /**
  * Parse a stored tags JSON column defensively. A single malformed row must
  * not break an entire search result set.
  */
-function parseTags(raw: string | null | undefined): string[] {
+export function parseTags(raw: string | null | undefined): string[] {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
@@ -140,7 +156,8 @@ export async function backfillEmbeddings(): Promise<number> {
   let failures = 0;
   for (const row of rows) {
     try {
-      const embedding = await generateEmbedding(row.content);
+      const generateFn = _generateEmbeddingFnForTesting ?? generateEmbedding;
+      const embedding = await generateFn(row.content);
       const buf = embeddingToBuffer(embedding);
 
       const db = getDatabase();
@@ -359,4 +376,5 @@ function keywordSearch(queryText: string, limit: number): Promise<KeywordResult[
 /** Reset for testing. */
 export function _resetVectorSearchForTesting(): void {
   _vecLoaded = false;
+  _generateEmbeddingFnForTesting = null;
 }
