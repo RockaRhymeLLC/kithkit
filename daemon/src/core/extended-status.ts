@@ -87,6 +87,15 @@ export function registerCheck(name: string, checkFn: HealthCheckFn): void {
 }
 
 /**
+ * Unregister a health check by name. Returns true if one was removed.
+ * Added for hot-loadable plugins: a stale check after plugin unload would
+ * keep reporting on code that is no longer running.
+ */
+export function unregisterCheck(name: string): boolean {
+  return _checks.delete(name);
+}
+
+/**
  * Get all registered check names.
  */
 export function getRegisteredChecks(): string[] {

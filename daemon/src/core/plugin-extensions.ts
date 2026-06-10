@@ -72,6 +72,9 @@ import { createLogger } from './logger.js';
 
 type Logger = ReturnType<typeof createLogger>;
 import { registerRoute, unregisterRoute, type RouteHandler } from './route-registry.js';
+import { registerCheck, unregisterCheck, type HealthCheckFn } from './extended-status.js';
+import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
+import type { ChannelAdapter } from '../comms/adapter.js';
 import { query, exec } from './db.js';
 import { getProjectDir, type KithkitConfig } from './config.js';
 import type { Scheduler } from '../automation/scheduler.js';
@@ -91,6 +94,20 @@ export interface PluginContext {
   projectDir: string;
   log: Logger;
   db: { query: typeof query; exec: typeof exec };
+  /** The live scheduler, or null before the main extension wires it. */
+  scheduler: Scheduler | null;
+  /**
+   * Cache-busted dynamic import of a compiled daemon module, by path relative
+   * to the daemon dist root (e.g. 'extensions/granola/index.js'). This is the
+   * decomposition unlock: a plugin that wires a compiled component through
+   * ctx.import() gets FRESH component code on plugin reload after a rebuild —
+   * a static import would pin the boot-time module forever.
+   */
+  import(distRelativePath: string): Promise<Record<string, unknown>>;
+  /** Register a channel adapter; auto-unregistered when the plugin unloads/reloads. */
+  registerAdapter(adapter: ChannelAdapter): void;
+  /** Register a health check; auto-unregistered when the plugin unloads/reloads. */
+  registerCheck(name: string, checkFn: HealthCheckFn): void;
 }
 
 export interface PluginExtension {
@@ -108,6 +125,10 @@ export interface PluginRecord {
   error: string | null;
   routes: string[];
   tasks: string[];
+  /** Channel adapters registered via ctx.registerAdapter (auto-torn-down). */
+  adapters: string[];
+  /** Health checks registered via ctx.registerCheck (auto-torn-down). */
+  checks: string[];
   loadedAt: string | null;
   reloads: number;
 }
@@ -296,7 +317,11 @@ export class PluginManager {
       registeredTasks.push(t.name);
     }
 
-    // onInit — rollback everything if it throws
+    // onInit — rollback everything if it throws. The context tracks what the
+    // plugin registers through it (adapters, checks) so teardown can remove
+    // them when the plugin unloads or reloads.
+    const ctxAdapters: string[] = [];
+    const ctxChecks: string[] = [];
     if (plugin.onInit) {
       try {
         await plugin.onInit({
@@ -304,10 +329,22 @@ export class PluginManager {
           projectDir: getProjectDir(),
           log: createLogger(`plugin:${plugin.name}`),
           db: { query, exec },
+          scheduler: this._getScheduler(),
+          import: (distRelativePath: string) => this._importFrameworkModule(distRelativePath),
+          registerAdapter: (adapter: ChannelAdapter) => {
+            registerAdapter(adapter);
+            ctxAdapters.push(adapter.name);
+          },
+          registerCheck: (name: string, checkFn: HealthCheckFn) => {
+            registerCheck(name, checkFn);
+            ctxChecks.push(name);
+          },
         });
       } catch (err) {
         for (const p of registeredRoutes) unregisterRoute(p);
         if (scheduler) for (const name of registeredTasks) scheduler.removeTask(name);
+        for (const name of ctxAdapters) unregisterAdapter(name);
+        for (const name of ctxChecks) unregisterCheck(name);
         const msg = `onInit failed: ${err instanceof Error ? err.message : String(err)}`;
         log.error(msg, { plugin: plugin.name });
         return this._errorRecord(plugin.name, absFile, msg);
@@ -322,6 +359,8 @@ export class PluginManager {
       error: null,
       routes: registeredRoutes,
       tasks: registeredTasks,
+      adapters: ctxAdapters,
+      checks: ctxChecks,
       loadedAt: new Date().toISOString(),
       reloads: prior ? prior.record.reloads + 1 : 0,
     };
@@ -399,6 +438,26 @@ export class PluginManager {
 
   // ── Private ───────────────────────────────────────────────
 
+  /**
+   * Cache-busted import of a compiled daemon module by dist-relative path.
+   * Resolved against the daemon dist root (this module lives in dist/core/).
+   * Path-traversal is rejected: plugins may only import modules under dist.
+   */
+  private async _importFrameworkModule(distRelativePath: string): Promise<Record<string, unknown>> {
+    const distRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..');
+    const resolved = path.resolve(distRoot, distRelativePath);
+    if (!resolved.startsWith(distRoot + path.sep)) {
+      throw new Error(`ctx.import: path escapes the daemon dist root: ${distRelativePath}`);
+    }
+    let mtimeMs: number;
+    try {
+      mtimeMs = fs.statSync(resolved).mtimeMs;
+    } catch {
+      throw new Error(`ctx.import: module not found: ${distRelativePath}`);
+    }
+    return await import(`${pathToFileURL(resolved).href}?v=${mtimeMs}-${++this._seq}`) as Record<string, unknown>;
+  }
+
   /** Per-request containment: a throwing plugin handler must not 500 the daemon loop unhandled. */
   private _wrapHandler(pluginName: string, handler: RouteHandler): RouteHandler {
     return async (req: http.IncomingMessage, res: http.ServerResponse, pathname: string, searchParams: URLSearchParams) => {
@@ -432,9 +491,15 @@ export class PluginManager {
         try { scheduler.removeTask(taskName); } catch { /* already gone */ }
       }
     }
+    for (const adapterName of p.record.adapters) {
+      try { unregisterAdapter(adapterName); } catch { /* already gone */ }
+    }
+    for (const checkName of p.record.checks) unregisterCheck(checkName);
     p.instance = null;
     p.record.routes = [];
     p.record.tasks = [];
+    p.record.adapters = [];
+    p.record.checks = [];
     if (!keepRecord) {
       this._plugins.delete(name);
       this._byFile.delete(p.record.file);
@@ -450,6 +515,8 @@ export class PluginManager {
       error,
       routes: [],
       tasks: [],
+      adapters: [],
+      checks: [],
       loadedAt: prior?.record.loadedAt ?? null,
       reloads: prior?.record.reloads ?? 0,
     };
