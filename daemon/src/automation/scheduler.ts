@@ -8,10 +8,13 @@
 
 import { CronExpressionParser } from 'cron-parser';
 import { parseInterval, type TaskScheduleConfig } from '../core/config.js';
-import { runTask, type TaskResult } from './task-runner.js';
+import { runTask, persistResult, type TaskResult } from './task-runner.js';
 import { registerCoreTasks, loadExternalTasks, type LoadResult } from './tasks/index.js';
 import { createLogger } from '../core/logger.js';
 import { exec as dbExec, query } from '../core/db.js';
+
+/** Catch-up window: if a missed trigger is older than this, skip it as stale. */
+const CATCH_UP_WINDOW_MS = 2 * 60 * 60 * 1000; // 2 hours
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -19,7 +22,7 @@ export interface ScheduledTask {
   name: string;
   enabled: boolean;
   schedule: { type: 'cron'; expression: string } | { type: 'interval'; ms: number };
-  command: string;
+  command?: string;
   args: string[];
   config: Record<string, unknown>;
   idleOnly: boolean;
@@ -48,6 +51,16 @@ export interface SchedulerOptions {
   sessionExists?: () => boolean;
   /** Auto-register built-in core task handlers (context-watchdog, todo-reminder, etc.). Defaults to true. */
   autoRegisterCoreTasks?: boolean;
+  /**
+   * Persistent already-ran guard for catch-up logic.
+   * Returns true if the named task has a successful (non-failure) result
+   * recorded in persistent storage with finished_at >= since.
+   *
+   * When provided, this is the authoritative guard used by _detectAndFireCatchUp
+   * to prevent re-firing tasks that already ran before a daemon restart.
+   * When omitted, the catch-up guard falls back to the in-memory lastRunAt check.
+   */
+  hasRunSince?: (taskName: string, since: Date) => boolean;
 }
 
 // ── Scheduler ────────────────────────────────────────────────
@@ -61,6 +74,8 @@ export class Scheduler {
   private _getLastHumanActivity?: () => Date | null;
   private _sessionExists?: () => boolean;
   private _started = false;
+  private _hasRunSince?: (taskName: string, since: Date) => boolean;
+  /** In-memory sleep state: task name → wake-up time */
   private _sleepUntil = new Map<string, Date>();
 
   constructor(options: SchedulerOptions) {
@@ -68,6 +83,7 @@ export class Scheduler {
     this._onTaskComplete = options.onTaskComplete;
     this._getLastHumanActivity = options.getLastHumanActivity;
     this._sessionExists = options.sessionExists;
+    this._hasRunSince = options.hasRunSince;
     this._loadTasks(options.tasks);
 
     // Auto-register built-in core task handlers unless explicitly disabled
@@ -85,10 +101,11 @@ export class Scheduler {
     if (this._started) return;
     this._started = true;
 
-    // Calculate initial next-run times
+    // Calculate initial next-run times, then check for missed triggers
     for (const task of this._tasks.values()) {
       if (task.enabled) {
         task.nextRunAt = this._calculateNextRun(task);
+        this._detectAndFireCatchUp(task);
       }
     }
 
@@ -293,7 +310,7 @@ export class Scheduler {
 
     // Command comes from config (config.command or config.config.command)
     const taskConfig = (config.config ?? {}) as Record<string, unknown>;
-    const command = (taskConfig.command as string) ?? `echo "No command for ${config.name}"`;
+    const command = (taskConfig.command as string | undefined) ?? undefined;
     const args = (taskConfig.args as string[]) ?? [];
 
     return {
@@ -317,6 +334,52 @@ export class Scheduler {
     if (taskConfig.command) existing.command = taskConfig.command as string;
     if (taskConfig.args) existing.args = taskConfig.args as string[];
     existing.config = taskConfig;
+  }
+
+  /**
+   * Detect a missed cron trigger on scheduler start and fire it once (catch-up).
+   *
+   * Fires when all of these hold:
+   *   - Task is a cron type
+   *   - The most recent scheduled occurrence (prev()) is in the past
+   *   - That occurrence is within CATCH_UP_WINDOW_MS of now (not stale)
+   *   - The task has not already run since that occurrence
+   */
+  private _detectAndFireCatchUp(task: ScheduledTask): void {
+    if (task.schedule.type !== 'cron') return;
+
+    let prevOccurrence: Date;
+    try {
+      prevOccurrence = CronExpressionParser.parse(task.schedule.expression).prev().toDate();
+    } catch {
+      return;
+    }
+
+    const now = Date.now();
+    const prevMs = prevOccurrence.getTime();
+
+    // Must be in the past (should always be true for prev(), but guard anyway)
+    if (prevMs >= now) return;
+
+    // Must be within the catch-up window — skip stale misses
+    if (now - prevMs > CATCH_UP_WINDOW_MS) return;
+
+    // Must not have already run since the missed occurrence.
+    // Prefer the persistent DB-backed guard (restart-safe); fall back to
+    // in-memory lastRunAt when hasRunSince is not injected (e.g. unit tests).
+    if (this._hasRunSince) {
+      if (this._hasRunSince(task.name, prevOccurrence)) return;
+    } else {
+      if (task.lastRunAt !== null && task.lastRunAt.getTime() >= prevMs) return;
+    }
+
+    const log = createLogger('scheduler');
+    log.info(
+      `Catch-up: task "${task.name}" missed trigger at ${prevOccurrence.toISOString()} — firing now`,
+    );
+
+    // Fire and forget — error already captured in task result
+    this._runTask(task).catch(() => {});
   }
 
   private _calculateNextRun(task: ScheduledTask): Date | null {
@@ -393,32 +456,26 @@ export class Scheduler {
         };
       }
 
-      // Use in-process handler if registered, otherwise spawn subprocess
+      // Use in-process handler if registered, otherwise spawn subprocess.
+      // The execution itself is guarded: if it throws, we still advance
+      // lastRunAt/nextRunAt below — otherwise nextRunAt stays in the past and
+      // the failing task hot-loops on every tick.
       const handler = this._handlers.get(task.name);
       let result: TaskResult;
-      if (handler) {
-        result = await this._runInProcess(task, handler);
-      } else if (task.command) {
-        result = await runTask(task.name, {
-          command: task.command,
-          args: task.args,
-          timeoutMs: (task.config.timeout_ms as number) ?? 300_000,
-          cwd: task.config.cwd as string | undefined,
-        });
-      } else {
-        // No handler registered and no command configured — skip gracefully.
-        // This happens when an extension task is in the scheduler config but
-        // the extension hasn't loaded yet (e.g. peer-heartbeat before agent-comms loads).
+      try {
+        result = await this._executeTask(task, handler);
+      } catch (err) {
+        const ts = new Date().toISOString();
         const log = createLogger('scheduler');
-        log.debug(`Task "${task.name}" has no handler or command — skipping`);
+        log.error(`Task "${task.name}" threw outside result capture`, { error: String(err) });
         result = {
-          id: 0,
+          id: -1,
           task_name: task.name,
-          status: 'success',
-          output: 'Skipped: no handler registered and no command configured',
+          status: 'failure',
+          output: err instanceof Error ? err.message : String(err),
           duration_ms: 0,
-          started_at: new Date().toISOString(),
-          finished_at: new Date().toISOString(),
+          started_at: ts,
+          finished_at: ts,
         };
       }
 
@@ -432,6 +489,37 @@ export class Scheduler {
       return result;
     } finally {
       task.running = false;
+    }
+  }
+
+  /**
+   * Dispatch a task to its in-process handler or subprocess command.
+   */
+  private async _executeTask(task: ScheduledTask, handler: TaskHandler | undefined): Promise<TaskResult> {
+    if (handler) {
+      return this._runInProcess(task, handler);
+    } else if (task.command) {
+      return runTask(task.name, {
+        command: task.command,
+        args: task.args,
+        timeoutMs: (task.config.timeout_ms as number) ?? 300_000,
+        cwd: task.config.cwd as string | undefined,
+      });
+    } else {
+      // No handler registered and no command configured — skip gracefully.
+      // This happens when an extension task is in the scheduler config but
+      // the extension hasn't loaded yet (e.g. peer-heartbeat before agent-comms loads).
+      const log = createLogger('scheduler');
+      log.debug(`Task "${task.name}" has no handler or command — skipping`);
+      return {
+        id: 0,
+        task_name: task.name,
+        status: 'success',
+        output: 'Skipped: no handler registered and no command configured',
+        duration_ms: 0,
+        started_at: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+      };
     }
   }
 
@@ -456,49 +544,16 @@ export class Scheduler {
       const result = await Promise.race([handler({ taskName: task.name, config: task.config }), timeoutPromise]);
       const durationMs = Date.now() - start;
       const finishedAt = new Date().toISOString();
-      const output = typeof result === 'string' ? result : 'completed';
+      const output = typeof result === 'string' ? result : 'In-process handler completed';
 
-      // Persist to DB (same pattern as runTask in task-runner.ts)
-      dbExec(
-        'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
-        task.name, 'success', output, durationMs, startedAt, finishedAt,
-      );
-      const rows = query<TaskResult>(
-        'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
-        task.name,
-      );
-      return rows[0] ?? {
-        id: 0,
-        task_name: task.name,
-        status: 'success',
-        output,
-        duration_ms: durationMs,
-        started_at: startedAt,
-        finished_at: finishedAt,
-      };
+      // persistResult never throws and fetches the row by lastInsertRowid
+      return persistResult(task.name, 'success', output, durationMs, startedAt, finishedAt);
     } catch (err) {
       const durationMs = Date.now() - start;
       const finishedAt = new Date().toISOString();
       const output = err instanceof Error ? err.message : String(err);
 
-      // Persist to DB
-      dbExec(
-        'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
-        task.name, 'failure', output, durationMs, startedAt, finishedAt,
-      );
-      const rows = query<TaskResult>(
-        'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
-        task.name,
-      );
-      return rows[0] ?? {
-        id: 0,
-        task_name: task.name,
-        status: 'failure',
-        output,
-        duration_ms: durationMs,
-        started_at: startedAt,
-        finished_at: finishedAt,
-      };
+      return persistResult(task.name, 'failure', output, durationMs, startedAt, finishedAt);
     }
   }
 }

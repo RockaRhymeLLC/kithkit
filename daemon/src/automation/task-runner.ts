@@ -10,6 +10,8 @@ import { exec as dbExec, query } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
 import { loadConfig } from '../core/config.js';
 
+const log = createLogger('task-runner');
+
 // ── Types ────────────────────────────────────────────────────
 
 export interface TaskResult {
@@ -30,6 +32,42 @@ export interface RunOptions {
   cwd?: string;
 }
 
+// ── Persistence ──────────────────────────────────────────────
+
+/**
+ * Insert a task result row and return the stored record.
+ *
+ * - Fetches the inserted row by lastInsertRowid (not "latest for task_name"),
+ *   so concurrent runs of the same task can't read each other's rows.
+ * - Never throws: a DB write failure must not leave runTask's promise
+ *   pending forever (which would hang the scheduler). On failure, returns
+ *   a synthetic result with id = -1 and logs the error.
+ */
+export function persistResult(
+  taskName: string,
+  status: TaskResult['status'],
+  output: string | null,
+  durationMs: number,
+  startedAt: string,
+  finishedAt: string,
+): TaskResult {
+  try {
+    const run = dbExec(
+      'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
+      taskName, status, output, durationMs, startedAt, finishedAt,
+    );
+    const rows = query<TaskResult>(
+      'SELECT * FROM task_results WHERE id = ?',
+      Number(run.lastInsertRowid),
+    );
+    if (rows[0]) return rows[0];
+    log.error(`persistResult: inserted row not found for task "${taskName}" (rowid ${String(run.lastInsertRowid)})`);
+  } catch (err) {
+    log.error(`persistResult: failed to store result for task "${taskName}"`, { error: String(err) });
+  }
+  return { id: -1, task_name: taskName, status, output, duration_ms: durationMs, started_at: startedAt, finished_at: finishedAt };
+}
+
 // ── Execution ────────────────────────────────────────────────
 
 /**
@@ -41,24 +79,15 @@ export function runTask(
 ): Promise<TaskResult> {
   const startedAt = new Date().toISOString();
   const startMs = Date.now();
-  const timeoutMs = options.timeoutMs ?? (loadConfig().task_runner?.default_timeout_ms ?? 300_000);
+  const timeoutMs = options.timeoutMs ?? (loadConfig().task_runner?.default_timeout_ms ?? 300_000); // 5 min default
 
   return new Promise((resolve) => {
     // Require explicit args array — no shell fallback
     if (!options.args || options.args.length === 0) {
-      const log = createLogger('task-runner');
       log.error(`Task "${taskName}" has no args array. Shell fallback (/bin/sh -c) is disabled for security. Add an explicit args array to the task config.`);
       const finishedAt = new Date().toISOString();
       const durationMs = Date.now() - startMs;
-      dbExec(
-        'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
-        taskName, 'failure', 'No args array provided — shell fallback disabled', durationMs, startedAt, finishedAt,
-      );
-      const rows = query<TaskResult>(
-        'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
-        taskName,
-      );
-      resolve(rows[0]!);
+      resolve(persistResult(taskName, 'failure', 'No args array provided — shell fallback disabled', durationMs, startedAt, finishedAt));
       return;
     }
     const cmd = options.command;
@@ -69,7 +98,7 @@ export function runTask(
       args,
       {
         timeout: timeoutMs,
-        maxBuffer: loadConfig().task_runner?.max_buffer_bytes ?? 1024 * 1024,
+        maxBuffer: loadConfig().task_runner?.max_buffer_bytes ?? 1024 * 1024, // 1MB
         env: { ...process.env, ...options.env },
         cwd: options.cwd,
       },
@@ -83,24 +112,7 @@ export function runTask(
           status = error.killed ? 'timeout' : 'failure';
         }
 
-        // Store in DB
-        dbExec(
-          'INSERT INTO task_results (task_name, status, output, duration_ms, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?)',
-          taskName,
-          status,
-          output || null,
-          durationMs,
-          startedAt,
-          finishedAt,
-        );
-
-        // Get the inserted row
-        const rows = query<TaskResult>(
-          'SELECT * FROM task_results WHERE task_name = ? ORDER BY id DESC LIMIT 1',
-          taskName,
-        );
-
-        resolve(rows[0]!);
+        resolve(persistResult(taskName, status, output || null, durationMs, startedAt, finishedAt));
       },
     );
 
