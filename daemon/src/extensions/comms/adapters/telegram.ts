@@ -30,7 +30,7 @@ import { resolveProjectPath, loadConfig } from '../../../core/config.js';
 import { commsSessionExists, startSession, injectToComms, COMMS_SESSION } from '../../../core/session-bridge.js';
 import { classifySender, checkRateLimit, registerTier } from '../../../core/access-control.js';
 import { createLogger } from '../../../core/logger.js';
-import { updateLastActiveChannel } from '../channel-router.js';
+import { updateLastActiveChannel, setChannel as setActiveChannel } from '../channel-router.js';
 import { markdownToTelegramHtml, hasMarkdownPatterns, hasHtmlTags } from './telegram-format.js';
 
 const log = createLogger('telegram');
@@ -612,6 +612,10 @@ function doInject(text: string, firstName: string, isThirdParty: boolean, chatTy
   const channelTag = isGroup ? `Telegram - group:${chatId}` : 'Telegram';
   const prefix = isThirdParty ? `[3rdParty][${channelTag}]` : `[${channelTag}]`;
   const formatted = `${prefix} ${firstName}: ${text}`;
+  // Ensure channel is set to telegram for every inbound message before injecting.
+  // UserPromptSubmit hooks may not fire for programmatic tmux injections, so we
+  // set the channel here rather than relying on the hook.
+  setActiveChannel('telegram');
   const ok = injectToComms(formatted, { pressEnter: true });
   if (ok) {
     log.info(`Injected ${isThirdParty ? '3rd-party ' : ''}message from ${firstName} (${text.substring(0, 50)}...)`);
@@ -1083,4 +1087,20 @@ export function _resetForTesting(): void {
   _approvalQueues.clear();
   _pendingApprovalContext = null;
   stopTypingLoop();
+}
+
+/**
+ * Directly invoke the internal doInject() function for unit testing.
+ * Bypasses session/keychain dependencies so the channel-routing side-effect
+ * of setActiveChannel() can be observed in isolation.
+ * @internal
+ */
+export function _doInjectForTesting(
+  text: string,
+  firstName: string,
+  isThirdParty: boolean,
+  chatType?: string,
+  chatId?: string,
+): void {
+  doInject(text, firstName, isThirdParty, chatType, chatId);
 }
