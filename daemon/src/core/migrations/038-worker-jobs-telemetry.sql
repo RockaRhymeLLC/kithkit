@@ -1,0 +1,11 @@
+-- Worker telemetry: resolved-model attribution + turn count per job.
+--
+-- The fable-5 experiment (2026-06-09/10) could not verify which model its
+-- workers actually ran on — worker_jobs captured tokens and cost but not the
+-- model the SDK resolved, and worker transcripts are cleaned up. These two
+-- columns close that gap at the source:
+--   resolved_model: from the SDK system:init message (modelUsage keys as
+--                   fallback). NULL for jobs that predate this migration.
+--   turns_used:     assistant turns consumed (also feeds cap calibration).
+--safe-alter: worker_jobs ADD COLUMN resolved_model TEXT
+--safe-alter: worker_jobs ADD COLUMN turns_used INTEGER
