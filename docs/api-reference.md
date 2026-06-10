@@ -1492,7 +1492,7 @@ Content is trimmed to fit within the budget — memories drop first, then distan
 
 ### POST /api/config/reload
 
-Hot-reload `kithkit.config.yaml` from disk without restarting the daemon. The scheduler re-reads task definitions and adjusts (adds new, removes deleted, updates changed without interrupting running tasks).
+Hot-reload `kithkit.config.yaml` from disk without restarting the daemon. On every reload, `kithkit.defaults.yaml` is deep-merged over the user config so defaults-only values hot-apply without a daemon restart. The scheduler re-reads task definitions and adjusts (adds new, removes deleted, updates changed without interrupting running tasks).
 
 ```bash
 curl -X POST http://localhost:3847/api/config/reload
