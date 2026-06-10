@@ -52,6 +52,43 @@ interface SearchFilters {
 
 const VALID_TYPES = ['fact', 'episodic', 'procedural'];
 
+/**
+ * Categories whose memories auto-share to peers by default (shareable=1).
+ * These are the self-improvement/learning categories produced by the retro
+ * loop and transcript-review hooks. All other categories — event, technical,
+ * person, user, private, fact, and anything not in this set — default to
+ * shareable=0 (local only) unless the caller explicitly sets shareable=1.
+ *
+ * Enumeration of call-sites confirms these are the only categories that
+ * should flow to peers by default:
+ *   api-format   — retro worker + transcript-review hook
+ *   behavioral   — retro worker + transcript-review hook (correction-detector
+ *                  explicitly passes shareable:false, so not affected)
+ *   process      — retro worker + transcript-review hook
+ *   tool-usage   — retro worker + transcript-review hook
+ *   communication — retro worker + transcript-review hook
+ *
+ * Call-sites that stay shareable=0 by default:
+ *   'event'      — state.ts (todo completion), task-queue.ts, unified-tasks.ts
+ *   'technical'  — memory-extraction hook (local context)
+ *   null/other   — any call without an explicit self-improvement category
+ */
+const SHAREABLE_CATEGORIES = new Set([
+  'api-format',
+  'behavioral',
+  'process',
+  'tool-usage',
+  'communication',
+]);
+
+/**
+ * Return the correct default shareable value for a given category.
+ * Only self-improvement/learning categories auto-share to peers.
+ */
+function defaultShareable(category: string | null | undefined): number {
+  return category && SHAREABLE_CATEGORIES.has(category) ? 1 : 0;
+}
+
 let _vectorEnabled = false;
 
 /**
@@ -205,8 +242,10 @@ export async function storeMemoryInternal(opts: {
   source?: string;
   importance?: number;
   dedup?: boolean;
+  origin_agent?: string;
+  trigger?: string;
 }): Promise<void> {
-  const { content, category, tags, source, importance, dedup } = opts;
+  const { content, category, tags, source, importance, dedup, origin_agent, trigger } = opts;
 
   // Simple time-based dedup: skip if an identical (or near-identical) memory
   // with the same source was stored in the last 5 minutes.
@@ -225,6 +264,11 @@ export async function storeMemoryInternal(opts: {
   if (tags) data.tags = JSON.stringify(tags);
   if (source) data.source = source;
   if (importance != null) data.importance = importance;
+  if (origin_agent) data.origin_agent = origin_agent;
+  if (trigger) data.trigger = trigger;
+  // Only self-improvement/learning categories auto-share to peers.
+  // All other internally-stored memories (event, technical, etc.) stay local.
+  data.shareable = defaultShareable(category);
 
   const memory = insert<Memory>('memories', data);
 
@@ -395,7 +439,12 @@ export async function handleMemoryRoute(
       if (body.importance != null) data.importance = body.importance;
       if (body.origin_agent != null) data.origin_agent = body.origin_agent;
       if (body.trigger != null) data.trigger = body.trigger;
-      if (body.shareable != null) data.shareable = body.shareable ? 1 : 0;
+      // shareable: caller-supplied value wins; absent → category-scoped default.
+      // Only self-improvement/learning categories (api-format, behavioral, process,
+      // tool-usage, communication) auto-share to peers. All others default to 0.
+      data.shareable = body.shareable != null
+        ? (body.shareable ? 1 : 0)
+        : defaultShareable(body.category as string | null);
       if (body.decay_policy != null) data.decay_policy = body.decay_policy;
 
       const memory = insert<Memory>('memories', data);

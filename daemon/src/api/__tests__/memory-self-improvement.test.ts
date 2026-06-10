@@ -137,14 +137,16 @@ describe('Memory self-improvement fields', { concurrency: 1 }, () => {
     beforeEach(setup);
     afterEach(teardown);
 
-    it('returns shareable=1 and decay_policy=default when not provided', async () => {
+    it('returns category-scoped shareable default and decay_policy=default when not provided', async () => {
+      // 'core' is not a self-improvement/learning category → shareable defaults to 0.
+      // See SHAREABLE_CATEGORIES in memory.ts for the full list.
       const res = await request('POST', '/api/memory/store', {
         content: 'Plain memory with no new fields',
         category: 'core',
       });
       assert.equal(res.status, 201);
       const body = JSON.parse(res.body);
-      assert.equal(body.shareable, 1, 'shareable should default to 1');
+      assert.equal(body.shareable, 0, 'shareable should default to 0 for non-learning category');
       assert.equal(body.decay_policy, 'default', 'decay_policy should default to "default"');
       assert.equal(body.origin_agent, null, 'origin_agent should default to null');
       assert.equal(body.trigger, null, 'trigger should default to null');
@@ -222,7 +224,10 @@ describe('Memory self-improvement fields', { concurrency: 1 }, () => {
           'SELECT * FROM memories WHERE content = ?',
         ).get('pre-existing memory') as Record<string, unknown>;
 
-        assert.equal(row['shareable'], 1, 'shareable defaults to 1');
+        // The DDL default for shareable is 0; the category-scoped application-layer
+        // default only applies at insert time through the API, not to pre-existing rows.
+        // This is correct: backfilling existing rows is a deliberate operator decision.
+        assert.equal(row['shareable'], 0, 'shareable DDL default is 0 for pre-existing rows');
         assert.equal(row['decay_policy'], 'default', 'decay_policy defaults to "default"');
         assert.equal(row['origin_agent'], null, 'origin_agent defaults to null');
         assert.equal(row['trigger'], null, 'trigger defaults to null');
@@ -234,60 +239,96 @@ describe('Memory self-improvement fields', { concurrency: 1 }, () => {
     });
   });
 
-  // ── Test 5: Soft cap — 51st memory is skipped ──────────────
+  // ── Test 5: Write-time category caps removed ────────────────
+  // Per-category caps were removed by Dave directive 2026-05-09 (todo #341):
+  // they silently dropped new entries. Lifecycle pruning is the consolidation
+  // task's job, not a hard cap at write time. The original tests here asserted
+  // the 51st memory was skipped — that is removed behavior; the current
+  // contract is that stores are never cap-rejected.
 
-  describe('Soft cap enforcement', () => {
+  describe('Write-time category caps removed (todo #341)', () => {
     beforeEach(setup);
     afterEach(teardown);
 
-    it('skips the 51st memory in a capped category', async () => {
-      const category = 'test-cap-skip';
+    it('stores past the old 50-per-category cap without skipping', async () => {
+      const category = 'test-cap-removed';
 
-      // Store 50 memories
-      for (let i = 0; i < 50; i++) {
+      for (let i = 0; i < 51; i++) {
         const r = await request('POST', '/api/memory/store', {
           content: `cap-test memory ${i}`,
           category,
         });
         assert.equal(r.status, 201, `Expected memory ${i} to be stored (got ${r.status})`);
+        const body = JSON.parse(r.body);
+        assert.equal(body.skipped, undefined, 'skipped should never be set');
       }
-
-      // 51st should be skipped
-      const res = await request('POST', '/api/memory/store', {
-        content: 'over the cap — should be skipped',
-        category,
-      });
-      assert.equal(res.status, 200);
-      const body = JSON.parse(res.body);
-      assert.equal(body.skipped, true, 'skipped should be true');
-      assert.ok(body.reason, 'reason should be set');
-      assert.ok((body.reason as string).includes('cap'), 'reason should mention the cap');
-      assert.ok(body.timestamp);
     });
+  });
 
-    // ── Test 6: 50th memory succeeds (at cap, not over) ──────
+  // ── Test 6: Category-scoped shareable defaults ───────────────
+  // Self-improvement/learning categories auto-share to peers (shareable=1).
+  // All other categories stay local (shareable=0) unless explicitly overridden.
 
-    it('stores the 50th memory successfully (at cap, not over)', async () => {
-      const category = 'test-cap-at';
+  describe('Category-scoped shareable defaults', () => {
+    beforeEach(setup);
+    afterEach(teardown);
 
-      // Store 49 memories
-      for (let i = 0; i < 49; i++) {
-        const r = await request('POST', '/api/memory/store', {
-          content: `cap-test memory ${i}`,
-          category,
+    const shareableCategories = ['api-format', 'behavioral', 'process', 'tool-usage', 'communication'];
+    const nonShareableCategories = ['event', 'technical', 'fact', 'person', 'user', 'private'];
+
+    for (const cat of shareableCategories) {
+      it(`defaults shareable=1 for self-improvement category: ${cat}`, async () => {
+        const res = await request('POST', '/api/memory/store', {
+          content: `category-scope test — ${cat}`,
+          category: cat,
         });
-        assert.equal(r.status, 201, `Expected memory ${i} to be stored (got ${r.status})`);
-      }
+        assert.equal(res.status, 201);
+        const body = JSON.parse(res.body);
+        assert.equal(body.shareable, 1, `${cat} should default to shareable=1`);
+      });
+    }
 
-      // 50th should succeed (count is 49, cap is 50, 49 < 50)
+    for (const cat of nonShareableCategories) {
+      it(`defaults shareable=0 for non-sharing category: ${cat}`, async () => {
+        const res = await request('POST', '/api/memory/store', {
+          content: `category-scope test — ${cat}`,
+          category: cat,
+        });
+        assert.equal(res.status, 201);
+        const body = JSON.parse(res.body);
+        assert.equal(body.shareable, 0, `${cat} should default to shareable=0`);
+      });
+    }
+
+    it('defaults shareable=0 when no category is provided', async () => {
       const res = await request('POST', '/api/memory/store', {
-        content: 'exactly at the cap — should succeed',
-        category,
+        content: 'no-category memory',
       });
       assert.equal(res.status, 201);
       const body = JSON.parse(res.body);
-      assert.ok(body.id, 'Should have an id');
-      assert.equal(body.skipped, undefined, 'skipped should not be set');
+      assert.equal(body.shareable, 0, 'null category should default to shareable=0');
+    });
+
+    it('caller-supplied shareable=1 overrides default for any category', async () => {
+      const res = await request('POST', '/api/memory/store', {
+        content: 'explicit override test',
+        category: 'event',
+        shareable: true,
+      });
+      assert.equal(res.status, 201);
+      const body = JSON.parse(res.body);
+      assert.equal(body.shareable, 1, 'explicit shareable=true should override category default');
+    });
+
+    it('caller-supplied shareable=0 overrides default for sharing categories', async () => {
+      const res = await request('POST', '/api/memory/store', {
+        content: 'explicit override test',
+        category: 'behavioral',
+        shareable: false,
+      });
+      assert.equal(res.status, 201);
+      const body = JSON.parse(res.body);
+      assert.equal(body.shareable, 0, 'explicit shareable=false should override category default');
     });
   });
 });
