@@ -119,13 +119,26 @@ HTTP route handlers, one file per domain area. `main.ts` dispatches to these bas
 |------|--------------|
 | `state.ts` | `/api/todos`, `/api/calendar`, `/api/config`, `/api/feature-state`, `/api/context` |
 | `memory.ts` | `/api/memory/store`, `/api/memory/search`, `/api/memory/:id` |
-| `agents.ts` | `/api/agents/spawn`, `/api/agents`, `/api/agents/:id` |
+| `agents.ts` | `/api/agents/spawn`, `/api/agents`, `/api/agents/:id`, `/api/agents/:id/activity` |
 | `messages.ts` | `/api/messages` |
 | `send.ts` | `/api/send` |
 | `tasks.ts` | `/api/scheduler/tasks`, `/api/scheduler/tasks/:name/run`, `/api/scheduler/tasks/:name/history` |
 | `config.ts` | `/api/config/reload` |
+| `approval.ts` | `/api/approval/decision`, `/api/approval/pending` |
+| `contacts.ts` | `/api/contacts`, `/api/contacts/:id`, `/api/contacts/search` |
+| `email.ts` | `/api/email/inbox`, `/api/email/inbox/search` |
+| `metrics.ts` | `/api/metrics`, `/api/metrics/ingest` |
+| `orchestrator.ts` | `/api/orchestrator/escalate`, `/api/orchestrator/status`, `/api/orchestrator/shutdown` |
+| `task-queue.ts` | `/api/orchestrator/tasks`, `/api/orchestrator/tasks/:id`, `/api/orchestrator/tasks/:id/activity`, `/api/orchestrator/tasks/:id/workers` |
+| `unified-tasks.ts` | `/api/tasks`, `/api/tasks/:id` |
+| `selftest.ts` | `/api/selftest` |
+| `sync-claude.ts` | `/api/sync/claude` |
+| `timer.ts` | `/api/timer`, `/api/timers` |
+| `self-improvement.ts` | `/api/self-improvement/stats` |
 
 All responses include a `timestamp` field (ISO 8601). Invalid JSON bodies return `400 { error: "Invalid JSON" }`.
+
+`helpers.ts` and `rate-limit.ts` are shared utilities — they do not register routes directly.
 
 ### Agents (`daemon/src/agents/`)
 
@@ -142,6 +155,39 @@ Worker lifecycle management.
 | `tmux.ts` | tmux session management — spawn orchestrator, inject text, check session state |
 
 Workers are ephemeral — they spawn for a task and terminate. The daemon tracks active workers in `kithkit.db` (the `agents` table) with their status, profile, PID, and activity timestamps.
+
+#### Fact Verifier and Quarantine (`daemon/src/agents/fact-verifier.ts`)
+
+The fact verifier runs automatically after every worker job completes (fire-and-forget, bounded by a 30-second timeout). It extracts verifiable claims from the job's result text and checks each one cheaply:
+
+| Claim type | Validation method |
+|------------|-------------------|
+| PR references (`#123`, `PR #123`, GitHub URLs) | `gh pr view` — confirms PR exists; checks asserted title and review state if present |
+| Commit SHAs (7–40 hex chars) | `git cat-file -t` — confirms object exists and is type `commit` |
+| File:line citations (`path/to/file.ts:42`) | `fs.existsSync` + line count check |
+| ISO dates (`YYYY-MM-DD`) | Calendar round-trip validation; rejects invalid dates and dates > 5 years future |
+| Orchestrator task IDs (UUID / 32-hex) | `GET /api/orchestrator/tasks/:id` — 200 = verified, 404 = contradicted |
+
+Each claim receives one of three verdicts:
+- **`VERIFIED`** — the claim checks out
+- **`UNVERIFIABLE`** — the tool (`gh`, `git`, daemon) was unavailable or returned an unexpected result; treated as inconclusive, not a failure
+- **`CONTRADICTED`** — the claim was checked and found to be false (wrong PR title, missing file, 404 task ID, etc.)
+
+**Quarantine trigger**: a job is quarantined when any claim is `CONTRADICTED`, or when the job has `status = completed` but an empty/whitespace result.
+
+**What quarantine means**: the job's output is annotated in the DB — the worker output is preserved and not deleted or rewritten. The daemon delivers a warning message to the comms agent listing the contradicted claims. The operator (comms agent / human) reviews the output and decides whether to trust, reject, or re-run the work.
+
+**DB fields** (added by migration 028 in `worker_jobs`):
+
+| Column | Values | Description |
+|--------|--------|-------------|
+| `verification_status` | `pending` \| `clean` \| `quarantined` \| `skipped` \| `error` | Overall result: `skipped` = no claims found; `error` = verifier itself failed |
+| `verification_report` | JSON blob | Full per-claim results (`ClaimResult[]`) with verdict and reason for each |
+| `verification_flagged_at` | ISO 8601 UTC | Timestamp when quarantine was set (null if not quarantined) |
+
+**Reviewing a quarantined job**: fetch the job record with `GET /api/agents/:id/status`. The `verification_report` field contains the detailed per-claim breakdown. The `verification_flagged_at` timestamp shows when the quarantine was set. There is no dedicated release endpoint — the operator reviews the output inline and takes action (re-running the task, discarding the result, or accepting it with the contradiction noted).
+
+The fact verifier skips `retro` and `fact-verifier` profile jobs to prevent infinite loops.
 
 ### Comms (`daemon/src/comms/`)
 
@@ -180,16 +226,28 @@ Background task scheduling.
 
 **Scheduler**: Reads task definitions from `kithkit.config.yaml`. Each task has either a `cron` expression or an `interval` (e.g., `"15m"`, `"1h"`). Tasks can be flagged `idle_only: true` to skip when the agent is actively in conversation, or `requires_session: true` to skip when no tmux session exists.
 
-**Built-in tasks**:
+**Built-in tasks** (source: `daemon/src/automation/tasks/index.ts` — 16 registered handlers):
 
-| Task | Schedule | Purpose |
-|------|----------|---------|
-| `context-watchdog` | Every 3m | Warn at 50% context usage; prompt restart at 65% |
-| `todo-reminder` | Every 30m | Prompt agent to work on open todos |
-| `approval-audit` | 1st of month, 9am | Review and prune 3rd-party sender approvals |
-| `backup` | Sunday 3am | Zip and verify backup of state and database |
-| `orchestrator-idle` | Every 2m | Monitor orchestrator session — spawn/wake on pending tasks, teardown on idle |
-| `message-delivery` | Every 10s | Deliver queued inter-agent messages to tmux sessions |
+| Task | Purpose |
+|------|---------|
+| `context-watchdog` | Warn at 50% context usage; prompt restart at 65% |
+| `todo-reminder` | Prompt agent to work on open todos |
+| `approval-audit` | Review and prune 3rd-party sender approvals |
+| `backup` | Zip and verify backup of state and database |
+| `orchestrator-idle` | Monitor orchestrator session — spawn/wake on pending tasks, teardown on idle |
+| `message-delivery` | Deliver queued inter-agent messages to tmux sessions |
+| `comms-heartbeat` | Nudge comms agent when workers finish; flush relay messages on session revival |
+| `peer-heartbeat` | Send periodic status messages to configured peer agents; detect peer liveness |
+| `api-metrics-aggregation` | Hourly rollup of `api_request_logs` into `api_metrics_hourly`; purge raw logs older than 24h |
+| `daily-digest` | Morning summary report: git activity, todos, failed tasks, peer status, error rates |
+| `morning-briefing` | Daily briefing: calendar events, weather, todos, overnight messages, email status |
+| `kkit-reflection` | Nightly self-improvement loop: review retro memories, apply skill updates and memory cleanup |
+| `self-watchdog` | Detect zombie daemon state — alert when no real work has occurred for a configurable idle threshold |
+| `orch-stale-task-recovery` | Time-based safety net for orphaned `assigned`/`in_progress` orchestrator tasks |
+| `stale-todo-archive` | Auto-archive stale FYI/Reminder/Maintenance todos that exceed a configured age |
+| `stale-todo-surfacing` | Weekly report of stale pending/in-progress todos delivered via the channel router |
+
+Schedules are configured per-instance in `kithkit.config.yaml` (or `kithkit.defaults.yaml` for defaults). Handlers are only registered if a corresponding task entry exists in config.
 
 **Orchestrator liveness detection**: `isOrchestratorAlive()` in `tmux.ts` uses `ORCH_SESSION_PATTERN` (`/^orch\d*$/`) to scan all tmux sessions by name, rather than checking only the default `orch1` session. This means non-default orchestrator session names (e.g., `orch`, `orch2`) are detected correctly.
 
