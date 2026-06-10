@@ -4,7 +4,7 @@
  * After a daemon crash or kill, active-looking database records accumulate
  * for resources whose owning sessions are long gone:
  *   - timers in 'pending' / 'snoozed' / 'fired' state for dead agent sessions
- *   - orchestrator_tasks stuck in 'assigned' / 'in_progress' state
+ *   - orchestrator tasks (tasks WHERE kind='orchestrator') stuck in 'assigned' / 'in_progress' state
  *   - worker_jobs stuck in 'running' / 'queued' state (belt-and-suspenders;
  *     the existing recoverFromRestart() also does this, but that function runs
  *     before migrations and has no session-awareness)
@@ -93,8 +93,8 @@ interface JobRow {
  *
  * Steps:
  *  1. Expire timers whose owner session is gone.
- *  2. Fail orchestrator_tasks that are assigned/in_progress but whose
- *     assignee session is gone.
+ *  2. Fail orchestrator tasks (tasks WHERE kind='orchestrator') that are assigned/in_progress
+ *     but whose assignee session is gone.
  *  3. Fail worker_jobs stuck in running/queued (workers die with the daemon
  *     process; there is no persistent process to check).
  *
@@ -150,10 +150,12 @@ export function cleanupOrphanedResources(): OrphanCleanupReport {
   // Tasks in 'assigned' or 'in_progress' state have an active assignee.
   // The only assignee that matters for session-checking is 'orchestrator'.
   // If the orchestrator session is gone, these tasks can never complete.
+  //
+  // Query by internal primary key (id) — external_id may be NULL for some
+  // rows (same NULL-safety class as the sn-todo-link fix).
 
-  // TODO(PR-C): migrate orchestrator_tasks queries to tasks table — see issue #94
   const activeTasks = query<TaskRow>(
-    `SELECT id, title, status, assignee FROM orchestrator_tasks WHERE status IN ('assigned', 'in_progress')`,
+    `SELECT id, title, status, assigned_to AS assignee FROM tasks WHERE kind = 'orchestrator' AND status IN ('assigned', 'in_progress')`,
   );
 
   for (const task of activeTasks) {
@@ -166,7 +168,7 @@ export function cleanupOrphanedResources(): OrphanCleanupReport {
 
     if (!sessionAliveCache.get(tmuxSession)) {
       exec(
-        `UPDATE orchestrator_tasks SET status = 'failed', error = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
+        `UPDATE tasks SET status = 'failed', error = ?, completed_at = ?, updated_at = ? WHERE id = ?`,
         'orphaned — owning agent session not found on daemon restart',
         ts, ts, task.id,
       );
