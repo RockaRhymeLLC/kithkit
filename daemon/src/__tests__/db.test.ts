@@ -169,7 +169,8 @@ describe('Migrations (t-119)', () => {
     assert.equal(version, available.at(-1)!.version, 'current version should match latest migration');
 
     const applied = getAppliedMigrations(db);
-    assert.equal(applied.length, available.length, 'all discovered migrations should be applied');
+    const uniqueVersionCount = new Set(available.map(m => m.version)).size;
+    assert.equal(applied.length, uniqueVersionCount, 'all unique migration versions should be applied (duplicates deduplicated)');
     // Spot-check first migration is still present
     assert.equal(applied[0]!.version, 1);
     assert.equal(applied[0]!.name, 'initial-schema');
@@ -232,6 +233,52 @@ describe('Migrations (t-119)', () => {
     assert.ok(migrations.length >= 1);
     assert.equal(migrations[0]!.version, 1);
     assert.equal(migrations[0]!.name, 'initial-schema');
+  });
+
+  // Mutation-killing dedup guard test (ported from fork PR #24 / f5a31718).
+  // Without the guard, inserting two migrations at the same version causes
+  // SQLITE_CONSTRAINT_PRIMARYKEY. This test MUST fail if the dedup logic
+  // is removed from runMigrations().
+  it('dedup guard: does not throw on duplicate version numbers, applies first file only (t-119-dedup)', () => {
+    const migrationsDir = path.join(tmpDir, 'migrations-dedup');
+    fs.mkdirSync(migrationsDir);
+
+    // Two files that parse to version 1. First alphabetically wins.
+    fs.writeFileSync(
+      path.join(migrationsDir, '001-alpha.sql'),
+      "CREATE TABLE dedup_alpha (id INTEGER PRIMARY KEY);",
+    );
+    fs.writeFileSync(
+      path.join(migrationsDir, '001-beta.sql'),
+      "CREATE TABLE dedup_beta (id INTEGER PRIMARY KEY);",
+    );
+
+    const db = new Database(':memory:');
+
+    // Must NOT throw — without the dedup guard this throws SQLITE_CONSTRAINT_PRIMARYKEY
+    let count: number;
+    assert.doesNotThrow(() => {
+      count = runMigrations(db, migrationsDir);
+    }, 'runMigrations() must not throw when two files share the same version number');
+
+    // Only one migration should have been inserted (version 1, first file wins)
+    const applied = db.prepare('SELECT * FROM migrations').all() as { version: number; name: string }[];
+    assert.equal(applied.length, 1, 'exactly one migration record should be in the migrations table');
+    assert.equal(applied[0]!.version, 1);
+    assert.equal(applied[0]!.name, 'alpha', 'first file (alphabetical) should win');
+
+    // Return value reflects deduplicated count, not raw file count
+    assert.equal(count!, 1, 'runMigrations() return value should equal unique-version count, not file count');
+
+    // The first file's table should exist; the second file's table must NOT
+    const tables = db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+    ).all() as { name: string }[];
+    const tableNames = tables.map(t => t.name);
+    assert.ok(tableNames.includes('dedup_alpha'), 'first file table should exist');
+    assert.ok(!tableNames.includes('dedup_beta'), 'second (duplicate version) file table must NOT exist');
+
+    db.close();
   });
 });
 
