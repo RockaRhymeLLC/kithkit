@@ -1131,6 +1131,18 @@ export async function handleTaskQueueRoute(
         }
       }
 
+      // Retro evaluation on comms correction/redirect feedback — the highest-signal
+      // human-feedback event (shouldTriggerRetro gates on retro.triggers.on_correction).
+      // Fires only when comms_outcome actually CHANGES to a corrective value, so
+      // repeat PUTs with the same outcome don't re-spawn retros.
+      if (
+        (updates.comms_outcome === 'corrected' || updates.comms_outcome === 'redirected') &&
+        updates.comms_outcome !== task.comms_outcome
+      ) {
+        const evalId = updated.external_id ?? String(updated.id);
+        _evalFn(evalId).catch(err => log.warn('Retro evaluation (comms correction) failed', { taskId, error: String(err) }));
+      }
+
       json(res, 200, withTimestamp(mappedUpdated));
       return true;
     }

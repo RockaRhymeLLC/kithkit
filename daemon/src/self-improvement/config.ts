@@ -42,6 +42,10 @@ export interface SelfImprovementConfig {
 
 // ── Defaults ─────────────────────────────────────────────────
 
+// Fail-closed: these in-code defaults apply only when neither
+// kithkit.defaults.yaml nor user config is present (bare test/dev contexts).
+// They must match the shipped kithkit.defaults.yaml — self-improvement spawns
+// retro workers (real cost), so it is opt-in, never on by default.
 const DEFAULTS: SelfImprovementConfig = {
   enabled: false,
   retro: {
