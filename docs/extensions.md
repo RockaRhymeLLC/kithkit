@@ -1,10 +1,103 @@
 # Writing Kithkit Extensions
 
-Extensions let agent repos add custom HTTP routes, scheduler tasks, and health checks to the daemon — without modifying the framework. The extension system uses three lifecycle hooks and two registration APIs.
+Extensions let agent repos add custom HTTP routes, scheduler tasks, and health checks to the daemon — without modifying the framework.
 
-## Overview
+Kithkit has **two extension mechanisms** — pick by lifecycle:
 
-An extension is a single TypeScript module that exports an object implementing the `Extension` interface. Kithkit supports **one extension per daemon instance**; that extension aggregates all sub-modules internally.
+| | Compiled-in extension | Hot-loadable plugin |
+|---|---|---|
+| Lives in | `daemon/src/extensions/` (TypeScript, compiled) | `.kithkit/extensions/*.js` (plain JS files) |
+| Loaded | At daemon boot, baked into the ESM module graph | At runtime — load/reload/unload with **no restart** |
+| Capabilities | Everything (full daemon imports) | Routes (under `/api/ext/`), scheduler tasks, channel adapters, health checks, `ctx.import()` of compiled modules |
+| Count | ONE per daemon (aggregates sub-modules) | Many |
+| Change workflow | Edit → build → **daemon restart** | Edit → save (fs-watched) or `POST /api/extensions/:name/reload` — live |
+| Use for | Core bootstrap: scheduler, A2A router, access control, anything with hard init-order deps | New capabilities, iterating features, and **decomposed components** of the main extension (see below) |
+
+**Default to a plugin for new capability.** Reach for the compiled-in extension only when you need boot-time ordering or you are modifying the core bootstrap itself.
+
+## Hot-Loadable Plugins (no daemon restart)
+
+A plugin is one self-contained `.js` file in `.kithkit/extensions/` (configurable via `extensions.plugins.{enabled,dir,watch}` in config). The daemon loads it at boot, reloads it when the file changes, and unloads it when the file is deleted.
+
+```js
+// .kithkit/extensions/my-plugin.js
+export default {
+  name: 'my-plugin',                          // required, unique
+
+  routes: {                                   // optional — MUST start with /api/ext/
+    '/api/ext/my-plugin/hello': async (req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      return true;
+    },
+  },
+
+  tasks: [{                                   // optional scheduler tasks
+    name: 'my-plugin-tick',
+    schedule: { type: 'interval', ms: 60_000 },  // or { type: 'cron', expression }
+    run: async (ctx) => { /* ... */ },
+  }],
+
+  async onInit(ctx) {
+    // ctx: { config, projectDir, log, db: {query, exec}, scheduler,
+    //        import(), registerAdapter(), registerCheck() }
+  },
+
+  async onShutdown() {
+    // Tear down anything YOU created (timers, listeners, connections).
+    // Routes/tasks/adapters/checks registered through the contract or ctx
+    // are torn down automatically.
+  },
+};
+```
+
+**Lifecycle guarantees** (see `daemon/src/core/plugin-extensions.ts`):
+- Loads are transactional — a failed registration or throwing `onInit` rolls back everything already registered.
+- A broken plugin file becomes an error record (`GET /api/extensions`), never a daemon crash.
+- A throwing route handler answers 500 for that request; the daemon keeps running.
+- Reload calls the OLD instance's `onShutdown`, then imports fresh (cache-busted).
+
+**Management API** (mutating calls require an `X-Agent-Token` with role `comms` or `daemon` — loading a plugin executes code in the daemon process, so localhost reachability alone is deliberately NOT enough):
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/extensions` | Main-extension status + plugin list (open, read-only) |
+| `POST /api/extensions/scan` | Rescan the plugins dir (load new, reload present, unload removed) |
+| `POST /api/extensions/:name/reload` | Reload one plugin |
+| `DELETE /api/extensions/:name` | Unload one plugin |
+
+**Trust model:** plugins are operator-trusted local files. In-process JS cannot be sandboxed — a plugin has full daemon capability by construction. The namespace lock and containment above are robustness hygiene, not a security boundary. Do not place a file in the plugins dir that you would not run as the daemon user.
+
+## Decomposing the Main Extension into Plugins
+
+Components of the compiled-in extension can be peeled out into plugins: the component code stays compiled in `daemon/src/extensions/<component>/`, and the plugin is the **wiring** that pulls it in through `ctx.import()` — the cache-busted import. After an `npm run build`, reloading the plugin picks up fresh component code live; a static import would pin the boot-time module forever.
+
+Worked example — Granola (`.kithkit/extensions/granola.js`), the first peeled component:
+
+```js
+let mod = null;
+export default {
+  name: 'granola',
+  async onInit(ctx) {
+    mod = await ctx.import('extensions/granola/index.js');  // dist-relative
+    await mod.initGranolaExtension(ctx.config, null, ctx.scheduler);
+  },
+  async onShutdown() {
+    if (mod) { await mod.shutdownGranolaExtension(); mod = null; }
+  },
+};
+```
+
+**Peel checklist** (each component, one PR at a time):
+1. The component's shutdown must be COMPLETE: unregister every route (use `unregisterRoute`), close timers/connections. A leaked registration breaks the next reload.
+2. Scheduler handlers re-register cleanly (`registerHandler` overwrites), but routes throw on duplicates — that's your signal the shutdown is incomplete.
+3. Wire through `ctx.import()`, never a static import, or hot-reload silently serves stale code.
+4. Remove the component's init/shutdown from the monolith in the same PR.
+5. Stage by blast radius — peel the most self-contained components first; live-critical channels (the one you talk to your human on) last, with rollback proven.
+
+## Compiled-In Extension Overview
+
+An extension is a single TypeScript module that exports an object implementing the `Extension` interface. Kithkit supports **one compiled-in extension per daemon instance**; that extension aggregates all sub-modules internally.
 
 Extensions are registered in your project's daemon entry point (`daemon/src/main.ts` or equivalent), before the daemon starts listening.
 
