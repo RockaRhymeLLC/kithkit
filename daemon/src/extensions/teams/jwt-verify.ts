@@ -37,6 +37,17 @@ export const BOT_FRAMEWORK_OPENID_META_URL =
 /** Expected `iss` (issuer) claim in the JWT. */
 export const BOT_FRAMEWORK_ISSUER = 'https://api.botframework.com';
 
+/**
+ * Symmetric clock-skew tolerance in seconds applied to both `exp` and `nbf`.
+ *
+ * Tokens are accepted if (nbf - CLOCK_SKEW_SEC) <= now <= (exp + CLOCK_SKEW_SEC).
+ *
+ * 300 s (5 min) matches the default `clockTolerance` used by the jose and
+ * jsonwebtoken libraries, and is the value recommended by the Bot Framework
+ * documentation for distributed deployments where node clocks may drift.
+ */
+export const CLOCK_SKEW_SEC = 300;
+
 // ── JWKS cache ────────────────────────────────────────────────────────────────
 
 interface JwkEntry {
@@ -233,8 +244,14 @@ export async function verifyBotFrameworkJwt(
     return { ok: false, reason: 'JWT missing exp claim' };
   }
   const nowSec = Math.floor(Date.now() / 1000);
-  if (nowSec > exp) {
+  if (nowSec > exp + CLOCK_SKEW_SEC) {
     return { ok: false, reason: `JWT expired at ${exp}, now ${nowSec}` };
+  }
+
+  // ── Not-before check ──────────────────────────────────────
+  // nbf is optional; only enforce when present.
+  if (typeof claims.nbf === 'number' && nowSec < claims.nbf - CLOCK_SKEW_SEC) {
+    return { ok: false, reason: 'JWT not yet valid (nbf)' };
   }
 
   // ── Signature verification ────────────────────────────────
