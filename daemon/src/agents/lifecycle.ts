@@ -22,7 +22,10 @@ import type { SpawnOptions as SdkSpawnOptions, WorkerState } from './sdk-adapter
 import type { AgentProfile } from './profiles.js';
 import { get, update, query, exec, getDatabase } from '../core/db.js';
 import { resolveProjectPath } from '../core/config.js';
+import { createLogger } from '../core/logger.js';
 import { injectLearnings } from '../self-improvement/pre-task-injector.js';
+
+const log = createLogger('agents:lifecycle');
 
 // ── Autonomy Mode ────────────────────────────────────────────
 
@@ -119,6 +122,10 @@ const queuedRequests = new Map<string, SpawnRequest>(); // Stored for deferred s
 
 // Poll interval for checking SDK worker completion
 const POLL_INTERVAL_MS = 500;
+
+// Injectable startWorker (overridable for testing spawn-failure containment).
+// Function declarations are hoisted, so referencing startWorker here is safe.
+let startWorkerFn: (jobId: string, req: SpawnRequest) => void = startWorker;
 
 // ── Config ───────────────────────────────────────────────────
 
@@ -221,7 +228,17 @@ export async function spawnWorkerJob(req: SpawnRequest): Promise<{ jobId: string
 
   // Try to start immediately or queue
   if (countRunningAgents() < maxConcurrentAgents) {
-    startWorker(jobId, req);
+    try {
+      startWorkerFn(jobId, req);
+    } catch (err) {
+      // sdkSpawn or the DB updates threw. Without this guard the job row
+      // stays 'queued' forever with no queue entry and no poll timer — a
+      // phantom job that blocks task reconciliation. Fail it loudly instead.
+      const msg = `Worker spawn failed: ${err instanceof Error ? err.message : String(err)}`;
+      log.error('spawnWorkerJob: startWorker threw — marking job failed', { jobId, error: String(err) });
+      finishJob(jobId, 'failed', null, msg);
+      return { jobId, status: 'failed' };
+    }
     return { jobId, status: 'running' };
   }
 
@@ -327,6 +344,20 @@ function finishJob(
 ): void {
   const ts = now();
 
+  // Idempotence guard: a job can reach finishJob twice (kill racing the poll
+  // timer, spawn-failure path racing a poll tick, future double-finish bugs).
+  // A second finish must not overwrite the original terminal result or
+  // re-fire job-complete listeners (duplicate retro ingestion / notifications).
+  const existing = get<JobRecord>('worker_jobs', jobId);
+  if (existing && (existing.status === 'completed' || existing.status === 'failed' || existing.status === 'timeout')) {
+    log.warn('finishJob: job already terminal — ignoring duplicate finish', {
+      jobId,
+      existingStatus: existing.status,
+      attemptedStatus: status,
+    });
+    return;
+  }
+
   update('agents', jobId, {
     status: 'stopped',
     last_activity: ts,
@@ -350,10 +381,15 @@ function finishJob(
       for (const listener of [...onJobCompleteListeners]) {
         try {
           listener(job);
-        } catch {
-          // individual listener errors must not break the daemon or other listeners
+        } catch (err) {
+          // Individual listener errors must not break the daemon or other
+          // listeners — but silent failures here invisibly break downstream
+          // loops (retro triggers, task reconciliation), so log them.
+          log.warn('finishJob: job-complete listener threw', { jobId, error: String(err) });
         }
       }
+    } else {
+      log.warn('finishJob: job row missing after update — listeners not notified', { jobId, status });
     }
   }
 
@@ -364,19 +400,41 @@ function finishJob(
 /**
  * Process the job queue — start queued jobs if slots are available.
  */
+let processingQueue = false; // re-entrancy guard: finishJob → processQueue can nest
+
 function processQueue(): void {
-  while (jobQueue.length > 0 && countRunningAgents() < maxConcurrentAgents) {
-    const nextJobId = jobQueue.shift()!;
+  // A failed startWorker below calls finishJob, which calls processQueue
+  // again — the guard turns that nested call into a no-op so the outer
+  // loop keeps draining without unbounded recursion.
+  if (processingQueue) return;
+  processingQueue = true;
+  try {
+    while (jobQueue.length > 0 && countRunningAgents() < maxConcurrentAgents) {
+      const nextJobId = jobQueue.shift()!;
 
-    // Verify job is still queued in DB
-    const job = get<JobRecord>('worker_jobs', nextJobId);
-    if (!job || job.status !== 'queued') continue;
+      // Verify job is still queued in DB
+      const job = get<JobRecord>('worker_jobs', nextJobId);
+      if (!job || job.status !== 'queued') continue;
 
-    const req = queuedRequests.get(nextJobId);
-    if (!req) continue;
+      const req = queuedRequests.get(nextJobId);
+      if (!req) continue;
 
-    queuedRequests.delete(nextJobId);
-    startWorker(nextJobId, req);
+      queuedRequests.delete(nextJobId);
+      try {
+        startWorkerFn(nextJobId, req);
+      } catch (err) {
+        // A single bad spawn must not break the dequeue loop — previously a
+        // throw here abandoned every job behind it in the queue.
+        log.error('processQueue: startWorker threw — failing job and continuing', {
+          jobId: nextJobId,
+          error: String(err),
+        });
+        finishJob(nextJobId, 'failed', null,
+          `Worker spawn failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  } finally {
+    processingQueue = false;
   }
 }
 
@@ -482,6 +540,8 @@ export function _resetForTesting(): void {
   queuedRequests.clear();
   maxConcurrentAgents = 3;
   onJobCompleteListeners.length = 0;
+  startWorkerFn = startWorker;
+  processingQueue = false;
 }
 
 export function _getQueueLength(): number {
@@ -490,4 +550,19 @@ export function _getQueueLength(): number {
 
 export function _getPollTimerCount(): number {
   return pollTimers.size;
+}
+
+/** @internal Override startWorker for testing spawn-failure containment. Pass null to restore. */
+export function _setStartWorkerFnForTesting(fn: ((jobId: string, req: SpawnRequest) => void) | null): void {
+  startWorkerFn = fn ?? startWorker;
+}
+
+/** @internal Invoke finishJob directly for testing (idempotence guard, queue draining). */
+export function _finishJobForTesting(
+  jobId: string,
+  status: 'completed' | 'failed' | 'timeout',
+  result: string | null,
+  error: string | null,
+): void {
+  finishJob(jobId, status, result, error);
 }
