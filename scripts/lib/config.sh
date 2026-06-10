@@ -53,10 +53,41 @@ read_config() {
             fi
         fi
 
-        # Fallback: grep for simple top-level or one-level-deep keys
-        local leaf="${key##*.}"
+        # Path-aware awk fallback: walks YAML indentation hierarchy to resolve
+        # the full dotted key path, not just the leaf name. This prevents
+        # leaf-name collisions (e.g. .agent.model vs .voice.stt.model).
         local val
-        val=$(grep -E "^[[:space:]]*${leaf}:" "$file" 2>/dev/null | head -1 | sed 's/^[^:]*:[[:space:]]*//' | sed 's/[[:space:]]*#.*//' | sed 's/^["'"'"']//' | sed 's/["'"'"']$//')
+        val=$(awk -v key_path="$key" '
+BEGIN {
+    sub(/^\./, "", key_path)
+    n = split(key_path, segs, "\\.")
+    depth = 0
+}
+/^[[:space:]]*(#|$)/ { next }
+{
+    spaces = 0; i = 1
+    while (i <= length($0) && substr($0, i, 1) == " ")  { spaces++;    i++ }
+    while (i <= length($0) && substr($0, i, 1) == "\t") { spaces += 2; i++ }
+    line = substr($0, i)
+    if (length(line) == 0 || substr(line, 1, 1) == "-") next
+    colon = index(line, ":")
+    if (colon == 0) next
+    k = substr(line, 1, colon - 1); v = substr(line, colon + 1)
+    gsub(/[[:space:]]/, "", k)
+    if (k == "") next
+    while (depth > 0 && spaces <= parent_indent[depth]) depth--
+    if (depth == 0 && spaces != 0) next
+    if (depth < n && k == segs[depth + 1]) {
+        if (depth + 1 == n) {
+            sub(/^[[:space:]]*/, "", v); sub(/[[:space:]]*#.*$/, "", v)
+            vl = length(v)
+            if (vl > 0 && (substr(v,1,1) == "\"" || substr(v,1,1) == "\047")) { v = substr(v,2); vl-- }
+            if (vl > 0 && (substr(v,vl,1) == "\"" || substr(v,vl,1) == "\047")) v = substr(v,1,vl-1)
+            if (v != "") { print v; exit }
+        } else { parent_indent[depth+1] = spaces; depth++ }
+    }
+}
+' "$file" 2>/dev/null)
         if [ -n "$val" ]; then
             echo "$val"
             return
