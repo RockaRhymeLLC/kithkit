@@ -89,6 +89,20 @@ interface WorkerJob {
 const VALID_PRIORITIES = ['low', 'medium', 'high', 'urgent'];
 const VALID_TODO_STATUSES = ['pending', 'in_progress', 'blocked', 'completed', 'cancelled'];
 
+// ── Todo update hook (extension point) ───────────────────────
+
+/**
+ * Optional hook called after any todo PUT update.
+ * Extensions (e.g. bmo-sn-todo-link) register here to react to todo changes.
+ * Errors in the hook are logged and swallowed — never fatal to the PUT response.
+ */
+type TodoUpdateHookFn = (internalId: number, changes: Record<string, unknown>) => void;
+let _todoUpdateHook: TodoUpdateHookFn | null = null;
+
+export function registerTodoUpdateHook(fn: TodoUpdateHookFn): void {
+  _todoUpdateHook = fn;
+}
+
 // Fields accepted by PUT /api/todos/:id.  Any field in the request body that
 // is NOT in this set is silently dropped and a log.warn is emitted so callers
 // can diagnose partial-update surprises.  See kithkit-internal #1812.
@@ -332,6 +346,17 @@ export async function handleStateRoute(
 
         update('tasks', putInternalId, data);
         const updated = get<Todo>('tasks', putInternalId);
+
+        // Fire todo-update hook if registered (e.g. bmo-sn-todo-link awareness signal)
+        if (_todoUpdateHook) {
+          try {
+            _todoUpdateHook(putInternalId, data);
+          } catch (hookErr) {
+            log.warn('Todo update hook error (non-fatal)', {
+              error: hookErr instanceof Error ? hookErr.message : String(hookErr),
+            });
+          }
+        }
 
         // Auto-store completion memory when a todo is marked done or completed
         const newStatus = putStatus;
