@@ -418,9 +418,12 @@ The `scripts/` directory provides session management and operational utilities.
 
 ## Extension Model
 
-Extensions let agent repos add custom routes, tasks, and health checks without modifying the framework. One extension is registered per daemon instance; the extension aggregates sub-modules internally.
+Extensions let agent repos add custom routes, tasks, and health checks without modifying the framework. There are two mechanisms:
 
-See [Extensions](extensions.md) for a complete authoring guide.
+1. **Compiled-in extension** — ONE per daemon instance, registered at boot, aggregates sub-modules internally. Changing it requires a build and daemon restart. Use for boot-ordered core infrastructure.
+2. **Hot-loadable plugins** — self-contained `.js` files in `.kithkit/extensions/` (config: `extensions.plugins`), loaded/reloaded/unloaded at RUNTIME via an fs watcher and the token-gated `/api/extensions` management API. Plugins register routes (under `/api/ext/`), scheduler tasks, channel adapters, and health checks; loads are transactional with rollback and broken plugins are contained as error records. Monolith components are progressively decomposed into plugins via the cache-busted `ctx.import()` wiring pattern (Granola is the first worked example).
+
+See [Extensions](extensions.md) for the complete authoring guide for both.
 
 **Extension hooks**:
 

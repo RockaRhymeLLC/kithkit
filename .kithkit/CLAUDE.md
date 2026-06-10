@@ -79,6 +79,11 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `GET /api/metrics` | Aggregated API request metrics |
 | `POST /api/metrics/ingest` | Receive batched metrics from remote agents |
 | `POST /api/config/reload` | Hot-reload config from disk |
+| `GET /api/extensions` | Main-extension status + hot-loadable plugin list |
+| `POST /api/extensions/scan` | Rescan plugins dir — load/reload/unload (comms/daemon token) |
+| `POST /api/extensions/:name/reload` | Hot-reload one plugin, no daemon restart (comms/daemon token) |
+| `DELETE /api/extensions/:name` | Unload a plugin (comms/daemon token) |
+| `POST /api/self-improvement/retro-backfill` | Ingest historical retro learnings (dry-run default) |
 
 See `docs/api-reference.md` for full request/response details.
 

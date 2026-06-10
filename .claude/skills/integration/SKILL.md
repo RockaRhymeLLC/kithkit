@@ -24,7 +24,13 @@ Human <-> Comms Agent <-> Daemon <-> Workers
 
 All persistent state (todos, calendar, memories, messages, config) lives in SQLite via the daemon API. Extensions add custom routes, scheduler tasks, and health checks without modifying the framework.
 
-## Writing Extensions
+## Two Extension Mechanisms — Pick By Lifecycle
+
+**Hot-loadable plugins (DEFAULT for new capability)**: self-contained `.js` files in `.kithkit/extensions/` that the daemon loads/reloads/unloads at RUNTIME — no daemon restart. Edit the file and it hot-swaps (fs-watched), or manage via `POST /api/extensions/scan|/:name/reload|DELETE /:name` (mutations require a comms/daemon-role `X-Agent-Token`; plugin load executes code in the daemon process). A plugin default-exports `{ name, routes?, tasks?, onInit?(ctx), onShutdown? }` — routes MUST live under `/api/ext/`; `ctx` provides `config`, `log`, `db`, `scheduler`, `registerAdapter()`, `registerCheck()`, and `ctx.import()` (cache-busted import of compiled daemon modules — the hook that lets a plugin wire fresh component code after a rebuild, live). Loads are transactional with rollback; broken files never crash the daemon. Full contract: `docs/extensions.md` + `daemon/src/core/plugin-extensions.ts`.
+
+**Compiled-in extension (core bootstrap only)**: the ONE TypeScript extension below, baked into the ESM graph at boot — changing it requires build + daemon restart. Use it only for boot-ordered infrastructure (scheduler, A2A router, access control); ship everything else as plugins. Existing monolith components are being decomposed INTO plugins via the `ctx.import()` wiring pattern — see the Granola worked example in `docs/extensions.md` and follow its peel checklist (complete shutdown incl. `unregisterRoute` for every route, then remove from the monolith in the same PR).
+
+## Writing Compiled-In Extensions
 
 An extension is a TypeScript module implementing the `Extension` interface:
 

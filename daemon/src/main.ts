@@ -30,6 +30,9 @@ import { handleContactsRoute } from './api/contacts.js';
 import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleMetricsRoute, logRequest } from './api/metrics.js';
 import { handleSelfImprovementRoute } from './api/self-improvement.js';
+import { handleExtensionsRoute } from './api/extensions.js';
+import { initPluginManager, getPluginManager } from './core/plugin-extensions.js';
+import { getScheduler } from './api/tasks.js';
 import { registerFactVerifier } from './agents/fact-verifier.js';
 import {
   getExtension,
@@ -291,6 +294,7 @@ const server = http.createServer((req, res) => {
         () => handleMetricsRoute(req, res, url.pathname, url.searchParams),
         () => handleTimerRoute(req, res, url.pathname),
         () => handleSelfImprovementRoute(req, res, url.pathname),
+        () => handleExtensionsRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {
         const handled = await handler();
@@ -421,6 +425,30 @@ function tryListen(): void {
         });
       }
     }
+
+    // Hot-loadable plugin extensions — loaded after the main extension so
+    // route/task conflict detection sees everything registered at boot.
+    // Absent directory = silent no-op (opt-in by creating the dir).
+    const pluginsConfig = (config as unknown as Record<string, unknown>).extensions as
+      | { plugins?: { enabled?: boolean; dir?: string; watch?: boolean } }
+      | undefined;
+    if (pluginsConfig?.plugins?.enabled !== false) {
+      const manager = initPluginManager({
+        dir: pluginsConfig?.plugins?.dir ?? '.kithkit/extensions',
+        config,
+        getScheduler,
+      });
+      try {
+        await manager.scan();
+        if (pluginsConfig?.plugins?.watch !== false) {
+          manager.startWatching();
+        }
+      } catch (err) {
+        log.error('Plugin extension scan failed (non-fatal)', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   });
 }
 
@@ -543,6 +571,20 @@ if (config.daemon.lan?.enabled) {
 
 async function shutdown(signal: string): Promise<void> {
   log.info(`Shutting down (${signal})`);
+
+  // Plugin extensions first — their tasks must unregister while the
+  // scheduler (owned by the main extension) is still alive.
+  const pluginManager = getPluginManager();
+  if (pluginManager) {
+    try {
+      await pluginManager.stop();
+      log.info('Plugin extensions stopped');
+    } catch (err) {
+      log.error('Plugin extensions shutdown error', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 
   // Extension shutdown hook — runs before server.close()
   const ext = getExtension();
