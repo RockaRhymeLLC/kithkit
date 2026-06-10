@@ -110,11 +110,30 @@ export function runMigrations(db: Database.Database, migrationsDir?: string): nu
   // Sort by version to ensure order
   pending.sort((a, b) => a.version - b.version);
 
+  // Deduplicate by version: keep the first file (sorted order) and warn on conflicts.
+  // This handles cases where two migration files share the same version number
+  // (e.g., a local override and an upstream migration at the same version).
+  // The first file wins; subsequent files at the same version are skipped.
+  const deduped: typeof pending = [];
+  const seenVersions = new Set<number>();
+  for (const m of pending) {
+    if (seenVersions.has(m.version)) {
+      console.warn(
+        `[migrations] Duplicate migration version ${m.version}: ` +
+        `'${m.name}' conflicts with an already-queued migration. Skipping.`,
+      );
+      continue;
+    }
+    seenVersions.add(m.version);
+    deduped.push(m);
+  }
+  const uniquePending = deduped;
+
   const insertMigration = db.prepare(
     'INSERT INTO migrations (version, name) VALUES (?, ?)',
   );
 
-  for (const migration of pending) {
+  for (const migration of uniquePending) {
     const sql = fs.readFileSync(migration.path, 'utf8');
 
     // Run each migration in a transaction
@@ -158,7 +177,7 @@ export function runMigrations(db: Database.Database, migrationsDir?: string): nu
     })();
   }
 
-  return pending.length;
+  return uniquePending.length;
 }
 
 /**
