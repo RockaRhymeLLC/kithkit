@@ -238,7 +238,7 @@ Tasks move through four semantic stages:
 3. **Fully closed** — comms (or orch for orch-originated tasks) sets `acknowledged_at` after reviewing the result with the human. Also sets `comms_outcome` (`accepted` | `corrected` | `redirected` | `cancelled`) and optionally `comms_corrections` (JSON string with human feedback).
 4. **Cancelled** — `status: cancelled`; terminal, no closure required.
 
-**Guard**: For tasks with `source: 'human'` (created via `POST /api/orchestrator/escalate`), only comms may set `acknowledged_at`. The orchestrator is blocked from self-closing these tasks.
+**Guard**: For tasks with `source: 'human'` (created via `POST /api/orchestrator/escalate`), only comms may set `acknowledged_at`. The orchestrator is blocked from self-closing these tasks. Comms must include the `X-Agent: comms` header on all acknowledgement PUT requests. The acknowledgement is a **two-step PUT**: the first PUT sets `status: completed`; the second PUT sets `acknowledged_at` and `comms_outcome`. Both requests must carry the `X-Agent: comms` header.
 
 **Calibration fields** (set at task completion): `complexity` (`S`|`M`|`L`|`XL`), `estimated_minutes`, `actual_minutes`, `task_type`, `completion_status`, `estimation_method`, `workers_used`. `estimate_multiplier` is **not stored** — it is computed on read as `actual_minutes / estimated_minutes`.
 
