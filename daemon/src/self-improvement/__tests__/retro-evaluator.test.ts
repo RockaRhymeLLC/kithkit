@@ -12,8 +12,10 @@ import { openDatabase, _resetDbForTesting, exec } from '../../core/db.js';
 import {
   shouldTriggerRetro,
   spawnRetro,
+  harvestRetroResults,
   _setSpawnFnForTesting,
   _setProfilesDirForTesting,
+  _setFetchFnForTesting,
 } from '../retro-evaluator.js';
 import {
   spawnWorkerJob,
@@ -465,5 +467,105 @@ describe('finishJob calls onJobComplete callback after DB update', () => {
     const job = getJobStatus(jobId);
     assert.ok(job, 'job should exist');
     assert.equal(job!.status, 'completed');
+  });
+});
+
+// ── harvestRetroResults endpoint wiring tests ─────────────────
+
+describe('harvestRetroResults POSTs learnings to /api/memory/store', () => {
+  afterEach(() => {
+    _setFetchFnForTesting(null);
+  });
+
+  it('calls /api/memory/store (not /api/memory) when learnings are present', async () => {
+    const capturedPostUrls: string[] = [];
+
+    const fakeFetch = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const urlStr = String(url);
+      // Respond to pollJobCompletion status poll
+      if (urlStr.includes('/api/agents/') && urlStr.includes('/status')) {
+        return {
+          ok: true,
+          json: async () => ({
+            status: 'completed',
+            result: JSON.stringify({
+              learnings: [
+                { content: 'Use structured logging for better debugging', category: 'procedural', tags: ['retro'] },
+              ],
+            }),
+          }),
+          text: async () => '',
+        } as Response;
+      }
+      // Capture memory-related POST calls
+      if (init?.method === 'POST' || !init?.method) {
+        capturedPostUrls.push(urlStr);
+      }
+      return {
+        ok: true,
+        json: async () => ({ id: 1 }),
+        text: async () => '{"id":1}',
+      } as Response;
+    };
+
+    _setFetchFnForTesting(fakeFetch as typeof fetch);
+    await harvestRetroResults('test-job-123', 'task-abc-456');
+
+    const memoryCalls = capturedPostUrls.filter(u => u.includes('/api/memory'));
+    assert.ok(memoryCalls.length > 0, 'should have made at least one memory POST call');
+    assert.ok(
+      memoryCalls.every(u => u.endsWith('/api/memory/store')),
+      `all memory calls must end with /api/memory/store — got: ${JSON.stringify(memoryCalls)}`,
+    );
+  });
+});
+
+// ── evaluateTask no-op when retro disabled ────────────────────
+
+describe('evaluateTask does not harvest when retro disabled', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    _resetConfigForTesting();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-retro-disabled-'));
+    _resetDbForTesting();
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+    // Do NOT write a config file — defaults leave self_improvement.enabled=false
+    loadConfig(tmpDir);
+  });
+
+  afterEach(() => {
+    _setFetchFnForTesting(null);
+    _resetConfigForTesting();
+    _resetDbForTesting();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('makes no /api/memory/store call when self_improvement is disabled (default)', async () => {
+    // Insert a task that would normally trigger retro (has error + retry_count > 0)
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, status, error, retry_count, tags)
+       VALUES (?, 'orchestrator', 'Test disabled harvest', 'completed', 'Worker timed out', 2, '[]')`,
+      'test-disabled-harvest-ext-001',
+    );
+
+    const capturedUrls: string[] = [];
+    const fakeFetch = async (url: string | URL | Request, _init?: RequestInit): Promise<Response> => {
+      capturedUrls.push(String(url));
+      return { ok: true, json: async () => ({}), text: async () => '{}' } as Response;
+    };
+
+    _setFetchFnForTesting(fakeFetch as typeof fetch);
+
+    // evaluateTask should return early (shouldTriggerRetro = false) — no harvest
+    const { evaluateTask } = await import('../retro-evaluator.js');
+    await evaluateTask('test-disabled-harvest-ext-001');
+
+    const memoryCalls = capturedUrls.filter(u => u.includes('/api/memory'));
+    assert.equal(
+      memoryCalls.length,
+      0,
+      `harvest must be a no-op when retro is disabled — got unexpected calls: ${JSON.stringify(memoryCalls)}`,
+    );
   });
 });
