@@ -9,12 +9,47 @@
  * Plugins are hot-loadable extension files (see core/plugin-extensions.ts).
  * The main compiled-in extension cannot be hot-reloaded (ESM module graph);
  * its status is reported here for completeness.
+ *
+ * SECURITY — load-authorization gate on every mutating endpoint:
+ * loading a plugin executes arbitrary code IN the daemon process, so the
+ * mutating endpoints are an arbitrary-code-load surface. The localhost-only
+ * bind is NOT a sufficient boundary for that — any local process (including
+ * sandboxed workers with Bash) can reach 127.0.0.1. Mutating calls therefore
+ * require an X-Agent-Token with role 'comms' or 'daemon' (same gate family
+ * as /api/send): a worker that can write a plugin file still cannot make the
+ * daemon LOAD it. Note the manager only ever loads operator-placed files
+ * from its one configured directory — no endpoint accepts file paths or
+ * content. GET (read-only status) stays open like other status endpoints.
  */
 
 import http from 'node:http';
 import { json, withTimestamp } from './helpers.js';
 import { getExtension, isDegraded } from '../core/extensions.js';
 import { getPluginManager } from '../core/plugin-extensions.js';
+import { verifyToken } from '../auth/agent-tokens.js';
+
+/** Gate mutating extension-management calls to comms/daemon roles. */
+function checkManagementAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  const rawHeader = req.headers['x-agent-token'];
+  const token = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+  if (!token) {
+    json(res, 401, withTimestamp({ error: 'X-Agent-Token header required for extension management' }));
+    return false;
+  }
+  const identity = verifyToken(token);
+  if (!identity) {
+    json(res, 401, withTimestamp({ error: 'Invalid or revoked agent token' }));
+    return false;
+  }
+  if (identity.role !== 'comms' && identity.role !== 'daemon') {
+    json(res, 403, withTimestamp({
+      error: 'Extension management requires the comms or daemon role — plugin load executes code in the daemon process.',
+      role: identity.role,
+    }));
+    return false;
+  }
+  return true;
+}
 
 export async function handleExtensionsRoute(
   req: http.IncomingMessage,
@@ -24,6 +59,11 @@ export async function handleExtensionsRoute(
   if (!pathname.startsWith('/api/extensions')) return false;
   const method = req.method ?? 'GET';
   const manager = getPluginManager();
+
+  // Every mutating method on this surface is gated before any routing.
+  if (method !== 'GET' && !checkManagementAuth(req, res)) {
+    return true;
+  }
 
   // GET /api/extensions
   if (pathname === '/api/extensions' && method === 'GET') {

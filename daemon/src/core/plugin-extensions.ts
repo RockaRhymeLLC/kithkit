@@ -33,6 +33,19 @@
  * onInit context: { config, projectDir, log, db: { query, exec } } — framework
  * services handed in so a plugin file needs no imports from the daemon tree.
  *
+ * TRUST MODEL (explicit): plugins are OPERATOR-TRUSTED local files behind an
+ * authenticated management gate. An in-process JS module has full daemon
+ * capability by construction (fs, child_process, network, DB, keychain) —
+ * in-process code CANNOT be sandboxed. The protections here are therefore
+ * load-authorization and hygiene, NOT capability restriction:
+ *   - the manager only loads files from its one configured directory; no API
+ *     accepts file paths or content
+ *   - mutating /api/extensions endpoints require a comms/daemon-role token
+ *     (api/extensions.ts) — localhost reachability alone cannot trigger a load
+ *   - the /api/ext/ route namespace + error containment below are robustness
+ *     hygiene, not a security boundary
+ * Do not load plugin files you would not run as the daemon user.
+ *
  * Guarantees:
  *   - A broken plugin never crashes the daemon (load error → status 'error').
  *   - Loads are transactional: if route/task registration or onInit fails,
@@ -42,10 +55,13 @@
  *   - Old module instances stay in Node's module cache (unavoidable with ESM)
  *     — a small, bounded leak per reload, acceptable for interactive use.
  *
- * Caveat (documented, by design): a plugin's own static imports of OTHER
- * files are cached by Node and do NOT reload — keep a plugin self-contained
- * in one file, or have it dynamically import its helpers with its own
- * cache-busting.
+ * Caveats (documented, by design):
+ *   - A plugin's own static imports of OTHER files are cached by Node and do
+ *     NOT reload — keep a plugin self-contained in one file, or have it
+ *     dynamically import its helpers with its own cache-busting.
+ *   - Teardown of plugin-created timers/listeners is the plugin's onShutdown
+ *     contract — the manager unregisters routes/tasks it registered, but it
+ *     cannot reach into a module to cancel intervals the plugin started.
  */
 
 import fs from 'node:fs';
