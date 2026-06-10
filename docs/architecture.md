@@ -191,6 +191,8 @@ Background task scheduling.
 | `orchestrator-idle` | Every 2m | Monitor orchestrator session — spawn/wake on pending tasks, teardown on idle |
 | `message-delivery` | Every 10s | Deliver queued inter-agent messages to tmux sessions |
 
+**Orchestrator liveness detection**: `isOrchestratorAlive()` in `tmux.ts` uses `ORCH_SESSION_PATTERN` (`/^orch\d*$/`) to scan all tmux sessions by name, rather than checking only the default `orch1` session. This means non-default orchestrator session names (e.g., `orch`, `orch2`) are detected correctly.
+
 Extensions add more tasks by registering handlers — see [Extensions](extensions.md).
 
 ---
@@ -316,7 +318,7 @@ security:
     outgoing_max_per_minute: 10
 ```
 
-**Config hot-reload**: Change the config file and POST to `/api/config/reload`. The scheduler re-reads task definitions (adds new, removes deleted, updates changed) without restarting the daemon. Running tasks are not interrupted.
+**Config hot-reload**: Change the config file and POST to `/api/config/reload`. On every reload, `kithkit.defaults.yaml` is deep-merged over the user config so defaults-only values hot-apply without a daemon restart. The scheduler re-reads task definitions (adds new, removes deleted, updates changed) without restarting the daemon. Running tasks are not interrupted.
 
 ---
 
