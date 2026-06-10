@@ -134,6 +134,15 @@ scheduler:
         in_progress_days: 7
         max_items: 20
 
+    - name: notify-todo-expire
+      cron: "0 3 * * *"
+      enabled: true
+      config:
+        enabled: true
+        ttl_days: 14
+        dry_run: true
+        log_path: "logs/notify-todo-expire.log"
+
     - name: kkit-reflection
       cron: "0 3 * * *"
       enabled: false

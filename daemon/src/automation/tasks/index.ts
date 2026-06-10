@@ -26,6 +26,7 @@ import { register as registerSelfWatchdog } from './self-watchdog.js';
 import { register as registerOrchStaleTaskRecovery } from './orch-stale-task-recovery.js';
 import { register as registerStaleTodoArchive } from './stale-todo-archive.js';
 import { register as registerStaleTodoSurfacing } from './stale-todo-surfacing.js';
+import { register as registerNotifyTodoExpire } from './notify-todo-expire.js';
 export { loadExternalTasks, type LoadResult } from './external-loader.js';
 
 /**
@@ -51,6 +52,7 @@ export function registerCoreTasks(scheduler: Scheduler): void {
     { name: 'orch-stale-task-recovery', register: registerOrchStaleTaskRecovery },
     { name: 'stale-todo-archive', register: registerStaleTodoArchive },
     { name: 'stale-todo-surfacing', register: registerStaleTodoSurfacing },
+    { name: 'notify-todo-expire', register: registerNotifyTodoExpire },
   ];
 
   for (const { name, register } of registrations) {

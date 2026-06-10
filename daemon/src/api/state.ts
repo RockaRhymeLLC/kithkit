@@ -108,7 +108,7 @@ export function registerTodoUpdateHook(fn: TodoUpdateHookFn): void {
 // can diagnose partial-update surprises.  See kithkit-internal #1812.
 const KNOWN_TODO_PUT_FIELDS = new Set([
   'title', 'description', 'priority', 'status', 'due_date', 'tags',
-  'snooze_until', 'assigned_to', 'work_notes',
+  'snooze_until', 'assigned_to', 'work_notes', 'source',
 ]);
 
 // ── Shim helpers ─────────────────────────────────────────────
@@ -232,6 +232,7 @@ export async function handleStateRoute(
       if (incomingStatus) data.status = incomingStatus;
       if (body.due_date) data.due_date = body.due_date;
       if (body.tags) data.tags = JSON.stringify(body.tags);
+      if (body.source !== undefined) data.source = body.source;
 
       const todo = insert<Todo>('tasks', data);
       // Native-first: do NOT stamp external_id on new todos — native tasks.id is the

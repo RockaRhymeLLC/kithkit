@@ -174,6 +174,7 @@ export const handleGranolaCandidateAction: RouteHandler = async (req, res, pathn
       description: `Action item from Granola note ${candidate.note_id}`,
       priority: 'medium',
       status: 'pending',
+      source: 'auto:granola',
       created_at: now,
       updated_at: now,
     };

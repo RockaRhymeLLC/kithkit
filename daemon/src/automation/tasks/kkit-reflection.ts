@@ -551,7 +551,7 @@ async function executeActions(
             results.push({ memory_id: action.memory_id, action: action.action, status: 'success', detail: `dry-run: would create "${title}"` });
           } else {
             exec(
-              "INSERT INTO tasks (kind, title, description, priority, status) VALUES ('todo', ?, ?, ?, ?)",
+              "INSERT INTO tasks (kind, title, description, priority, status, source) VALUES ('todo', ?, ?, ?, ?, 'auto:reflection')",
               title,
               description,
               priority,
