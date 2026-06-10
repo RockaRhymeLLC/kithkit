@@ -79,6 +79,10 @@ export interface JobRecord {
   created_at: string;
   spawned_by: string | null;
   spawner_notified_at: string | null;
+  /** Model the SDK resolved for the session (migration 038); NULL pre-038. */
+  resolved_model?: string | null;
+  /** Assistant turns consumed (migration 038); NULL pre-038. */
+  turns_used?: number | null;
 }
 
 export interface SpawnRequest {
@@ -371,6 +375,8 @@ function finishJob(
     tokens_in: sdkState?.tokensIn ?? 0,
     tokens_out: sdkState?.tokensOut ?? 0,
     cost_usd: sdkState?.costUsd ?? 0,
+    resolved_model: sdkState?.resolvedModel ?? null,
+    turns_used: sdkState?.turnsUsed ?? null,
     finished_at: ts,
   });
 
