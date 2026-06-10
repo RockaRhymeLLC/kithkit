@@ -22,6 +22,7 @@ import {
   _setFetchJson,
   _resetJwksCacheForTesting,
   BOT_FRAMEWORK_ISSUER,
+  CLOCK_SKEW_SEC,
 } from '../jwt-verify.js';
 
 import {
@@ -71,6 +72,7 @@ function makeMockJwt(overrides: {
   iss?: string;
   aud?: string | string[];
   exp?: number;
+  nbf?: number;
   kid?: string;
   alg?: string;
 } = {}): { token: string; kid: string; publicKeyJwk: Record<string, unknown> } {
@@ -96,7 +98,7 @@ function makeMockJwt(overrides: {
     aud: overrides.aud ?? BOT_APP_ID,
     exp: overrides.exp ?? nowSec + 3600,
     iat: nowSec,
-    nbf: nowSec - 60,
+    nbf: overrides.nbf ?? nowSec - 60,
     appid: BOT_APP_ID,
   };
 
@@ -578,5 +580,109 @@ describe('Conversation reference store', () => {
   it('getConversationRef returns undefined for unknown id', () => {
     const result = getConversationRef('unknown-id');
     assert.equal(result, undefined);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLOCK-SKEW + NBF HARDENING (mutation-killing)
+//
+// Four tests that collectively kill two mutations:
+//   Mutation 1: remove nbf enforcement entirely
+//   Mutation 2: remove CLOCK_SKEW_SEC from nbf check (make it strict: now < nbf)
+//   Mutation 3: remove CLOCK_SKEW_SEC from exp check (make it strict: now > exp)
+//   Mutation 4: remove exp check entirely
+//
+// Tests (a) and (b) cover nbf enforcement; (c) and (d) cover exp clock-skew.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Teams JWT — clock-skew hardening: nbf (mutation-killing)', () => {
+  beforeEach(() => {
+    _resetJwksCacheForTesting();
+  });
+
+  afterEach(() => {
+    _resetJwksCacheForTesting();
+    _setFetchJson(async (url) => { throw new Error(`Unexpected network in test: ${url}`); });
+  });
+
+  // (a) nbf in future BEYOND leeway → rejected
+  // Kills mutation: "remove nbf enforcement entirely"
+  // Without nbf check: ok:true (token is signed + other claims valid, nbf ignored)
+  // With nbf check:    ok:false (now < nbf - CLOCK_SKEW_SEC)
+  it('(a) rejects when nbf is in the future beyond CLOCK_SKEW_SEC leeway', async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    // nbf = now + CLOCK_SKEW_SEC + 10 → beyond tolerance by 10 seconds
+    const { token, publicKeyJwk } = makeMockJwt({ nbf: nowSec + CLOCK_SKEW_SEC + 10 });
+    installMockJwks([publicKeyJwk]);
+
+    const result = await verifyBotFrameworkJwt(token, BOT_APP_ID);
+    assert.equal(result.ok, false, 'Token with nbf beyond leeway must be rejected');
+    if (!result.ok) {
+      assert.match(result.reason, /nbf/i, 'Rejection reason must mention nbf');
+    }
+  });
+
+  // (b) nbf in future WITHIN leeway → accepted
+  // Kills mutation: "remove CLOCK_SKEW_SEC from nbf check" (i.e., enforce strictly: now < nbf)
+  // Without clock-skew on nbf: nowSec < nbf → ok:false (strict check rejects)
+  // With clock-skew on nbf:    nowSec < nbf - CLOCK_SKEW_SEC → false → ok:true
+  it('(b) accepts when nbf is in the future but within CLOCK_SKEW_SEC leeway', async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    // nbf = now + CLOCK_SKEW_SEC - 10 → within tolerance by 10 seconds
+    const { token, publicKeyJwk } = makeMockJwt({ nbf: nowSec + CLOCK_SKEW_SEC - 10 });
+    installMockJwks([publicKeyJwk]);
+
+    const result = await verifyBotFrameworkJwt(token, BOT_APP_ID);
+    assert.equal(
+      result.ok,
+      true,
+      `Token with nbf within leeway must be accepted. Got: ${result.ok ? '' : (result as { ok: false; reason: string }).reason}`,
+    );
+  });
+});
+
+describe('Teams JWT — clock-skew hardening: exp (mutation-killing)', () => {
+  beforeEach(() => {
+    _resetJwksCacheForTesting();
+  });
+
+  afterEach(() => {
+    _resetJwksCacheForTesting();
+    _setFetchJson(async (url) => { throw new Error(`Unexpected network in test: ${url}`); });
+  });
+
+  // (c) exp in past BEYOND leeway → rejected
+  // Kills mutation: "remove exp check entirely"
+  // Without exp check: ok:true (expired token passes all other checks)
+  // With exp check:    ok:false (now > exp + CLOCK_SKEW_SEC)
+  it('(c) rejects when exp is in the past beyond CLOCK_SKEW_SEC leeway', async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    // exp = now - CLOCK_SKEW_SEC - 10 → beyond tolerance by 10 seconds
+    const { token, publicKeyJwk } = makeMockJwt({ exp: nowSec - CLOCK_SKEW_SEC - 10 });
+    installMockJwks([publicKeyJwk]);
+
+    const result = await verifyBotFrameworkJwt(token, BOT_APP_ID);
+    assert.equal(result.ok, false, 'Token with exp beyond leeway must be rejected');
+    if (!result.ok) {
+      assert.match(result.reason, /expired/i, 'Rejection reason must mention expired');
+    }
+  });
+
+  // (d) exp in past WITHIN leeway → accepted
+  // Kills mutation: "remove CLOCK_SKEW_SEC from exp check" (i.e., enforce strictly: now > exp)
+  // Without clock-skew on exp: nowSec > exp → ok:false (strict check rejects recently-expired token)
+  // With clock-skew on exp:    nowSec > exp + CLOCK_SKEW_SEC → false → ok:true
+  it('(d) accepts when exp is in the past but within CLOCK_SKEW_SEC leeway', async () => {
+    const nowSec = Math.floor(Date.now() / 1000);
+    // exp = now - CLOCK_SKEW_SEC + 10 → within tolerance by 10 seconds
+    const { token, publicKeyJwk } = makeMockJwt({ exp: nowSec - CLOCK_SKEW_SEC + 10 });
+    installMockJwks([publicKeyJwk]);
+
+    const result = await verifyBotFrameworkJwt(token, BOT_APP_ID);
+    assert.equal(
+      result.ok,
+      true,
+      `Token with exp within leeway must be accepted. Got: ${result.ok ? '' : (result as { ok: false; reason: string }).reason}`,
+    );
   });
 });
