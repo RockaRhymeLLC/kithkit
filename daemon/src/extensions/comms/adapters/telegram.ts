@@ -547,10 +547,10 @@ export async function sendPhoto(photoBuffer: Buffer, chatId?: string, caption?: 
 }
 
 /**
- * Send a file (photo buffer) via Telegram with retry on network/429/5xx errors.
+ * Send a photo buffer via Telegram with retry on network/429/5xx errors.
  * Returns true on success, false if all attempts fail.
  */
-export async function telegramSendFile(photoBuffer: Buffer, chatId?: string, caption?: string): Promise<boolean> {
+export async function telegramSendPhotoBuffer(photoBuffer: Buffer, chatId?: string, caption?: string): Promise<boolean> {
   try {
     await withRetry(async () => {
       const ok = await sendPhoto(photoBuffer, chatId, caption);
@@ -560,6 +560,124 @@ export async function telegramSendFile(photoBuffer: Buffer, chatId?: string, cap
   } catch {
     return false;
   }
+}
+
+// ── Send document/file ───────────────────────────────────────
+
+/**
+ * Send a file to Telegram via sendDocument (for docs/PDFs) or sendPhoto (for images).
+ * @param filePath  Absolute path to the file on disk
+ * @param fileName  Display filename (defaults to basename of filePath)
+ * @param caption   Optional caption text
+ * @param chatId    Override chat ID (defaults to _replyChatId or configured chat ID)
+ */
+export async function telegramSendFile(
+  filePath: string,
+  fileName?: string,
+  caption?: string,
+  chatId?: string,
+): Promise<boolean> {
+  const token = await getBotToken();
+  const targetChatId = chatId ?? _replyChatId ?? await getChatId();
+  if (!token || !targetChatId) {
+    log.error('Cannot send file: missing bot token or chat ID');
+    return false;
+  }
+
+  let fileBuffer: Buffer;
+  try {
+    fileBuffer = fs.readFileSync(filePath);
+  } catch (err) {
+    log.error('Cannot read file for Telegram send', { filePath, error: err instanceof Error ? err.message : String(err) });
+    return false;
+  }
+
+  const resolvedName = fileName ?? path.basename(filePath);
+  const ext = path.extname(resolvedName).toLowerCase();
+
+  // Route photos to sendPhoto (inline preview in chat), everything else to sendDocument
+  const isPhoto = ['.jpg', '.jpeg', '.png', '.gif', '.webp'].includes(ext);
+
+  if (isPhoto) {
+    // Reuse existing sendPhoto function
+    await sendPhoto(fileBuffer, targetChatId, caption);
+    return true;
+  }
+
+  // sendDocument via multipart/form-data
+  const boundary = `----FormBoundary${Date.now()}`;
+  const parts: Buffer[] = [];
+
+  parts.push(Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${targetChatId}\r\n`,
+  ));
+  if (caption) {
+    parts.push(Buffer.from(
+      `--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n`,
+    ));
+  }
+
+  // Determine MIME type heuristically
+  const mimeTypes: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.csv': 'text/csv',
+    '.txt': 'text/plain',
+    '.json': 'application/json',
+    '.zip': 'application/zip',
+    '.mp3': 'audio/mpeg',
+    '.mp4': 'video/mp4',
+  };
+  const mimeType = mimeTypes[ext] ?? 'application/octet-stream';
+
+  parts.push(Buffer.from(
+    `--${boundary}\r\nContent-Disposition: form-data; name="document"; filename="${resolvedName}"\r\nContent-Type: ${mimeType}\r\n\r\n`,
+  ));
+  parts.push(fileBuffer);
+  parts.push(Buffer.from(`\r\n--${boundary}--\r\n`));
+
+  const body = Buffer.concat(parts);
+
+  return new Promise<boolean>((resolve) => {
+    const req = https.request({
+      hostname: 'api.telegram.org',
+      path: `/bot${token}/sendDocument`,
+      method: 'POST',
+      headers: {
+        'Content-Type': `multipart/form-data; boundary=${boundary}`,
+        'Content-Length': body.length,
+      },
+    }, (res) => {
+      let responseBody = '';
+      res.on('data', (chunk: Buffer) => { responseBody += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          const result = JSON.parse(responseBody);
+          if (result.ok) {
+            log.info(`Sent file to Telegram: ${resolvedName}`);
+            resolve(true);
+          } else {
+            log.error('Telegram sendDocument failed', { response: responseBody });
+            resolve(false);
+          }
+        } catch {
+          log.error('Telegram sendDocument: unparseable response');
+          resolve(false);
+        }
+      });
+    });
+
+    req.on('error', (err: Error) => {
+      log.error('Telegram sendDocument error', { error: err.message });
+      resolve(false);
+    });
+
+    req.write(body);
+    req.end();
+  });
 }
 
 // ── Inbound message buffer ───────────────────────────────────
@@ -1015,6 +1133,17 @@ export class TelegramAdapter implements ChannelAdapter {
   /** Send a message directly (bypasses channel router). */
   async sendDirect(text: string, chatId?: string): Promise<boolean> {
     return telegramSend(text, chatId);
+  }
+
+  /**
+   * Send a file to Telegram by path. Supports images (photo preview) and documents.
+   * @param filePath  Absolute path to the file on disk
+   * @param fileName  Optional display filename (defaults to basename)
+   * @param caption   Optional caption text
+   * @param chatId    Optional override chat ID
+   */
+  async sendFile(filePath: string, fileName?: string, caption?: string, chatId?: string): Promise<boolean> {
+    return telegramSendFile(filePath, fileName, caption, chatId);
   }
 
   /**
