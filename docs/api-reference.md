@@ -13,6 +13,7 @@ The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It bin
 - [Calendar](#calendar)
 - [Messages](#messages)
 - [Channel Delivery](#channel-delivery)
+- [Approval Workflow](#approval-workflow)
 - [Memory](#memory)
 - [Config & State](#config--state)
 - [Sync](#sync)
@@ -1093,6 +1094,89 @@ The `results` object maps channel name to `true` (delivered) or `false` (failed)
 | 200 | `{ "results": { "<channel>": true/false }, "timestamp": "..." }` |
 | 400 | `{ "error": "message is required" }` |
 | 400 | `{ "error": "Unknown channel(s): X. Registered: Y" }` |
+
+---
+
+## Approval Workflow
+
+The approval workflow gates outbound messages through a human-in-the-loop decision step. When an `approval_policies` entry is configured for a channel, `POST /api/send` for that channel creates a pending gate instead of delivering immediately. The gate waits for a decision via `POST /api/approval/decision`. Source: `daemon/src/api/approval.ts`.
+
+### POST /api/approval/decision
+
+Record an approve or reject decision for a pending gate. Resolves the gate immediately and allows (or blocks) delivery.
+
+**Auth required**: `X-Agent-Token` header with a valid token for the `comms` role. Only the comms agent may submit decisions. (Telegram inline-button approvals bypass this endpoint entirely — they call `resolveGate()` directly in the extension callback path.)
+
+```bash
+curl -X POST http://localhost:3847/api/approval/decision \
+  -H 'Content-Type: application/json' \
+  -H "X-Agent-Token: $COMMS_TOKEN" \
+  -d '{"approval_id": "abc123", "decision": "approved", "decider": "human"}'
+```
+
+```json
+// Request body
+{
+  "approval_id": "abc123",    // required — ID of the pending gate (from GET /api/approval/pending)
+  "decision": "approved",     // required — "approved" | "rejected"
+  "decider": "human"          // optional — informational; must be "human" if provided
+}
+```
+
+```json
+// Response 200
+{ "status": "ok" }
+```
+
+| Status | Response |
+|--------|----------|
+| 200 | `{ "status": "ok" }` — decision recorded, gate resolved |
+| 400 | `{ "error": "approval_id is required and must be a string" }` |
+| 400 | `{ "error": "decision must be \"approved\" or \"rejected\"" }` |
+| 400 | `{ "error": "decider must be \"human\"" }` |
+| 401 | `{ "error": "X-Agent-Token header required" }` or `"Invalid or revoked agent token"` |
+| 403 | `{ "error": "Only the comms agent may submit approval decisions" }` |
+| 404 | `{ "error": "approval_id not found" }` — no pending gate with that ID |
+| 409 | `{ "error": "Conflict", "message": "This approval has already been resolved or has expired..." }` |
+
+---
+
+### GET /api/approval/pending
+
+List all in-flight approval gates awaiting a decision. No auth required.
+
+```bash
+curl http://localhost:3847/api/approval/pending
+```
+
+```json
+// Response 200
+{
+  "pending": [
+    {
+      "approval_id": "abc123",
+      "channel": "telegram",
+      "recipient": "user@example.com",
+      "sender_agent": "orchestrator",
+      "preview": "Sending: Task complete. Ready for review.",
+      "policy": { "require_approval_for": "all", "timeout_minutes": 10 },
+      "expires_at": "2026-03-01T10:10:00.000Z",
+      "created_at": "2026-03-01T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `approval_id` | Unique gate ID — pass to `POST /api/approval/decision` |
+| `channel` | Delivery channel the message is destined for |
+| `recipient` | Intended recipient (channel-specific identifier) |
+| `sender_agent` | Agent that triggered the outbound send |
+| `preview` | Truncated preview of the message text |
+| `policy` | The approval policy that triggered the gate |
+| `expires_at` | Gate auto-expires at this time (ISO 8601) |
+| `created_at` | When the gate was created |
 
 ---
 

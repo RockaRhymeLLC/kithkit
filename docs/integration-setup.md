@@ -142,6 +142,70 @@ Set `channels.voice.enabled: true` in `kithkit.config.yaml`.
 - **Python shebang**: tts-worker.py says `python3.12` — the venv must be Python 3.12
 - **No voice clients connected**: Expected — the voice client app must register separately via `/voice/register`
 
+## 4. Microsoft Teams
+
+Kithkit integrates with Microsoft Teams via the Bot Framework. The Teams extension registers a `ChannelAdapter` named `teams` and an inbound webhook route (`POST /api/teams/messages`). Source: `daemon/src/extensions/teams/index.ts`.
+
+### Keychain Requirements
+
+| Keychain Service | Purpose |
+|---|---|
+| `credential-teams-bot-client-id` | Bot app ID (also the `MicrosoftAppId`); used for both inbound JWT verification and outbound auth |
+| `credential-teams-bot-secret` | Bot app password — never logged |
+
+### Config (`kithkit.config.yaml`)
+
+```yaml
+channels:
+  teams:
+    enabled: true
+    tenantId: "<azure-tenant-id>"   # Required for single-tenant bots
+```
+
+Both keychain entries must be present or the extension disables itself at startup (logs a warning).
+
+### How it works
+
+**Inbound** — The Bot Framework sends a `POST /api/teams/messages` to your Cloudflare tunnel. The daemon verifies the RS256 JWT bearer token against the Bot Framework JWKS and injects valid `message` activities into the comms tmux session. Other activity types (e.g., `conversationUpdate`, `typing`) receive a `200 {"ok":true}` acknowledgement and are silently dropped.
+
+**Outbound** — `POST /api/send` with `channel: "teams"` routes through the Teams adapter, which replies to the most recently seen conversation using the botframework-connector SDK. To target a specific conversation, pass `metadata.conversationId` in the request body.
+
+The adapter does not support images, buttons, or HTML; markdown is passed through as-is. Max message length: 28,000 characters.
+
+### Approval gate (optional)
+
+To require human approval before outbound Teams messages are sent, add an entry to `approval_policies` in config:
+
+```yaml
+approval_policies:
+  teams:
+    require_approval_for: all
+    timeout_minutes: 10
+```
+
+### Setup Steps
+
+1. **Register a bot in Azure** — create an Azure Bot resource, note the bot app ID and secret
+2. **Store credentials in Keychain**:
+   ```bash
+   security add-generic-password -s "credential-teams-bot-client-id" -a "$USER" -w "<bot-app-id>"
+   security add-generic-password -s "credential-teams-bot-secret" -a "$USER" -w "<bot-password>"
+   ```
+3. **Set `channels.teams` in config** — enable the extension and set your Azure tenant ID
+4. **Point the bot's messaging endpoint** at your Cloudflare tunnel:
+   `https://YOUR_HOSTNAME/api/teams/messages`
+5. **Restart the daemon** — look for `Teams extension initialized` in logs
+6. **Test**: send a Teams message to the bot; confirm it appears in the comms session
+
+### Common Issues
+
+- **Extension not initializing**: Keychain entries are missing. The extension logs `Teams extension: credentials not found in Keychain — Teams disabled`.
+- **Inbound 401 errors**: The Bot Framework JWT is failing verification. Confirm the bot app ID stored in `credential-teams-bot-client-id` matches the bot registered in Azure.
+- **Outbound fails with "no conversation reference"**: The Teams adapter requires at least one inbound message before it can reply (the conversation reference is stored from inbound traffic). Send a message to the bot first.
+- **Wrong tenant on outbound**: Ensure `channels.teams.tenantId` matches the Azure AD tenant where the bot is registered. Leaving it empty causes HTTP 400 from the connector.
+
+---
+
 ## Post-Setup Checklist
 
 - [ ] Daemon health: `curl localhost:3847/health` — status "ok"
@@ -154,3 +218,5 @@ Set `channels.voice.enabled: true` in `kithkit.config.yaml`.
 - [ ] TTS worker shows "READY" in logs
 - [ ] TTS synthesis produces valid WAV
 - [ ] STT transcription returns text
+- [ ] Teams extension shows "initialized" in logs (if configured)
+- [ ] Teams inbound message appears in comms session
