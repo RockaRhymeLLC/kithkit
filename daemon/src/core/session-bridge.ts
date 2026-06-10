@@ -56,6 +56,20 @@ export const _testHelpers = {
 /** Reset module state for testing. */
 export function _resetForTesting(): void {
   _tmuxPath = null;
+  _commsSessionExistsOverride = null;
+}
+
+/**
+ * Override commsSessionExists() return value for testing.
+ * Pass null to restore default behavior (real tmux check).
+ * Used by delivery-integrity tests to simulate session-alive vs session-dead
+ * without requiring a live tmux session.
+ *
+ * @internal
+ */
+let _commsSessionExistsOverride: (() => boolean) | null = null;
+export function _setCommsSessionExistsForTesting(fn: (() => boolean) | null): void {
+  _commsSessionExistsOverride = fn;
 }
 
 // ── tmux resolution ─────────────────────────────────────────
@@ -142,6 +156,7 @@ export function injectToComms(
  * Check if the comms agent session exists.
  */
 export function commsSessionExists(): boolean {
+  if (_commsSessionExistsOverride !== null) return _commsSessionExistsOverride();
   return sessionExists(COMMS_SESSION);
 }
 
