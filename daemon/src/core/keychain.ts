@@ -8,13 +8,17 @@ import { execFile } from 'node:child_process';
 /**
  * Read a credential from the macOS Keychain.
  * @param service - The service name (e.g., "credential-api-key")
+ * @param account - Optional account name for precise lookup (uses -a flag)
  * @returns The password value, or null if not found
  */
-export function readKeychain(service: string): Promise<string | null> {
+export function readKeychain(service: string, account?: string): Promise<string | null> {
   return new Promise((resolve) => {
+    const args = ['find-generic-password', '-s', service];
+    if (account) args.push('-a', account);
+    args.push('-w');
     execFile(
       'security',
-      ['find-generic-password', '-s', service, '-w'],
+      args,
       { timeout: 5000 },
       (err, stdout) => {
         if (err) {
