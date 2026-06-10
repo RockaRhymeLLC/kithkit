@@ -24,6 +24,8 @@ The daemon runs a local HTTP server on `127.0.0.1:<port>` (default 3847). It bin
 - [Contacts](#contacts)
 - [Selftest](#selftest)
 - [A2A Messaging](#a2a-messaging)
+- [Extension Management (hot-loadable plugins)](#extension-management-hot-loadable-plugins)
+- [Self-Improvement: Retro Backfill](#self-improvement-retro-backfill)
 - [Extension Routes](#extension-routes)
 - [Voice Endpoints](#voice-endpoints)
 - [Error Responses](#error-responses)
@@ -3028,6 +3030,69 @@ All error responses follow a consistent shape:
 | 503 | Service unavailable — required subsystem not initialized |
 
 ---
+
+## Extension Management (hot-loadable plugins)
+
+Hot-loadable plugin extensions (see [Extensions](extensions.md)) are managed at runtime — no daemon restart. **Mutating endpoints require an `X-Agent-Token` header with role `comms` or `daemon`** (plugin load executes code in the daemon process; the localhost bind alone is deliberately not sufficient authorization). Workers and orchestrators receive `403`.
+
+### GET /api/extensions
+
+Main-extension status plus the plugin list. Read-only, no token required.
+
+```bash
+curl http://localhost:3847/api/extensions
+```
+
+```json
+{
+  "extension": { "name": "agent", "degraded": false, "hot_reloadable": false },
+  "plugins": [
+    {
+      "name": "granola", "file": "/path/.kithkit/extensions/granola.js",
+      "status": "loaded", "error": null,
+      "routes": [], "tasks": [], "adapters": [], "checks": [],
+      "loadedAt": "2026-06-10T12:00:00.000Z", "reloads": 2
+    }
+  ],
+  "plugins_dir": "/path/.kithkit/extensions",
+  "timestamp": "..."
+}
+```
+
+### POST /api/extensions/scan
+
+Rescan the plugins directory: load new files, reload present ones, unload removed ones. Returns the resulting plugin list.
+
+```bash
+curl -X POST http://localhost:3847/api/extensions/scan \
+  -H "X-Agent-Token: $(cat .kithkit/.comms-token)"
+```
+
+### POST /api/extensions/:name/reload
+
+Reload one plugin by name (calls the old instance's `onShutdown`, re-imports the file cache-busted). Returns `200` with the plugin record on success, `422` if the reload produced an error record, `404` for an unknown plugin.
+
+### DELETE /api/extensions/:name
+
+Unload one plugin: `onShutdown` + automatic teardown of its routes, tasks, adapters, and health checks. Returns `404` if not loaded.
+
+## Self-Improvement: Retro Backfill
+
+### POST /api/self-improvement/retro-backfill
+
+Ingest historical retro-worker jobs whose learnings were never stored (the pre-ingest-listener backlog). Walks completed retro-profile jobs oldest-first through the standard ingestion path. **Idempotent**: jobs that already produced a memory (`source = 'retro:<jobId>'`) are skipped, so re-runs and batching are safe.
+
+**Body** (all optional): `{ "dry_run": true, "limit": 500 }` — `dry_run` defaults to **true**; a real backfill writes memories and must be requested explicitly with `"dry_run": false`. `limit` is clamped to 1–5000.
+
+```bash
+# Count what a backfill would do
+curl -X POST http://localhost:3847/api/self-improvement/retro-backfill -d '{}'
+# Run it for real, in batches
+curl -X POST http://localhost:3847/api/self-improvement/retro-backfill \
+  -H "Content-Type: application/json" -d '{"dry_run": false, "limit": 500}'
+```
+
+Response: `{ scanned, already_ingested, ingested_jobs, stored_learnings, no_learnings, dry_run, timestamp }`.
 
 ## Extension Routes
 

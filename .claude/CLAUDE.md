@@ -69,6 +69,11 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `GET /api/orchestrator/tasks/:id/activity` | Get task activity log (paginated) |
 | `POST /api/orchestrator/tasks/:id/workers` | Assign a worker job to a task |
 | `POST /api/config/reload` | Hot-reload config from disk |
+| `GET /api/extensions` | Main-extension status + hot-loadable plugin list |
+| `POST /api/extensions/scan` | Rescan plugins dir — load/reload/unload (comms/daemon token) |
+| `POST /api/extensions/:name/reload` | Hot-reload one plugin, no daemon restart (comms/daemon token) |
+| `DELETE /api/extensions/:name` | Unload a plugin (comms/daemon token) |
+| `POST /api/self-improvement/retro-backfill` | Ingest historical retro learnings (dry-run default) |
 | `POST /api/a2a/send` | Send A2A message (DM or group) with auto/relay/LAN routing |
 | `GET /api/contacts` | List contacts (filter by type, role, tag) |
 | `POST /api/contacts` | Create a contact |
