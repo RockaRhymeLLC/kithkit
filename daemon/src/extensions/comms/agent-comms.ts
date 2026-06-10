@@ -10,10 +10,15 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
 import { readKeychain } from '../../core/keychain.js';
-import { injectText } from '../../core/session-bridge.js';
 import { getProjectDir } from '../../core/config.js';
 import { createLogger } from '../../core/logger.js';
 import type { KithkitConfig } from '../../core/config.js';
+// Persist-on-receive: mirror the relay path (sdk-bridge.ts uses sendMessage + direct).
+// Extraction-friendly seam: when agent-comms is extracted into kithkit-a2a-client (#116),
+// this import migrates with it.
+import { sendMessage } from '../../agents/message-router.js';
+import type { MessageType } from '../../agents/message-router.js';
+import { commsSessionExists } from '../../core/session-bridge.js';
 
 const log = createLogger('agent-comms');
 const VALID_TYPES = ['text', 'status', 'coordination', 'pr-review'];
@@ -262,14 +267,69 @@ export async function handleAgentMessage(
 
   const formatted = formatMessage(msg);
 
-  injectText(formatted);
-
-  log.info(`Delivered message from ${msg.from}`, {
-    messageId: msg.messageId,
-    type: msg.type,
+  // Persist-before-inject: INSERT to DB unconditionally before any tmux side-effect.
+  // Mirror of sdk-bridge.ts relay path (sendMessage({..., direct:true})).
+  //
+  // BMO decision #1 (#585): from_agent = bare name (msg.from, no transport prefix).
+  // Both LAN and relay paths now persist bare sender identity (relay-path prefix
+  // 'network:${sender}' stripped in sdk-bridge.ts, bare-identity invariant #585).
+  //
+  // BMO decision #2 (#585): messages.type column is free TEXT (no CHECK constraint).
+  // msg.type is stored as-sent. MessageType has been widened to include 'coordination'
+  // and 'pr-review' (LAN-valid types) to avoid application-layer coercion loss.
+  //
+  // to: 'comms' — correct and forced by protocol design (not a rationalization).
+  //
+  // The LAN AgentMessage type has NO to/recipient/target/recipientAgent field:
+  // only from, type, text, status, action, task, context, messageId, timestamp.
+  // validateMessage() enforces none either. This endpoint (/agent/message) is a
+  // comms-inbound-only path — peers address this agent (comms), not internal
+  // sub-agents. There is no mechanism for a peer to LAN-target the orchestrator
+  // through this endpoint; orchestrator messages reach it via the daemon's internal
+  // inter-agent system (sendMessage + isPersistentAgent('orchestrator')), not via
+  // inbound LAN POST. Hardcoding to:'comms' is the only correct option on this path.
+  //
+  // BMO decision #3 (#585): to_agent='comms' is the canonical recipient for all
+  // LAN inbound messages. isPersistentAgent() in message-router fires the
+  // direct-channel inject path. agentName is used for logging only.
+  const persisted = sendMessage({
+    from: msg.from,
+    to: 'comms',
+    type: msg.type as MessageType,
+    body: formatted,
+    metadata: { source: 'lan', messageId: msg.messageId },
+    direct: true,
   });
 
+  // injected_at stamped in message-router.ts direct-inject path (BMO decision #3, #585).
+
   const agentName = _config?.agent?.name?.toLowerCase() ?? 'unknown';
+  if (persisted.delivered) {
+    log.info(`Delivered message from ${msg.from}`, {
+      messageId: msg.messageId,
+      type: msg.type,
+      dbId: persisted.messageId,
+    });
+  } else if (commsSessionExists()) {
+    // Dead-letter: session is alive but inject failed. Message is persisted and
+    // queued for retry via the message-delivery scheduler, but this is unexpected
+    // and warrants an ERROR so it surfaces in log monitoring (#585).
+    log.error(`DEAD-LETTER: inject failed despite live comms session — message queued for retry`, {
+      from: msg.from,
+      messageId: msg.messageId,
+      dbId: persisted.messageId,
+      type: msg.type,
+    });
+  } else {
+    // Session absent — normal pending state, not a delivery error.
+    // The message-delivery scheduler will inject when the session restarts.
+    log.info(`Message persisted, comms session absent — queued for delivery`, {
+      from: msg.from,
+      messageId: msg.messageId,
+      dbId: persisted.messageId,
+    });
+  }
+
   logCommsEntry({
     ts: new Date().toISOString(),
     direction: 'in',
@@ -278,11 +338,21 @@ export async function handleAgentMessage(
     type: msg.type,
     text: msg.text,
     messageId: msg.messageId,
+    delivered: persisted.delivered,
   });
+
+  // TODO(#124, #620): ack-semantics slot.
+  // Sender currently receives ok:true as soon as the DB row is created.
+  // Future: a positive ACK should only be returned after confirmed inject
+  // (or explicit delivery receipt from the comms session). This requires
+  // a protocol-level change in the LAN message exchange (#620 ten-four ACK
+  // protocol) and the per-message acknowledgement model (#124).
+  // queued:true is an interim observable for callers that want to distinguish
+  // persisted-but-not-yet-injected from confirmed delivery.
 
   return {
     status: 200,
-    body: { ok: true, queued: false },
+    body: { ok: true, queued: !persisted.delivered },
   };
 }
 

@@ -266,7 +266,7 @@ function wireMessageEvent(): void {
 
     // Persist inbound message to DB so content is never lost
     sendMessage({
-      from: `network:${msg.sender}`,
+      from: msg.sender,
       to: 'comms',
       type: 'text',
       body: formatted,
@@ -304,7 +304,7 @@ function wireGroupMessageEvent(): void {
     const formatted = `[Group:${groupTag}] ${displayName}${verified}: ${text}`;
 
     sendMessage({
-      from: `network:${msg.sender}`,
+      from: msg.sender,
       to: 'comms',
       type: 'text',
       body: formatted,
@@ -342,7 +342,7 @@ function wireGroupInvitationEvent(): void {
     const formatted = `[Network] Group invitation: "${inv.groupName}" from ${displayName}${greeting}. Accept with: network.acceptGroupInvitation('${inv.groupId}')`;
 
     sendMessage({
-      from: `network:${inv.invitedBy}`,
+      from: inv.invitedBy,
       to: 'comms',
       type: 'text',
       body: formatted,
@@ -373,7 +373,7 @@ function wireContactRequestEvent(autoApprove: boolean): void {
         log.info(`Auto-approved contact request from ${req.from}`);
         const formatted = `[Network] Auto-approved contact request from ${displayName}`;
         sendMessage({
-          from: `network:${req.from}`,
+          from: req.from,
           to: 'comms',
           type: 'text',
           body: formatted,
@@ -393,7 +393,7 @@ function wireContactRequestEvent(autoApprove: boolean): void {
     const prompt = `[Network] Contact request from ${displayName}${emailInfo}. Accept with: network.acceptContact('${req.from}')`;
 
     sendMessage({
-      from: `network:${req.from}`,
+      from: req.from,
       to: 'comms',
       type: 'text',
       body: prompt,
@@ -416,7 +416,7 @@ function wireBroadcastEvent(): void {
     const formatted = `[Network Broadcast] ${displayName}: [${broadcast.type}] ${summary}`;
 
     sendMessage({
-      from: `network:${broadcast.sender}`,
+      from: broadcast.sender,
       to: 'comms',
       type: 'text',
       body: formatted,
@@ -449,7 +449,7 @@ function wireCommunityStatusEvent(): void {
 
     const formatted = `[Network] Community '${event.community}' is now ${event.status}`;
     sendMessage({
-      from: 'network:system',
+      from: 'system',
       to: 'comms',
       type: 'status',
       body: formatted,
