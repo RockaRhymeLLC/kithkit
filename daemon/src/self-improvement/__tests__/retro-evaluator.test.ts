@@ -398,6 +398,75 @@ describe('spawnRetro constructs correct prompt with task context', () => {
   });
 });
 
+// ── evaluateTask id-resolution tests (Round 4) ────────────────
+
+describe('evaluateTask resolves tasks by internal id when external_id is NULL', () => {
+  let tmpDir: string;
+  let profilesDir: string;
+  let spawnCalls: number;
+
+  beforeEach(() => {
+    _resetConfigForTesting();
+    _resetDbForTesting();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-retro-eval-'));
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+    profilesDir = path.join(tmpDir, 'agents');
+    fs.mkdirSync(profilesDir);
+    fs.writeFileSync(path.join(profilesDir, 'retro.md'), RETRO_PROFILE_MD);
+    enableSelfImprovement(tmpDir);
+    _setProfilesDirForTesting(profilesDir);
+
+    spawnCalls = 0;
+    _setSpawnFnForTesting(() => {
+      spawnCalls++;
+      return Promise.resolve({ jobId: 'mock-eval-job', status: 'running' as const });
+    });
+  });
+
+  afterEach(() => {
+    _setSpawnFnForTesting(null);
+    _setProfilesDirForTesting(null);
+    _resetConfigForTesting();
+    _resetDbForTesting();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('spawns a retro for a NULL-external_id task addressed by internal id', async () => {
+    // The task-queue PUT handler passes String(updated.id) when a task has no
+    // external_id — before the fallback, that id could never resolve.
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, status, error, retry_count)
+       VALUES (NULL, 'orchestrator', 'Fallback resolution task', 'failed', 'worker died', 0)`,
+    );
+    const row = (await import('../../core/db.js')).query<{ id: number }>(
+      `SELECT id FROM tasks WHERE title = 'Fallback resolution task'`,
+    )[0]!;
+
+    const { evaluateTask } = await import('../retro-evaluator.js');
+    await evaluateTask(String(row.id));
+
+    assert.equal(spawnCalls, 1, 'retro should be spawned via internal-id fallback');
+  });
+
+  it('still resolves by external_id first', async () => {
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, status, error, retry_count)
+       VALUES ('bbbbbbbb-0000-4000-8000-000000000002', 'orchestrator', 'External id task', 'failed', 'boom', 0)`,
+    );
+
+    const { evaluateTask } = await import('../retro-evaluator.js');
+    await evaluateTask('bbbbbbbb-0000-4000-8000-000000000002');
+
+    assert.equal(spawnCalls, 1, 'retro should be spawned via external_id lookup');
+  });
+
+  it('does not spawn for an id that resolves to nothing', async () => {
+    const { evaluateTask } = await import('../retro-evaluator.js');
+    await evaluateTask('99999');
+    assert.equal(spawnCalls, 0, 'no retro for unresolvable id');
+  });
+});
+
 // ── finishJob callback tests ──────────────────────────────────
 
 describe('finishJob calls onJobComplete callback after DB update', () => {

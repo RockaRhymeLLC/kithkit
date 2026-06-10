@@ -35,6 +35,7 @@ import { isOrchestratorAlive as _isOrchestratorAlive, injectMessage as _injectMe
 import { getJobStatus as _getJobStatus } from '../../agents/lifecycle.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
+import { evaluateTask as _evaluateTask } from '../../self-improvement/retro-evaluator.js';
 
 const log = createLogger('orch-stale-task-recovery');
 
@@ -54,21 +55,25 @@ type JobStatusLike = { status: string } | null;
 let isOrchestratorAlive: () => boolean = _isOrchestratorAlive;
 let injectMessage: (agentId: string, text: string) => boolean = _injectMessage;
 let getJobStatus: (jobId: string) => JobStatusLike = _getJobStatus;
+let evaluateTask: (taskId: string) => Promise<void> = _evaluateTask;
 
 export function _setDepsForTesting(deps: {
   isOrchestratorAlive?: () => boolean;
   injectMessage?: (agentId: string, text: string) => boolean;
   getJobStatus?: (jobId: string) => JobStatusLike;
+  evaluateTask?: (taskId: string) => Promise<void>;
 } | null): void {
   if (deps === null) {
     isOrchestratorAlive = _isOrchestratorAlive;
     injectMessage = _injectMessage;
     getJobStatus = _getJobStatus;
+    evaluateTask = _evaluateTask;
     return;
   }
   if (deps.isOrchestratorAlive) isOrchestratorAlive = deps.isOrchestratorAlive;
   if (deps.injectMessage) injectMessage = deps.injectMessage;
   if (deps.getJobStatus) getJobStatus = deps.getJobStatus;
+  if (deps.evaluateTask) evaluateTask = deps.evaluateTask;
 }
 
 // ── Types ────────────────────────────────────────────────────
@@ -234,6 +239,14 @@ async function run(config: Record<string, unknown>): Promise<void> {
         );
 
         recordRecoveryNote(task.rowid, task.ext_id, task.status, ts);
+
+        // Fire-and-forget retro evaluation — stale-recovered tasks are real
+        // failures (orch dead, work abandoned) and previously never got a
+        // retro because they bypass the normal task-completion API path.
+        // evaluateTask self-gates on self_improvement config and never throws.
+        try {
+          void evaluateTask(task.ext_id);
+        } catch { /* best-effort — recovery must not be interrupted */ }
 
         recovered++;
         log.warn('Stale task recovered (orch dead)', {

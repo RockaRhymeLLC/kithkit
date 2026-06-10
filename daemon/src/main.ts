@@ -8,7 +8,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, type KithkitConfig } from './core/config.js';
-import { openDatabase, closeDatabase, resolveDbPath, migrateDbIfNeeded } from './core/db.js';
+import { openDatabase, closeDatabase, resolveDbPath, migrateDbIfNeeded, query } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { handleStateRoute } from './api/state.js';
@@ -16,6 +16,8 @@ import { handleMemoryRoute } from './api/memory.js';
 import { handleAgentsRoute, setProfilesDir } from './api/agents.js';
 import { configure as configureTmux } from './agents/tmux.js';
 import { recoverFromRestart } from './agents/recovery.js';
+import { setOnJobComplete } from './agents/lifecycle.js';
+import { evaluateTask } from './self-improvement/retro-evaluator.js';
 import { cleanupOrphanedResources } from './core/orphan-cleanup.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
@@ -34,6 +36,7 @@ import { handleExtensionsRoute } from './api/extensions.js';
 import { initPluginManager, getPluginManager } from './core/plugin-extensions.js';
 import { getScheduler } from './api/tasks.js';
 import { registerFactVerifier } from './agents/fact-verifier.js';
+import { registerRetroIngest } from './self-improvement/retro-ingest.js';
 import {
   getExtension,
   isDegraded,
@@ -166,6 +169,41 @@ if (recovery.orphansCleaned > 0 || recovery.failedJobsRecovered > 0) {
 // output without deleting it. Must run after openDatabase() so the verifier
 // can write verification_status / verification_report to worker_jobs.
 registerFactVerifier();
+
+// ── Self-improvement bootstrap ────────────────────────────────
+
+// Wire retro evaluator dispatch hook — when any worker job completes,
+// look up its parent task and evaluate for retrospective.
+// setOnJobComplete replaces the listener list (back-compat shim); must run
+// before registerRetroIngest() which addOnJobComplete-appends.
+setOnJobComplete((job) => {
+  try {
+    const rows = query<{ task_id: string }>(
+      `SELECT t.external_id AS task_id
+       FROM task_workers tw
+       JOIN tasks t ON t.id = tw.task_id
+       WHERE tw.worker_id = ?`,
+      job.id,
+    );
+    if (rows.length > 0) {
+      const taskId = rows[0]!.task_id;
+      log.info('Worker completed — triggering retro evaluation', { jobId: job.id, taskId });
+      evaluateTask(taskId).catch(err => {
+        log.warn('Retro evaluation failed after worker completion', { jobId: job.id, taskId, error: String(err) });
+      });
+    }
+  } catch (err) {
+    log.warn('Failed to dispatch retro evaluation on job complete', { jobId: job.id, error: String(err) });
+  }
+});
+log.info('Retro evaluator dispatch hook registered');
+
+// Register the retro-learnings ingest listener. The retro worker profile has
+// no Bash/Write tools and outputs JSON learnings "for the caller to store" —
+// this listener IS that caller: it parses completed retro jobs and persists
+// the learnings as memories so pre-task injection can surface them.
+// Must run after setOnJobComplete() above (that shim clears the listener list).
+registerRetroIngest();
 
 
 log.info('Kithkit daemon starting', {
