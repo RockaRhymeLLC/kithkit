@@ -129,7 +129,7 @@ Flow:
 3. `curl` POST to `http://{peer.host}:{peer.port}/agent/message`
    - Headers: `Content-Type: application/json`, `Authorization: Bearer {secret}`
    - Timeouts: 5s connect, 10s total
-4. If hostname fails and peer has `ip` field → retry with IP as fallback
+4. Address resolution uses priority ordering: env IP override (highest) → static `.ip` → `.host` (lowest / fallback). `buildPeerHosts()` builds this ordered list and `sendViaLAN()` attempts each address in sequence until one succeeds. If `.ip` is unset, the resolver falls through to `.host` automatically.
 5. Parse HTTP response (status code + JSON body)
 6. Log to `logs/agent-comms.log` (JSONL)
 
@@ -384,7 +384,7 @@ agent-comms:
     - name: agent-a
       host: node1.lan
       port: 3847
-      ip: 192.168.x.x    # DNS fallback
+      ip: 192.168.x.x    # primary address (tried before host); host is the DNS fallback
     - name: agent-b
       host: 192.168.x.x
       port: 3847
