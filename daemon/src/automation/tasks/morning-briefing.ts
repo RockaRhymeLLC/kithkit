@@ -370,6 +370,58 @@ async function gatherReminders(): Promise<string> {
   return lines.join('\n');
 }
 
+// ── Todos ─────────────────────────────────────────────────────
+
+/**
+ * Maximum number of open to-dos to include in the briefing.
+ * Items beyond this cap are summarised as "+N more open todos".
+ * Keeps the injected payload well under OS ARG_MAX / tmux send-keys limits.
+ */
+const TODO_CAP = 20;
+
+/**
+ * Fetch open to-dos from the daemon DB, bounded to TODO_CAP.
+ * Sorted by priority descending (critical first) then recency
+ * (most recently updated first).
+ *
+ * Exported for unit testing.
+ */
+export function gatherTodos(): string {
+  try {
+    const rows = query<{ id: number; title: string; priority: string; due_date: string | null }>(
+      `SELECT id, title, priority, due_date FROM todos
+       WHERE status NOT IN ('done', 'cancelled')
+       ORDER BY CASE priority
+         WHEN 'critical' THEN 0
+         WHEN 'high'     THEN 1
+         WHEN 'medium'   THEN 2
+         WHEN 'low'      THEN 3
+         ELSE                 4
+       END ASC,
+       updated_at DESC`,
+    );
+
+    if (rows.length === 0) return 'No open todos.';
+
+    const shown = rows.slice(0, TODO_CAP);
+    const remainder = rows.length - shown.length;
+
+    const lines = shown.map(row => {
+      const priority = (row.priority ?? 'medium').toUpperCase();
+      const due = row.due_date ? ` (due: ${row.due_date})` : '';
+      return `• [${priority}] ${row.title}${due}`;
+    });
+
+    if (remainder > 0) {
+      lines.push(`+${remainder} more open todos`);
+    }
+
+    return lines.join('\n');
+  } catch {
+    return 'To-do list unavailable.';
+  }
+}
+
 // ── Email (from task_results) ────────────────────────────────
 
 function gatherEmailSummary(): string {
@@ -481,6 +533,7 @@ async function run(config: Record<string, unknown>): Promise<string> {
 
   // Synchronous DB/filesystem queries
   const internalCal = gatherInternalCalendar();
+  const todos = gatherTodos();
   const email = gatherEmailSummary();
   const overnight = gatherOvernightMessages();
 
@@ -496,6 +549,7 @@ async function run(config: Record<string, unknown>): Promise<string> {
   ];
 
   parts.push('', '<b>Reminders</b>', reminders);
+  parts.push('', '<b>To-Dos</b>', todos);
 
   if (internalCal) {
     parts.push('', '<b>Agent Notes</b>', internalCal);
