@@ -1,4 +1,6 @@
--- No-op: both spawned_by and spawner_notified_at columns already exist
--- (added by migration 005-worker-spawned-by.sql).
--- This migration is kept as a placeholder to maintain version ordering.
+-- No-op placeholder kept to maintain version ordering.
+-- NOTE: the original DDL for spawned_by/spawner_notified_at lived in a migration
+-- that was removed from the sequence (NOT 005, which is memory-access-tracking).
+-- Fresh installs therefore lacked these worker_jobs columns until migration
+-- 037-worker-jobs-spawned-by-repair.sql, which adds them idempotently.
 SELECT 1;
