@@ -28,6 +28,11 @@ export function setScheduler(scheduler: Scheduler): void {
   _scheduler = scheduler;
 }
 
+/** The live scheduler instance, or null before the extension wires it. */
+export function getScheduler(): Scheduler | null {
+  return _scheduler;
+}
+
 export function _getSchedulerForTesting(): Scheduler | null {
   return _scheduler;
 }
