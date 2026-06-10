@@ -24,6 +24,28 @@ import { json, withTimestamp, parseBody } from './helpers.js';
 
 const VALID_MESSAGE_TYPES: readonly string[] = ['text', 'task', 'result', 'error', 'status'];
 
+/**
+ * Add a derived `expired` field to each message.
+ * expired:true if messages.metadata contains dead_letter:true.
+ * This is an additive, read-only field — the full ACK protocol is tracked in #124.
+ */
+function withExpiredField<T extends { metadata: string | null }>(
+  messages: T[],
+): (T & { expired: boolean })[] {
+  return messages.map(m => {
+    let expired = false;
+    if (m.metadata) {
+      try {
+        const meta = JSON.parse(m.metadata);
+        expired = meta.dead_letter === true;
+      } catch {
+        // ignore parse errors — expired stays false
+      }
+    }
+    return { ...m, expired };
+  });
+}
+
 /** Validate and return the `type` query param, or send a 400 and return false. */
 function validateType(
   raw: string | null,
@@ -150,7 +172,7 @@ export async function handleMessagesRoute(
         if (messages.length > 0) {
           markMessagesRead(messages.map(m => m.id));
         }
-        json(res, 200, withTimestamp({ data: messages }));
+        json(res, 200, withTimestamp({ data: withExpiredField(messages) }));
         return true;
       }
 
@@ -168,7 +190,7 @@ export async function handleMessagesRoute(
         const type = validateType(searchParams.get('type'), res);
         if (type === false) return true;
         const messages = getMessagesSince(agent, sinceId, type ?? undefined);
-        json(res, 200, withTimestamp({ data: messages }));
+        json(res, 200, withTimestamp({ data: withExpiredField(messages) }));
         return true;
       }
 
@@ -182,7 +204,7 @@ export async function handleMessagesRoute(
         limit: limit && !isNaN(limit) ? limit : undefined,
       });
 
-      json(res, 200, withTimestamp({ data: messages }));
+      json(res, 200, withTimestamp({ data: withExpiredField(messages) }));
       return true;
     }
 

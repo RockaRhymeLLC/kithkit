@@ -76,6 +76,9 @@ scheduler:
       enabled: true
       config:
         requires_session: true
+        # Max age for undelivered relay messages before dead-lettering (#620).
+        # Uses messages.created_at (DB-persisted), so daemon restarts do not reset the clock.
+        ttl_hours: 24
 
     - name: api-metrics-aggregation
       interval: "1h"
