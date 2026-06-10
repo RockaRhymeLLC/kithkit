@@ -38,7 +38,10 @@ export async function handleSendRoute(
         json(res, 401, withTimestamp({ error: 'Invalid or revoked agent token' }));
         return true;
       }
-      if (identity.role !== 'comms') {
+      // 'comms' = the comms agent; 'daemon' = in-process scheduler tasks.
+      // Workers and orchestrators remain blocked: the escalation chain
+      // (worker → orchestrator → comms → human) is unchanged.
+      if (identity.role !== 'comms' && identity.role !== 'daemon') {
         json(res, 403, withTimestamp({
           error: 'Workers and orchestrators cannot send to human channels. Escalate via /api/messages (worker → orchestrator → comms → human).',
           role: identity.role,
