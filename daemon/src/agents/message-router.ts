@@ -18,7 +18,11 @@ const log = createLogger('message-router');
 
 // ── Types ────────────────────────────────────────────────────
 
-export type MessageType = 'text' | 'task' | 'result' | 'error' | 'status';
+// Core router types plus LAN A2A types ('coordination', 'pr-review').
+// The messages.type column is free TEXT (no DB CHECK constraint) — see migration 001.
+// Per BMO decision #2 (#585): store as-sent for fidelity. 'coordination' and
+// 'pr-review' are valid LAN-inbound types from agent-comms.ts VALID_TYPES.
+export type MessageType = 'text' | 'task' | 'result' | 'error' | 'status' | 'coordination' | 'pr-review';
 
 export interface Message {
   id: number;
@@ -29,6 +33,7 @@ export interface Message {
   metadata: string | null;
   processed_at: string | null;
   read_at: string | null;
+  injected_at: string | null;
   created_at: string;
 }
 
@@ -41,7 +46,7 @@ export interface SendMessageRequest {
   direct?: boolean;
 }
 
-const VALID_MESSAGE_TYPES: MessageType[] = ['text', 'task', 'result', 'error', 'status'];
+const VALID_MESSAGE_TYPES: MessageType[] = ['text', 'task', 'result', 'error', 'status', 'coordination', 'pr-review'];
 const WORKER_ALLOWED_TYPES: MessageType[] = ['result', 'error'];
 
 // ── Deduplication ─────────────────────────────────────────────
@@ -222,12 +227,15 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
       if (req.direct) {
         const injected = tmuxInjector(req.to, req.body);
         if (injected) {
-          // Mark as processed, read, AND notified — the full content was already
-          // displayed in the tmux session. No follow-up notification needed.
+          // Mark as processed, read, notified, AND injected_at — the full content was
+          // already displayed in the tmux session. No follow-up notification needed.
+          // injected_at (BMO decision #3, #585): ISO-8601 UTC timestamp of confirmed inject.
+          // NULL = persisted but not yet injected (pending delivery via scheduler).
+          // Dedup path returns before reaching this code, so stamp is always for a fresh row.
           const now = new Date().toISOString();
           exec(
-            'UPDATE messages SET processed_at = ?, read_at = ?, notified_at = ? WHERE id = ?',
-            now, now, now, message.id,
+            'UPDATE messages SET processed_at = ?, read_at = ?, notified_at = ?, injected_at = ? WHERE id = ?',
+            now, now, now, now, message.id,
           );
           // Tell the heartbeat dedup that comms was just notified, so it
           // doesn't fire a redundant "[heartbeat] N unread messages" nudge.
