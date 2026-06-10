@@ -24,9 +24,59 @@
 import { execFileSync } from 'node:child_process';
 import { query, exec } from './db.js';
 import { createLogger } from './logger.js';
-import { TMUX_BIN, TMUX_SOCKET, resolveSession, getOrchestratorState, killOrchestratorSession } from '../agents/tmux.js';
+import {
+  TMUX_BIN,
+  TMUX_SOCKET,
+  resolveSession,
+  getOrchestratorState as _getOrchestratorState,
+  killOrchestratorSession as _killOrchestratorSession,
+} from '../agents/tmux.js';
 
 const log = createLogger('orphan-cleanup');
+
+// ── Injectable deps (for testing) ────────────────────────────
+
+let _isTmuxSessionAlive = (sessionName: string): boolean => {
+  try {
+    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${sessionName}`], {
+      timeout: 5000,
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+let _orchStateFn: () => 'active' | 'waiting' | 'dead' = _getOrchestratorState;
+let _killOrchFn: () => boolean = _killOrchestratorSession;
+
+/** @internal Override injectable deps for testing. Pass null to restore originals. */
+export function _setDepsForTesting(deps: {
+  isTmuxSessionAlive?: (sessionName: string) => boolean;
+  getOrchestratorState?: () => 'active' | 'waiting' | 'dead';
+  killOrchestratorSession?: () => boolean;
+} | null): void {
+  if (deps === null) {
+    _isTmuxSessionAlive = (sessionName: string): boolean => {
+      try {
+        execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${sessionName}`], {
+          timeout: 5000,
+          stdio: 'ignore',
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    _orchStateFn = _getOrchestratorState;
+    _killOrchFn = _killOrchestratorSession;
+    return;
+  }
+  if (deps.isTmuxSessionAlive !== undefined) _isTmuxSessionAlive = deps.isTmuxSessionAlive;
+  if (deps.getOrchestratorState !== undefined) _orchStateFn = deps.getOrchestratorState;
+  if (deps.killOrchestratorSession !== undefined) _killOrchFn = deps.killOrchestratorSession;
+}
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -50,18 +100,10 @@ function agentToTmuxSession(agentId: string): string {
 
 /**
  * Check whether a tmux session is currently alive.
- * Returns true only if `tmux has-session` exits 0.
+ * Delegates to the injectable `_isTmuxSessionAlive` dep (overridable in tests).
  */
 function isTmuxSessionAlive(sessionName: string): boolean {
-  try {
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${sessionName}`], {
-      timeout: 5000,
-      stdio: 'ignore',
-    });
-    return true;
-  } catch {
-    return false;
-  }
+  return _isTmuxSessionAlive(sessionName);
 }
 
 // ── Orphan detection ─────────────────────────────────────────
@@ -222,10 +264,10 @@ export function cleanupOrphanedResources(): OrphanCleanupReport {
   // bash. The escalate handler would see it as alive and queue work that
   // nobody picks up. Kill it so the next escalation spawns a fresh session.
 
-  const orchState = getOrchestratorState();
+  const orchState = _orchStateFn();
   if (orchState === 'waiting') {
     log.info('cleanupOrphanedResources: stale orch session detected — killing for clean spawn');
-    killOrchestratorSession();
+    _killOrchFn();
     report.staleOrchSessionKilled = true;
   }
 
