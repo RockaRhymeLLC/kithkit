@@ -322,3 +322,107 @@ describe('PluginManager: scan', () => {
     assert.match(errored[0]!.error!, /already loaded/);
   });
 });
+
+// ── Extended plugin context (Round 5b: decomposition support) ─
+
+describe('PluginManager: extended context', () => {
+  it('passes the live scheduler and supports ctx.registerCheck with auto-teardown', async () => {
+    const probe = path.join(tmpDir, 'ctx2-probe.json');
+    const file = writePlugin('ctx2.js', `
+import fs from 'node:fs';
+export default {
+  name: 'ctx2',
+  async onInit(ctx) {
+    fs.writeFileSync(${JSON.stringify(probe)}, JSON.stringify({
+      hasScheduler: !!ctx.scheduler && typeof ctx.scheduler.hasHandler === 'function',
+      hasImport: typeof ctx.import === 'function',
+      hasRegisterAdapter: typeof ctx.registerAdapter === 'function',
+    }));
+    ctx.registerCheck('ctx2-check', () => ({ ok: true, message: 'fine' }));
+  },
+};
+`);
+    const record = await manager.loadFile(file);
+    assert.equal(record.status, 'loaded');
+    assert.deepEqual(record.checks, ['ctx2-check']);
+
+    const seen = JSON.parse(fs.readFileSync(probe, 'utf8'));
+    assert.equal(seen.hasScheduler, true);
+    assert.equal(seen.hasImport, true);
+    assert.equal(seen.hasRegisterAdapter, true);
+
+    const { getRegisteredChecks } = await import('../extended-status.js');
+    assert.ok(getRegisteredChecks().includes('ctx2-check'));
+
+    await manager.unload('ctx2');
+    assert.ok(!getRegisteredChecks().includes('ctx2-check'), 'check removed on unload');
+  });
+
+  it('ctx.import loads framework modules cache-busted and rejects path escape', async () => {
+    const probe = path.join(tmpDir, 'imp-probe.json');
+    const file = writePlugin('imp.js', `
+import fs from 'node:fs';
+export default {
+  name: 'imp',
+  async onInit(ctx) {
+    const routeRegistry = await ctx.import('core/route-registry.js');
+    let escaped = false;
+    try { await ctx.import('../../../etc/passwd'); } catch { escaped = true; }
+    fs.writeFileSync(${JSON.stringify(probe)}, JSON.stringify({
+      gotModule: typeof routeRegistry.registerRoute === 'function',
+      escapeRejected: escaped,
+    }));
+  },
+};
+`);
+    const record = await manager.loadFile(file);
+    assert.equal(record.status, 'loaded');
+    const seen = JSON.parse(fs.readFileSync(probe, 'utf8'));
+    assert.equal(seen.gotModule, true, 'ctx.import resolves dist-relative framework modules');
+    assert.equal(seen.escapeRejected, true, 'path traversal outside dist is rejected');
+  });
+
+  it('adapters registered via ctx are unregistered on unload', async () => {
+    const file = writePlugin('adp.js', `
+export default {
+  name: 'adp',
+  async onInit(ctx) {
+    ctx.registerAdapter({
+      name: 'adp-test-channel',
+      send: async () => ({ ok: true }),
+    });
+  },
+};
+`);
+    const record = await manager.loadFile(file);
+    assert.equal(record.status, 'loaded');
+    assert.deepEqual(record.adapters, ['adp-test-channel']);
+
+    const { getAdapter } = await import('../../comms/channel-router.js');
+    assert.ok(getAdapter('adp-test-channel'), 'adapter registered');
+
+    await manager.unload('adp');
+    assert.equal(getAdapter('adp-test-channel'), undefined, 'adapter removed on unload');
+  });
+});
+
+// ── The real Granola plugin (decomposition proof) ────────────
+
+describe('Granola plugin: the peeled monolith component loads via ctx.import', () => {
+  it('loads the actual .kithkit/extensions/granola.js against compiled modules', async () => {
+    // Repo root is four levels up from daemon/dist/core/__tests__/
+    const repoRoot = path.resolve(import.meta.dirname, '../../../../');
+    const granolaPlugin = path.join(repoRoot, '.kithkit', 'extensions', 'granola.js');
+    assert.ok(fs.existsSync(granolaPlugin), 'granola plugin file must exist in the repo');
+
+    // Granola is not enabled in this test config, so its init self-gates and
+    // returns early — what this proves is the WIRING: the plugin file parses,
+    // ctx.import resolves the compiled component, and init/shutdown round-trip.
+    const record = await manager.loadFile(granolaPlugin);
+    assert.equal(record.status, 'loaded', `granola plugin should load (error: ${record.error})`);
+    assert.equal(record.name, 'granola');
+
+    const removed = await manager.unload('granola');
+    assert.equal(removed, true, 'granola plugin unloads cleanly');
+  });
+});
