@@ -10,12 +10,15 @@
  */
 
 import { query, update, exec } from '../core/db.js';
+import { createLogger } from '../core/logger.js';
 import {
   cleanupOrphanedAgents,
   type AgentRecord,
   type JobRecord,
 } from './lifecycle.js';
 import { sendMessage } from './message-router.js';
+
+const log = createLogger('agents:recovery');
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -60,6 +63,13 @@ export function notifyWorkerFailure(job: JobRecord): void {
         status: 'failed',
         ...notification,
       }),
+    });
+  } else {
+    // No live orchestrator — the failure notification is dropped. Log it so
+    // the loss is visible; the stale-task recovery sweep is the safety net.
+    log.warn('notifyWorkerFailure: no running orchestrator — failure notification dropped', {
+      jobId: job.id,
+      profile: job.profile,
     });
   }
 }
