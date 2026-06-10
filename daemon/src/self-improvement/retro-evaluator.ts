@@ -7,7 +7,7 @@ import { getSelfImprovementConfig } from './config.js';
 import { spawnWorkerJob } from '../agents/lifecycle.js';
 import { query, exec } from '../core/db.js';
 import { loadProfiles } from '../agents/profiles.js';
-import { resolveProjectPath } from '../core/config.js';
+import { resolveProjectPath, loadConfig } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('retro-evaluator');
@@ -58,11 +58,25 @@ interface TaskActivity {
   created_at: string;
 }
 
+interface RetroLearning {
+  content: string;
+  category?: string;
+  tags?: string[];
+}
+
+interface RetroResult {
+  learnings: RetroLearning[];
+  skipped?: Array<{ content: string; reason: string }>;
+}
+
 // ── Internal state (overridable for testing) ──────────────────
 
 type SpawnFn = typeof spawnWorkerJob;
 let spawnFn: SpawnFn = spawnWorkerJob;
 let profilesDirOverride: string | null = null;
+
+type FetchFn = typeof fetch;
+let fetchFn: FetchFn = fetch;
 
 export function _setSpawnFnForTesting(fn: SpawnFn | null): void {
   spawnFn = fn ?? spawnWorkerJob;
@@ -70,6 +84,157 @@ export function _setSpawnFnForTesting(fn: SpawnFn | null): void {
 
 export function _setProfilesDirForTesting(dir: string | null): void {
   profilesDirOverride = dir;
+}
+
+export function _setFetchFnForTesting(fn: FetchFn | null): void {
+  fetchFn = fn ?? fetch;
+}
+
+// ── Helpers ───────────────────────────────────────────────────
+
+function getDaemonPort(): number {
+  try {
+    const config = loadConfig() as unknown as Record<string, unknown>;
+    const daemonConfig = config.daemon as { port?: number } | undefined;
+    return daemonConfig?.port ?? 3847;
+  } catch {
+    return 3847;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// ── Learning harvest pipeline ─────────────────────────────────
+
+/**
+ * Polls the daemon API until the job reaches a terminal state.
+ * Returns the raw result string, or null on timeout/failure.
+ */
+export async function pollJobCompletion(
+  jobId: string,
+  port: number,
+  intervalMs = 5000,
+  timeoutMs = 300_000,
+): Promise<string | null> {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    let job: { status: string; result?: string | null };
+    try {
+      const res = await fetchFn(`http://127.0.0.1:${port}/api/agents/${jobId}/status`);
+      if (!res.ok) {
+        log.warn(`pollJobCompletion: HTTP ${res.status} for job ${jobId}`);
+        return null;
+      }
+      job = await res.json() as { status: string; result?: string | null };
+    } catch (err) {
+      log.warn(`pollJobCompletion: fetch error for job ${jobId}: ${String(err)}`);
+      return null;
+    }
+
+    if (job.status === 'completed') {
+      return job.result ?? null;
+    }
+
+    // stopped = agent session ended (agents table), job may have completed
+    if (job.status === 'stopped') {
+      log.debug(`pollJobCompletion: job ${jobId} has status stopped (agent session ended)`);
+      return job.result ?? null;
+    }
+
+    if (job.status === 'failed' || job.status === 'timeout') {
+      log.warn(`pollJobCompletion: retro job ${jobId} ended with status '${job.status}'`);
+      return null;
+    }
+
+    await sleep(intervalMs);
+  }
+
+  log.warn(`pollJobCompletion: timed out after ${timeoutMs / 1000}s waiting for retro job ${jobId}`);
+  return null;
+}
+
+/**
+ * Polls for retro worker completion, parses the JSON result, and stores
+ * each learning via the daemon memory API with trigger: 'retro'.
+ */
+export async function harvestRetroResults(jobId: string, taskId: string): Promise<void> {
+  const port = getDaemonPort();
+
+  log.debug('[retro] harvestRetroResults: polling for job completion', { jobId, taskId, port });
+  const rawResult = await pollJobCompletion(jobId, port);
+  if (rawResult === null) {
+    log.warn(`harvestRetroResults: no result for retro job ${jobId} (task ${taskId})`);
+    return;
+  }
+
+  log.debug('[retro] harvestRetroResults: got raw result, parsing JSON', { jobId, taskId, previewLen: rawResult.length });
+
+  // Extract JSON from the result — the worker may wrap it in a markdown code block
+  let jsonText = rawResult.trim();
+  const fenceMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)```/);
+  if (fenceMatch) {
+    jsonText = fenceMatch[1].trim();
+  }
+
+  let parsed: RetroResult;
+  try {
+    parsed = JSON.parse(jsonText) as RetroResult;
+  } catch {
+    log.warn(
+      `harvestRetroResults: failed to parse retro JSON for job ${jobId}`,
+      { preview: rawResult.slice(0, 200) },
+    );
+    return;
+  }
+
+  const learnings = parsed.learnings;
+  if (!Array.isArray(learnings) || learnings.length === 0) {
+    log.info(`harvestRetroResults: no learnings in retro output for task ${taskId}`);
+    return;
+  }
+
+  log.debug('[retro] harvestRetroResults: storing learnings', { jobId, taskId, count: learnings.length });
+
+  let stored = 0;
+  for (const learning of learnings) {
+    if (!learning.content || typeof learning.content !== 'string') continue;
+
+    const tags = Array.isArray(learning.tags) ? learning.tags : ['retro', 'self-improvement'];
+
+    try {
+      log.debug('[retro] harvestRetroResults: storing learning', { jobId, taskId, preview: learning.content.slice(0, 80) });
+      const res = await fetchFn(`http://127.0.0.1:${port}/api/memory/store`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: learning.content,
+          category: learning.category ?? null,
+          tags,
+          trigger: 'retro',
+          source: `retro-${taskId}`,
+          importance: 2,
+        }),
+      });
+
+      if (!res.ok) {
+        const text = await res.text();
+        log.warn(`harvestRetroResults: memory store returned ${res.status}: ${text.slice(0, 100)}`);
+      } else {
+        stored++;
+      }
+    } catch (err) {
+      log.warn(`harvestRetroResults: error storing learning: ${String(err)}`);
+    }
+  }
+
+  const skippedCount = parsed.skipped?.length ?? 0;
+  log.info(
+    `harvestRetroResults: stored ${stored}/${learnings.length} learnings for task ${taskId}` +
+    (skippedCount > 0 ? ` (worker skipped ${skippedCount})` : ''),
+  );
 }
 
 // ── Exported functions ────────────────────────────────────────
@@ -88,6 +253,7 @@ export function shouldTriggerRetro(task: OrchestratorTask & { workers?: WorkerJo
   const cfg = getSelfImprovementConfig();
 
   if (!cfg.enabled || !cfg.retro.enabled) {
+    log.debug('[retro] self-improvement disabled by config, skipping retro');
     return false;
   }
 
@@ -109,21 +275,29 @@ export function shouldTriggerRetro(task: OrchestratorTask & { workers?: WorkerJo
 
   const triggers = cfg.retro.triggers;
 
+  const hasError = !!(task.error);
+  const retryCount = task.retry_count;
+  const failedWorkers = task.workers?.filter(w => w.status === 'failed' && w.error).length ?? 0;
+
   // Check: error field set
-  if (triggers.on_error && task.error) {
+  if (triggers.on_error && hasError) {
+    log.debug('[retro] trigger conditions met, spawning retro worker', { taskId: task.external_id, reason: 'on_error' });
     return true;
   }
 
   // Check: retry_count > 0
-  if (triggers.on_retry && task.retry_count > 0) {
+  if (triggers.on_retry && retryCount > 0) {
+    log.debug('[retro] trigger conditions met, spawning retro worker', { taskId: task.external_id, reason: 'on_retry' });
     return true;
   }
 
   // Check: workers with error status
-  if (triggers.on_error && task.workers && task.workers.some(w => w.status === 'failed' && w.error)) {
+  if (triggers.on_error && failedWorkers > 0) {
+    log.debug('[retro] trigger conditions met, spawning retro worker', { taskId: task.external_id, reason: 'failed_workers' });
     return true;
   }
 
+  log.debug('[retro] no trigger conditions matched for task', { taskId: task.external_id, hasError, retryCount, failedWorkers });
   return false;
 }
 
@@ -134,6 +308,7 @@ export function shouldTriggerRetro(task: OrchestratorTask & { workers?: WorkerJo
 export async function spawnRetro(
   task: OrchestratorTask & { workers?: WorkerJob[]; activity?: TaskActivity[] },
 ): Promise<string> {
+  log.debug('[retro] spawning retro worker for task', { taskId: task.external_id });
   const profilesDir = profilesDirOverride ?? resolveProjectPath('.claude', 'agents');
   const profiles = loadProfiles(profilesDir);
   const profile = profiles.get('retro');
@@ -178,6 +353,7 @@ export async function spawnRetro(
     spawned_by: 'orchestrator',
   });
 
+  log.debug('[retro] retro worker spawned', { taskId: task.external_id, jobId });
   log.info(`Spawned retro worker ${jobId} for task ${task.id}`);
   return jobId;
 }
@@ -187,6 +363,7 @@ export async function spawnRetro(
  * and spawns if warranted. Non-blocking — errors are caught and logged.
  */
 export async function evaluateTask(taskId: string, _db?: unknown): Promise<void> {
+  log.debug('[retro] evaluateTask called for task', { taskId });
   try {
     const taskRows = query<OrchestratorTask>('SELECT * FROM tasks WHERE external_id = ?', taskId);
     const task = taskRows[0];
@@ -231,6 +408,11 @@ export async function evaluateTask(taskId: string, _db?: unknown): Promise<void>
     } catch (actErr) {
       log.warn(`Failed to log retro activity for task ${taskId}: ${String(actErr)}`);
     }
+
+    // Harvest learnings from the retro worker — non-blocking
+    harvestRetroResults(jobId, taskId).catch(err => {
+      log.warn(`harvestRetroResults failed for task ${taskId}: ${String(err)}`);
+    });
   } catch (err) {
     log.error(`evaluateTask failed for ${taskId}: ${String(err)}`);
   }
