@@ -35,6 +35,17 @@ daemon:
     max_size_mb: 10
     max_files: 5
 
+# Hot-loadable plugin extensions — self-contained .js extension files the
+# daemon loads/reloads/unloads at runtime WITHOUT a restart. Each plugin can
+# register HTTP routes (under /api/ext/) and scheduler tasks, plus
+# onInit/onShutdown hooks. Manage via GET/POST /api/extensions*.
+# The directory is opt-in: absent dir = silent no-op.
+extensions:
+  plugins:
+    enabled: true
+    dir: ".kithkit/extensions"
+    watch: true             # fs-watch the dir and auto-(re)load on change
+
 scheduler:
   tasks_dirs: []          # Additional directories to scan for external task handler files
   hot_load_jobs:

@@ -76,6 +76,22 @@ export async function matchRoute(
 }
 
 /**
+ * Unregister a previously registered route by its exact pattern string.
+ * Returns true if a route was removed, false if no route matched.
+ *
+ * Added for hot-loadable plugin extensions: a plugin reload must atomically
+ * swap its route handlers (unregister old → register new) without restarting
+ * the daemon. Framework/extension routes registered at boot are unaffected —
+ * only callers that know a pattern (its owner) can remove it.
+ */
+export function unregisterRoute(pattern: string): boolean {
+  const idx = _routes.findIndex(r => r.pattern === pattern);
+  if (idx === -1) return false;
+  _routes.splice(idx, 1);
+  return true;
+}
+
+/**
  * Get list of registered route patterns (for health/debug output).
  */
 export function getRegisteredRoutes(): string[] {
