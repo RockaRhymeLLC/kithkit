@@ -19,10 +19,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { openDatabase, _resetDbForTesting } from '../../../../core/db.js';
-import { loadConfig, _resetConfigForTesting } from '../../../../core/config.js';
-import { getChannel, _resetForTesting as _resetChannelRouter } from '../../channel-router.js';
-import { _doInjectForTesting, _resetForTesting as _resetTelegramAdapter } from '../telegram.js';
+import { openDatabase, _resetDbForTesting } from '../../../core/db.js';
+import { loadConfig, _resetConfigForTesting } from '../../../core/config.js';
+import { getChannel, _resetForTesting as _resetChannelRouter } from '../channel-router.js';
+import { _doInjectForTesting, _resetForTesting as _resetTelegramAdapter } from '../adapters/telegram.js';
 
 // ── helpers ──────────────────────────────────────────────────
 
