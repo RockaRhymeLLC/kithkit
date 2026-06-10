@@ -26,7 +26,7 @@ export interface TokenIdentity {
  * Inserts a row into agent_tokens and returns the raw token string.
  */
 export function issueToken(
-  role: 'comms' | 'orchestrator' | 'worker',
+  role: 'comms' | 'orchestrator' | 'worker' | 'daemon',
   metadata?: { jobId?: string },
 ): string {
   const token = randomBytes(32).toString('hex');
@@ -73,4 +73,33 @@ export function revokeTokensByJobId(jobId: string): void {
     `UPDATE agent_tokens SET revoked_at = datetime('now')
      WHERE job_id = ? AND revoked_at IS NULL`,
   ).run(jobId);
+}
+
+// ── Daemon-internal token ────────────────────────────────────
+// Scheduler tasks run inside the daemon process but deliver to human
+// channels via HTTP /api/send, which role-gates on X-Agent-Token.
+// They are the daemon itself — not workers — so they get a dedicated
+// 'daemon' role token, minted once per boot and never persisted to disk.
+
+let _daemonToken: string | null = null;
+
+/** For testing only — resets the in-memory singleton to simulate a new boot. */
+export function _resetDaemonTokenForTesting(): void {
+  _daemonToken = null;
+}
+
+/**
+ * Get (minting on first call) the boot-scoped daemon-internal token.
+ * Revokes any stale 'daemon' tokens from previous boots before minting,
+ * so the table holds at most one active daemon token.
+ */
+export function getDaemonToken(): string {
+  if (_daemonToken) return _daemonToken;
+  const db = getDatabase();
+  db.prepare(
+    `UPDATE agent_tokens SET revoked_at = datetime('now')
+     WHERE role = 'daemon' AND revoked_at IS NULL`,
+  ).run();
+  _daemonToken = issueToken('daemon');
+  return _daemonToken;
 }
