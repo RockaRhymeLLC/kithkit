@@ -1,0 +1,13 @@
+-- Repair: worker_jobs.spawned_by / spawner_notified_at are missing on fresh installs.
+--
+-- The original DDL for these columns lived in a migration that was removed from
+-- the sequence; 011-worker-spawned-by.sql was left as a no-op placeholder with a
+-- comment incorrectly claiming migration 005 added them (005 is memory-access-
+-- tracking). Long-lived databases have the columns from the removed migration,
+-- but any database created from the current migration chain does not — which
+-- breaks spawnWorkerJob's INSERT (it writes spawned_by) on every worker spawn.
+--
+-- --safe-alter ignores "duplicate column name", so this is a no-op on databases
+-- that already have the columns and a repair on those that don't.
+--safe-alter: worker_jobs ADD COLUMN spawned_by TEXT
+--safe-alter: worker_jobs ADD COLUMN spawner_notified_at TEXT
