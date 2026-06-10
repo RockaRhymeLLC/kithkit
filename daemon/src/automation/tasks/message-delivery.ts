@@ -5,7 +5,7 @@
  * 2. This task runs on a short interval, pulls undelivered messages for persistent agents
  * 3. Injects the FULL MESSAGE CONTENT into the target tmux session
  * 4. Marks as delivered (processed_at + read_at + notified_at set) — no re-pinging
- * 5. Expires undelivered messages after MAX_RETRIES failed injection attempts
+ * 5. Expires undelivered messages after TTL hours using created_at (age-based, restart-resilient)
  *
  * Deliver-once: each message is notified exactly once. No re-ping phase.
  */
@@ -13,29 +13,16 @@
 import { query, exec, update } from '../../core/db.js';
 import { injectMessage, listSessions, _getCommsSession } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
+import { loadConfig } from '../../core/config.js';
 import type { Scheduler } from '../scheduler.js';
 import type { Message } from '../../agents/message-router.js';
 
 const log = createLogger('message-delivery');
 
-// ── Config ───────────────────────────────────────────────────
-
-/** Max delivery attempts before marking a message as expired. */
-const MAX_RETRIES = 3;
-
-
 // ── State ────────────────────────────────────────────────────
 
 let _scheduler: Scheduler | null = null;
 let _pendingWakeup = false;
-
-/**
- * In-memory retry counter for undelivered messages. Keyed by message ID.
- * Resets on daemon restart — acceptable because stale messages
- * from a previous daemon run will get a fresh 3 attempts.
- */
-const _retryCounts = new Map<number, number>();
-
 
 /**
  * Tracks the last time we successfully injected a notification ping into
@@ -44,6 +31,18 @@ const _retryCounts = new Map<number, number>();
  * the heartbeat skips the unread-message portion of its nudge.
  */
 const _lastAgentNotificationTime = new Map<string, number>();
+
+// ── Config helpers ───────────────────────────────────────────
+
+/**
+ * Read the message-delivery TTL from the scheduler task config.
+ * Defaults to 24 hours if not configured. Config key: scheduler.tasks[message-delivery].config.ttl_hours
+ */
+function getTtlHours(): number {
+  const tasks = loadConfig().scheduler?.tasks ?? [];
+  const taskCfg = tasks.find(t => t.name === 'message-delivery');
+  return (taskCfg?.config?.ttl_hours as number | undefined) ?? 24;
+}
 
 // ── Public API ───────────────────────────────────────────────
 
@@ -98,15 +97,18 @@ function getLiveSessions(): Set<string> {
 /**
  * Mark a message as expired (undeliverable). Sets processed_at with
  * metadata indicating it was not successfully delivered.
+ *
+ * Emits log.error (dead-letter observable, Shape A of #620) and sets
+ * dead_letter:true in metadata so API consumers and ops tooling can detect drops.
  */
-function expireMessage(msg: Message, retries: number): void {
+function expireMessage(msg: Message, reason: string): void {
   const now = new Date().toISOString();
   const existingMeta = msg.metadata ? JSON.parse(msg.metadata) : {};
   const expiredMeta = JSON.stringify({
     ...existingMeta,
     expired: true,
-    reason: 'max_retries_exceeded',
-    retries,
+    dead_letter: true,
+    reason,
     expired_at: now,
   });
   exec(
@@ -115,7 +117,13 @@ function expireMessage(msg: Message, retries: number): void {
     expiredMeta,
     msg.id,
   );
-  _retryCounts.delete(msg.id);
+  log.error('DEAD-LETTER: message expired — TTL exceeded', {
+    id: msg.id,
+    from: msg.from_agent,
+    to: msg.to_agent,
+    reason,
+    created_at: msg.created_at,
+  });
 }
 
 /**
@@ -139,18 +147,44 @@ function formatBatchContent(messages: Message[]): string {
  * Only targets comms — orchestrator sessions are excluded because the
  * wrapper's poll loop handles message retrieval between Claude runs.
  * Injecting into orch* sessions disrupts Claude's input stream (issue #135).
+ *
+ * Age-based TTL (Shape B, #620): messages older than ttl_hours are expired before
+ * delivery is attempted. Expiry uses created_at (persisted in DB), so the clock
+ * survives daemon restarts — no in-memory counter needed.
  */
 async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivered: number; failed: number; expired: number }> {
+  let delivered = 0;
+  let failed = 0;
+  let expired = 0;
+
+  const ttlHours = getTtlHours();
+
+  // ── TTL pre-pass: expire messages that have aged past the TTL ──────────────
+  // Created_at is the persistent clock — daemon restarts do not reset expiry.
+  // Uses unixepoch() for comparison so it handles both DB-default format
+  // ('YYYY-MM-DD HH:MM:SS') and ISO 8601 ('YYYY-MM-DDTHH:MM:SS.sssZ') values.
+  // Filter strictly to to_agent='comms' (OQ4: orch-delivery gap deferred to its own PR).
+  const ttlExpired = query<Message>(
+    `SELECT * FROM messages
+     WHERE processed_at IS NULL
+       AND to_agent = 'comms'
+       AND unixepoch(created_at) < unixepoch('now') - (? * 3600)
+     ORDER BY created_at ASC`,
+    ttlHours,
+  );
+
+  for (const msg of ttlExpired) {
+    expireMessage(msg, 'ttl_exceeded');
+    expired++;
+  }
+
+  // ── Delivery pass: deliver remaining (non-expired) messages ────────────────
   const undelivered = query<Message>(
     `SELECT * FROM messages
      WHERE processed_at IS NULL
        AND to_agent = 'comms'
      ORDER BY created_at ASC`,
   );
-
-  let delivered = 0;
-  let failed = 0;
-  let expired = 0;
 
   if (undelivered.length === 0) return { delivered, failed, expired };
 
@@ -163,47 +197,26 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
   }
 
   for (const [agentId, messages] of byAgent) {
-    // Check retries and expire where needed
-    const deliverable: Message[] = [];
-    for (const msg of messages) {
-      const retries = _retryCounts.get(msg.id) ?? 0;
-      if (retries >= MAX_RETRIES) {
-        expireMessage(msg, retries);
-        expired++;
-        log.warn('Message expired after max retries', { id: msg.id, to: agentId, retries });
-        continue;
-      }
-      if (!liveSessions.has(agentId)) {
-        const newCount = retries + 1;
-        _retryCounts.set(msg.id, newCount);
-        if (newCount >= MAX_RETRIES) {
-          expireMessage(msg, newCount);
-          expired++;
-          log.warn('Message expired — target session does not exist', { id: msg.id, to: agentId, retries: newCount });
-        } else {
-          failed++;
-        }
-        continue;
-      }
-      deliverable.push(msg);
+    if (!liveSessions.has(agentId)) {
+      // Session is absent — messages remain pending; will be delivered when
+      // session returns (heartbeat flush) or expired by TTL pre-pass next cycle.
+      failed += messages.length;
+      continue;
     }
 
-    if (deliverable.length === 0) continue;
-
     // Inject the full message content into the tmux session
-    const contentText = formatBatchContent(deliverable);
+    const contentText = formatBatchContent(messages);
     const success = injectMessage(agentId, contentText);
 
     if (success) {
       const now = new Date().toISOString();
       const nowMs = Date.now();
-      for (const msg of deliverable) {
+      for (const msg of messages) {
         const existingMeta = msg.metadata ? JSON.parse(msg.metadata) : {};
         const updatedMeta = JSON.stringify({ ...existingMeta, last_notified_at: now });
         // Set both processed_at AND read_at — the agent already has the content
         // in their session, so no follow-up notification is needed.
         exec('UPDATE messages SET processed_at = ?, read_at = ?, notified_at = ?, metadata = ? WHERE id = ?', now, now, now, updatedMeta, msg.id);
-        _retryCounts.delete(msg.id);
         delivered++;
       }
       // If we just delivered to the orchestrator, touch last_activity so the
@@ -215,13 +228,9 @@ async function deliverNewMessages(liveSessions: Set<string>): Promise<{ delivere
         });
       }
       _lastAgentNotificationTime.set(agentId, nowMs);
-      log.debug('Message content delivered', { to: agentId, count: deliverable.length });
+      log.debug('Message content delivered', { to: agentId, count: messages.length });
     } else {
-      for (const msg of deliverable) {
-        const newCount = (_retryCounts.get(msg.id) ?? 0) + 1;
-        _retryCounts.set(msg.id, newCount);
-        failed++;
-      }
+      failed += messages.length;
       log.warn('Failed to inject message content', { to: agentId });
     }
   }
@@ -318,13 +327,23 @@ export function register(scheduler: Scheduler): void {
 
 // ── Testing ──────────────────────────────────────────────────
 
-/** @internal Reset retry state for testing */
+/**
+ * @internal Reset delivery state for testing.
+ * The in-memory _retryCounts map was removed in #620 (age-based TTL makes it
+ * obsolete — created_at in DB is the persistent timer). This function now only
+ * clears the notification time map.
+ */
 export function _resetRetriesForTesting(): void {
-  _retryCounts.clear();
   _lastAgentNotificationTime.clear();
 }
 
-/** @internal Get current retry count for testing */
-export function _getRetryCount(messageId: number): number {
-  return _retryCounts.get(messageId) ?? 0;
+/**
+ * @internal Thin wrapper around deliverNewMessages() for test harness access.
+ * Allows tests to drive the delivery cycle directly with an injected liveSessions set,
+ * without requiring the scheduler or a live tmux environment.
+ */
+export async function _deliverNewMessagesForTesting(opts: {
+  liveSessions: Set<string>;
+}): Promise<{ delivered: number; failed: number; expired: number }> {
+  return deliverNewMessages(opts.liveSessions);
 }
