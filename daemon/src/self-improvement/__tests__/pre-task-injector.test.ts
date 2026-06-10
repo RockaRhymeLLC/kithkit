@@ -427,6 +427,93 @@ describe('Profile max_memories_injected overrides global default', () => {
   });
 });
 
+describe('Relevance scoring is normalized by the memory, not the prompt (Round 4)', () => {
+  let tmpDir: string;
+  let db: ReturnType<typeof openDatabase>;
+
+  beforeEach(() => {
+    _resetConfigForTesting();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-injector-'));
+    _resetDbForTesting();
+    db = openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+    // Default min_relevance_score (0.4) — the production setting
+    enableInjection(tmpDir);
+  });
+
+  afterEach(() => {
+    _resetConfigForTesting();
+    _resetDbForTesting();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // A realistic worker prompt: a relevant instruction surrounded by the kind of
+  // boilerplate every real spawn carries (guardrails, reporting instructions).
+  // Under the old formula (matched ÷ task-word-count) this prompt's length
+  // capped every memory's score near zero and injection NEVER fired.
+  const LONG_PROMPT = [
+    'You are a coding worker. Fix the deploy script: the curl commands use',
+    'unquoted URLs with question marks and ampersands, which breaks under zsh',
+    'because of glob expansion. Quote the URLs in every curl invocation.',
+    '',
+    'Guardrails: read the existing code before modifying it. Follow project',
+    'conventions. Keep changes focused on the assigned task. Write tests for',
+    'new functionality and run the full suite before reporting completion.',
+    'Commit early and often with clear messages. Do not push to remote.',
+    'Structure your final report so it can be reviewed: summary of changes,',
+    'files touched, exact build and test results, and any risks or behavior',
+    'changes you want flagged. Stop before irreversible steps and report back',
+    'to the orchestrator for authorization first. If you are blocked on a',
+    'dependency or missing access, update the task with current status and',
+    'escalate rather than guessing. Verify your work against the actual state',
+    'of the repository, not what you intended. Clean up temporary files and',
+    'stale state when you finish. Track what you commit to and follow through.',
+  ].join('\n');
+
+  it('injects a relevant memory into a realistic long prompt at the default threshold', async () => {
+    insertMemory({
+      content: 'Always quote URLs in curl commands because zsh glob expansion breaks on unquoted question marks',
+      category: 'tool-usage',
+      origin_agent: 'test-agent',
+    });
+
+    const result = await injectLearnings(LONG_PROMPT, BASE_PROFILE, db);
+
+    assert.ok(
+      result.includes('## Known Issues / Past Learnings'),
+      'relevant memory should be injected despite prompt length',
+    );
+    assert.ok(result.includes('Always quote URLs in curl commands'), 'should include the memory content');
+  });
+
+  it('still filters an irrelevant memory against the same long prompt', async () => {
+    insertMemory({
+      content: 'breakfast is served at 8am in the cafeteria kitchen area',
+      category: 'process',
+    });
+
+    const result = await injectLearnings(LONG_PROMPT, BASE_PROFILE, db);
+    assert.equal(result, LONG_PROMPT, 'irrelevant memory should not be injected');
+  });
+
+  it('stem matching folds common inflections (token/tokens, validate/validating)', async () => {
+    insertMemory({
+      content: 'validate authentication tokens',
+      category: 'behavioral',
+    });
+
+    const result = await injectLearnings(
+      'Work on validating authenticated token flows in the gateway service',
+      BASE_PROFILE,
+      db,
+    );
+
+    assert.ok(
+      result.includes('validate authentication tokens'),
+      'inflected forms should match via stems',
+    );
+  });
+});
+
 describe('Falls back to global default when profile has no max_memories_injected', () => {
   let tmpDir: string;
   let db: ReturnType<typeof openDatabase>;

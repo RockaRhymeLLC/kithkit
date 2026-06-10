@@ -12,8 +12,16 @@ const log = createLogger('pre-task-injector');
 
 // ── Constants ────────────────────────────────────────────────
 
-/** Categories that represent self-improvement learnings (not general knowledge). */
-const SI_CATEGORIES = ['api-format', 'behavioral', 'process', 'tool-usage', 'communication'];
+/** Categories that represent self-improvement learnings (not general knowledge).
+ * Shared with retro-ingest.ts — the retro worker's learnings must land in one
+ * of these categories to be picked up by pre-task injection. */
+export const SI_CATEGORIES = ['api-format', 'behavioral', 'process', 'tool-usage', 'communication'];
+
+/** Stem length for relevance matching — 5 chars folds common English
+ * inflections (token/tokens, validate/validation, spawn/spawning) into one
+ * key while keeping distinct technical terms apart. Words shorter than the
+ * stem length are kept whole (api, a2a, curl). */
+const STEM_LENGTH = 5;
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -31,15 +39,40 @@ function formatAge(createdAt: string): string {
 }
 
 /**
- * Compute a keyword relevance score (0–1) for a memory against a task description.
- * Score = fraction of non-trivial task words found in the memory content.
- * Returns 0.0 if the task description has no qualifying words (length ≥ 3) — no signal means no injection.
+ * Tokenise text into a set of lowercase word stems (words ≥ 3 chars,
+ * truncated to STEM_LENGTH).
  */
-function computeScore(taskWords: string[], content: string): number {
-  if (taskWords.length === 0) return 0.0;
-  const lower = content.toLowerCase();
-  const matched = taskWords.filter(w => lower.includes(w)).length;
-  return matched / taskWords.length;
+function toStems(text: string): Set<string> {
+  return new Set(
+    text
+      .toLowerCase()
+      .split(/\W+/)
+      .filter(w => w.length >= 3)
+      .map(w => w.slice(0, STEM_LENGTH)),
+  );
+}
+
+/**
+ * Compute a keyword relevance score (0–1) for a memory against a task description.
+ *
+ * Score = fraction of the MEMORY's distinct word stems found in the task
+ * description. Normalising by the memory (the short text) keeps the score
+ * scale independent of prompt length: the previous formula divided by the
+ * task-prompt word count, so any realistic worker prompt (hundreds of words)
+ * mathematically capped every memory's score far below the default 0.4
+ * threshold and injection never fired.
+ *
+ * Returns 0.0 if either side has no qualifying words — no signal means no injection.
+ */
+function computeScore(taskStems: Set<string>, content: string): number {
+  if (taskStems.size === 0) return 0.0;
+  const memStems = toStems(content);
+  if (memStems.size === 0) return 0.0;
+  let matched = 0;
+  for (const stem of memStems) {
+    if (taskStems.has(stem)) matched++;
+  }
+  return matched / memStems.size;
 }
 
 // ── Public API ───────────────────────────────────────────────
@@ -75,21 +108,17 @@ export async function searchRelevantLearnings(
        FROM memories
        WHERE category IN (${placeholders})
          AND (expires_at IS NULL OR expires_at > datetime('now'))
-       ORDER BY created_at DESC`,
+       ORDER BY created_at DESC
+       LIMIT 500`,
     )
     .all(...SI_CATEGORIES);
 
-  // Tokenise: split on non-alphanumeric, filter to words ≥ 3 chars
-  const taskWords = taskDescription
-    .trim()
-    .split(/\W+/)
-    .filter(w => w.length >= 3)
-    .map(w => w.toLowerCase());
+  const taskStems = toStems(taskDescription);
 
   const scored = rows
     .map(row => ({
       ...row,
-      _relevance_score: computeScore(taskWords, row.content),
+      _relevance_score: computeScore(taskStems, row.content),
     }))
     .filter(r => r._relevance_score >= minScore)
     .sort((a, b) => b._relevance_score - a._relevance_score)
