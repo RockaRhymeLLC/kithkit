@@ -78,6 +78,13 @@ export interface WorkerState {
   finishedAt: string | null;
   /** ISO timestamp of the last SDK stream event received. Null until first message arrives. */
   lastActivityAt: string | null;
+  /** Model the SDK actually resolved for this session (system:init message),
+   * with the result message's modelUsage keys as fallback. Null if the SDK
+   * never reported one — the gap that made model attribution impossible in
+   * the fable-5 experiment rounds. */
+  resolvedModel: string | null;
+  /** Assistant turns consumed (mirrors capState.turns_used for persistence). */
+  turnsUsed: number;
 }
 
 // ── Cap warning state ─────────────────────────────────────────
@@ -282,6 +289,8 @@ export function spawnWorker(opts: SpawnOptions): string {
     startedAt: new Date().toISOString(),
     finishedAt: null,
     lastActivityAt: null,
+    resolvedModel: null,
+    turnsUsed: 0,
   };
 
   const worker: ActiveWorker = {
@@ -369,9 +378,20 @@ async function runWorker(
       // Reset inactivity timers on any message
       resetInactivityTimer(worker, timeoutMs, warnThresholdMs);
 
+      // Resolved-model capture: the SDK announces the session's actual model
+      // in the system:init message. This is the authoritative attribution the
+      // fable-5 experiment rounds lacked.
+      if (message.type === 'system') {
+        const sysMsg = message as SDKMessage & { subtype?: string; model?: string };
+        if (sysMsg.subtype === 'init' && typeof sysMsg.model === 'string' && sysMsg.model) {
+          worker.state.resolvedModel = sysMsg.model;
+        }
+      }
+
       // Count assistant turns and check turn-based cap warning.
       if (message.type === 'assistant') {
         worker.capState.turns_used++;
+        worker.state.turnsUsed = worker.capState.turns_used;
 
         if (
           effectiveMaxTurns !== undefined &&
@@ -392,11 +412,21 @@ async function runWorker(
           result?: string;
           total_cost_usd?: number;
           usage?: { input_tokens?: number; output_tokens?: number };
+          num_turns?: number;
+          modelUsage?: Record<string, unknown>;
         };
 
         worker.state.tokensIn = resultMsg.usage?.input_tokens ?? 0;
         worker.state.tokensOut = resultMsg.usage?.output_tokens ?? 0;
         worker.state.costUsd = resultMsg.total_cost_usd ?? 0;
+        if (typeof resultMsg.num_turns === 'number' && resultMsg.num_turns > worker.state.turnsUsed) {
+          worker.state.turnsUsed = resultMsg.num_turns;
+        }
+        // Fallback model attribution: modelUsage is keyed by model id.
+        if (!worker.state.resolvedModel && resultMsg.modelUsage) {
+          const models = Object.keys(resultMsg.modelUsage);
+          if (models.length > 0) worker.state.resolvedModel = models.join(',');
+        }
 
         if (resultMsg.subtype === 'success') {
           worker.state.status = 'completed';
