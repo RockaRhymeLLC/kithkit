@@ -18,7 +18,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { openDatabase, _resetDbForTesting } from '../../core/db.js';
-import { handleSendRoute } from '../send.js';
+import { handleSendRoute, _setTelegramSendFileForTesting } from '../send.js';
 import { issueToken } from '../../auth/agent-tokens.js';
 import {
   registerAdapter,
@@ -94,7 +94,8 @@ let commsToken: string;
 
 before(async () => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'send-file-test-'));
-  openDatabase(path.join(tmpDir, 'test.db'));
+  _resetDbForTesting();
+  openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
 
   // Minimal contacts table
   const { exec } = await import('../../core/db.js');
@@ -159,6 +160,24 @@ describe('POST /api/send-file', () => {
     });
     assert.equal(res.status, 400);
     assert.match(res.body.error as string, /only supported on.*telegram/i);
+  });
+
+  it('returns 200 with telegram:true when telegramSendFile succeeds (mocked seam)', async () => {
+    let intercepted = false;
+    _setTelegramSendFileForTesting(async () => { intercepted = true; return true; });
+
+    const tmpFile = path.join(tmpDir, 'happy.txt');
+    fs.writeFileSync(tmpFile, 'happy path content');
+
+    try {
+      const res = await post('/api/send-file', { file_path: tmpFile });
+      assert.equal(res.status, 200);
+      assert.equal((res.body.results as Record<string, boolean>).telegram, true,
+        'Expected results.telegram to be true — mock was not intercepted');
+      assert.ok(intercepted, 'Expected telegramSendFile mock to be called (seam not wired)');
+    } finally {
+      _setTelegramSendFileForTesting(null);
+    }
   });
 
   it('returns 404 when recipient name not found in contacts', async () => {

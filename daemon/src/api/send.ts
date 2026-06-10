@@ -17,6 +17,24 @@ import { verifyToken } from '../auth/agent-tokens.js';
 
 const log = createLogger('api-send');
 
+// ── Injectable seam for telegramSendFile (testability) ───────
+// In production this is null and the lazy import is used.
+// Tests inject a mock via _setTelegramSendFileForTesting to avoid
+// real Telegram API calls and to intercept the call for assertions.
+type TelegramSendFileFn = (
+  filePath: string,
+  fileName?: string,
+  caption?: string,
+  chatId?: string,
+) => Promise<boolean>;
+
+let _telegramSendFileOverride: TelegramSendFileFn | null = null;
+
+/** For testing only — inject a mock for telegramSendFile. Pass null to restore. */
+export function _setTelegramSendFileForTesting(fn: TelegramSendFileFn | null): void {
+  _telegramSendFileOverride = fn;
+}
+
 // ── Recipient resolution ─────────────────────────────────────
 
 interface ContactRow {
@@ -306,8 +324,10 @@ export async function handleSendRoute(
         return true;
       }
 
-      // Lazy import to avoid circular deps — telegram adapter may not be loaded yet
-      const { telegramSendFile } = await import('../extensions/comms/adapters/telegram.js');
+      // Lazy import to avoid circular deps — telegram adapter may not be loaded yet.
+      // Use the injectable override if set (tests only), otherwise dynamic import.
+      const telegramSendFile = _telegramSendFileOverride
+        ?? (await import('../extensions/comms/adapters/telegram.js')).telegramSendFile;
       const ok = await telegramSendFile(filePath, fileName, caption, chatId);
 
       const results: Record<string, boolean> = { telegram: ok };
