@@ -112,3 +112,56 @@ describe('extensions API: load-authorization gate', () => {
     assert.ok(Array.isArray(body.plugins));
   });
 });
+
+describe('extensions API: path leak prevention (R2 hardening #2)', () => {
+  it('GET /api/extensions does not leak plugins_dir absolute path', async () => {
+    const { req, res, out } = fakeReqRes('GET');
+    await handleExtensionsRoute(req, res, '/api/extensions');
+    const body = JSON.parse(out.body!);
+    // plugins_dir (absolute path) must not be present
+    assert.equal(body.plugins_dir, undefined, 'plugins_dir absolute path must not be in response');
+    // plugins_dir_configured is the safe replacement (boolean)
+    assert.ok('plugins_dir_configured' in body, 'plugins_dir_configured boolean must be present');
+    assert.equal(typeof body.plugins_dir_configured, 'boolean');
+  });
+
+  it('GET /api/extensions plugin file fields contain no absolute paths', async () => {
+    // Write a minimal valid plugin file into the tmpDir plugins dir so list() has something
+    const pluginSrc = `export default { name: 'leak-test-plugin', routes: {}, tasks: [] };`;
+    const pluginsDir = path.join(tmpDir, 'extensions');
+    const pluginFile = path.join(pluginsDir, 'leak-test-plugin.mjs');
+    fs.writeFileSync(pluginFile, pluginSrc);
+
+    const { req, res, out } = fakeReqRes('GET');
+    await handleExtensionsRoute(req, res, '/api/extensions');
+    const body = JSON.parse(out.body!);
+    assert.ok(Array.isArray(body.plugins));
+    for (const plugin of body.plugins) {
+      assert.ok(
+        typeof plugin.file === 'string' && !plugin.file.startsWith('/'),
+        `plugin.file must not be an absolute path; got: ${plugin.file}`,
+      );
+    }
+  });
+
+  it('GET /api/extensions response contains no string values starting with / (full path scan)', async () => {
+    const { req, res, out } = fakeReqRes('GET');
+    await handleExtensionsRoute(req, res, '/api/extensions');
+    const body = JSON.parse(out.body!);
+
+    function collectStrings(val: unknown): string[] {
+      if (typeof val === 'string') return [val];
+      if (Array.isArray(val)) return val.flatMap(collectStrings);
+      if (val && typeof val === 'object') return Object.values(val).flatMap(collectStrings);
+      return [];
+    }
+
+    const allStrings = collectStrings(body);
+    const absolutePaths = allStrings.filter(s => s.startsWith('/'));
+    assert.deepEqual(
+      absolutePaths,
+      [],
+      `Response must not contain absolute paths; found: ${JSON.stringify(absolutePaths)}`,
+    );
+  });
+});

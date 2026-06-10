@@ -23,10 +23,16 @@
  */
 
 import http from 'node:http';
+import path from 'node:path';
 import { json, withTimestamp } from './helpers.js';
 import { getExtension, isDegraded } from '../core/extensions.js';
-import { getPluginManager } from '../core/plugin-extensions.js';
+import { getPluginManager, PluginRecord } from '../core/plugin-extensions.js';
 import { verifyToken } from '../auth/agent-tokens.js';
+
+/** Strip the absolute file path from a PluginRecord — expose only the basename. */
+function sanitizePlugin(record: PluginRecord): PluginRecord & { file: string } {
+  return { ...record, file: path.basename(record.file) };
+}
 
 /** Gate mutating extension-management calls to comms/daemon roles. */
 function checkManagementAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
@@ -72,8 +78,8 @@ export async function handleExtensionsRoute(
       extension: ext
         ? { name: ext.name, degraded: isDegraded(), hot_reloadable: false }
         : null,
-      plugins: manager ? manager.list() : [],
-      plugins_dir: manager?.dir ?? null,
+      plugins: manager ? manager.list().map(sanitizePlugin) : [],
+      plugins_dir_configured: manager != null,
     }));
     return true;
   }
@@ -85,7 +91,7 @@ export async function handleExtensionsRoute(
       return true;
     }
     const plugins = await manager.scan();
-    json(res, 200, withTimestamp({ plugins }));
+    json(res, 200, withTimestamp({ plugins: plugins.map(sanitizePlugin) }));
     return true;
   }
 
@@ -102,7 +108,7 @@ export async function handleExtensionsRoute(
       json(res, 404, withTimestamp({ error: `Plugin not found: ${name}` }));
       return true;
     }
-    json(res, record.status === 'loaded' ? 200 : 422, withTimestamp({ plugin: record }));
+    json(res, record.status === 'loaded' ? 200 : 422, withTimestamp({ plugin: sanitizePlugin(record) }));
     return true;
   }
 
