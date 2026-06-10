@@ -13,9 +13,26 @@
 
 import { createRequire } from 'node:module';
 import { getDatabase, query } from '../core/db.js';
+import { createLogger } from '../core/logger.js';
 import { generateEmbedding, embeddingToBuffer, EMBEDDING_DIMENSIONS } from './embeddings.js';
 
+const log = createLogger('memory:vector-search');
+
 const require = createRequire(import.meta.url);
+
+/**
+ * Parse a stored tags JSON column defensively. A single malformed row must
+ * not break an entire search result set.
+ */
+function parseTags(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -120,14 +137,27 @@ export async function backfillEmbeddings(): Promise<number> {
   );
 
   let count = 0;
+  let failures = 0;
   for (const row of rows) {
-    const embedding = await generateEmbedding(row.content);
-    const buf = embeddingToBuffer(embedding);
+    try {
+      const embedding = await generateEmbedding(row.content);
+      const buf = embeddingToBuffer(embedding);
 
-    const db = getDatabase();
-    db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(buf, row.id);
-    indexEmbedding(row.id, embedding);
-    count++;
+      const db = getDatabase();
+      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(buf, row.id);
+      indexEmbedding(row.id, embedding);
+      count++;
+    } catch (err) {
+      // One bad row must not abort the whole backfill — skip and continue.
+      failures++;
+      log.warn(`backfillEmbeddings: failed for memory ${row.id}`, { error: String(err) });
+      // If everything is failing (e.g. embedding model unavailable), bail out
+      // early instead of grinding through the full table.
+      if (failures >= 5 && count === 0) {
+        log.error('backfillEmbeddings: aborting — first 5 rows all failed');
+        break;
+      }
+    }
   }
 
   return count;
@@ -209,7 +239,7 @@ export async function vectorSearch(
         content: mem.content,
         type: mem.category ?? 'fact',
         category: mem.category,
-        tags: JSON.parse(mem.tags || '[]'),
+        tags: parseTags(mem.tags),
         source: mem.source,
         distance: vr.distance,
         score,
@@ -321,7 +351,7 @@ function keywordSearch(queryText: string, limit: number): Promise<KeywordResult[
 
   return Promise.resolve(rows.map(r => ({
     id: r.id, content: r.content, type: r.category ?? 'fact', category: r.category,
-    tags: JSON.parse(r.tags || '[]'), source: r.source,
+    tags: parseTags(r.tags), source: r.source,
     score: r.kw_score, distance: 0, created_at: r.created_at,
   })));
 }

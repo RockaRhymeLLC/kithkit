@@ -36,6 +36,7 @@ async function sendA2A(body: Record<string, unknown>): Promise<void> {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(10000),
   });
   if (!response.ok) {
     const text = await response.text();
