@@ -3,6 +3,14 @@
 -- trigger: what event or condition triggered storage
 -- shareable: whether this memory can be shared with peer agents (1=yes, 0=no)
 -- decay_policy: how/when this memory expires beyond the default TTL logic
+--
+-- NOTE: shareable DEFAULT is 0 at the DDL level. The application layer
+-- applies a category-scoped default at insert time (going forward only,
+-- no backfill): memories whose category is in the self-improvement/learning
+-- set (api-format, behavioral, process, tool-usage, communication) are
+-- stored with shareable=1; all other categories (event, technical, person,
+-- user, private, fact, null) stay at 0. Callers may always override by
+-- passing an explicit shareable value. See SHAREABLE_CATEGORIES in memory.ts.
 --safe-alter: memories ADD COLUMN origin_agent TEXT
 --safe-alter: memories ADD COLUMN trigger TEXT
 --safe-alter: memories ADD COLUMN shareable INTEGER DEFAULT 0
