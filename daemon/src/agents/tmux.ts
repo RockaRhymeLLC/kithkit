@@ -357,22 +357,32 @@ export function getOrchestratorState(): 'active' | 'waiting' | 'dead' {
     }
   }
 
-  try {
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
-      timeout: 5000,
-    });
-  } catch {
-    return 'dead';
-  }
+  // has-session check — reuse sessionExists seam for test isolation
+  const sessionAlive = _testingDeps?.sessionExists
+    ? _testingDeps.sessionExists(session)
+    : (() => {
+        try {
+          execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
+            timeout: 5000,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+  if (!sessionAlive) return 'dead';
 
   try {
-    // Get the PID of the Claude process that owns the tmux pane
-    const panePid = execFileSync(TMUX_BIN, [
-      '-S', TMUX_SOCKET,
-      'display-message',
-      '-t', `${session}:`,
-      '-p', '#{pane_pid}',
-    ], { timeout: 5000, encoding: 'utf8' }).trim();
+    // Get the PID of the Claude process that owns the tmux pane.
+    // panePid seam allows tests to throw here and exercise the outer catch.
+    const panePid = _testingDeps?.panePid
+      ? _testingDeps.panePid()
+      : execFileSync(TMUX_BIN, [
+          '-S', TMUX_SOCKET,
+          'display-message',
+          '-t', `${session}:`,
+          '-p', '#{pane_pid}',
+        ], { timeout: 5000, encoding: 'utf8' }).trim();
 
     if (!panePid || !/^\d+$/.test(panePid)) {
       return 'dead';
@@ -476,6 +486,16 @@ interface TmuxTestDeps {
    * an unexpected error that triggers the outer catch (should return 'dead').
    */
   orchProcessState?: () => 'active' | 'waiting' | null;
+  /**
+   * Override the tmux display-message call that fetches the pane PID inside
+   * getOrchestratorState(). Throw to simulate a display-message failure and
+   * exercise the outer catch (which must return 'dead' — see #110 phantom-nudge fix).
+   * Return a numeric string (e.g. "12345") to proceed with normal process detection.
+   *
+   * NOTE: orchProcessState has its own inner catch and does NOT reach this outer catch.
+   * Use this seam (with sessionExists: () => true) for a true mutation-killer.
+   */
+  panePid?: () => string;
 }
 
 let _testingDeps: TmuxTestDeps | null = null;

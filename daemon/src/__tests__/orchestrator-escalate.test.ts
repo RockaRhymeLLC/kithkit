@@ -20,6 +20,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { openDatabase, _resetDbForTesting, query } from '../core/db.js';
 import { buildTaskFields, handleOrchestratorRoute, _setDepsForTesting } from '../api/orchestrator.js';
+import { initLogger, _resetLoggerForTesting } from '../core/logger.js';
 
 // ── Unit tests for buildTaskFields ──────────────────────────────────────────
 
@@ -165,12 +166,13 @@ describe('buildTaskFields', { concurrency: 1 }, () => {
 
 /**
  * Regression: when injectMessage() returns false (session died between state-check
- * and nudge), the escalate handler must still create the task row in DB and return
- * { status: 'escalated' }. The injected warning makes the failure visible in logs
- * so operators can diagnose phantom-nudge incidents.
+ * and nudge), the escalate handler must:
+ *   1. Still create the task row in DB (for idle monitor recovery)
+ *   2. Return { status: 'escalated' }
+ *   3. Emit a warn log so operators can diagnose phantom-nudge incidents
  *
- * This test verifies the observable contract (task in DB + escalated response)
- * rather than log output, because the test harness does not intercept log lines.
+ * MUTATION-KILL: removing the `if (!nudged) { log.warn(...) }` block from
+ * orchestrator.ts causes test 3 to fail (no warn log emitted → assertion fails).
  */
 
 const ESCALATE_TEST_PORT = 19872;
@@ -210,12 +212,24 @@ function escRequest(
   });
 }
 
+function readLogEntries(logDir: string): Array<{ level: string; msg: string }> {
+  const logFile = path.join(logDir, 'daemon.log');
+  if (!fs.existsSync(logFile)) return [];
+  const lines = fs.readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean);
+  return lines
+    .map(l => { try { return JSON.parse(l) as { level: string; msg: string }; } catch { return null; } })
+    .filter((e): e is { level: string; msg: string } => e !== null);
+}
+
 describe('Escalate handler — inject-fail graceful handling (#110)', { concurrency: 1 }, () => {
   let server: http.Server;
   let tmpDir: string;
+  let logDir: string;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kkit-esc-'));
+    logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kkit-esc-log-'));
+    initLogger({ logDir, minLevel: 'warn' });
     _resetDbForTesting();
     openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
 
@@ -250,11 +264,17 @@ describe('Escalate handler — inject-fail graceful handling (#110)', { concurre
   afterEach(async () => {
     _setDepsForTesting(null);
     _resetDbForTesting();
+    _resetLoggerForTesting({ logDir: os.tmpdir(), minLevel: 'info' });
     await new Promise<void>((resolve) => {
       if (server?.listening) {
-        server.close(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); resolve(); });
+        server.close(() => {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+          fs.rmSync(logDir, { recursive: true, force: true });
+          resolve();
+        });
       } else {
         if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+        if (logDir) fs.rmSync(logDir, { recursive: true, force: true });
         resolve();
       }
     });
@@ -292,5 +312,23 @@ describe('Escalate handler — inject-fail graceful handling (#110)', { concurre
       "SELECT external_id FROM tasks WHERE kind = 'orchestrator' AND status = 'pending'",
     );
     assert.ok(pendingTasks.length >= 1, 'at least one pending task must exist for idle monitor to pick up');
+  });
+
+  it('MUTATION-KILL: warn log emitted when inject fails (removing the !nudged warn block turns this RED)', async () => {
+    // This test kills the mutation "remove the if (!nudged) { log.warn(...) } block".
+    // Without that block, no warn is logged and the assertion below fails → RED.
+    // With the block in place, the warn fires and the assertion passes → GREEN.
+    await escRequest('POST', '/api/orchestrator/escalate', {
+      task: 'Inject-fail warn mutation-kill test',
+    });
+
+    const entries = readLogEntries(logDir);
+    const warnEntries = entries.filter(
+      e => e.level === 'warn' && e.msg.includes('inject failed'),
+    );
+    assert.ok(
+      warnEntries.length > 0,
+      `expected a warn log containing 'inject failed' when injectMessage returns false, got: ${JSON.stringify(entries)}`,
+    );
   });
 });
