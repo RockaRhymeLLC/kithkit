@@ -288,8 +288,14 @@ export function injectMessage(agentId: string, text: string): boolean {
       }
     }
 
-    log.info('Message injected into tmux session', { agentId, session, length: safeText.length });
-    return true; // syscall-based; COMMIT 4 upgrades this to receipt-based (return submitted)
+    // Receipt-based success: return true only when capture-pane confirmed the submit
+    // landed (pane advanced). This supersedes #439's syscall-based check IN-PLACE:
+    // #439 checked the send-keys exit code (truthy if no exception), which could
+    // succeed even if the C-m never reached Claude's readline. Callers that check
+    // the return value (e.g. the !nudged warn path in orchestrator.ts) now get a
+    // meaningful signal that Claude actually received and queued the input.
+    log.info('Message injected into tmux session', { agentId, session, length: safeText.length, verified: submitted });
+    return submitted;
   } catch (err) {
     log.error('Failed to inject message into tmux', {
       agentId,
