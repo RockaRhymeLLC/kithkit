@@ -5,6 +5,8 @@
  * t-313: peer marked unreachable when both .lan DNS and relay fail
  * t-314: updatePeerState exported from agent-comms + called on successful heartbeat (Fix 1 mutation-kill)
  * t-315: relay-fallback removal causes t-312 / t-313 assertions to fail (Fix 2 mutation-kill — see report)
+ * t-316: quiet-period guard — both pings fail + no recent traffic → NO dispatch (kithkit#77 fix)
+ *        mutation-kill: removing the guard re-introduces the false-positive dispatch and t-316 goes RED.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -16,6 +18,7 @@ import {
   _setFetchForTesting,
   _setLoadConfigForTesting,
   _setScanForPeersForTesting,
+  _setGetMessageCountsForTesting,
   _resetForTesting,
   _runForTesting,
 } from '../automation/tasks/peer-heartbeat.js';
@@ -314,5 +317,109 @@ describe('t-314: updatePeerState is exported from agent-comms and functional (Fi
       'Peer state after successful heartbeat must be idle');
 
     _resetForTesting();
+  });
+});
+
+// ── t-316: quiet-period guard (kithkit#77 fix) ────────────────────────────────
+//
+// Root cause: when both the direct-LAN ping (sendAgentMessage) and the relay
+// probe fail, the watchdog dispatched recovery unconditionally — triggering
+// false-positive updatePeerState('unreachable') + ARP scans during quiet
+// periods where the peer is intentionally offline.
+//
+// Fix: before dispatching recovery, cross-check inbound-webhook-count (messages
+// received FROM the peer in the last 10 min) vs inject-count (of those, the
+// ones confirmed injected).  Both zero → quiet period → NO dispatch.
+//
+// Mutation-kill: reverting the guard (removing the getMessageCounts() check and
+// always dispatching recovery when both probes fail) causes sub-test (a) to
+// observe an unexpected updatePeerState call, failing the assertion.
+
+describe('t-316: quiet-period guard — both pings fail + zero counters → no recovery dispatch (kithkit#77)', () => {
+  beforeEach(() => { _resetForTesting(); });
+  afterEach(() => { _resetForTesting(); });
+
+  it('(a) quiet period: both probes fail AND no recent messages → updatePeerState NOT called with unreachable/unknown', async () => {
+    // Both the direct LAN send and the relay probe fail.
+    const fetchMock = makeFetchMock(false); // relay fails
+    const commsMock = makeCommsMock(false); // direct send fails
+
+    _setLoadConfigForTesting(() => makeLanConfig());
+    _setCommsForTesting(commsMock);
+    _setFetchForTesting(fetchMock.fn);
+    _setScanForPeersForTesting(async () => new Map());
+    // Counter override: no recent messages from this peer → quiet period.
+    _setGetMessageCountsForTesting(() => ({ inbound: 0, inject: 0 }));
+
+    await _runForTesting();
+
+    const recoveryDispatched = commsMock._calls.updatePeerState.some(
+      (c) => c.state.status === 'unreachable' || c.state.status === 'unknown',
+    );
+    assert.equal(
+      recoveryDispatched,
+      false,
+      `updatePeerState must NOT be called with unreachable/unknown during a quiet period. ` +
+      `Got: ${JSON.stringify(commsMock._calls.updatePeerState)}`,
+    );
+  });
+
+  it('(b) broken delivery: both probes fail AND inbound > inject → updatePeerState called with unreachable', async () => {
+    // Both the direct LAN send and the relay probe fail.
+    const fetchMock = makeFetchMock(false);
+    const commsMock = makeCommsMock(false);
+
+    _setLoadConfigForTesting(() => makeLanConfig());
+    _setCommsForTesting(commsMock);
+    _setFetchForTesting(fetchMock.fn);
+    _setScanForPeersForTesting(async () => new Map());
+    // Counter override: peer sent us 3 messages, but none were injected → broken delivery.
+    _setGetMessageCountsForTesting(() => ({ inbound: 3, inject: 0 }));
+
+    await _runForTesting();
+
+    const unreachableCall = commsMock._calls.updatePeerState.find(
+      (c) => c.state.status === 'unreachable',
+    );
+    assert.ok(
+      unreachableCall !== undefined,
+      `updatePeerState must be called with unreachable when broken delivery is detected (inbound=3, inject=0). ` +
+      `Got: ${JSON.stringify(commsMock._calls.updatePeerState)}`,
+    );
+    assert.equal(unreachableCall!.name, 'bmo');
+  });
+
+  it('(c) relay success still suppresses recovery regardless of counters', async () => {
+    // Direct LAN fails, but relay probe SUCCEEDS — peer is alive via relay.
+    // The quiet-period guard must not interfere with the existing relay-success path.
+    const fetchMock = makeFetchMock(true); // relay succeeds
+    const commsMock = makeCommsMock(false); // direct send fails
+
+    _setLoadConfigForTesting(() => makeLanConfig());
+    _setCommsForTesting(commsMock);
+    _setFetchForTesting(fetchMock.fn);
+    _setScanForPeersForTesting(async () => new Map());
+    // Even with non-zero counters, the relay-success path should win.
+    _setGetMessageCountsForTesting(() => ({ inbound: 5, inject: 0 }));
+
+    await _runForTesting();
+
+    // Must be marked local-dns-indeterminate, NOT unreachable.
+    const unreachableCall = commsMock._calls.updatePeerState.find(
+      (c) => c.state.status === 'unreachable' || c.state.status === 'unknown',
+    );
+    assert.equal(
+      unreachableCall,
+      undefined,
+      `updatePeerState must NOT be called with unreachable/unknown when relay succeeds. ` +
+      `Got: ${JSON.stringify(commsMock._calls.updatePeerState)}`,
+    );
+    const indeterminate = commsMock._calls.updatePeerState.find(
+      (c) => c.state.status === 'local-dns-indeterminate',
+    );
+    assert.ok(
+      indeterminate !== undefined,
+      'updatePeerState must be called with local-dns-indeterminate when relay succeeds',
+    );
   });
 });
