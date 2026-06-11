@@ -217,19 +217,25 @@ describe('POST /api/send with attachments', () => {
     const tmpFile = path.join(tmpDir, 'attach.txt');
     fs.writeFileSync(tmpFile, 'content');
 
-    const res = await post(
-      '/api/send',
-      {
-        message: 'hello with attachment',
-        channel: 'telegram',
-        attachments: [tmpFile],
-      },
-      { 'X-Agent-Token': commsToken },
-    );
+    _setTelegramSendFileForTesting(async () => false);
 
-    // Route should succeed; attachment results reported even if telegram send fails (no token)
-    assert.equal(res.status, 200);
-    assert.ok('results' in res.body);
+    try {
+      const res = await post(
+        '/api/send',
+        {
+          message: 'hello with attachment',
+          channel: 'telegram',
+          attachments: [tmpFile],
+        },
+        { 'X-Agent-Token': commsToken },
+      );
+
+      // Route should succeed; attachment results reported even if telegram send fails (no token)
+      assert.equal(res.status, 200);
+      assert.ok('results' in res.body);
+    } finally {
+      _setTelegramSendFileForTesting(null);
+    }
   });
 
   it('reports missing attachment paths as MISSING failures', async () => {

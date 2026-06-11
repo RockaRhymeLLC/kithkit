@@ -206,7 +206,7 @@ export async function handleSendRoute(
         for (const ch of delivered) {
           attachResults[ch] = { sent: [], failed: [] };
           if (ch === 'telegram') {
-            const { telegramSendFile } = await import('../extensions/comms/adapters/telegram.js');
+            const telegramSendFile = _telegramSendFileOverride ?? (await import('../extensions/comms/adapters/telegram.js')).telegramSendFile;
             for (const fp of validPaths) {
               const ok = await telegramSendFile(fp, undefined, undefined, metadata.chatId as string | undefined);
               if (ok) attachResults[ch].sent.push(path.basename(fp));
