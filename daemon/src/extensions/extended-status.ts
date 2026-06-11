@@ -3,7 +3,7 @@
  *
  * Gathers agent-specific status beyond what the kithkit framework provides:
  * - Todo counts from filesystem
- * - Git status (branch, dirty, ahead of origin)
+ * - Git status (branch, dirty, ahead/behind origin)
  * - Context usage from context-usage.json
  * - Service statuses (Telegram, email, voice, agent-comms)
  * - Memory stats (local count, peer sync state)
@@ -22,6 +22,31 @@ import type { AgentConfig } from './config.js';
 const execFileAsync = promisify(execFile);
 const log = createLogger('agent-extended-status');
 
+// ── Testing seam ────────────────────────────────────────────
+// Allows unit tests to inject a mock exec without real git/network I/O.
+// Only used in test environments — never call in production code.
+type ExecFileFn = (
+  file: string,
+  args: string[],
+  opts: { cwd: string; encoding: 'utf8'; timeout: number },
+) => Promise<{ stdout: string }>;
+
+let _execForTesting: ExecFileFn | null = null;
+
+/** Inject a mock exec implementation for tests. Pass null to restore real execFile. */
+export function _setExecForTesting(fn: ExecFileFn | null): void {
+  _execForTesting = fn;
+}
+
+function _exec(
+  file: string,
+  args: string[],
+  opts: { cwd: string; encoding: 'utf8'; timeout: number },
+): Promise<{ stdout: string }> {
+  if (_execForTesting) return _execForTesting(file, args, opts);
+  return execFileAsync(file, args, opts) as Promise<{ stdout: string }>;
+}
+
 // ── Types ───────────────────────────────────────────────────
 
 export interface TodoCounts {
@@ -33,7 +58,16 @@ export interface TodoCounts {
 export interface GitStatus {
   branch: string;
   aheadOfOrigin: number;
+  /** Commits that origin/main has but HEAD does not. Derived live via git fetch + rev-list. */
+  behindOfOrigin: number;
   dirty: boolean;
+  /**
+   * True when `git fetch origin main` failed before counting (e.g. network down).
+   * The behind/ahead counts are still returned but are based on the cached remote ref
+   * and may be stale. Make this visible to callers rather than silently reporting a
+   * potentially wrong number.
+   */
+  fetchFailed?: boolean;
 }
 
 export interface ContextUsage {
@@ -109,16 +143,37 @@ export async function getRecentCommits(limit = 3): Promise<CommitInfo[]> {
 export async function getGitStatus(): Promise<GitStatus | undefined> {
   const cwd = getProjectDir();
   try {
-    const [branchResult, aheadResult, statusResult] = await Promise.all([
-      execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, encoding: 'utf8', timeout: 3000 }),
-      execFileAsync('git', ['rev-list', '--count', 'origin/main..HEAD'], { cwd, encoding: 'utf8', timeout: 3000 }).catch(() => ({ stdout: '0' })),
-      execFileAsync('git', ['status', '--porcelain'], { cwd, encoding: 'utf8', timeout: 3000 }),
+    // Fetch origin/main so the remote-tracking ref is current before counting.
+    // This is mandatory: without a fresh fetch, `HEAD..origin/main` reflects the
+    // cached ref from the last fetch, which may be arbitrarily stale and will
+    // under-count commits-behind (the exact failure mode seen on 2026-06-07).
+    let fetchFailed = false;
+    try {
+      await _exec('git', ['fetch', 'origin', 'main', '--no-tags', '--quiet'], {
+        cwd,
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+    } catch (fetchErr) {
+      // Network may be down or remote unreachable. Continue with cached refs but
+      // surface the staleness so callers and report consumers can see it.
+      fetchFailed = true;
+      log.warn('git fetch origin main failed; commit counts may be stale', { error: String(fetchErr) });
+    }
+
+    const [branchResult, aheadResult, behindResult, statusResult] = await Promise.all([
+      _exec('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, encoding: 'utf8', timeout: 3000 }),
+      _exec('git', ['rev-list', '--count', 'origin/main..HEAD'], { cwd, encoding: 'utf8', timeout: 3000 }).catch(() => ({ stdout: '0' })),
+      _exec('git', ['rev-list', '--count', 'HEAD..origin/main'], { cwd, encoding: 'utf8', timeout: 3000 }).catch(() => ({ stdout: '0' })),
+      _exec('git', ['status', '--porcelain'], { cwd, encoding: 'utf8', timeout: 3000 }),
     ]);
 
     return {
       branch: branchResult.stdout.trim(),
       aheadOfOrigin: parseInt(aheadResult.stdout.trim(), 10) || 0,
+      behindOfOrigin: parseInt(behindResult.stdout.trim(), 10) || 0,
       dirty: statusResult.stdout.trim().length > 0,
+      ...(fetchFailed && { fetchFailed: true }),
     };
   } catch {
     return undefined;
