@@ -21,6 +21,7 @@ import {
   _resetInjectionAttempts,
   _setTmuxDepsForTesting,
   isOrchestratorAlive,
+  getOrchestratorState,
   ORCH_SESSION_PATTERN,
 } from '../agents/tmux.js';
 
@@ -324,5 +325,51 @@ describe('isOrchestratorAlive — independent detection (fix/752)', () => {
     assert.equal(result, false, '_testingDeps.isOrchAlive returning false must be respected');
     assert.equal(listSessionsCalled, false,
       '_testingDeps.isOrchAlive must short-circuit (false case) before listSessions is called');
+  });
+});
+
+// ── getOrchestratorState: outer-catch fallback (phantom-nudge fix, #110) ──────
+
+/**
+ * Regression suite for the outer-catch fallback in getOrchestratorState().
+ *
+ * Root cause of phantom new-task nudges (#110): when process-state detection
+ * failed (e.g. `tmux display-message` timed out, unexpected pgrep error), the
+ * outer catch returned 'waiting' instead of 'dead'. This caused the escalate
+ * endpoint to fire a nudge to an unknown-state session instead of spawning a
+ * fresh orchestrator — leaving the task pending but unreachable.
+ *
+ * Fix: outer catch now returns 'dead' (conservative). Callers treat the
+ * unknown state as dead, so the escalate spawns a fresh session and the
+ * idle monitor can pick up pending tasks normally.
+ *
+ * These tests use the orchProcessState injectable:
+ *   - Return 'active' or 'waiting' → normal branch, does NOT hit outer catch
+ *   - Return null                  → throws inside the outer try, exercises the catch
+ */
+describe('getOrchestratorState — outer-catch fallback (phantom-nudge fix #110)', { concurrency: 1 }, () => {
+  afterEach(() => _setTmuxDepsForTesting(null));
+
+  it('MUTATION-KILL: returns dead (not waiting) when process-state detection throws', () => {
+    // orchProcessState returning null triggers a throw inside the outer try, exercising
+    // the catch block. With the bug, this returned 'waiting'. With the fix, 'dead'.
+    _setTmuxDepsForTesting({ orchProcessState: () => null });
+    const result = getOrchestratorState();
+    assert.equal(result, 'dead',
+      'outer-catch must return dead, not waiting — returning waiting causes phantom new-task nudges');
+  });
+
+  it('returns active when orchProcessState reports active', () => {
+    _setTmuxDepsForTesting({ orchProcessState: () => 'active' });
+    const result = getOrchestratorState();
+    assert.equal(result, 'active',
+      'orchProcessState=active must propagate unchanged');
+  });
+
+  it('returns waiting when orchProcessState reports waiting', () => {
+    _setTmuxDepsForTesting({ orchProcessState: () => 'waiting' });
+    const result = getOrchestratorState();
+    assert.equal(result, 'waiting',
+      'orchProcessState=waiting must propagate unchanged');
   });
 });

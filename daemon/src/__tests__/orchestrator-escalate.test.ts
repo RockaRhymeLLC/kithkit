@@ -12,9 +12,14 @@
  *   3. Title derived from first line, capped at 200 chars (unit)
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildTaskFields } from '../api/orchestrator.js';
+import http from 'node:http';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { openDatabase, _resetDbForTesting, query } from '../core/db.js';
+import { buildTaskFields, handleOrchestratorRoute, _setDepsForTesting } from '../api/orchestrator.js';
 
 // ── Unit tests for buildTaskFields ──────────────────────────────────────────
 
@@ -153,5 +158,139 @@ describe('buildTaskFields', { concurrency: 1 }, () => {
         assert.ok(titleText.length <= 200, `title exceeds 200 chars for input: ${task.slice(0, 30)}`);
       }
     });
+  });
+});
+
+// ── Escalate handler: inject-fail warning (#110 phantom-nudge) ────────────────
+
+/**
+ * Regression: when injectMessage() returns false (session died between state-check
+ * and nudge), the escalate handler must still create the task row in DB and return
+ * { status: 'escalated' }. The injected warning makes the failure visible in logs
+ * so operators can diagnose phantom-nudge incidents.
+ *
+ * This test verifies the observable contract (task in DB + escalated response)
+ * rather than log output, because the test harness does not intercept log lines.
+ */
+
+const ESCALATE_TEST_PORT = 19872;
+
+function escRequest(
+  method: string,
+  urlPath: string,
+  body?: unknown,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const opts: http.RequestOptions = {
+      host: '127.0.0.1',
+      port: ESCALATE_TEST_PORT,
+      path: urlPath,
+      method,
+      timeout: 5000,
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        'Connection': 'close',
+      },
+    };
+    const r = http.request(opts, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode ?? 0, json: JSON.parse(data) as Record<string, unknown> });
+        } catch {
+          resolve({ status: res.statusCode ?? 0, json: { raw: data } });
+        }
+      });
+    });
+    r.on('error', reject);
+    r.on('timeout', () => { r.destroy(); reject(new Error('timeout')); });
+    if (body !== undefined) r.write(JSON.stringify(body));
+    r.end();
+  });
+}
+
+describe('Escalate handler — inject-fail graceful handling (#110)', { concurrency: 1 }, () => {
+  let server: http.Server;
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kkit-esc-'));
+    _resetDbForTesting();
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+
+    // Deps: orch is 'waiting' but injectMessage returns false (session died)
+    _setDepsForTesting({
+      getOrchestratorState: () => 'waiting',
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => null,  // not called in waiting path
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', `http://localhost:${ESCALATE_TEST_PORT}`);
+      handleOrchestratorRoute(req, res, url.pathname)
+        .then((handled) => {
+          if (!handled) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not found' }));
+          }
+        })
+        .catch((err) => {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: String(err) }));
+          }
+        });
+    });
+
+    await new Promise<void>((resolve) => server.listen(ESCALATE_TEST_PORT, '127.0.0.1', resolve));
+  });
+
+  afterEach(async () => {
+    _setDepsForTesting(null);
+    _resetDbForTesting();
+    await new Promise<void>((resolve) => {
+      if (server?.listening) {
+        server.close(() => { fs.rmSync(tmpDir, { recursive: true, force: true }); resolve(); });
+      } else {
+        if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+        resolve();
+      }
+    });
+  });
+
+  it('task is created in DB and response is escalated even when inject fails', async () => {
+    const res = await escRequest('POST', '/api/orchestrator/escalate', {
+      task: 'Test phantom nudge guard — inject fails',
+    });
+
+    assert.equal(res.status, 200, 'should return HTTP 200');
+    assert.equal(res.json.status, 'escalated', 'status should be escalated');
+    assert.ok(typeof res.json.task_id === 'string', 'task_id should be present');
+
+    // Verify task was committed to DB — it must be pending for idle monitor recovery
+    const taskId = res.json.task_id as string;
+    const rows = query<{ external_id: string; status: string }>(
+      "SELECT external_id, status FROM tasks WHERE external_id = ? AND kind = 'orchestrator'",
+      taskId,
+    );
+    assert.equal(rows.length, 1, 'task row must exist in DB');
+    assert.equal(rows[0]!.status, 'pending', 'task must be pending so idle monitor can recover it');
+  });
+
+  it('task is created in DB even when inject fails — idle monitor can wake orch', async () => {
+    // Second assertion: inject failure must not prevent task from being actionable.
+    // The task must be visible via the pending-tasks query used by orchestrator-idle Check 3.
+    const res = await escRequest('POST', '/api/orchestrator/escalate', {
+      task: 'Phantom guard — idle monitor recovery path',
+    });
+
+    assert.equal(res.status, 200);
+
+    const pendingTasks = query<{ external_id: string }>(
+      "SELECT external_id FROM tasks WHERE kind = 'orchestrator' AND status = 'pending'",
+    );
+    assert.ok(pendingTasks.length >= 1, 'at least one pending task must exist for idle monitor to pick up');
   });
 });
