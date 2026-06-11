@@ -32,6 +32,7 @@ import { loadConfig } from '../../core/config.js';
 import type { Scheduler } from '../scheduler.js';
 import { getLastActivityTimestamp } from './helpers/activity-query.js';
 import { fireSelfWatchdogAlert as _fireSelfWatchdogAlert } from './helpers/alert.js';
+import { checkDistStaleness } from './dist-staleness.js';
 
 const log = createLogger('self-watchdog');
 
@@ -53,6 +54,9 @@ async function run(): Promise<void> {
 
   const warnSeconds = watchdog?.idle_threshold_seconds?.warn_seconds ?? DEFAULT_WARN_SECONDS;
   const alertSeconds = watchdog?.idle_threshold_seconds?.alert_seconds ?? DEFAULT_ALERT_SECONDS;
+
+  // Dist-staleness check — runs on every tick, independent of idle/zombie state.
+  await checkDistStaleness();
 
   const lastActivityAt = await getLastActivityTimestamp();
 
