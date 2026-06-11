@@ -211,7 +211,13 @@ registerRetroIngest();
 
 // DNS-resolve relay/community hostnames. Warn-only — never blocks boot.
 // Results are cached and surfaced on GET /health as `unresolvable_urls`.
-await runBootUrlCheck(config);
+try {
+  await runBootUrlCheck(config);
+} catch (err) {
+  log.warn('boot-url-check: unexpected error during boot — skipping URL validation', {
+    error: err instanceof Error ? err.message : String(err),
+  });
+}
 
 log.info('Kithkit daemon starting', {
   agent: config.agent.name,
