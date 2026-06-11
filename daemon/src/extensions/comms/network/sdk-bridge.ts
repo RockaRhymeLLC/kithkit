@@ -185,13 +185,32 @@ export function getCommunityStatus(communityName: string): { status: 'active' | 
 }
 
 /**
+ * Discriminated result from handleIncomingP2P.
+ *
+ * Used by the /agent/p2p HTTP handler to select the correct HTTP status:
+ *   ok:true                    → 200 (delivered)
+ *   ok:false, permanent:false  → 5xx (transient — SDK unavailable, sender should retry)
+ *   ok:false, permanent:true   → 4xx (permanent — bad envelope, retrying will not help)
+ */
+export type P2PHandleResult =
+  | { ok: true }
+  | { ok: false; permanent: false }   // transient: SDK not ready, retry later
+  | { ok: false; permanent: true };   // permanent: envelope rejected by SDK, do not retry
+
+/**
  * Process an incoming P2P message envelope.
  * Called from the /agent/p2p HTTP endpoint.
+ *
+ * Returns a discriminated result so the HTTP handler can send the correct
+ * status class:
+ *   - SDK unavailable (null _network) → permanent:false → 5xx (transient, retry)
+ *   - SDK rejects the envelope (throws) → permanent:true → 4xx (permanent, no retry)
  */
-export async function handleIncomingP2P(envelope: WireEnvelope): Promise<boolean> {
+export async function handleIncomingP2P(envelope: WireEnvelope): Promise<P2PHandleResult> {
   if (!_network) {
     log.warn('Received P2P message but SDK not initialized');
-    return false;
+    // Transient — SDK may become available after initialization; sender should retry.
+    return { ok: false, permanent: false };
   }
 
   try {
@@ -200,10 +219,10 @@ export async function handleIncomingP2P(envelope: WireEnvelope): Promise<boolean
       if (!msg) {
         log.info('Group message deduplicated', { messageId: envelope.messageId });
       }
-      return true;
+      return { ok: true };
     } else {
       _network.receiveMessage(envelope);
-      return true;
+      return { ok: true };
     }
   } catch (err) {
     log.warn('Failed to process incoming P2P message', {
@@ -211,7 +230,8 @@ export async function handleIncomingP2P(envelope: WireEnvelope): Promise<boolean
       sender: envelope.sender,
       type: envelope.type,
     });
-    return false;
+    // Permanent — SDK rejected the envelope (bad/invalid content); retrying won't help.
+    return { ok: false, permanent: true };
   }
 }
 

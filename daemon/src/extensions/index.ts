@@ -39,6 +39,7 @@ import {
   refreshAgentCommsConfig,
 } from './comms/agent-comms.js';
 import { initNetworkSDK, stopNetworkSDK, handleIncomingP2P, getNetworkClient } from './comms/network/sdk-bridge.js';
+import type { P2PHandleResult } from './comms/network/sdk-bridge.js';
 import { registerWithRelay } from './comms/network/registration.js';
 import { runRegistrationRetryLoop } from './comms/network/retry.js';
 import { handleNetworkRoute } from './comms/network/api.js';
@@ -153,15 +154,25 @@ async function handleAgentP2P(
     }
     // If !secret (keychain locked/unavailable), accept without verification (fail-open)
 
-    const persisted = await handleIncomingP2P(envelope);
-    if (!persisted) {
-      // SDK unavailable or handler error — envelope was NOT stored.
-      // Return ok:false so the sender SDK can report 'queued' instead of false 'delivered'.
-      log.warn('P2P message not persisted (SDK unavailable or handler error)', {
-        sender: (envelope as unknown as Record<string, unknown>).sender,
-      });
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: 'Message not persisted' }));
+    const p2pResult: P2PHandleResult = await handleIncomingP2P(envelope);
+    if (!p2pResult.ok) {
+      if (p2pResult.permanent) {
+        // Permanent reject (4xx) — SDK rejected the envelope (bad/invalid content).
+        // Sender MUST NOT retry; retrying will not fix a client-side envelope error.
+        log.warn('P2P message permanently rejected by SDK (bad envelope)', {
+          sender: (envelope as unknown as Record<string, unknown>).sender,
+        });
+        res.writeHead(422, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Message rejected: invalid envelope' }));
+      } else {
+        // Transient failure (5xx) — SDK unavailable; envelope was NOT stored.
+        // Sender should retry later once the SDK initialises.
+        log.warn('P2P message not persisted (SDK unavailable)', {
+          sender: (envelope as unknown as Record<string, unknown>).sender,
+        });
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: false, error: 'Service temporarily unavailable' }));
+      }
     } else {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
