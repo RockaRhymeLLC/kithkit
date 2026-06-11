@@ -93,11 +93,23 @@ export async function runBootUrlCheck(config: KithkitConfig): Promise<BootUrlChe
 
   // network.relay.url (optional single-relay config)
   const relayUrl = networkConfig?.relay?.url;
-  if (relayUrl && relayUrl.trim()) candidateUrls.push(relayUrl.trim());
+  if (typeof relayUrl !== 'string') {
+    if (relayUrl != null) {
+      _logWarn('boot-url-check: skipping non-string network.relay.url', { value: String(relayUrl) });
+    }
+  } else if (relayUrl.trim()) {
+    candidateUrls.push(relayUrl.trim());
+  }
 
   // network.communities[].primary (multi-community relay URLs)
   for (const community of networkConfig?.communities ?? []) {
-    const primary = community.primary?.trim();
+    if (typeof community.primary !== 'string') {
+      if (community.primary != null) {
+        _logWarn('boot-url-check: skipping non-string community primary URL', { value: String(community.primary) });
+      }
+      continue;
+    }
+    const primary = community.primary.trim();
     if (primary) candidateUrls.push(primary);
   }
 
