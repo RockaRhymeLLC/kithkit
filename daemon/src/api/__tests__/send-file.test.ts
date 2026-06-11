@@ -217,7 +217,8 @@ describe('POST /api/send with attachments', () => {
     const tmpFile = path.join(tmpDir, 'attach.txt');
     fs.writeFileSync(tmpFile, 'content');
 
-    _setTelegramSendFileForTesting(async () => false);
+    let sendFileInvoked = false;
+    _setTelegramSendFileForTesting(async () => { sendFileInvoked = true; return false; });
 
     try {
       const res = await post(
@@ -233,6 +234,7 @@ describe('POST /api/send with attachments', () => {
       // Route should succeed; attachment results reported even if telegram send fails (no token)
       assert.equal(res.status, 200);
       assert.ok('results' in res.body);
+      assert.ok(sendFileInvoked, 'attachment path must route through the injectable seam');
     } finally {
       _setTelegramSendFileForTesting(null);
     }
