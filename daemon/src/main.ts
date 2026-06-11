@@ -35,6 +35,7 @@ import { handleTimerRoute, initTimers } from './api/timer.js';
 import { handleMetricsRoute, logRequest } from './api/metrics.js';
 import { handleSelfImprovementRoute } from './api/self-improvement.js';
 import { handleExtensionsRoute } from './api/extensions.js';
+import { handleNetworkRoute } from './api/network.js';
 import { initPluginManager, getPluginManager } from './core/plugin-extensions.js';
 import { getScheduler } from './api/tasks.js';
 import { registerFactVerifier } from './agents/fact-verifier.js';
@@ -354,6 +355,7 @@ const server = http.createServer((req, res) => {
         () => handleTimerRoute(req, res, url.pathname),
         () => handleSelfImprovementRoute(req, res, url.pathname),
         () => handleExtensionsRoute(req, res, url.pathname),
+        () => handleNetworkRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {
         const handled = await handler();
