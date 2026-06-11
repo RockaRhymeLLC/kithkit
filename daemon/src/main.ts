@@ -36,6 +36,7 @@ import { handleMetricsRoute, logRequest } from './api/metrics.js';
 import { handleSelfImprovementRoute } from './api/self-improvement.js';
 import { handleExtensionsRoute } from './api/extensions.js';
 import { handleNetworkRoute } from './api/network.js';
+import { handleRestartRoute, setShutdownFn } from './api/restart.js';
 import { initPluginManager, getPluginManager } from './core/plugin-extensions.js';
 import { getScheduler } from './api/tasks.js';
 import { registerFactVerifier } from './agents/fact-verifier.js';
@@ -356,6 +357,7 @@ const server = http.createServer((req, res) => {
         () => handleSelfImprovementRoute(req, res, url.pathname),
         () => handleExtensionsRoute(req, res, url.pathname),
         () => handleNetworkRoute(req, res, url.pathname),
+        () => handleRestartRoute(req, res, url.pathname),
       ];
       for (const handler of handlers) {
         const handled = await handler();
@@ -687,6 +689,10 @@ async function shutdown(signal: string): Promise<void> {
 
 process.on('SIGTERM', () => shutdown('SIGTERM'));
 process.on('SIGINT', () => shutdown('SIGINT'));
+
+// Wire the daemon's shutdown function into the deferred-restart endpoint so
+// POST /api/daemon/restart can trigger a graceful exit after the 202 is sent.
+setShutdownFn(shutdown);
 
 process.on('unhandledRejection', (reason) => {
   log.error('Unhandled promise rejection', {
