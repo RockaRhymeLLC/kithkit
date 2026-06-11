@@ -248,6 +248,14 @@ export async function storeMemoryInternal(opts: {
 }): Promise<void> {
   const { content, category, tags, source, importance, dedup, origin_agent, trigger } = opts;
 
+  // Defense-in-depth: guard the internal write path against canary/fixture
+  // content from auto-extraction pipelines, retro ingest, and completion
+  // memories — kithkit#375 (extends #301/#372 to cover all write paths).
+  if (isCanaryOrFixtureContent(content)) {
+    logSkippedFixtureContent(content, source);
+    return;
+  }
+
   // Simple time-based dedup: skip if an identical (or near-identical) memory
   // with the same source was stored in the last 5 minutes.
   if (dedup && source) {
