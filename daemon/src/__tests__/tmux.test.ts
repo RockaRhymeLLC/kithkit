@@ -21,6 +21,7 @@ import {
   _resetInjectionAttempts,
   _setTmuxDepsForTesting,
   isOrchestratorAlive,
+  getOrchestratorState,
   ORCH_SESSION_PATTERN,
 } from '../agents/tmux.js';
 
@@ -160,16 +161,27 @@ describe('injectMessage log level for missing session (R2 guard)', () => {
       .filter((e): e is { level: string; msg: string; data?: Record<string, unknown> } => e !== null);
   }
 
+  let savedAllowInject: string | undefined;
+
   beforeEach(() => {
     logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-tmux-test-'));
     // Capture debug level so we can verify the downgrade
     initLogger({ logDir, minLevel: 'debug' });
+    // Opt in to real session-check logic (bypasses the test-runner guard in injectMessage)
+    // so that the session lookup and its log calls actually execute.
+    savedAllowInject = process.env.KITHKIT_ALLOW_TEST_INJECT;
+    process.env.KITHKIT_ALLOW_TEST_INJECT = '1';
   });
 
   afterEach(() => {
     _setTmuxDepsForTesting(null);
     _resetLoggerForTesting({ logDir: os.tmpdir(), minLevel: 'info' });
     fs.rmSync(logDir, { recursive: true, force: true });
+    if (savedAllowInject === undefined) {
+      delete process.env.KITHKIT_ALLOW_TEST_INJECT;
+    } else {
+      process.env.KITHKIT_ALLOW_TEST_INJECT = savedAllowInject;
+    }
   });
 
   it('logs debug (not warn) when orch session not found and orchestrator is gone', () => {
@@ -324,5 +336,76 @@ describe('isOrchestratorAlive — independent detection (fix/752)', () => {
     assert.equal(result, false, '_testingDeps.isOrchAlive returning false must be respected');
     assert.equal(listSessionsCalled, false,
       '_testingDeps.isOrchAlive must short-circuit (false case) before listSessions is called');
+  });
+});
+
+// ── getOrchestratorState: outer-catch fallback (phantom-nudge fix, #110) ──────
+
+/**
+ * Regression suite for the outer-catch fallback in getOrchestratorState().
+ *
+ * Root cause of phantom new-task nudges (#110): when process-state detection
+ * failed (e.g. `tmux display-message` timed out, unexpected pgrep error), the
+ * outer catch returned 'waiting' instead of 'dead'. This caused the escalate
+ * endpoint to fire a nudge to an unknown-state session instead of spawning a
+ * fresh orchestrator — leaving the task pending but unreachable.
+ *
+ * Fix: outer catch now returns 'dead' (conservative). Callers treat the
+ * unknown state as dead, so the escalate spawns a fresh session and the
+ * idle monitor can pick up pending tasks normally.
+ *
+ * SEAM ARCHITECTURE:
+ *   - orchProcessState injectable: has its OWN inner try/catch (lines 342-358).
+ *     Throwing via orchProcessState is caught by that INNER catch, never reaching
+ *     the outer catch at lines 397-406. NOT a mutation-killer for the outer catch.
+ *   - sessionExists + panePid injectables: bypass the orchProcessState block entirely.
+ *     sessionExists=true passes the has-session check; panePid throwing propagates
+ *     directly into the outer try with no inner catch to intercept it. This IS a
+ *     true mutation-killer for the outer catch.
+ */
+describe('getOrchestratorState — outer-catch fallback (phantom-nudge fix #110)', { concurrency: 1 }, () => {
+  afterEach(() => _setTmuxDepsForTesting(null));
+
+  it('MUTATION-KILL (outer catch via panePid seam): returns dead when display-message throws', () => {
+    // TRUE mutation-killer for the outer catch (lines 397-406 in tmux.ts).
+    //
+    // orchProcessState is NOT set, so the seam block (lines 342-358) is bypassed.
+    // sessionExists: () => true  →  has-session check passes, enters the outer try.
+    // panePid: () => { throw }   →  propagates directly to the outer catch.
+    //
+    // MUTATION PROOF: reverting the outer catch from 'dead' to 'waiting' makes this
+    // test RED. The orchProcessState=null approach does NOT kill that mutation because
+    // its throw is caught by the seam's own inner catch, never reaching the outer catch.
+    _setTmuxDepsForTesting({
+      sessionExists: () => true,
+      panePid: () => { throw new Error('simulated display-message failure'); },
+    });
+    const result = getOrchestratorState();
+    assert.equal(result, 'dead',
+      'outer catch must return dead (not waiting) — this seam drives the REAL outer catch, not the orchProcessState inner catch');
+  });
+
+  it('orchProcessState seam error is also caught as dead (inner catch, not outer)', () => {
+    // orchProcessState returning null throws inside the seam block's OWN inner catch
+    // (lines 352-357), which also returns 'dead'. This is NOT the outer catch (#110 fix)
+    // but still verifies the seam handles unexpected errors defensively.
+    _setTmuxDepsForTesting({ orchProcessState: () => null });
+    const result = getOrchestratorState();
+    assert.equal(result, 'dead',
+      'orchProcessState inner catch must also return dead on error (defensive seam behavior)');
+  });
+
+  it('returns active when orchProcessState reports active', () => {
+    _setTmuxDepsForTesting({ orchProcessState: () => 'active' });
+    const result = getOrchestratorState();
+    assert.equal(result, 'active',
+      'orchProcessState=active must propagate unchanged');
+  });
+
+  it('returns waiting when orchProcessState reports waiting', () => {
+    _setTmuxDepsForTesting({ orchProcessState: () => 'waiting' });
+    const result = getOrchestratorState();
+    assert.equal(result, 'waiting',
+      'orchProcessState=waiting must propagate unchanged');
   });
 });

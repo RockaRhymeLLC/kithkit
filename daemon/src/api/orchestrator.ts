@@ -246,8 +246,14 @@ export async function handleOrchestratorRoute(
       }));
     } else {
       // Orchestrator is waiting (idle at prompt) — inject a nudge so it checks the queue
-      injectMessage('orchestrator', `[System] New task queued (${taskId.slice(0, 8)}). Check pending tasks: curl -s 'http://localhost:${getConfigPort()}/api/orchestrator/tasks?status=pending'`);
-      log.info('Task escalated to waiting orchestrator with tmux nudge', { task: task.slice(0, 100), taskId });
+      const nudged = injectMessage('orchestrator', `[System] New task queued (${taskId.slice(0, 8)}). Check pending tasks: curl -s 'http://localhost:${getConfigPort()}/api/orchestrator/tasks?status=pending'`);
+      if (!nudged) {
+        // Inject failed — session may have died between state-check and nudge.
+        // The task is pending in the DB; the orchestrator-idle monitor will wake
+        // or respawn the orchestrator on its next tick (via Check 3 / respawn path).
+        log.warn('New-task nudge inject failed — task is pending in queue, idle monitor will recover', { taskId });
+      }
+      log.info('Task escalated to waiting orchestrator with tmux nudge', { task: task.slice(0, 100), taskId, nudged });
       json(res, 200, withTimestamp({
         status: 'escalated',
         task_id: taskId,

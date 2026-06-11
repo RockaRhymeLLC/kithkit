@@ -339,22 +339,50 @@ export function isOrchestratorAlive(): boolean {
 export function getOrchestratorState(): 'active' | 'waiting' | 'dead' {
   const session = resolveSession('orchestrator')!;
 
-  try {
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
-      timeout: 5000,
-    });
-  } catch {
-    return 'dead';
+  // Test seam: when orchProcessState is set, bypass real tmux entirely.
+  // Returns the specified state ('active'|'waiting'), or throws to exercise the
+  // outer-catch path (which should return 'dead' — see #110 phantom-nudge fix).
+  if (_testingDeps?.orchProcessState !== undefined) {
+    try {
+      const result = _testingDeps.orchProcessState();
+      if (result === null) {
+        throw new Error('simulated process-state detection error (test injection)');
+      }
+      return result;
+    } catch (err) {
+      log.warn('getOrchestratorState: failed to determine process state, treating as dead', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return 'dead';
+    }
   }
 
+  // has-session check — reuse sessionExists seam for test isolation
+  const sessionAlive = _testingDeps?.sessionExists
+    ? _testingDeps.sessionExists(session)
+    : (() => {
+        try {
+          execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
+            timeout: 5000,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+  if (!sessionAlive) return 'dead';
+
   try {
-    // Get the PID of the Claude process that owns the tmux pane
-    const panePid = execFileSync(TMUX_BIN, [
-      '-S', TMUX_SOCKET,
-      'display-message',
-      '-t', `${session}:`,
-      '-p', '#{pane_pid}',
-    ], { timeout: 5000, encoding: 'utf8' }).trim();
+    // Get the PID of the Claude process that owns the tmux pane.
+    // panePid seam allows tests to throw here and exercise the outer catch.
+    const panePid = _testingDeps?.panePid
+      ? _testingDeps.panePid()
+      : execFileSync(TMUX_BIN, [
+          '-S', TMUX_SOCKET,
+          'display-message',
+          '-t', `${session}:`,
+          '-p', '#{pane_pid}',
+        ], { timeout: 5000, encoding: 'utf8' }).trim();
 
     if (!panePid || !/^\d+$/.test(panePid)) {
       return 'dead';
@@ -377,10 +405,14 @@ export function getOrchestratorState(): 'active' | 'waiting' | 'dead' {
       return 'waiting'; // No children → idle at input prompt
     }
   } catch (err) {
-    log.warn('getOrchestratorState: failed to determine process state, assuming waiting', {
+    // Conservative fallback: if we cannot determine process state, treat the session
+    // as dead. This prevents phantom new-task nudges being fired to an unknown-state
+    // session. The escalate endpoint will spawn a fresh orchestrator instead.
+    // (Previously this returned 'waiting', which caused phantom nudges — see #110.)
+    log.warn('getOrchestratorState: failed to determine process state, treating as dead', {
       error: err instanceof Error ? err.message : String(err),
     });
-    return 'waiting';
+    return 'dead';
   }
 }
 
@@ -448,6 +480,22 @@ interface TmuxTestDeps {
   sessionExists?: (session: string) => boolean;
   isOrchAlive?: () => boolean;
   listSessions?: () => string[];
+  /**
+   * Override process-state detection inside getOrchestratorState() for unit tests.
+   * Return 'active' | 'waiting' to specify the desired state, or null to simulate
+   * an unexpected error that triggers the outer catch (should return 'dead').
+   */
+  orchProcessState?: () => 'active' | 'waiting' | null;
+  /**
+   * Override the tmux display-message call that fetches the pane PID inside
+   * getOrchestratorState(). Throw to simulate a display-message failure and
+   * exercise the outer catch (which must return 'dead' — see #110 phantom-nudge fix).
+   * Return a numeric string (e.g. "12345") to proceed with normal process detection.
+   *
+   * NOTE: orchProcessState has its own inner catch and does NOT reach this outer catch.
+   * Use this seam (with sessionExists: () => true) for a true mutation-killer.
+   */
+  panePid?: () => string;
 }
 
 let _testingDeps: TmuxTestDeps | null = null;
