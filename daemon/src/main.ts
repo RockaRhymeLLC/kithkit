@@ -11,6 +11,7 @@ import { loadConfig, type KithkitConfig } from './core/config.js';
 import { openDatabase, closeDatabase, resolveDbPath, migrateDbIfNeeded, query } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
+import { getDistStaleBuildState } from './automation/tasks/dist-staleness.js';
 import { handleStateRoute } from './api/state.js';
 import { handleMemoryRoute } from './api/memory.js';
 import { handleAgentsRoute, setProfilesDir } from './api/agents.js';
@@ -256,10 +257,14 @@ const server = http.createServer((req, res) => {
     const cfIp = req.headers['cf-connecting-ip'] as string | undefined;
     const isLocal = !cfIp && (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1');
 
+    const staleBuild = getDistStaleBuildState();
     const response: Record<string, unknown> = {
       ...health,
       degraded: isDegraded(),
       extension: ext ? ext.name : null,
+      stale_build: staleBuild.checked
+        ? { stale: staleBuild.staleFiles.length > 0, files: staleBuild.staleFiles, checked_at: staleBuild.checkedAt }
+        : null,
     };
 
     // Only include sensitive details for localhost requests
@@ -549,10 +554,14 @@ if (config.daemon.lan?.enabled) {
         'Content-Type': 'application/json',
         'Access-Control-Allow-Origin': '*',
       });
+      const staleBuildLan = getDistStaleBuildState();
       res.end(JSON.stringify({
         ...health,
         degraded: isDegraded(),
         extension: ext ? ext.name : null,
+        stale_build: staleBuildLan.checked
+          ? { stale: staleBuildLan.staleFiles.length > 0, files: staleBuildLan.staleFiles, checked_at: staleBuildLan.checkedAt }
+          : null,
         listener: 'lan',
       }));
       return;
