@@ -38,8 +38,10 @@ import {
   runVerification,
   _setExecFnForTesting,
   _setFetchFnForTesting,
+  _setInjectFnForTesting,
+  _notifyCommsForTesting,
 } from '../fact-verifier.js';
-import type { ExecResult, FetchResult, PrClaim, CommitClaim, FileLineClaim, DateClaim, TaskClaim } from '../fact-verifier.js';
+import type { ExecResult, FetchResult, PrClaim, CommitClaim, FileLineClaim, DateClaim, TaskClaim, VerificationReport } from '../fact-verifier.js';
 import type { JobRecord } from '../lifecycle.js';
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -942,5 +944,80 @@ describe('runVerification: task-ID planted-fabrication integration test', () => 
     const taskResult = report.claims.find(r => r.claim.type === 'task');
     assert.ok(taskResult, 'Expected a task claim result');
     assert.equal(taskResult!.verdict, 'UNVERIFIABLE');
+  });
+});
+
+// ── notifyComms: [System] injectText (not sendMessage) ───────
+
+/**
+ * notifyComms is private — we reach it via _notifyCommsForTesting.
+ * These tests assert the [System]-prefixed injectText path added in
+ * fix(fact-verifier): stop quarantine notices leaking to human channel.
+ * sendMessage is no longer imported by fact-verifier; these tests confirm
+ * the injectText path is wired correctly.
+ */
+describe('notifyComms: quarantine notice uses [System] injectText, not sendMessage', () => {
+  afterEach(() => {
+    _setInjectFnForTesting(null);
+  });
+
+  function makeQuarantinedReport(overrides: Partial<VerificationReport> = {}): VerificationReport {
+    return {
+      jobId: 'job-abc',
+      timestamp: new Date().toISOString(),
+      quarantined: true,
+      quarantineReason: 'contradicted claim',
+      claims: [{
+        claim: { type: 'pr', raw: '#999', prNumber: 999 },
+        verdict: 'CONTRADICTED',
+        reason: 'PR #999 not found',
+      }],
+      ...overrides,
+    };
+  }
+
+  it('calls injectText with a body starting with "[System]" on quarantine', () => {
+    const calls: string[] = [];
+    _setInjectFnForTesting((text) => { calls.push(text); });
+
+    _notifyCommsForTesting('job-abc', makeQuarantinedReport());
+
+    assert.equal(calls.length, 1, 'injectText should have been called exactly once');
+    assert.ok(
+      calls[0]!.startsWith('[System]'),
+      `Expected text to start with "[System]", got: ${JSON.stringify(calls[0])}`,
+    );
+  });
+
+  it('includes job id and QUARANTINED in the injected notice', () => {
+    const calls: string[] = [];
+    _setInjectFnForTesting((text) => { calls.push(text); });
+
+    _notifyCommsForTesting('job-quarantine-test', makeQuarantinedReport());
+
+    assert.equal(calls.length, 1, 'injectText should have been called');
+    assert.ok(
+      calls[0]!.includes('QUARANTINED'),
+      `Expected QUARANTINED in injected text: ${JSON.stringify(calls[0])}`,
+    );
+    assert.ok(
+      calls[0]!.includes('job-quarantine-test'),
+      `Expected job id in injected text: ${JSON.stringify(calls[0])}`,
+    );
+  });
+
+  it('does NOT call injectText when the report is not quarantined', () => {
+    let injectCalled = false;
+    _setInjectFnForTesting(() => { injectCalled = true; });
+
+    const cleanReport: VerificationReport = {
+      jobId: 'job-clean',
+      timestamp: new Date().toISOString(),
+      quarantined: false,
+      claims: [{ claim: { type: 'pr', raw: '#1', prNumber: 1 }, verdict: 'VERIFIED', reason: 'PR exists' }],
+    };
+    _notifyCommsForTesting('job-clean', cleanReport);
+
+    assert.ok(!injectCalled, 'injectText should NOT be called for a clean (non-quarantined) report');
   });
 });
