@@ -116,6 +116,10 @@ export function getPeerByName(name: string): PeerConfig | undefined {
   return peers.find((p) => p.name.toLowerCase() === name.toLowerCase());
 }
 
+export function getAllConfiguredPeers(): PeerConfig[] {
+  return (_config as CommsConfig)?.['agent-comms']?.peers ?? [];
+}
+
 // ── Display Name ──────────────────────────────────────────────
 export function getDisplayName(agentId: string): string {
   const peers = (_config as CommsConfig)?.['agent-comms']?.peers ?? [];
