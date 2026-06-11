@@ -44,6 +44,7 @@ export function configure(opts: { projectDir: string }): void {
 // ── Session name mapping ────────────────────────────────────
 
 export function resolveSession(agentId: string): string | null {
+  if (_testingDeps?.resolveSession) return _testingDeps.resolveSession(agentId);
   if (agentId === 'comms') return COMMS_SESSION;
   if (agentId === 'orchestrator') return ORCH_SESSION;
   return null; // Workers don't have tmux sessions
@@ -196,15 +197,23 @@ export function injectMessage(agentId: string, text: string): boolean {
 export function spawnOrchestratorSession(): string | null {
   const session = resolveSession('orchestrator')!;
 
-  // Check if already running
-  try {
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
-      timeout: 5000,
-    });
+  // Check if already running — use injectable for test isolation (same pattern as injectMessage)
+  const alreadyRunning = _testingDeps?.sessionExists
+    ? _testingDeps.sessionExists(session)
+    : (() => {
+        try {
+          execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
+            timeout: 5000,
+          });
+          return true;
+        } catch {
+          return false;
+        }
+      })();
+
+  if (alreadyRunning) {
     log.warn('Orchestrator session already exists', { session });
     return session;
-  } catch {
-    // Session doesn't exist — good, we'll create it
   }
 
   try {
@@ -418,7 +427,11 @@ export function _getOrchestratorSession(): string { return ORCH_SESSION; }
 
 /**
  * Dependency overrides for unit testing.
- * - sessionExists: override the tmux has-session check used in injectMessage
+ * - resolveSession: override agentId → tmux session name mapping used by resolveSession(),
+ *   spawnOrchestratorSession(), and injectMessage(). Inject a sentinel name to verify that
+ *   both the spawn and deliver paths route through the same resolution function (todo #81).
+ * - sessionExists: override the tmux has-session check used in spawnOrchestratorSession()
+ *   and injectMessage()
  * - isOrchAlive: override isOrchestratorAlive() return value
  * - listSessions: override the session list used by isOrchestratorAlive() independent detection
  *
@@ -431,6 +444,7 @@ export function _getOrchestratorSession(): string { return ORCH_SESSION; }
  * isOrchAlive) — e.g. to verify that a session named 'orch2' is correctly detected.
  */
 interface TmuxTestDeps {
+  resolveSession?: (agentId: string) => string | null;
   sessionExists?: (session: string) => boolean;
   isOrchAlive?: () => boolean;
   listSessions?: () => string[];
