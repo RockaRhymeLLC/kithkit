@@ -11,6 +11,7 @@ import { getDatabase } from '../core/db.js';
 import { loadConfig } from '../core/config.js';
 import { getSelfImprovementConfig } from './config.js';
 import { createLogger } from '../core/logger.js';
+import { isCanaryOrFixtureContent, logSkippedFixtureContent } from '../api/memory-fixture-guard.js';
 
 const log = createLogger('self-improvement:memory-sync');
 
@@ -219,6 +220,14 @@ export async function handleMemorySync(payload: Record<string, unknown>): Promis
   const trigger = (learning.trigger as string | null) ?? 'sync';
   const decayPolicy = (learning.decay_policy as string | null) ?? 'default';
   const incomingCreatedAt = learning.created_at as string | undefined;
+
+  // Reject canary/fixture content from peer-sync payloads before any DB write.
+  // A malicious or misconfigured peer can send poisoned rows; this guard catches
+  // them at the inbound boundary — kithkit#375 (closes bypass identified in #301).
+  if (isCanaryOrFixtureContent(content)) {
+    logSkippedFixtureContent(content, `peer-sync:${originAgent ?? 'unknown'}`);
+    return;
+  }
 
   const db = getDatabase();
 
