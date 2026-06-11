@@ -12,6 +12,7 @@ import { openDatabase, closeDatabase, resolveDbPath, migrateDbIfNeeded, query } 
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { getDistStaleBuildState } from './automation/tasks/dist-staleness.js';
+import { runBootUrlCheck, getBootUrlCheckState } from './core/boot-url-check.js';
 import { handleStateRoute } from './api/state.js';
 import { handleMemoryRoute } from './api/memory.js';
 import { handleAgentsRoute, setProfilesDir } from './api/agents.js';
@@ -206,6 +207,11 @@ log.info('Retro evaluator dispatch hook registered');
 // Must run after setOnJobComplete() above (that shim clears the listener list).
 registerRetroIngest();
 
+// ── Boot-time URL check ───────────────────────────────────────
+
+// DNS-resolve relay/community hostnames. Warn-only — never blocks boot.
+// Results are cached and surfaced on GET /health as `unresolvable_urls`.
+await runBootUrlCheck(config);
 
 log.info('Kithkit daemon starting', {
   agent: config.agent.name,
@@ -258,6 +264,7 @@ const server = http.createServer((req, res) => {
     const isLocal = !cfIp && (remoteAddr === '127.0.0.1' || remoteAddr === '::1' || remoteAddr === '::ffff:127.0.0.1');
 
     const staleBuild = getDistStaleBuildState();
+    const bootUrlCheck = getBootUrlCheckState();
     const response: Record<string, unknown> = {
       ...health,
       degraded: isDegraded(),
@@ -265,6 +272,9 @@ const server = http.createServer((req, res) => {
       stale_build: staleBuild.checked
         ? { stale: staleBuild.staleFiles.length > 0, files: staleBuild.staleFiles, checked_at: staleBuild.checkedAt }
         : null,
+      unresolvable_urls: bootUrlCheck.checked
+        ? bootUrlCheck.unresolvableUrls.map(e => ({ url: e.url, hostname: e.hostname }))
+        : [],
     };
 
     // Only include sensitive details for localhost requests
@@ -555,6 +565,7 @@ if (config.daemon.lan?.enabled) {
         'Access-Control-Allow-Origin': '*',
       });
       const staleBuildLan = getDistStaleBuildState();
+      const bootUrlCheckLan = getBootUrlCheckState();
       res.end(JSON.stringify({
         ...health,
         degraded: isDegraded(),
@@ -562,6 +573,9 @@ if (config.daemon.lan?.enabled) {
         stale_build: staleBuildLan.checked
           ? { stale: staleBuildLan.staleFiles.length > 0, files: staleBuildLan.staleFiles, checked_at: staleBuildLan.checkedAt }
           : null,
+        unresolvable_urls: bootUrlCheckLan.checked
+          ? bootUrlCheckLan.unresolvableUrls.map(e => ({ url: e.url, hostname: e.hostname }))
+          : [],
         listener: 'lan',
       }));
       return;
