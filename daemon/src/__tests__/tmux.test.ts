@@ -17,6 +17,7 @@ import {
   _getCommsSession,
   _getOrchestratorSession,
   injectMessage,
+  verifySubmitLanded,
   _getInjectionAttempts,
   _resetInjectionAttempts,
   _setTmuxDepsForTesting,
@@ -407,5 +408,168 @@ describe('getOrchestratorState — outer-catch fallback (phantom-nudge fix #110)
     const result = getOrchestratorState();
     assert.equal(result, 'waiting',
       'orchProcessState=waiting must propagate unchanged');
+  });
+});
+
+// ── injectMessage: separate C-m submit + capture-pane verify (fix #853/#2297) ───
+//
+// Mutation-kill suite for the spawn-kickoff submit race fix.
+//
+// ROOT CAUSE (#853/#2297 / trace 8069cbf0):
+//   A freshly-spawned orchestrator receives its kickoff nudge via a single
+//   execFile('sleep', ['5']) → injectMessage() path. The text lands in the pane
+//   but the submit keystroke (Enter/C-m) loses the race on slower boxes —
+//   the orch sees the text but never submits it, and idles forever.
+//
+// FIX:
+//   1. Readiness-gate: wait for Claude's `> ` input prompt before sending.
+//   2. Text and submit are separate send-keys calls. The submit is always
+//      `send-keys C-m` — never folded into the -l literal payload where
+//      the sanitizer or length cap could swallow it.
+//   3. verifySubmitLanded() uses capture-pane to confirm the pane advanced
+//      after the submit; bounded retry re-sends C-m if not yet confirmed.
+//
+// SEAM ARCHITECTURE:
+//   sendKeys injectable: records all send-keys calls without real tmux I/O.
+//     - MUTATION-KILL: remove the standalone execSendKeys(session, ['C-m']) call
+//       → no 'C-m' entry in sendKeysCalls → assert fails → RED.
+//   capturePane injectable: returns pre-scripted pane content.
+//     - Also suppresses all sleeps inside injectMessage when set (fast tests).
+//     - MUTATION-KILL (COMMIT 4): return constant content → verifySubmitLanded
+//       returns false → injectMessage returns false → result-assert fails → RED.
+//
+// HOW TO PROVE MUTATION-KILL:
+//   1. GREEN baseline (as written).
+//   2. Fold submit into text: replace execSendKeys(session, ['C-m']) with
+//      execSendKeys(session, ['-l', stamped + '\r']) → no separate C-m call
+//      → cmCalls filter returns [] → assert fails → RED.
+//   3. Restore → GREEN.
+
+describe('injectMessage — separate C-m submit with capture-pane verify (mutation-kill #853)', { concurrency: 1 }, () => {
+  let savedAllowInject: string | undefined;
+  let savedSuppress: string | undefined;
+
+  beforeEach(() => {
+    savedAllowInject = process.env.KITHKIT_ALLOW_TEST_INJECT;
+    savedSuppress = process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    // KITHKIT_ALLOW_TEST_INJECT=1 bypasses isUnderTestRunner() so the real
+    // inject path runs; sendKeys + capturePane seams prevent actual tmux I/O.
+    process.env.KITHKIT_ALLOW_TEST_INJECT = '1';
+    delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    _resetInjectionAttempts();
+  });
+
+  afterEach(() => {
+    _setTmuxDepsForTesting(null);
+    if (savedAllowInject === undefined) {
+      delete process.env.KITHKIT_ALLOW_TEST_INJECT;
+    } else {
+      process.env.KITHKIT_ALLOW_TEST_INJECT = savedAllowInject;
+    }
+    if (savedSuppress === undefined) {
+      delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    } else {
+      process.env.KITHKIT_SUPPRESS_NOTIFICATIONS = savedSuppress;
+    }
+    _resetInjectionAttempts();
+  });
+
+  it('MUTATION-KILL (primary): a standalone C-m send-keys call fires after the text payload', () => {
+    // This is the primary mutation-killer for the spawn-kickoff race fix.
+    //
+    // The REAL submit path: execSendKeys(session, ['C-m']) is a dedicated call
+    // in injectMessage's try block, separate from the text payload send.
+    //
+    // MUTATION: fold C-m into the text payload (execSendKeys(session, ['-l', text+'\r']))
+    //   → no separate ['C-m'] entry in sendKeysCalls
+    //   → cmCalls filter returns [] → length assertion fails → RED.
+    //
+    // This test drives the REAL submit path via sendKeys seam — not a bypass seam
+    // that sidesteps the code deciding to send C-m (cf. PR #439's first submission).
+
+    const sendKeysCalls: Array<{ session: string; args: string[] }> = [];
+    let captureCallCount = 0;
+
+    _setTmuxDepsForTesting({
+      resolveSession: (id) => (id === 'orchestrator' ? 'orch1' : null),
+      sessionExists: () => true,
+      isOrchAlive: () => true,
+      sendKeys: (session, args) => { sendKeysCalls.push({ session, args }); },
+      // capturePane seam:
+      //   call 0 (baseline / readiness gate): show prompt → isInputPromptReady passes
+      //   call 1+ (verifySubmitLanded): return different content → verify returns true
+      capturePane: (_session) => {
+        const n = captureCallCount++;
+        return n === 0
+          ? '$ claude\n> '                         // ready prompt (baseline)
+          : '$ claude\n[12:00:01] check queue\n> '; // submit confirmed (new content)
+      },
+    });
+
+    const result = injectMessage('orchestrator', 'check queue');
+
+    // injectMessage must return true (syscall succeeded)
+    assert.equal(result, true, 'injectMessage must return true when send-keys syscall succeeds');
+
+    // The standalone C-m call MUST be present in the recorded calls.
+    // Mutation-kill: if C-m is folded into the text payload, this list is empty → RED.
+    const cmCalls = sendKeysCalls.filter(c => c.args.includes('C-m'));
+    assert.ok(
+      cmCalls.length >= 1,
+      `MUTATION-KILL: standalone C-m send-keys call must fire — got calls: ${JSON.stringify(sendKeysCalls)}`,
+    );
+
+    // The text payload call (-l) must NOT contain C-m (it must stay separate)
+    const textCalls = sendKeysCalls.filter(c => c.args[0] === '-l');
+    assert.ok(textCalls.length >= 1, 'text must be sent via -l literal send-keys');
+    assert.ok(
+      !textCalls.some(c => c.args.join('\0').includes('C-m')),
+      `text payload must not fold C-m into the -l argument — mutation evidence: ${JSON.stringify(textCalls)}`,
+    );
+
+    // Every call must target the correct session
+    assert.ok(
+      sendKeysCalls.every(c => c.session === 'orch1'),
+      'all send-keys calls must target the resolved orchestrator session',
+    );
+  });
+
+  it('MUTATION-KILL (secondary): verifySubmitLanded detects pane-advanced via capturePane', () => {
+    // Drives verifySubmitLanded() directly via the exported function.
+    // The capturePane seam returns changed content → verify returns true.
+    // Mutation: replace capturePaneContent() body with () => baselineContent
+    //   (always same) → verify returns false → assert fails → RED.
+    let calls = 0;
+    _setTmuxDepsForTesting({
+      resolveSession: () => 'orch1',
+      sessionExists: () => true,
+      isOrchAlive: () => true,
+      capturePane: (_session) => {
+        // First call: baseline (same)
+        // Second call: pane advanced (different — simulates submit received)
+        return calls++ === 0 ? '> ' : '> [response]\n> ';
+      },
+    });
+
+    const baseline = '> ';
+    const verified = verifySubmitLanded('orch1', baseline);
+    assert.equal(verified, true,
+      'verifySubmitLanded must return true when capturePane shows pane advanced');
+  });
+
+  it('verifySubmitLanded returns false when pane content does not change (submit not received)', () => {
+    // COMMIT 4 receipt-based return precondition: if pane never changes,
+    // verifySubmitLanded must return false so injectMessage can return false.
+    _setTmuxDepsForTesting({
+      resolveSession: () => 'orch1',
+      sessionExists: () => true,
+      isOrchAlive: () => true,
+      capturePane: (_session) => '> ', // constant — no change
+    });
+
+    const baseline = '> ';
+    const verified = verifySubmitLanded('orch1', baseline);
+    assert.equal(verified, false,
+      'verifySubmitLanded must return false when capturePane content does not change (submit not confirmed)');
   });
 });

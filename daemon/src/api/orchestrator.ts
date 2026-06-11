@@ -193,12 +193,19 @@ export async function handleOrchestratorRoute(
         details: `Spawned for task: ${task.slice(0, 200)}`,
       });
 
-      // Log the escalation as a message
+      // Log the escalation as a message.
+      // direct: true adds a tmux-inject attempt as a SECOND delivery path alongside
+      // the 5s-delayed startup nudge already fired by spawnOrchestratorSession().
+      // With COMMIT 1's readiness-gate, injectMessage() waits for the `> ` prompt
+      // before sending; if Claude isn't ready within the gate window, the inject
+      // returns false and the message-router falls through to notifyNewMessage(),
+      // which triggers the scheduler to retry delivery once the session is live.
       sendMessage({
         from: 'comms',
         to: 'orchestrator',
         type: 'task',
         body: JSON.stringify({ task, context, task_id: taskId }),
+        direct: true,
       });
 
       log.info('Orchestrator spawned for task', { task: task.slice(0, 100), taskId });
