@@ -21,12 +21,63 @@
 import { createLogger } from '../../core/logger.js';
 import { loadConfig } from '../../core/config.js';
 import { scanForPeers } from '../../core/lan-discovery.js';
+import { query } from '../../core/db.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('peer-heartbeat');
 
 const _lastScan = new Map<string, number>();
 const SCAN_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Look-back window for the quiet-period counter check.
+ * Must cover at least one full heartbeat interval (5 min default) with margin.
+ * 600 s = 10 min = 2× the default heartbeat interval.
+ */
+const QUIET_PERIOD_INTERVAL_SECONDS = 600;
+
+/** Counts of inbound messages from a peer within the look-back window. */
+interface MessageCounts {
+  /** Messages received FROM the peer (via LAN webhook or relay). */
+  inbound: number;
+  /** Of those, messages confirmed injected into the comms session. */
+  inject: number;
+}
+
+/**
+ * Returns inbound-webhook-count and inject-count for a peer over the last
+ * QUIET_PERIOD_INTERVAL_SECONDS seconds.
+ *
+ * Wires to the `messages` table that the daemon already maintains:
+ *  - `from_agent` identifies the originating peer.
+ *  - `injected_at IS NOT NULL` marks successful delivery (set by message-router.ts
+ *    direct-inject path, BMO decision #3, kithkit#585).
+ *
+ * Exported for testing via _setGetMessageCountsForTesting().
+ */
+function getMessageCounts(peerName: string): MessageCounts {
+  if (_getMessageCountsForTesting) return _getMessageCountsForTesting(peerName);
+  try {
+    const intervalStr = `-${QUIET_PERIOD_INTERVAL_SECONDS} seconds`;
+    // SUM(CASE …) returns NULL on an empty set in SQLite; coerce to 0.
+    const rows = query<{ inbound: number; inject: number | null }>(
+      `SELECT
+         COUNT(*) AS inbound,
+         SUM(CASE WHEN injected_at IS NOT NULL THEN 1 ELSE 0 END) AS inject
+       FROM messages
+       WHERE from_agent = ?
+         AND created_at > datetime('now', ?)`,
+      peerName.toLowerCase(),
+      intervalStr,
+    );
+    const row = rows[0];
+    return { inbound: row?.inbound ?? 0, inject: row?.inject ?? 0 };
+  } catch {
+    // DB unavailable — fail open (err on side of dispatching recovery, matching
+    // the pre-fix behavior so a DB outage doesn't suppress alerts).
+    return { inbound: 1, inject: 0 };
+  }
+}
 
 /**
  * Peers currently in the "local-DNS-indeterminate" state: send failed via
@@ -66,12 +117,14 @@ let _commsOverride: any | null = null;
 let _fetchOverride: typeof fetch | null = null;
 let _loadConfigOverride: (() => ReturnType<typeof loadConfig>) | null = null;
 let _scanForPeersOverride: ((port: number) => Promise<Map<string, string>>) | null = null;
+let _getMessageCountsForTesting: ((peerName: string) => MessageCounts) | null = null;
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function _setCommsForTesting(c: any | null): void { _commsOverride = c; }
 export function _setFetchForTesting(f: typeof fetch | null): void { _fetchOverride = f; }
 export function _setLoadConfigForTesting(fn: (() => ReturnType<typeof loadConfig>) | null): void { _loadConfigOverride = fn; }
 export function _setScanForPeersForTesting(fn: ((port: number) => Promise<Map<string, string>>) | null): void { _scanForPeersOverride = fn; }
+export function _setGetMessageCountsForTesting(fn: ((peerName: string) => MessageCounts) | null): void { _getMessageCountsForTesting = fn; }
 
 /** Reset all module state between tests. */
 export function _resetForTesting(): void {
@@ -79,6 +132,7 @@ export function _resetForTesting(): void {
   _fetchOverride = null;
   _loadConfigOverride = null;
   _scanForPeersOverride = null;
+  _getMessageCountsForTesting = null;
   _localDnsIndeterminate.clear();
   _lastScan.clear();
 }
@@ -219,80 +273,121 @@ async function run(): Promise<void> {
               }
             }
           } else {
-            // Both .lan DNS and relay failed — peer is likely genuinely
-            // unreachable (or relay is also down).  This is distinct from
-            // the local-DNS-only failure above.
-            _localDnsIndeterminate.delete(peer.name.toLowerCase());
-            comms.updatePeerState?.(peer.name, {
-              status: 'unreachable',
-              updatedAt: Date.now(),
-            });
-            failed++;
-            log.warn(`${peer.name}: unreachable via .lan DNS and relay — marking peer down`, {
-              localDnsFailed: true,
-              host: peer.host,
-              peerStatus: 'peer-actually-unreachable',
-            });
+            // Both .lan DNS and relay failed — check whether this is a genuine
+            // broken session or merely a quiet period (no traffic from peer).
+            //
+            // Quiet-period guard: cross-check inbound-webhook-count vs inject-count
+            // over the last QUIET_PERIOD_INTERVAL_SECONDS using the messages table
+            // (the live source the daemon already maintains).
+            //
+            //  both zero  → quiet period (no recent peer traffic) → skip dispatch
+            //  inbound > inject → broken delivery → dispatch recovery
+            const counts = getMessageCounts(peer.name);
+            if (counts.inbound === 0 && counts.inject === 0) {
+              // Quiet period: peer has not sent us any messages recently, and we
+              // have not injected any from it.  Both live probes failed, but the
+              // absence of traffic indicates the peer may be intentionally offline
+              // (e.g. night session stopped).  Do NOT dispatch recovery.
+              log.debug(`${peer.name}: both probes failed but no recent inbound traffic — quiet period, skipping recovery dispatch`, {
+                host: peer.host,
+              });
+            } else {
+              // Broken delivery: peer has been sending traffic (inbound > 0) but
+              // it is not reaching us, OR a previous inject attempt is on record.
+              // Proceed with the recovery dispatch.
+              _localDnsIndeterminate.delete(peer.name.toLowerCase());
+              comms.updatePeerState?.(peer.name, {
+                status: 'unreachable',
+                updatedAt: Date.now(),
+              });
+              failed++;
+              log.warn(`${peer.name}: unreachable via .lan DNS and relay — marking peer down`, {
+                localDnsFailed: true,
+                host: peer.host,
+                peerStatus: 'peer-actually-unreachable',
+                inboundCount: counts.inbound,
+                injectCount: counts.inject,
+              });
 
-            // ARP scan to check whether peer has moved to a new IP.
-            if (shouldScan(peer.name)) {
-              try {
-                const discovered = await effectiveScan(peer.port ?? 3847);
-                const newIP = discovered.get(peer.name.toLowerCase());
-                if (newIP) {
-                  comms.setPeerIpOverride?.(peer.name, newIP);
-                  log.info(`Discovered ${peer.name} at new IP ${newIP}`);
+              // ARP scan to check whether peer has moved to a new IP.
+              if (shouldScan(peer.name)) {
+                try {
+                  const discovered = await effectiveScan(peer.port ?? 3847);
+                  const newIP = discovered.get(peer.name.toLowerCase());
+                  if (newIP) {
+                    comms.setPeerIpOverride?.(peer.name, newIP);
+                    log.info(`Discovered ${peer.name} at new IP ${newIP}`);
+                  }
+                } catch (scanErr) {
+                  log.warn(`LAN discovery scan failed for ${peer.name}`, {
+                    error: scanErr instanceof Error ? scanErr.message : String(scanErr),
+                  });
                 }
-              } catch (scanErr) {
-                log.warn(`LAN discovery scan failed for ${peer.name}`, {
-                  error: scanErr instanceof Error ? scanErr.message : String(scanErr),
-                });
               }
             }
           }
         } else {
-          // Non-mDNS host — original behavior: record unknown and scan.
-          comms.updatePeerState?.(peer.name, {
-            status: 'unknown',
-            updatedAt: Date.now(),
-          });
-          failed++;
-          log.debug(`Heartbeat failed for ${peer.name}`, { error: result.error });
+          // Non-mDNS host — apply quiet-period guard before dispatching recovery.
+          const counts = getMessageCounts(peer.name);
+          if (counts.inbound === 0 && counts.inject === 0) {
+            log.debug(`${peer.name}: heartbeat failed but no recent inbound traffic — quiet period, skipping recovery dispatch`);
+          } else {
+            comms.updatePeerState?.(peer.name, {
+              status: 'unknown',
+              updatedAt: Date.now(),
+            });
+            failed++;
+            log.debug(`Heartbeat failed for ${peer.name}`, {
+              error: result.error,
+              inboundCount: counts.inbound,
+              injectCount: counts.inject,
+            });
 
-          // Attempt LAN discovery to find peer at a new IP
-          if (shouldScan(peer.name)) {
+            // Attempt LAN discovery to find peer at a new IP
+            if (shouldScan(peer.name)) {
+              const discovered = await effectiveScan(peer.port ?? 3847);
+              const newIP = discovered.get(peer.name.toLowerCase());
+              if (newIP) {
+                comms.setPeerIpOverride?.(peer.name, newIP);
+                log.info(`Discovered ${peer.name} at new IP ${newIP}`);
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      // Unexpected error path — apply the same quiet-period guard.
+      const counts = getMessageCounts(peer.name);
+      if (counts.inbound === 0 && counts.inject === 0) {
+        log.debug(`${peer.name}: heartbeat threw but no recent inbound traffic — quiet period, skipping recovery dispatch`, {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      } else {
+        comms.updatePeerState?.(peer.name, {
+          status: 'unknown',
+          updatedAt: Date.now(),
+        });
+        failed++;
+        log.warn(`Heartbeat error for ${peer.name}`, {
+          error: err instanceof Error ? err.message : String(err),
+          inboundCount: counts.inbound,
+          injectCount: counts.inject,
+        });
+
+        // Attempt LAN discovery to find peer at a new IP
+        if (shouldScan(peer.name)) {
+          try {
             const discovered = await effectiveScan(peer.port ?? 3847);
             const newIP = discovered.get(peer.name.toLowerCase());
             if (newIP) {
               comms.setPeerIpOverride?.(peer.name, newIP);
               log.info(`Discovered ${peer.name} at new IP ${newIP}`);
             }
+          } catch (scanErr) {
+            log.warn(`LAN discovery scan failed for ${peer.name}`, {
+              error: scanErr instanceof Error ? scanErr.message : String(scanErr),
+            });
           }
-        }
-      }
-    } catch (err) {
-      comms.updatePeerState?.(peer.name, {
-        status: 'unknown',
-        updatedAt: Date.now(),
-      });
-      failed++;
-      log.warn(`Heartbeat error for ${peer.name}`, {
-        error: err instanceof Error ? err.message : String(err),
-      });
-
-      // Attempt LAN discovery to find peer at a new IP
-      if (shouldScan(peer.name)) {
-        try {
-          const discovered = await effectiveScan(peer.port ?? 3847);
-          const newIP = discovered.get(peer.name.toLowerCase());
-          if (newIP) {
-            comms.setPeerIpOverride?.(peer.name, newIP);
-            log.info(`Discovered ${peer.name} at new IP ${newIP}`);
-          }
-        } catch (scanErr) {
-          log.warn(`LAN discovery scan failed for ${peer.name}`, {
-            error: scanErr instanceof Error ? scanErr.message : String(scanErr),
-          });
         }
       }
     }
