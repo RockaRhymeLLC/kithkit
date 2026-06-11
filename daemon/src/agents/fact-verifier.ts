@@ -25,7 +25,7 @@
 import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import { update, exec } from '../core/db.js';
-import { sendMessage } from './message-router.js';
+import { injectText } from '../core/session-bridge.js';
 import { addOnJobComplete } from './lifecycle.js';
 import type { JobRecord } from './lifecycle.js';
 import { createLogger } from '../core/logger.js';
@@ -158,6 +158,17 @@ let _fetchFn: FetchFn | null = null;
 /** Override the fetch implementation for tests. Pass null to restore default. */
 export function _setFetchFnForTesting(fn: FetchFn | null): void {
   _fetchFn = fn;
+}
+
+// ── Injectable injectText (for testing) ──────────────────────
+
+type InjectFn = (text: string, options?: { timestamp?: boolean }) => void;
+
+let _injectFn: InjectFn | null = null;
+
+/** Override injectText for tests — prevents real tmux injection. Pass null to restore default. */
+export function _setInjectFnForTesting(fn: InjectFn | null): void {
+  _injectFn = fn;
 }
 
 async function defaultFetch(url: string): Promise<FetchResult> {
@@ -772,13 +783,7 @@ function notifyComms(jobId: string, report: VerificationReport): void {
   lines.push(`Worker output preserved. Review with: GET /api/agents/${jobId}/status`);
 
   try {
-    sendMessage({
-      from: 'daemon',
-      to: 'comms',
-      type: 'status',
-      body: lines.join('\n'),
-      metadata: { fact_verifier: true, job_id: jobId, quarantined: true },
-    });
+    (_injectFn ?? injectText)(`[System] ${lines.join('\n')}`, { timestamp: true });
   } catch (err) {
     // Notification failure must never crash the daemon
     log.warn(`fact-verifier: failed to notify comms for job ${jobId}`, { err: String(err) });
@@ -786,6 +791,11 @@ function notifyComms(jobId: string, report: VerificationReport): void {
 }
 
 // ── Entry point ───────────────────────────────────────────────
+
+/** @internal — test only: invoke notifyComms directly with a pre-built report */
+export function _notifyCommsForTesting(jobId: string, report: VerificationReport): void {
+  notifyComms(jobId, report);
+}
 
 /**
  * Verify a completed job. Runs async, fire-and-forget.
