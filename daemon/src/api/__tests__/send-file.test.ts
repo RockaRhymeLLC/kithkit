@@ -199,14 +199,22 @@ describe('POST /api/send-file', () => {
     const tmpFile = path.join(tmpDir, 'report.txt');
     fs.writeFileSync(tmpFile, 'report content');
 
-    // The actual Telegram send will fail (no bot token in test env) but route should 200
-    const res = await post('/api/send-file', {
-      file_path: tmpFile,
-      to: 'TestUser',
-    });
-    // May be 200 with telegram: false (no real token), route layer should not 5xx
-    assert.ok(res.status === 200 || res.status === 200, `Unexpected status: ${res.status}`);
-    assert.ok('results' in res.body);
+    let invoked = false;
+    _setTelegramSendFileForTesting(async () => { invoked = true; return false; });
+
+    try {
+      // The actual Telegram send will fail (no bot token in test env) but route should 200
+      const res = await post('/api/send-file', {
+        file_path: tmpFile,
+        to: 'TestUser',
+      });
+      // May be 200 with telegram: false (no real token), route layer should not 5xx
+      assert.ok(res.status === 200 || res.status === 200, `Unexpected status: ${res.status}`);
+      assert.ok('results' in res.body);
+      assert.ok(invoked, 'must route through the injectable seam');
+    } finally {
+      _setTelegramSendFileForTesting(null);
+    }
 
     exec(`DELETE FROM contacts WHERE name = 'TestUser'`);
   });
