@@ -432,6 +432,13 @@ export function killOrchestratorSession(): boolean {
  * ORCH_SESSION_PATTERN. A session-name mismatch is now DETECTABLE — not silently
  * mis-reported as "dead" when the orchestrator is actually alive.
  *
+ * Zombie session guard (kithkit#796): a tmux session whose NAME still exists but whose
+ * pane's child process has exited is a zombie. Such sessions match the name pattern yet
+ * are not actually alive. After confirming a session name matches, we compose with
+ * getOrchestratorState() — which already performs the pane-PID liveness check
+ * introduced in #439 (dead-default) and hardened in #853 (fast-retry) — to ensure the
+ * pane process is genuinely running. 'dead' from getOrchestratorState() means zombie.
+ *
  * The true/false contract is preserved; _testingDeps.isOrchAlive override is unchanged.
  */
 export function isOrchestratorAlive(): boolean {
@@ -443,7 +450,14 @@ export function isOrchestratorAlive(): boolean {
     ? _testingDeps.listSessions()
     : listSessions();
 
-  return sessions.some(name => ORCH_SESSION_PATTERN.test(name));
+  if (!sessions.some(name => ORCH_SESSION_PATTERN.test(name))) {
+    return false;
+  }
+
+  // A session name matched — but verify the pane process is actually alive.
+  // getOrchestratorState() checks the pane PID and returns 'dead' for zombie sessions
+  // (session lingers, pane process gone). 'active' or 'waiting' means genuinely live.
+  return getOrchestratorState() !== 'dead';
 }
 
 /**

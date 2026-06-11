@@ -265,17 +265,23 @@ describe('isOrchestratorAlive — independent detection (fix/752)', () => {
     //
     // NEW impl consults _testingDeps.listSessions → withNoOrch = false, withOrch2 = true.
     //   assert.notEqual(false, true) → PASSES → GREEN.
+    //
+    // orchProcessState: () => 'waiting' is set for the second mock so that the
+    // pane-PID liveness check (getOrchestratorState) reports a live session.
 
     _setTmuxDepsForTesting({ listSessions: () => ['comms1'] }); // no orch session
     const withNoOrch = isOrchestratorAlive();
 
-    _setTmuxDepsForTesting({ listSessions: () => ['comms1', 'orch2'] }); // orch2 added
+    _setTmuxDepsForTesting({
+      listSessions: () => ['comms1', 'orch2'],  // orch2 added
+      orchProcessState: () => 'waiting',         // pane is alive (required for zombie guard)
+    });
     const withOrch2 = isOrchestratorAlive();
 
     assert.equal(withNoOrch, false,
       'should return false when no session matches ORCH_SESSION_PATTERN');
     assert.equal(withOrch2, true,
-      'should return true when orch2 exists in the session list');
+      'should return true when orch2 exists in the session list and pane is alive');
     assert.notEqual(withNoOrch, withOrch2,
       'result MUST change when an orch-pattern session is added — ' +
       'old has-session-on-constant impl returns the same value both times (cannot pass this)');
@@ -302,9 +308,14 @@ describe('isOrchestratorAlive — independent detection (fix/752)', () => {
       'isOrchestratorAlive() must return false when no sessions exist at all');
   });
 
-  it('returns true when the standard ORCH_SESSION name (orch1) appears in the list', () => {
+  it('returns true when the standard ORCH_SESSION name (orch1) appears in the list and pane is alive', () => {
     // Regression guard: standard operation must still work.
-    _setTmuxDepsForTesting({ listSessions: () => ['comms1', 'orch1'] });
+    // orchProcessState: () => 'waiting' is required because the pane-PID liveness check
+    // (getOrchestratorState) now runs after the session-name match (#796 zombie guard).
+    _setTmuxDepsForTesting({
+      listSessions: () => ['comms1', 'orch1'],
+      orchProcessState: () => 'waiting',
+    });
 
     const result = isOrchestratorAlive();
     assert.equal(result, true,
@@ -337,6 +348,86 @@ describe('isOrchestratorAlive — independent detection (fix/752)', () => {
     assert.equal(result, false, '_testingDeps.isOrchAlive returning false must be respected');
     assert.equal(listSessionsCalled, false,
       '_testingDeps.isOrchAlive must short-circuit (false case) before listSessions is called');
+  });
+});
+
+// ── isOrchestratorAlive — zombie session detection (fix #796) ────────────────
+//
+// Mutation-kill tests for the pane-PID liveness check added to isOrchestratorAlive().
+//
+// PROBLEM (kithkit#796): a zombie tmux session — where the session NAME still appears
+// in `tmux list-sessions` but the pane's child process has exited — causes the
+// pattern-only implementation to return true. Callers believe the orchestrator is alive
+// and skip spawning a fresh one, leaving tasks permanently stuck.
+//
+// FIX: after the session-name pattern match, call getOrchestratorState() which performs
+// the pane-PID liveness check (#439 dead-default, #853 fast-retry). 'dead' → zombie.
+//
+// HOW THE MUTATION KILL WORKS:
+//   With the fix: listSessions finds 'orch1' → session match → getOrchestratorState()
+//     is called → panePid throws → outer catch → 'dead' → isOrchestratorAlive() = false.
+//   MUTATION (remove getOrchestratorState call): session match → return true immediately.
+//     → assert.equal(result, false) FAILS → RED.
+//
+// SEAM ARCHITECTURE:
+//   - listSessions: returns a session list with an orch-pattern name.
+//   - sessionExists: () => true — tells getOrchestratorState() the session is still
+//     present in tmux (simulates the zombie: has-session succeeds, pane dead).
+//   - panePid: () => { throw } — simulates the dead-pane condition:
+//     tmux display-message can't return a valid PID for the dead pane. This throw
+//     propagates to the outer catch in getOrchestratorState() which returns 'dead'.
+//   These three together are the minimal deterministic zombie simulation.
+
+describe('isOrchestratorAlive — zombie session detection (fix #796)', () => {
+  afterEach(() => {
+    _setTmuxDepsForTesting(null);
+  });
+
+  it('MUTATION-KILL: returns false when session name matches but pane process is dead (zombie)', () => {
+    // Zombie scenario: tmux session 'orch1' lingers in `list-sessions` but the
+    // pane's child process (Claude) has already exited.
+    //
+    // listSessions returns ['orch1']  →  ORCH_SESSION_PATTERN matches
+    // sessionExists: () => true       →  has-session still succeeds (session shell alive)
+    // panePid: () => { throw }        →  display-message fails on dead pane → outer catch
+    //                                    in getOrchestratorState() returns 'dead'
+    //
+    // MUTATION-KILL: removing the getOrchestratorState() call from isOrchestratorAlive()
+    // makes it return true (pattern match alone) → assert.equal(false) FAILS → RED.
+    _setTmuxDepsForTesting({
+      listSessions: () => ['orch1'],
+      sessionExists: () => true,
+      panePid: () => { throw new Error('zombie pane: no valid pid'); },
+    });
+
+    const result = isOrchestratorAlive();
+    assert.equal(result, false,
+      'MUTATION-KILL: zombie session (name matches ORCH_SESSION_PATTERN but pane dead) ' +
+      'must return false — removing the getOrchestratorState() check causes true → RED');
+  });
+
+  it('returns true when session name matches and pane process is genuinely alive', () => {
+    // Sanity / non-zombie baseline: session name matches AND state is 'waiting' (live).
+    // orchProcessState bypasses pane-PID syscalls for deterministic test behaviour.
+    _setTmuxDepsForTesting({
+      listSessions: () => ['orch1'],
+      orchProcessState: () => 'waiting',
+    });
+
+    const result = isOrchestratorAlive();
+    assert.equal(result, true,
+      'live orchestrator session (name matches, pane alive) must still return true');
+  });
+
+  it('returns true when session name matches and pane is actively processing (active state)', () => {
+    _setTmuxDepsForTesting({
+      listSessions: () => ['orch1'],
+      orchProcessState: () => 'active',
+    });
+
+    const result = isOrchestratorAlive();
+    assert.equal(result, true,
+      'active orchestrator session must return true — active state is alive, not zombie');
   });
 });
 
