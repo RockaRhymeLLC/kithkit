@@ -41,6 +41,23 @@ let injectMessage = _injectMessage;
 let spawnOrchestratorSession = _spawnOrchestratorSession;
 let cleanupSessionDirs = _cleanupSessionDirs;
 let evaluateTask: (taskId: string) => Promise<void> = _evaluateTask;
+// isClaudeProcessRunning is injectable so the fast-retry path can be unit-tested
+// without a real tmux session (COMMIT 2).
+let isClaudeProcessRunning_dep: () => boolean = isClaudeProcessRunning;
+
+// ── Just-spawned fast-retry state (COMMIT 2) ─────────────────
+
+/**
+ * Tracks when the orchestrator was most recently spawned by the idle monitor.
+ * Used by the fast-retry path to detect and re-nudge a just-spawned orch whose
+ * kickoff submit was missed (race: C-m fired before readline was ready).
+ *
+ * Set by respawnForPendingTasks / respawnForAwaitingApproval after a successful spawn.
+ * Cleared when the orch becomes active, or when FAST_RETRY_WINDOW_MS elapses.
+ */
+let justSpawnedAt: number | null = null;
+
+const FAST_RETRY_WINDOW_MS = 30_000; // 30 seconds
 
 /**
  * Dump post-mortem state to the orchestrator's session directory.
@@ -88,6 +105,9 @@ const GRACE_PERIOD_MS = 60 * 1000; // 60 seconds to exit after nudge
  * With --agent, Claude IS the tmux pane process. To distinguish "actively processing"
  * from "idle at the input prompt," we check whether Claude has child processes
  * (tool execution spawns children like bash, node, etc.).
+ *
+ * Named _isClaudeProcessRunningImpl so the injectable `isClaudeProcessRunning_dep`
+ * variable can be overridden for unit tests without naming conflicts.
  */
 function isClaudeProcessRunning(): boolean {
   try {
@@ -270,6 +290,8 @@ function respawnForPendingTasks(taskId: string, taskTitle: string, taskDesc: str
       body: JSON.stringify({ task: taskTitle, context: taskDesc, task_id: taskId }),
     });
 
+    // Mark spawn time so the fast-retry path can re-nudge if kickoff submit races
+    justSpawnedAt = Date.now();
     log.info('Orchestrator respawned for pending tasks', { session, pendingCount, taskId });
   } catch (err) {
     log.error('Failed to respawn orchestrator', {
@@ -326,6 +348,8 @@ function respawnForAwaitingApproval(count: number): void {
       }),
     });
 
+    // Mark spawn time for fast-retry (same as respawnForPendingTasks)
+    justSpawnedAt = Date.now();
     log.info('Orchestrator respawned for awaiting-approval tasks', { session, count });
   } catch (err) {
     log.error('Failed to respawn orchestrator for awaiting-approval tasks', {
@@ -577,6 +601,46 @@ async function run(config: Record<string, unknown>): Promise<void> {
     ? config.idle_timeout_minutes * 60 * 1000
     : DEFAULT_IDLE_TIMEOUT_MS;
 
+  // --- Fast-retry: just-spawned kickoff re-nudge (COMMIT 2) ---
+  //
+  // If the idle monitor just spawned this orchestrator and the orch is still at
+  // the idle prompt (Claude process not running), the initial kickoff submit may
+  // have lost the race. Re-inject the kickoff nudge within a 30s window so a
+  // missed submit is caught within seconds rather than waiting for the 10-min
+  // idle timeout path.
+  //
+  // Key invariant: we deliberately do NOT touch last_activity here. Touching it
+  // would reset the idle clock and self-sustain the idle wedge — the orch would
+  // never look truly idle and would never be force-respawned if the nudge keeps
+  // failing. Without the last_activity update, the 10-min idle timeout fires
+  // normally if the orch remains wedged after the retry window expires.
+  if (justSpawnedAt !== null) {
+    const spawnAgeMs = Date.now() - justSpawnedAt;
+    if (spawnAgeMs > FAST_RETRY_WINDOW_MS) {
+      justSpawnedAt = null; // window expired — resume normal idle/shutdown flow
+    } else {
+      if (isClaudeProcessRunning_dep()) {
+        // Orch is actively processing — kickoff was received; clear the window.
+        justSpawnedAt = null;
+      } else {
+        // Still idle at prompt within the fast-retry window — re-nudge kickoff.
+        const port = (loadConfig() as { daemon: { port: number } }).daemon.port;
+        log.info('Fast-retry: orchestrator still idle at prompt after spawn — re-nudging kickoff', {
+          spawnAgeMs,
+        });
+        try {
+          injectMessage(
+            'orchestrator',
+            `You have been spawned. Check the task queue for pending work: curl -s 'http://localhost:${port}/api/orchestrator/tasks?status=pending'`,
+          );
+        } catch (e) {
+          log.warn('Fast-retry kickoff nudge failed', { error: String(e) });
+        }
+      }
+      return; // don't proceed to idle-timeout checks during the fast-retry window
+    }
+  }
+
   // --- Check 0: Process-level liveness ---
   // Claude can pause for long periods during complex tasks (thinking, generating).
   // If the Claude process is still running, the orchestrator is NOT idle — even if
@@ -817,6 +881,8 @@ export function _setDepsForTesting(deps: {
   spawnOrchestratorSession?: () => string | null;
   cleanupSessionDirs?: (maxAgeDays?: number) => number;
   evaluateTask?: (taskId: string) => Promise<void>;
+  /** Override isClaudeProcessRunning for fast-retry path tests (COMMIT 2). */
+  isClaudeProcessRunning?: () => boolean;
 } | null): void {
   if (deps === null) {
     isOrchestratorAlive = _isOrchestratorAlive;
@@ -825,6 +891,7 @@ export function _setDepsForTesting(deps: {
     spawnOrchestratorSession = _spawnOrchestratorSession;
     cleanupSessionDirs = _cleanupSessionDirs;
     evaluateTask = _evaluateTask;
+    isClaudeProcessRunning_dep = isClaudeProcessRunning;
     return;
   }
   if (deps.isOrchestratorAlive) isOrchestratorAlive = deps.isOrchestratorAlive;
@@ -833,4 +900,15 @@ export function _setDepsForTesting(deps: {
   if (deps.spawnOrchestratorSession) spawnOrchestratorSession = deps.spawnOrchestratorSession;
   if (deps.cleanupSessionDirs) cleanupSessionDirs = deps.cleanupSessionDirs;
   if (deps.evaluateTask) evaluateTask = deps.evaluateTask;
+  if (deps.isClaudeProcessRunning) isClaudeProcessRunning_dep = deps.isClaudeProcessRunning;
+}
+
+/** @internal Set justSpawnedAt for testing the fast-retry path (COMMIT 2). */
+export function _setJustSpawnedAtForTesting(ts: number | null): void {
+  justSpawnedAt = ts;
+}
+
+/** @internal Read justSpawnedAt for testing the fast-retry path (COMMIT 2). */
+export function _getJustSpawnedAtForTesting(): number | null {
+  return justSpawnedAt;
 }
