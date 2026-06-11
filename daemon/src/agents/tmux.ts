@@ -84,6 +84,85 @@ function isUnderTestRunner(): boolean {
   );
 }
 
+// ── Send-keys helpers ───────────────────────────────────────
+
+/**
+ * Execute a tmux send-keys call, routing through the test seam when available.
+ * Using a helper ensures the sendKeys seam intercepts ALL send-keys calls —
+ * both the text payload and the separate C-m submit keystroke — so tests can
+ * assert each call independently without performing real tmux I/O.
+ */
+function execSendKeys(session: string, args: string[]): void {
+  if (_testingDeps?.sendKeys) {
+    _testingDeps.sendKeys(session, args);
+    return;
+  }
+  execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', `${session}:`, ...args], {
+    timeout: 5000,
+  });
+}
+
+/**
+ * Capture the current visible content of a tmux pane.
+ *
+ * This is the shared "capture-pane verify" primitive used by:
+ *  - verifySubmitLanded() (COMMIT 1) — confirms the C-m submit was received
+ *  - injectMessage() return value (COMMIT 4) — upgrades return from syscall to receipt
+ *
+ * Injectable via _testingDeps.capturePane for unit tests that must avoid real tmux I/O.
+ * When the seam is active, sleeps and retry loops inside callers are automatically
+ * suppressed (checking !_testingDeps?.capturePane) to keep test execution fast.
+ */
+function capturePaneContent(session: string): string {
+  if (_testingDeps?.capturePane) return _testingDeps.capturePane(session);
+  return execFileSync(TMUX_BIN, [
+    '-S', TMUX_SOCKET, 'capture-pane', '-t', `${session}:`, '-p', '-J',
+  ], { timeout: 5000, encoding: 'utf8' });
+}
+
+/**
+ * Heuristic: is the pane currently showing Claude Code's input prompt?
+ * Claude Code presents `> ` at the start of the input line.
+ */
+function isInputPromptReady(content: string): boolean {
+  return />\s*$/.test(content.trimEnd());
+}
+
+const MAX_CM_RETRIES = 2;
+
+/**
+ * Verify that the submit keystroke (C-m) was received by checking whether
+ * the pane content advanced past the baseline (i.e. Claude started responding).
+ *
+ * Shared primitive — used by injectMessage (COMMIT 1 guard) and as the basis
+ * for the receipt-based return value in COMMIT 4.
+ *
+ * Returns true if the pane grew (submit confirmed), false if it did not change
+ * within MAX_CM_RETRIES + 1 capture attempts.
+ *
+ * Sleeps between retries are suppressed when _testingDeps.capturePane is active
+ * so tests complete without real delay.
+ */
+export function verifySubmitLanded(session: string, baselineContent: string): boolean {
+  const baselineLen = baselineContent.length;
+  for (let i = 0; i <= MAX_CM_RETRIES; i++) {
+    try {
+      const current = capturePaneContent(session);
+      // Pane grew or changed substantially → Claude is processing the input
+      if (current.length > baselineLen + 5 || current !== baselineContent) {
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    // No delay between retries when seam is active (fast tests)
+    if (i < MAX_CM_RETRIES && !_testingDeps?.capturePane) {
+      execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 });
+    }
+  }
+  return false;
+}
+
 // ── Message injection ───────────────────────────────────────
 
 /**
@@ -161,19 +240,56 @@ export function injectMessage(agentId: string, text: string): boolean {
     return false;
   }
 
+  // Capture baseline pane content; wait for the input prompt to be ready (bounded).
+  // This readiness-gate prevents injecting into a pane that is mid-render.
+  // Sleeps are suppressed when the capturePane seam is active (test mode).
+  let preSendContent = '';
   try {
-    // Prepend EST timestamp and send as keystrokes, then press Enter
+    preSendContent = capturePaneContent(session);
+    const READY_ATTEMPTS = _testingDeps?.capturePane ? 1 : 10;
+    for (let i = 0; i < READY_ATTEMPTS && !isInputPromptReady(preSendContent); i++) {
+      if (!_testingDeps?.capturePane) {
+        execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 });
+      }
+      preSendContent = capturePaneContent(session);
+    }
+  } catch { /* non-fatal — proceed with send even if capture-pane fails */ }
+
+  try {
+    // Send the message text as literal keystrokes (-l prevents key-name expansion)
     const stamped = `${estTimestamp()} ${safeText}`;
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', `${session}:`, '-l', stamped], {
-      timeout: 5000,
-    });
-    // Small delay to let tmux buffer the text before submitting
-    execFileSync('/bin/sleep', ['0.15'], { timeout: 2000 });
-    execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', `${session}:`, 'Enter'], {
-      timeout: 5000,
-    });
+    execSendKeys(session, ['-l', stamped]);
+
+    // Small delay to let tmux buffer the text before the submit keystroke.
+    // Suppressed in seam test mode (capturePane set) to keep tests fast.
+    if (!_testingDeps?.capturePane) {
+      execFileSync('/bin/sleep', ['0.15'], { timeout: 2000 });
+    }
+
+    // Send the submit keystroke as a SEPARATE send-keys call.
+    // It must NOT be folded into the text payload (the -l literal flag treats
+    // 'C-m' as the literal characters C and m, not as Enter). Keeping it separate
+    // also means no sanitizer or length cap can accidentally swallow it.
+    execSendKeys(session, ['C-m']);
+
+    // Verify submit landed via capture-pane; retry C-m if the pane hasn't advanced.
+    // This catches the race on slower boxes where the submit keystroke arrives before
+    // Claude's readline is fully ready (trace 8069cbf0, todo #853/#2297).
+    let submitted = verifySubmitLanded(session, preSendContent);
+    if (!submitted) {
+      for (let i = 0; i < MAX_CM_RETRIES; i++) {
+        execSendKeys(session, ['C-m']);
+        if (verifySubmitLanded(session, preSendContent)) { submitted = true; break; }
+      }
+      if (!submitted) {
+        log.warn('injectMessage: submit verify failed after retries (send-keys syscall succeeded)', {
+          agentId, session,
+        });
+      }
+    }
+
     log.info('Message injected into tmux session', { agentId, session, length: safeText.length });
-    return true;
+    return true; // syscall-based; COMMIT 4 upgrades this to receipt-based (return submitted)
   } catch (err) {
     log.error('Failed to inject message into tmux', {
       agentId,
@@ -496,6 +612,28 @@ interface TmuxTestDeps {
    * Use this seam (with sessionExists: () => true) for a true mutation-killer.
    */
   panePid?: () => string;
+  /**
+   * Intercept tmux send-keys calls inside injectMessage for mutation-kill testing.
+   * Called instead of the real execFileSync for every send-keys invocation — both
+   * the text payload (-l) and the separate C-m submit keystroke.
+   *
+   * Presence of this seam also suppresses sleeps inside injectMessage so tests
+   * complete without real delays.
+   *
+   * Mutation-kill usage: record all calls; assert that a separate ['C-m'] call
+   * was recorded. Folding C-m into the text payload removes this call → test RED.
+   */
+  sendKeys?: (session: string, args: string[]) => void;
+  /**
+   * Override capture-pane output for submit-verify testing.
+   * Called by capturePaneContent() instead of the real tmux capture-pane.
+   * When set, retry/sleep delays inside verifySubmitLanded and the readiness
+   * gate are suppressed (test mode short-circuit).
+   *
+   * For COMMIT 4 receipt-based return test: return same content on every call
+   * to simulate a failed verify; assert injectMessage returns false.
+   */
+  capturePane?: (session: string) => string;
 }
 
 let _testingDeps: TmuxTestDeps | null = null;
