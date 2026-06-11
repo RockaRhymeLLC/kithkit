@@ -221,6 +221,91 @@ describe('boot-url-check', () => {
     assert.equal(state.unresolvableUrls.length, 0);
   });
 
+  // ── Hardening (#848): non-string URL entries ──────────────
+  //
+  // Mutation-kill strategy: removing the typeof-string guard causes
+  // .trim() on a number/object to throw TypeError → runBootUrlCheck
+  // rejects → the test fails (RED). With the guard present the function
+  // completes normally → GREEN.
+
+  describe('non-string URL entries — skip + warn, never throw (#848)', () => {
+    it('skips a number relay.url without throwing and emits a warn', async () => {
+      const warnMessages: string[] = [];
+      _setDepsForTesting({
+        resolve: async () => {},
+        logWarn: (msg) => warnMessages.push(msg),
+      });
+
+      // number in place of string — crashes original code without guard
+      const config = makeConfig({ relay: { url: 42 as unknown as string } });
+
+      // Must not reject — boot must continue
+      const state = await runBootUrlCheck(config);
+
+      assert.equal(state.checked, true, 'Boot must continue: state.checked must be true');
+      assert.equal(
+        state.unresolvableUrls.length,
+        0,
+        'Non-string entry must not appear in unresolvableUrls',
+      );
+      assert.ok(
+        warnMessages.some(m => m.includes('non-string')),
+        `Must emit a warn mentioning "non-string", got: ${JSON.stringify(warnMessages)}`,
+      );
+    });
+
+    it('skips an object community.primary without throwing and emits a warn', async () => {
+      const warnMessages: string[] = [];
+      _setDepsForTesting({
+        resolve: async () => {},
+        logWarn: (msg) => warnMessages.push(msg),
+      });
+
+      // object in place of string — crashes original code without guard
+      const config = makeConfig({
+        communities: [{ primary: { nested: 'bad' } as unknown as string }],
+      });
+
+      // Must not reject — boot must continue
+      const state = await runBootUrlCheck(config);
+
+      assert.equal(state.checked, true, 'Boot must continue: state.checked must be true');
+      assert.equal(
+        state.unresolvableUrls.length,
+        0,
+        'Non-string entry must not appear in unresolvableUrls',
+      );
+      assert.ok(
+        warnMessages.some(m => m.includes('non-string')),
+        `Must emit a warn mentioning "non-string", got: ${JSON.stringify(warnMessages)}`,
+      );
+    });
+
+    it('skips a null community.primary silently without throwing', async () => {
+      const warnMessages: string[] = [];
+      _setDepsForTesting({
+        resolve: async () => {},
+        logWarn: (msg) => warnMessages.push(msg),
+      });
+
+      const config = makeConfig({
+        communities: [{ primary: null as unknown as string }],
+      });
+
+      // Must not reject
+      const state = await runBootUrlCheck(config);
+
+      assert.equal(state.checked, true, 'Boot must continue: state.checked must be true');
+      assert.equal(
+        state.unresolvableUrls.length,
+        0,
+        'Null entry must not appear in unresolvableUrls',
+      );
+      // null is the "not configured" case — no warn expected
+      assert.equal(warnMessages.length, 0, 'Null community.primary must not emit a warn');
+    });
+  });
+
   // ── Edge: empty/blank URL values → skipped ─────────────────
 
   it('skips empty string community primary URL', async () => {
