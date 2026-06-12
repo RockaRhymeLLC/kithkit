@@ -200,6 +200,10 @@ describe('orchestrator-idle: Check 3b bounded-nudge budget (mutation-kill proof)
   beforeEach(setup);
   afterEach(teardown);
 
+  it('pins the in-progress no-progress budget at 3 ticks (regression guard)', () => {
+    assert.equal(_IN_PROGRESS_NO_PROGRESS_BUDGET, 3, 'in-progress no-progress budget must stay pinned at 3 ticks');
+  });
+
   it(`frozen orch is NOT reaped for first N (${_IN_PROGRESS_NO_PROGRESS_BUDGET}) ticks, IS reaped on tick N+1`, async () => {
     // State: orch alive, Claude NOT running, 11 min idle (> 10 min timeout),
     // single in_progress task whose updated_at NEVER advances between ticks.
