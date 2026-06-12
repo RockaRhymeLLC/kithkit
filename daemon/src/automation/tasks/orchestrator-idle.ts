@@ -142,6 +142,14 @@ function isClaudeProcessRunning(): boolean {
 let shutdownNudgedAt: number | null = null;
 let shutdownReason: string | null = null;
 
+// ── Check 3b bounded-nudge state ─────────────────────────────
+// Mirrors the shutdownNudgedAt nudge→grace→give-up precedent (lines ~480–534).
+// Tracks MAX(updated_at) of in_progress/assigned tasks to distinguish a
+// genuinely progressing orchestrator from a wedged one that ignores nudges.
+const IN_PROGRESS_NO_PROGRESS_BUDGET = 3; // tick budget — mirrors shutdownNudgedAt grace count
+let lastInProgressUpdatedAt: string | null = null;
+let inProgressNoProgressTicks: number = 0;
+
 function buildShutdownPrompt(reason: string): string {
   return [
     `Shutdown requested: ${reason}`,
@@ -806,36 +814,86 @@ async function run(config: Record<string, unknown>): Promise<void> {
   // tasks that are already IN ('in_progress','assigned') — work it was actively
   // running when it went idle at the prompt (Claude turn ended without marking
   // the task complete). Force-killing here would orphan that work.
-  // Instead, inject a resume nudge so the orchestrator picks back up, and touch
-  // last_activity so the idle clock resets.
-  const inProgressTaskRows = query<{ count: number }>(
-    `SELECT COUNT(*) as count FROM tasks
+  //
+  // BOUNDED NUDGE — mirrors the shutdownNudgedAt nudge→grace→give-up precedent:
+  // While MAX(updated_at) advances between ticks the orchestrator is genuinely
+  // progressing → inject a resume nudge, reset last_activity, return.
+  // Once updated_at stops advancing we increment inProgressNoProgressTicks.
+  //   < IN_PROGRESS_NO_PROGRESS_BUDGET  → still within grace: nudge + reset, return.
+  //   >= IN_PROGRESS_NO_PROGRESS_BUDGET → frozen / wedged: do NOT reset last_activity,
+  //     alert comms, fall through to the existing reap path.
+  const inProgressTaskRows = query<{ count: number; max_updated_at: string | null }>(
+    `SELECT COUNT(*) as count, MAX(updated_at) as max_updated_at FROM tasks
      WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned')`,
   );
   const inProgressCount = inProgressTaskRows[0]?.count ?? 0;
   if (inProgressCount > 0) {
-    const resumeMsg = inProgressCount === 1
-      ? `You have 1 in-progress task — resume it and mark complete or fail; do not idle mid-task. Check GET /api/orchestrator/tasks?status=in_progress`
-      : `You have ${inProgressCount} in-progress task(s) — resume them and mark complete or fail; do not idle mid-task. Check GET /api/orchestrator/tasks?status=in_progress`;
-    log.info('Orchestrator idle but has in-progress/assigned tasks — waking to resume', { inProgressCount });
-    let injected = false;
+    const maxUpdatedAt = inProgressTaskRows[0]?.max_updated_at ?? null;
+    const hasProgressed = maxUpdatedAt !== null && maxUpdatedAt !== lastInProgressUpdatedAt;
+
+    if (hasProgressed) {
+      lastInProgressUpdatedAt = maxUpdatedAt;
+      inProgressNoProgressTicks = 0;
+    } else {
+      inProgressNoProgressTicks++;
+    }
+
+    if (inProgressNoProgressTicks < IN_PROGRESS_NO_PROGRESS_BUDGET) {
+      const resumeMsg = inProgressCount === 1
+        ? `You have 1 in-progress task — resume it and mark complete or fail; do not idle mid-task. Check GET /api/orchestrator/tasks?status=in_progress`
+        : `You have ${inProgressCount} in-progress task(s) — resume them and mark complete or fail; do not idle mid-task. Check GET /api/orchestrator/tasks?status=in_progress`;
+      log.info('Orchestrator idle but has in-progress/assigned tasks — waking to resume', {
+        inProgressCount,
+        noProgressTicks: inProgressNoProgressTicks,
+      });
+      let injected = false;
+      try {
+        injected = injectMessage('orchestrator', resumeMsg);
+      } catch (e) {
+        log.warn('Failed to inject in-progress task resume nudge to orchestrator', { error: String(e) });
+      }
+      if (injected) {
+        update('agents', 'orchestrator', {
+          last_activity: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+        logActivity({
+          agent_id: 'orchestrator',
+          event_type: 'task_received',
+          details: `Woken to resume ${inProgressCount} in-progress/assigned task(s)`,
+        });
+      }
+      return;
+    }
+
+    // Budget exhausted — orchestrator is frozen (alive, holds in_progress task,
+    // ignored all nudges). Do NOT reset last_activity; fall through to reap.
+    log.warn('Orchestrator wedged: in-progress task not advancing after max nudges — falling through to reap', {
+      inProgressCount,
+      noProgressTicks: inProgressNoProgressTicks,
+      lastUpdatedAt: lastInProgressUpdatedAt,
+    });
     try {
-      injected = injectMessage('orchestrator', resumeMsg);
+      const wedgedTaskRows = query<{ id: string }>(
+        `SELECT external_id AS id FROM tasks
+         WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned') LIMIT 3`,
+      );
+      sendMessage({
+        from: 'daemon',
+        to: 'comms',
+        type: 'status',
+        body: JSON.stringify({
+          alert: 'orchestrator_wedged',
+          message: `Orchestrator wedged on in-progress task — ${IN_PROGRESS_NO_PROGRESS_BUDGET} no-progress nudges exhausted, reaping`,
+          taskIds: wedgedTaskRows.map(t => t.id),
+        }),
+      });
     } catch (e) {
-      log.warn('Failed to inject in-progress task resume nudge to orchestrator', { error: String(e) });
+      log.warn('Failed to alert comms about wedged orchestrator', { error: String(e) });
     }
-    if (injected) {
-      update('agents', 'orchestrator', {
-        last_activity: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-      logActivity({
-        agent_id: 'orchestrator',
-        event_type: 'task_received',
-        details: `Woken to resume ${inProgressCount} in-progress/assigned task(s)`,
-      });
-    }
-    return;
+    lastInProgressUpdatedAt = null;
+    inProgressNoProgressTicks = 0;
+    // Fall through to the reap path below
   }
 
   const reason = `idle for ${Math.round(idleMs / 60000)} minutes — Claude process not running, no pending work`;
@@ -949,3 +1007,17 @@ export function _setJustSpawnedAtForTesting(ts: number | null): void {
 export function _getJustSpawnedAtForTesting(): number | null {
   return justSpawnedAt;
 }
+
+/** @internal Reset Check 3b bounded-nudge state for testing. */
+export function _resetInProgressNudgeStateForTesting(): void {
+  lastInProgressUpdatedAt = null;
+  inProgressNoProgressTicks = 0;
+}
+
+/** @internal Read Check 3b bounded-nudge state for testing. */
+export function _getInProgressNudgeStateForTesting(): { ticks: number; updatedAt: string | null } {
+  return { ticks: inProgressNoProgressTicks, updatedAt: lastInProgressUpdatedAt };
+}
+
+/** @internal The no-progress tick budget for Check 3b (exposed for test assertions). */
+export const _IN_PROGRESS_NO_PROGRESS_BUDGET = IN_PROGRESS_NO_PROGRESS_BUDGET;

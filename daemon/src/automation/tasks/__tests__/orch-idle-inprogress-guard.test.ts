@@ -31,6 +31,9 @@ import {
   _setDepsForTesting as setIdleDeps,
   _resetNudgeStateForTesting,
   _setJustSpawnedAtForTesting,
+  _resetInProgressNudgeStateForTesting,
+  _getInProgressNudgeStateForTesting,
+  _IN_PROGRESS_NO_PROGRESS_BUDGET,
 } from '../orchestrator-idle.js';
 
 function isoMinutesAgo(minutes: number): string {
@@ -53,6 +56,7 @@ function setup(): void {
 function teardown(): void {
   setIdleDeps(null);
   _resetNudgeStateForTesting();
+  _resetInProgressNudgeStateForTesting();
   _setJustSpawnedAtForTesting(null);
   _resetDbForTesting();
   _resetConfigForTesting();
@@ -176,5 +180,122 @@ describe('orchestrator-idle: in_progress/assigned guard (Check 3b regression)', 
     );
     assert.ok(shutdownNudge,
       'should inject shutdown nudge when there is genuinely no live work');
+  });
+});
+
+// ── BUDGET TEST ──────────────────────────────────────────────
+//
+// A frozen orchestrator (in_progress task whose updated_at never advances)
+// must NOT be reaped for the first N ticks (within grace budget), but MUST
+// be reaped on tick N+1 (budget exhausted).
+//
+// Discriminator / mutation-kill proof:
+//   GREEN with the bounded-nudge implementation (counter-based budget).
+//   RED  when Check 3b is reverted to unconditionally reset last_activity
+//        (the old behaviour) — the orch is then immortal because the idle
+//        clock is reset every tick regardless of progress, so the reap
+//        path is never reached and killOrchestratorSession is never called.
+
+describe('orchestrator-idle: Check 3b bounded-nudge budget (mutation-kill proof)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it(`frozen orch is NOT reaped for first N (${_IN_PROGRESS_NO_PROGRESS_BUDGET}) ticks, IS reaped on tick N+1`, async () => {
+    // State: orch alive, Claude NOT running, 11 min idle (> 10 min timeout),
+    // single in_progress task whose updated_at NEVER advances between ticks.
+    insertOrchAgent(11);
+    insertOrchTask('task-frozen-budget-1', 'in_progress');
+
+    let killCalled = false;
+
+    // injectMessage returns false on every call:
+    //  - During ticks 1..N the resume nudge injection fails, but Check 3b
+    //    still returns early (within budget) → kill NOT triggered.
+    //  - On tick N+1 budget is exhausted → fall-through to the shutdown path
+    //    → shutdown nudge injection also fails → direct killOrchestratorSession.
+    setIdleDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => null,
+      cleanupSessionDirs: () => 0,
+      evaluateTask: () => Promise.resolve(),
+      isClaudeProcessRunning: () => false,
+    });
+
+    // Drive N+1 ticks. last_activity is never reset (injection always fails),
+    // so the idle condition remains true on every tick.
+    const TICKS = _IN_PROGRESS_NO_PROGRESS_BUDGET + 1; // = 4
+    for (let i = 0; i < TICKS; i++) {
+      await runIdleMonitor({ idle_timeout_minutes: 10 });
+    }
+
+    assert.equal(killCalled, true,
+      `killOrchestratorSession must be called after ${TICKS} ticks (budget=${_IN_PROGRESS_NO_PROGRESS_BUDGET}) of a frozen in_progress task`);
+
+    // Verify counter state was reset after triggering reap
+    const state = _getInProgressNudgeStateForTesting();
+    assert.equal(state.ticks, 0, 'no-progress counter should be reset to 0 after budget is exhausted');
+    assert.equal(state.updatedAt, null, 'lastInProgressUpdatedAt should be null after budget is exhausted');
+  });
+
+  it('orch is NOT reaped before budget is exhausted (guard holds for all ticks within N)', async () => {
+    insertOrchAgent(11);
+    insertOrchTask('task-frozen-budget-2', 'in_progress');
+
+    let killCalled = false;
+    setIdleDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => null,
+      cleanupSessionDirs: () => 0,
+      evaluateTask: () => Promise.resolve(),
+      isClaudeProcessRunning: () => false,
+    });
+
+    // Drive exactly N ticks (one short of the budget trigger)
+    const TICKS = _IN_PROGRESS_NO_PROGRESS_BUDGET;
+    for (let i = 0; i < TICKS; i++) {
+      await runIdleMonitor({ idle_timeout_minutes: 10 });
+    }
+
+    assert.equal(killCalled, false,
+      `killOrchestratorSession must NOT be called within the first ${TICKS} ticks (budget not yet exhausted)`);
+  });
+
+  it('orch keeps alive indefinitely when task IS progressing (updated_at advances each tick)', async () => {
+    insertOrchAgent(11);
+    const extId = 'task-progressing-1';
+    insertOrchTask(extId, 'in_progress');
+
+    let killCalled = false;
+    setIdleDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      injectMessage: () => false,
+      spawnOrchestratorSession: () => null,
+      cleanupSessionDirs: () => 0,
+      evaluateTask: () => Promise.resolve(),
+      isClaudeProcessRunning: () => false,
+    });
+
+    // Drive 2× the budget ticks, but advance updated_at each tick so it's always "progressing"
+    const TICKS = _IN_PROGRESS_NO_PROGRESS_BUDGET * 2;
+    for (let i = 0; i < TICKS; i++) {
+      // Advance the task's updated_at so MAX(updated_at) changes every tick
+      exec(
+        `UPDATE tasks SET updated_at = ? WHERE external_id = ? AND kind = 'orchestrator'`,
+        new Date(Date.now() + i * 1000).toISOString(),
+        extId,
+      );
+      await runIdleMonitor({ idle_timeout_minutes: 10 });
+    }
+
+    assert.equal(killCalled, false,
+      'kill must NOT be triggered when the task keeps advancing — only frozen orchs get reaped');
+    // Counter should have been reset to 0 on every tick (always "progressing")
+    const state = _getInProgressNudgeStateForTesting();
+    assert.equal(state.ticks, 0, 'no-progress counter should remain 0 while task is progressing');
   });
 });
