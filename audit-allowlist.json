@@ -19,9 +19,9 @@
   ],
   "allowlist": [
     {
-      "id": "GHSA-EXAMPLE-FAKE-0000",
-      "expires": "2025-01-01",
-      "reason": "EXAMPLE ENTRY — this is a placeholder only. Delete or replace it. Set a real expiry date and justification."
+      "id": "GHSA-W5HQ-G745-H8PQ",
+      "expires": "2026-12-12",
+      "reason": "Transitive uuid advisory (buffer bounds check in v3/v5/v6 when buf is provided) pulled via botframework-connector/msal. Unreachable in kithkit: no direct uuid dependency, no uuid imports in daemon/src, and UUIDs are generated exclusively via node:crypto randomUUID (41 call sites) - the vulnerable uuid v3/v5/v6 buf code path is never executed. Accepted as unreachable until the upstream SDK bumps its uuid transitive. Re-evaluate by 2026-12-12."
     }
   ]
 }
