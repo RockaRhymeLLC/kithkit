@@ -7,6 +7,10 @@
  * t-315: relay-fallback removal causes t-312 / t-313 assertions to fail (Fix 2 mutation-kill — see report)
  * t-316: quiet-period guard — both pings fail + no recent traffic → NO dispatch (kithkit#77 fix)
  *        mutation-kill: removing the guard re-introduces the false-positive dispatch and t-316 goes RED.
+ * t-317: live-ping gate (todo #854 fast-follow) — peer responds to live ping despite broken delivery
+ *        channel → NO recovery dispatch; revert live-ping gate → dispatch happens → t-317 goes RED.
+ * t-318: count-semantics (todo #854 fast-follow) — inbound==0 is the sole quiet-period discriminator;
+ *        inject alone does NOT trigger dispatch; revert to (inbound===0 && inject===0) → t-318 goes RED.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -19,6 +23,7 @@ import {
   _setLoadConfigForTesting,
   _setScanForPeersForTesting,
   _setGetMessageCountsForTesting,
+  _setLivePingForTesting,
   _resetForTesting,
   _runForTesting,
 } from '../automation/tasks/peer-heartbeat.js';
@@ -421,5 +426,182 @@ describe('t-316: quiet-period guard — both pings fail + zero counters → no r
       indeterminate !== undefined,
       'updatePeerState must be called with local-dns-indeterminate when relay succeeds',
     );
+  });
+});
+
+// ── t-317: live-ping gate (todo #854 fast-follow) ─────────────────────────────
+//
+// Root cause: PR #437 added the quiet-period guard (inbound==0 → skip dispatch)
+// but when inbound > 0 the recovery was still dispatched unconditionally.  A
+// transient delivery failure (relay down, routing glitch) with residual message
+// traffic would trigger false-positive recovery.
+//
+// Fix: when inbound > 0 (looks broken), send a direct live ping to the peer
+// before dispatching.  Only declare broken if the live ping also fails.
+//
+// Mutation-kill: removing the live-ping gate (reverting to "dispatch whenever
+// inbound > 0 regardless of live ping result") causes sub-tests (a) and (b) to
+// observe unexpected updatePeerState calls, failing the assertion.
+
+describe('t-317: live-ping gate — peer responds to live ping → no recovery dispatch (todo #854 fast-follow)', () => {
+  beforeEach(() => { _resetForTesting(); });
+  afterEach(() => { _resetForTesting(); });
+
+  it('(a) mDNS: both .lan DNS and relay fail + inbound > 0 + live ping OK → no dispatch', async () => {
+    // Both the direct LAN send (sendAgentMessage) and the relay probe fail.
+    // Message counts show inbound=3 (looks broken).
+    // But the live ping succeeds — peer is alive, delivery channel is broken.
+    const fetchMock = makeFetchMock(false); // relay fails
+    const commsMock = makeCommsMock(false); // direct send fails
+
+    _setLoadConfigForTesting(() => makeLanConfig());
+    _setCommsForTesting(commsMock);
+    _setFetchForTesting(fetchMock.fn);
+    _setScanForPeersForTesting(async () => new Map());
+    _setGetMessageCountsForTesting(() => ({ inbound: 3, inject: 0 }));
+    // Live ping SUCCEEDS — peer responds to direct probe.
+    // Mutation: remove the live-ping gate → dispatch triggered → recoveryDispatched = true → RED.
+    _setLivePingForTesting(async () => true);
+
+    await _runForTesting();
+
+    const recoveryDispatched = commsMock._calls.updatePeerState.some(
+      (c) => c.state.status === 'unreachable' || c.state.status === 'unknown',
+    );
+    assert.equal(
+      recoveryDispatched,
+      false,
+      `No recovery dispatch when live ping succeeds (peer is alive). ` +
+      `Got: ${JSON.stringify(commsMock._calls.updatePeerState)}`,
+    );
+  });
+
+  it('(b) non-mDNS: send fails + inbound > 0 + live ping OK → no dispatch', async () => {
+    // Non-mDNS IP host: direct heartbeat fails, inbound=3 (looks broken),
+    // but live ping succeeds.
+    const commsMock = makeCommsMock(false);
+
+    _setLoadConfigForTesting(() => makeNonMdnsConfig());
+    _setCommsForTesting(commsMock);
+    _setScanForPeersForTesting(async () => new Map());
+    _setGetMessageCountsForTesting(() => ({ inbound: 3, inject: 0 }));
+    // Live ping SUCCEEDS.
+    // Mutation: remove live-ping gate → updatePeerState('unknown') dispatched → RED.
+    _setLivePingForTesting(async () => true);
+
+    await _runForTesting();
+
+    const recoveryDispatched = commsMock._calls.updatePeerState.some(
+      (c) => c.state.status === 'unreachable' || c.state.status === 'unknown',
+    );
+    assert.equal(
+      recoveryDispatched,
+      false,
+      `No recovery dispatch when live ping succeeds (non-mDNS). ` +
+      `Got: ${JSON.stringify(commsMock._calls.updatePeerState)}`,
+    );
+  });
+
+  it('(c) live ping fails + inbound > 0 → dispatch still fires (sanity: gate only suppresses on ping-OK)', async () => {
+    // Confirms the gate does not suppress dispatch when the live ping also fails.
+    const fetchMock = makeFetchMock(false);
+    const commsMock = makeCommsMock(false);
+
+    _setLoadConfigForTesting(() => makeLanConfig());
+    _setCommsForTesting(commsMock);
+    _setFetchForTesting(fetchMock.fn);
+    _setScanForPeersForTesting(async () => new Map());
+    _setGetMessageCountsForTesting(() => ({ inbound: 3, inject: 0 }));
+    // Live ping FAILS (default after _resetForTesting, but explicit for clarity).
+    _setLivePingForTesting(async () => false);
+
+    await _runForTesting();
+
+    const unreachableCall = commsMock._calls.updatePeerState.find(
+      (c) => c.state.status === 'unreachable',
+    );
+    assert.ok(
+      unreachableCall !== undefined,
+      `Recovery must be dispatched when live ping also fails. ` +
+      `Got: ${JSON.stringify(commsMock._calls.updatePeerState)}`,
+    );
+  });
+});
+
+// ── t-318: count-semantics correction (todo #854 fast-follow) ─────────────────
+//
+// Root cause: the inbound counter in getMessageCounts() included type:status
+// rows (heartbeat traffic that is persisted-but-never-injected).  A peer that
+// only exchanges heartbeats appeared as inbound > 0 → broken delivery rather
+// than inbound == 0 → quiet period.
+//
+// Fix: (1) add AND type != 'status' to the SQL query so heartbeat rows are
+// excluded from inbound; (2) simplify the quiet-period condition to
+// `inbound === 0` — inject is always a subset of inbound after the filter
+// and is no longer an independent gate.
+//
+// Mutation-kill: reverting to `inbound === 0 && inject === 0` causes sub-test
+// (a) to observe an unexpected dispatch when inject=5 with inbound=0, failing
+// the assertion.  The test uses a mocked counter to simulate the scenario
+// deterministically without a real DB.
+
+describe('t-318: count-semantics — inbound==0 is the sole quiet-period discriminator (todo #854 fast-follow)', () => {
+  beforeEach(() => { _resetForTesting(); });
+  afterEach(() => { _resetForTesting(); });
+
+  it('(a) inbound=0 with inject=5 → quiet period, no recovery dispatch', async () => {
+    // Scenario: the DB query returns inbound=0 (all recent messages are
+    // type:status and are filtered out) but inject=5 (legacy non-zero value,
+    // e.g. older injections within the window under a previous schema).
+    //
+    // With the CORRECTED condition (inbound === 0): quiet → no dispatch. ✓
+    // Mutation (revert to inbound === 0 && inject === 0):
+    //   inject=5 fails the inject===0 check → not quiet → live ping
+    //   (_livePingForTesting defaults to false after _resetForTesting)
+    //   → dispatch fires → recoveryDispatched = true → this assertion fails → RED ✓
+    const fetchMock = makeFetchMock(false); // relay fails
+    const commsMock = makeCommsMock(false); // direct send fails
+
+    _setLoadConfigForTesting(() => makeLanConfig());
+    _setCommsForTesting(commsMock);
+    _setFetchForTesting(fetchMock.fn);
+    _setScanForPeersForTesting(async () => new Map());
+    // inbound=0 (status-only traffic filtered), inject=5 (residual non-zero).
+    _setGetMessageCountsForTesting(() => ({ inbound: 0, inject: 5 }));
+    // _livePingForTesting is already () => false from _resetForTesting —
+    // if the quiet-period check is bypassed, live ping fails → dispatch fires.
+
+    await _runForTesting();
+
+    const recoveryDispatched = commsMock._calls.updatePeerState.some(
+      (c) => c.state.status === 'unreachable' || c.state.status === 'unknown',
+    );
+    assert.equal(
+      recoveryDispatched,
+      false,
+      `inbound=0 must be treated as quiet period regardless of inject count. ` +
+      `With the corrected inbound-only discriminator, type:status-only traffic ` +
+      `(inbound=0 after SQL filter) never triggers recovery. ` +
+      `Got: ${JSON.stringify(commsMock._calls.updatePeerState)}`,
+    );
+  });
+
+  it('(b) inbound=0 inject=0 → quiet period (baseline, unchanged from t-316a)', async () => {
+    // Confirms the pure-zero case continues to work with the simplified condition.
+    const fetchMock = makeFetchMock(false);
+    const commsMock = makeCommsMock(false);
+
+    _setLoadConfigForTesting(() => makeLanConfig());
+    _setCommsForTesting(commsMock);
+    _setFetchForTesting(fetchMock.fn);
+    _setScanForPeersForTesting(async () => new Map());
+    _setGetMessageCountsForTesting(() => ({ inbound: 0, inject: 0 }));
+
+    await _runForTesting();
+
+    const recoveryDispatched = commsMock._calls.updatePeerState.some(
+      (c) => c.state.status === 'unreachable' || c.state.status === 'unknown',
+    );
+    assert.equal(recoveryDispatched, false, 'inbound=0 inject=0 must remain a quiet period');
   });
 });
