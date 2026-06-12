@@ -304,7 +304,8 @@ describe('shim id-collision regression', { concurrency: 1 }, () => {
     assert.equal(body.title, 'Legacy todo with same id as orch');
     assert.equal(body.id, todoNativeId, 'response id is native tasks.id (not the legacy external_id)');
     assert.ok(body.id !== orchIntId, 'native id of todo differs from the orch tasks.id slot');
-    assert.equal(body.external_id, null, 'external_id is masked in response');
+    // external_id is now surfaced (bug#1820 fix) — the legacy todo has external_id=String(orchIntId)
+    assert.equal(body.external_id, String(orchIntId), 'external_id is surfaced in response (bug#1820)');
   });
 
   it('GET /api/orchestrator/tasks/:uuid resolves by external_id, is kind-scoped', async () => {

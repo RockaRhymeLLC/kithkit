@@ -30,6 +30,7 @@ const log = createLogger('state-api');
 interface Todo {
   id: number;
   external_id: string | null;
+  source: string | null;
   title: string;
   description: string | null;
   priority: string;
@@ -108,7 +109,7 @@ export function registerTodoUpdateHook(fn: TodoUpdateHookFn): void {
 // can diagnose partial-update surprises.  See kithkit-internal #1812.
 const KNOWN_TODO_PUT_FIELDS = new Set([
   'title', 'description', 'priority', 'status', 'due_date', 'tags',
-  'snooze_until', 'assigned_to', 'work_notes',
+  'snooze_until', 'assigned_to', 'work_notes', 'external_id', 'source',
 ]);
 
 // ── Shim helpers ─────────────────────────────────────────────
@@ -147,12 +148,11 @@ function resolveLegacyTodoId(legacyId: string): number | null {
 }
 
 /**
- * Map a unified tasks row to the todo response shape:
- * - id: native tasks.id (always — removes the external_id display logic)
- * - external_id: masked as null to preserve legacy API contract
+ * Map a unified tasks row to the todo response shape.
+ * external_id and source are now surfaced — callers need them for SN/external linkage.
  */
 function mapTodoResponse(row: Todo): Record<string, unknown> {
-  return { ...(row as unknown as Record<string, unknown>), external_id: null };
+  return { ...(row as unknown as Record<string, unknown>) };
 }
 
 const execFileAsync = promisify(execFile);
@@ -232,11 +232,19 @@ export async function handleStateRoute(
       if (incomingStatus) data.status = incomingStatus;
       if (body.due_date) data.due_date = body.due_date;
       if (body.tags) data.tags = JSON.stringify(body.tags);
+      if (body.external_id !== undefined) data.external_id = body.external_id || null;
+      if (body.source !== undefined) data.source = body.source;
 
-      const todo = insert<Todo>('tasks', data);
-      // Native-first: do NOT stamp external_id on new todos — native tasks.id is the
-      // display id from here on.  Existing migrated todos retain their external_id
-      // for legacy fallback until they are eventually wiped.
+      let todo: Todo;
+      try {
+        todo = insert<Todo>('tasks', data);
+      } catch (err) {
+        if (err instanceof Error && err.message.includes('UNIQUE constraint failed: tasks.external_id')) {
+          json(res, 409, withTimestamp({ error: 'external_id already exists' }));
+          return true;
+        }
+        throw err;
+      }
       logTodoAction(todo.id, 'created', null, null, `Created with title: ${todo.title}`);
       json(res, 201, withTimestamp(mapTodoResponse(todo)));
       return true;
@@ -336,6 +344,8 @@ export async function handleStateRoute(
         if (body.snooze_until !== undefined) data.snooze_until = body.snooze_until;
         if (body.assigned_to !== undefined) data.assigned_to = body.assigned_to;
         if (body.work_notes !== undefined) data.work_notes = body.work_notes;
+        if (body.external_id !== undefined) data.external_id = body.external_id || null;
+        if (body.source !== undefined) data.source = body.source;
         if (putStatus !== undefined) {
           data.status = putStatus;
           logTodoAction(existing.id, 'status_change', existing.status, putStatus);
@@ -344,7 +354,15 @@ export async function handleStateRoute(
           logTodoAction(existing.id, 'priority_change', existing.priority, body.priority as string);
         }
 
-        update('tasks', putInternalId, data);
+        try {
+          update('tasks', putInternalId, data);
+        } catch (err) {
+          if (err instanceof Error && err.message.includes('UNIQUE constraint failed: tasks.external_id')) {
+            json(res, 409, withTimestamp({ error: 'external_id already exists' }));
+            return true;
+          }
+          throw err;
+        }
         const updated = get<Todo>('tasks', putInternalId);
 
         // Fire todo-update hook if registered (e.g. bmo-sn-todo-link awareness signal)
