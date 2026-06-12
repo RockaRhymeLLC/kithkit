@@ -647,7 +647,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
   // last_activity hasn't been updated. This prevents premature kills.
   // This check MUST run before the active workers check — a long-running Claude
   // process with no spawned workers should not be killed.
-  if (isClaudeProcessRunning()) {
+  if (isClaudeProcessRunning_dep()) {
     log.debug('Claude process still running in orchestrator session — not idle');
     // Touch last_activity so the DB stays fresh
     update('agents', 'orchestrator', {
@@ -796,6 +796,43 @@ async function run(config: Record<string, unknown>): Promise<void> {
         agent_id: 'orchestrator',
         event_type: 'task_received',
         details: `Woken for ${pendingTaskCount} pending task(s): ${taskTitle}`,
+      });
+    }
+    return;
+  }
+
+  // --- Check 3b: In-progress / assigned tasks ---
+  // Check 3 above only guards on status='pending'. An orchestrator can also hold
+  // tasks that are already IN ('in_progress','assigned') — work it was actively
+  // running when it went idle at the prompt (Claude turn ended without marking
+  // the task complete). Force-killing here would orphan that work.
+  // Instead, inject a resume nudge so the orchestrator picks back up, and touch
+  // last_activity so the idle clock resets.
+  const inProgressTaskRows = query<{ count: number }>(
+    `SELECT COUNT(*) as count FROM tasks
+     WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned')`,
+  );
+  const inProgressCount = inProgressTaskRows[0]?.count ?? 0;
+  if (inProgressCount > 0) {
+    const resumeMsg = inProgressCount === 1
+      ? `You have 1 in-progress task — resume it and mark complete or fail; do not idle mid-task. Check GET /api/orchestrator/tasks?status=in_progress`
+      : `You have ${inProgressCount} in-progress task(s) — resume them and mark complete or fail; do not idle mid-task. Check GET /api/orchestrator/tasks?status=in_progress`;
+    log.info('Orchestrator idle but has in-progress/assigned tasks — waking to resume', { inProgressCount });
+    let injected = false;
+    try {
+      injected = injectMessage('orchestrator', resumeMsg);
+    } catch (e) {
+      log.warn('Failed to inject in-progress task resume nudge to orchestrator', { error: String(e) });
+    }
+    if (injected) {
+      update('agents', 'orchestrator', {
+        last_activity: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+      logActivity({
+        agent_id: 'orchestrator',
+        event_type: 'task_received',
+        details: `Woken to resume ${inProgressCount} in-progress/assigned task(s)`,
       });
     }
     return;
