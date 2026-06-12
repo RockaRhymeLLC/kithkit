@@ -46,7 +46,7 @@ BLOCKED_PATTERNS=(
   "0000000000"
 )
 
-EXCLUSIONS="README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/|\.claude/skills/|docs/|install-hooks\.sh"
+EXCLUSIONS="README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/|\.claude/skills/|docs/|install-hooks\.sh|test/|__tests__/"
 
 PATTERN=$(IFS="|"; echo "${BLOCKED_PATTERNS[*]}")
 

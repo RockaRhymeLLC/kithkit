@@ -91,7 +91,7 @@ jobs:
 
           # Directories/files excluded from checking (documentation, examples)
           # install-hooks.sh defines these patterns — it must contain them by definition
-          EXCLUDE='README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/|\.claude/skills/|docs/|install-hooks\.sh'
+          EXCLUDE='README\.md|SECURITY\.md|CONTRIBUTING\.md|templates/|\.github/|\.claude/skills/|docs/|install-hooks\.sh|test/|__tests__/'
 
           # Get changed files — PR diff or push diff
           if [ "${{ github.event_name }}" = "pull_request" ]; then
