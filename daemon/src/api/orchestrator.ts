@@ -12,8 +12,8 @@ import fs from 'node:fs';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import {
   spawnOrchestratorSession as _spawnOrchestratorSession,
-  killOrchestratorSession,
-  isOrchestratorAlive,
+  killOrchestratorSession as _killOrchestratorSession,
+  isOrchestratorAlive as _isOrchestratorAlive,
   getOrchestratorState as _getOrchestratorState,
   injectMessage as _injectMessage,
 } from '../agents/tmux.js';
@@ -35,8 +35,32 @@ const log = createLogger('orchestrator-api');
 
 let getOrchestratorState = _getOrchestratorState;
 let spawnOrchestratorSession = _spawnOrchestratorSession;
+let killOrchestratorSession = _killOrchestratorSession;
 let sendMessage = _sendMessageImpl;
 let injectMessage = _injectMessage;
+let isOrchestratorAlive = _isOrchestratorAlive;
+
+// ── Session identity helper (fix(3)) ─────────────────────────
+//
+// The /shutdown handler arms a force-kill setTimeout. If the wedged session is
+// hard-killed externally and the daemon auto-respawns a fresh orch, a stale
+// timer from the OLD session must NOT kill the innocent new session.
+//
+// Guard: capture agents.started_at at timer-arm time; re-check at fire time.
+// If they differ (the session was replaced/respawned), skip the kill.
+
+/**
+ * Read the orchestrator's started_at from the agents table.
+ * Used by the stale-shutdown-timer guard (fix(3)) to identify sessions.
+ */
+function _getOrchStartedAtImpl(): string | null {
+  const rows = query<{ started_at: string | null }>(
+    "SELECT started_at FROM agents WHERE id = 'orchestrator'",
+  );
+  return rows[0]?.started_at ?? null;
+}
+
+let getOrchStartedAt: () => string | null = _getOrchStartedAtImpl;
 
 /** @internal Override injectable deps for testing. Pass null to restore originals. */
 export function _setDepsForTesting(deps: {
@@ -44,18 +68,30 @@ export function _setDepsForTesting(deps: {
   spawnOrchestratorSession?: () => string | null;
   sendMessage?: typeof _sendMessageImpl;
   injectMessage?: (target: string, text: string) => boolean;
+  /** Override isOrchestratorAlive for handler-level tests (shutdown guard, status). */
+  isOrchestratorAlive?: () => boolean;
+  /** Override killOrchestratorSession to capture calls in tests. */
+  killOrchestratorSession?: () => boolean;
+  /** Override started_at lookup for fix(3) timer-guard tests. */
+  getOrchStartedAt?: () => string | null;
 } | null): void {
   if (deps === null) {
     getOrchestratorState = _getOrchestratorState;
     spawnOrchestratorSession = _spawnOrchestratorSession;
+    killOrchestratorSession = _killOrchestratorSession;
     sendMessage = _sendMessageImpl;
     injectMessage = _injectMessage;
+    isOrchestratorAlive = _isOrchestratorAlive;
+    getOrchStartedAt = _getOrchStartedAtImpl;
     return;
   }
   if (deps.getOrchestratorState) getOrchestratorState = deps.getOrchestratorState;
   if (deps.spawnOrchestratorSession) spawnOrchestratorSession = deps.spawnOrchestratorSession;
+  if (deps.killOrchestratorSession) killOrchestratorSession = deps.killOrchestratorSession;
   if (deps.sendMessage) sendMessage = deps.sendMessage;
   if (deps.injectMessage) injectMessage = deps.injectMessage;
+  if (deps.isOrchestratorAlive) isOrchestratorAlive = deps.isOrchestratorAlive;
+  if (deps.getOrchStartedAt) getOrchStartedAt = deps.getOrchStartedAt;
 }
 
 function getConfigPort(): number {
@@ -64,6 +100,16 @@ function getConfigPort(): number {
 
 // Shutdown timeout: if orchestrator doesn't ack within 60s, force kill
 const SHUTDOWN_TIMEOUT_MS = 60_000;
+
+// ── Test-only timeout override ────────────────────────────────
+// Allows unit tests to use a short timer (e.g. 50ms) so the force-kill path
+// fires quickly without real 60s waits. Production code never sets this.
+let _shutdownTimeoutOverrideMs: number | null = null;
+
+/** @internal Set a short timeout for shutdown timer tests. Pass null to restore production behavior. */
+export function _setShutdownTimeoutForTesting(ms: number | null): void {
+  _shutdownTimeoutOverrideMs = ms;
+}
 
 // Track the pending shutdown timer so we can cancel it on new spawn
 let pendingShutdownTimer: ReturnType<typeof setTimeout> | null = null;
@@ -340,7 +386,8 @@ export async function handleOrchestratorRoute(
     // wait for the current task to complete before initiating shutdown.
     // Use an extended timeout (3 min) to give the task time to finish.
     const activeTimeout = 3 * 60_000; // 3 minutes for active tasks
-    const effectiveTimeout = (!force && orchState === 'active') ? activeTimeout : SHUTDOWN_TIMEOUT_MS;
+    const effectiveTimeout = _shutdownTimeoutOverrideMs
+      ?? ((!force && orchState === 'active') ? activeTimeout : SHUTDOWN_TIMEOUT_MS);
 
     // Send shutdown message
     sendMessage({
@@ -360,10 +407,26 @@ export async function handleOrchestratorRoute(
       log.info('Cancelled orchestrator timers on shutdown', { count: cancelledTimers });
     }
 
+    // Fix(3): capture session identity NOW (at arm time) so the timer can verify
+    // it is killing the same instance it was armed for. If the session is replaced
+    // (e.g. wedge-restart by fix(2)) before the timer fires, started_at changes and
+    // the timer correctly skips the kill — sparing the innocent fresh session.
+    const armedStartedAt = getOrchStartedAt();
+
     // Set a timeout to force-kill if no acknowledgment (cancellable on new spawn)
     pendingShutdownTimer = setTimeout(() => {
       pendingShutdownTimer = null;
       if (isOrchestratorAlive()) {
+        // Fix(3): identity guard — only kill if this is the SAME session instance.
+        const currentStartedAt = getOrchStartedAt();
+        if (currentStartedAt !== armedStartedAt) {
+          log.info('Shutdown force-kill timer fired but orchestrator session was replaced — skipping kill', {
+            armedStartedAt,
+            currentStartedAt,
+          });
+          return;
+        }
+
         log.warn('Orchestrator did not shut down within timeout — force killing', {
           timeout_ms: effectiveTimeout,
           was_active: orchState === 'active',

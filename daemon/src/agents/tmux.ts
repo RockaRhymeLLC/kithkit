@@ -580,6 +580,24 @@ export function listSessions(): string[] {
   }
 }
 
+// ── Pane content capture (exported) ────────────────────────
+
+/**
+ * Capture the current visible text of the orchestrator's tmux pane.
+ * Returns the pane content string, or null if the session is not alive or capture fails.
+ * Routed through the _testingDeps.capturePane seam so unit tests can supply fake pane text
+ * without real tmux I/O (same seam used by injectMessage's submit-verify path).
+ * Used by the context watchdog's wedge detector (signal iii: feedback prompt / garbled XML).
+ */
+export function captureOrchestratorPane(): string | null {
+  const session = resolveSession('orchestrator')!;
+  try {
+    return capturePaneContent(session);
+  } catch {
+    return null;
+  }
+}
+
 // ── Session liveness check ──────────────────────────────────
 
 /**
