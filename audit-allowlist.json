@@ -1,0 +1,27 @@
+{
+  "$comment": [
+    "audit-allowlist.json — npm audit CVE/GHSA allowlist for kithkit.",
+    "",
+    "Format: each entry in 'allowlist' MUST have:",
+    "  id      — the advisory identifier, e.g. 'GHSA-xxxx-xxxx-xxxx' or 'CVE-2024-12345'",
+    "  expires — ISO date (YYYY-MM-DD) after which the entry is considered stale and audit-check fails",
+    "  reason  — human-readable justification for why this advisory is accepted as unreachable",
+    "",
+    "The audit-check.mjs wrapper reads this file and suppresses any npm audit advisory whose id",
+    "matches a non-expired entry. Any advisory NOT listed here causes a non-zero exit.",
+    "An expired entry that is still relied upon also causes a non-zero exit.",
+    "",
+    "IMPORTANT: This file is human-curated. Entries must be reviewed periodically.",
+    "           Set expires to the earliest date you can commit to re-evaluating the risk.",
+    "",
+    "Run the check: npm run audit:check",
+    "Populate with: npm audit --json | jq '.vulnerabilities' (identify GHSA IDs to evaluate)"
+  ],
+  "allowlist": [
+    {
+      "id": "GHSA-EXAMPLE-FAKE-0000",
+      "expires": "2025-01-01",
+      "reason": "EXAMPLE ENTRY — this is a placeholder only. Delete or replace it. Set a real expiry date and justification."
+    }
+  ]
+}
