@@ -53,6 +53,7 @@ import { sendMessage as _sendMessageImpl } from '../../agents/message-router.js'
 import { logActivity } from '../../api/activity.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
+import { _IN_PROGRESS_NO_PROGRESS_BUDGET } from './orchestrator-idle.js';
 
 const log = createLogger('context-watchdog');
 
@@ -266,11 +267,14 @@ const FEEDBACK_PROMPT_PATTERNS = [
   /How is Claude doing/i,
 ];
 
-// Patterns that indicate garbled literal tool XML in the pane (signal iii-b)
+// Patterns that indicate garbled literal tool XML in the pane (signal iii-b).
+// NOTE: bare </ was intentionally removed — it matches ANY closing HTML/markdown tag
+// (</em>, </code>, </li>, etc.) that appears in normal orch output, causing false-positive
+// wedge-restarts of a healthy orchestrator. Only <invoke and <parameter are unambiguous
+// garbled tool-XML indicators. (fix(2) rework per R2 review.)
 const GARBLED_XML_PATTERNS = [
   /<invoke/,
   /<parameter/,
-  /<\//,
 ];
 
 /** Test whether the given pane text contains wedge signal (iii). */
@@ -311,6 +315,38 @@ export function _setWedgeDepsForTesting(deps: {
   if (deps.sendMessage) sendMessage = deps.sendMessage;
 }
 
+// ── GATE 3: restart-loop cap ──────────────────────────────────────────────────
+//
+// Signal(i) can re-fire on every tick if the task's MAX(updated_at) never advances
+// after a restart (fresh orch immediately re-wedges on the same task).
+// This cap bounds the loop: after WEDGE_RESTART_CAP consecutive no-progress
+// detections, the frozen task is marked FAILED instead of re-queued.
+//
+// DESIGN INTENT (coordinated with #448 Check 3b):
+// We reuse _IN_PROGRESS_NO_PROGRESS_BUDGET (= 3) as the cap K so both the
+// idle-orch bounded-nudge (Check 3b in orchestrator-idle) and the wedge-restart
+// loop bound share the same threshold, rather than having a 3rd independent counter.
+//
+// These two counters are COMPLEMENTARY, not parallel:
+//   • orchestrator-idle Check 3b fires when isClaudeProcessRunning=FALSE (Claude at prompt)
+//   • context-watchdog GATE 3 fires when isOrchestratorAlive()=TRUE (Claude apparently running)
+// They guard distinct failure modes and do NOT double-count the same event.
+//
+// GATE 1 race safety: Node.js single-threaded scheduler prevents true simultaneous
+// execution. GATE 2's task-reset to pending also prevents double-act: once a task
+// is reset to pending, Check 3b sees no in_progress task and skips its budget counter.
+
+/**
+ * Cap K — maximum consecutive no-progress wedge-restart detections before the frozen
+ * task is marked FAILED. Reuses Check 3b's budget constant for shared threshold.
+ */
+export const WEDGE_RESTART_CAP = _IN_PROGRESS_NO_PROGRESS_BUDGET; // = 3
+
+/** MAX(updated_at) of in_progress task(s) at the time of the most recent signal(i)-driven restart. */
+let lastWedgeIpMaxUpdatedAt: string | null = null;
+/** Count of consecutive signal(i) detections where updated_at did NOT advance since last restart. */
+let wedgeRestartCount = 0;
+
 /**
  * Auto-restart the orchestrator after detecting a wedge condition.
  *
@@ -324,6 +360,26 @@ function restartWedgedOrchestrator(reason: string): void {
   log.warn('Wedge detector: auto-restarting orchestrator', { reason });
 
   killOrchestratorSession();
+
+  // GATE 2: Reset frozen in_progress task(s) to pending so the fresh orch re-picks them up.
+  // The fresh orch polls ?status=pending ONLY (per .claude/agents/orchestrator.md:17).
+  // Without this reset the task stays in_progress with no owner — orphaned indefinitely
+  // (or until orchestrator-idle reaps it as a zombie, which is an uncontrolled race).
+  // Resetting to pending also makes signal(i) self-limiting: the fresh orch advances
+  // updated_at when it transitions pending→in_progress, which clears signal(i) on the
+  // next tick. After WEDGE_RESTART_CAP no-progress cycles, GATE 3 marks the task FAILED
+  // instead of re-queuing (see monitorOrchestratorWedge).
+  try {
+    const gateTs = new Date().toISOString();
+    exec(
+      `UPDATE tasks SET status = 'pending', error = NULL, updated_at = ?
+       WHERE kind = 'orchestrator' AND status = 'in_progress'`,
+      gateTs,
+    );
+    log.info('Wedge detector GATE 2: reset in_progress task(s) to pending for fresh orch pick-up');
+  } catch (err) {
+    log.warn('Wedge detector GATE 2: failed to reset in_progress task(s) to pending', { error: String(err) });
+  }
 
   const session = spawnOrchestratorSession();
   const ts = new Date().toISOString();
@@ -431,11 +487,81 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
     if (signalII) reasons.push(`agents.last_activity frozen since ${lastActivity} (>${timeoutMinutes}m)`);
     if (signalIII) reasons.push('pane shows feedback prompt or garbled XML');
 
+    // ── GATE 3: restart-loop bound (signal (i) driven) ─────────────────────
+    // Signal(i) can re-fire every tick if the task's updated_at never advances after
+    // a GATE 2 reset+restart (e.g., fresh orch immediately re-wedges on the same task).
+    // Count consecutive no-progress detections; at WEDGE_RESTART_CAP fail the task
+    // instead of re-queuing — breaking the infinite restart storm.
+    //
+    // GATE 1 coordination with orchestrator-idle Check 3b:
+    // Check 3b fires when isClaudeProcessRunning=FALSE (Claude at shell prompt, not working).
+    // signal(i) fires when isOrchestratorAlive()=TRUE (orch session alive, Claude apparently
+    // processing but task still frozen). These are mutually exclusive in the common path.
+    // GATE 2's pending-reset also prevents double-act: after reset, Check 3b sees no
+    // in_progress task and skips its budget counter on that tick.
+    if (signalI) {
+      if (ipMaxUpdated === lastWedgeIpMaxUpdatedAt) {
+        // Same frozen value as last restart — no progress was made
+        wedgeRestartCount++;
+      } else {
+        // Either first detection or task advanced since last restart — reset counter
+        wedgeRestartCount = 1;
+        lastWedgeIpMaxUpdatedAt = ipMaxUpdated;
+      }
+
+      if (wedgeRestartCount >= WEDGE_RESTART_CAP) {
+        // Cap exhausted — mark frozen task(s) FAILED and alert comms; do NOT restart.
+        log.warn('Wedge detector GATE 3: restart cap reached — marking frozen task(s) FAILED', {
+          wedgeRestartCount,
+          WEDGE_RESTART_CAP,
+          ipMaxUpdated,
+          reason: reasons.join('; '),
+        });
+        const capTs = new Date().toISOString();
+        try {
+          const frozenTasks = query<{ ext_id: string }>(
+            `SELECT external_id AS ext_id FROM tasks WHERE kind = 'orchestrator' AND status = 'in_progress'`,
+          );
+          exec(
+            `UPDATE tasks SET status = 'failed', error = 'wedge_restart_cap_exceeded', completed_at = ?, updated_at = ?
+             WHERE kind = 'orchestrator' AND status = 'in_progress'`,
+            capTs, capTs,
+          );
+          for (const task of frozenTasks) {
+            exec(
+              `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
+               SELECT id, 'daemon', 'note', 'cleanup', ?, ?
+               FROM tasks WHERE kind = 'orchestrator' AND external_id = ?`,
+              `Task failed: wedge restart cap (${WEDGE_RESTART_CAP}) exceeded — orchestrator repeatedly re-wedged without progress`,
+              capTs, task.ext_id,
+            );
+          }
+          sendMessage({
+            from: 'daemon',
+            to: 'comms',
+            type: 'status',
+            body: JSON.stringify({
+              alert: 'orchestrator_wedge_cap_exceeded',
+              message: `Orchestrator wedge restart cap (${WEDGE_RESTART_CAP}) exceeded — frozen task(s) marked FAILED: ${frozenTasks.map(t => t.ext_id).join(', ')}`,
+              taskIds: frozenTasks.map(t => t.ext_id),
+            }),
+          });
+        } catch (err) {
+          log.warn('Wedge detector GATE 3: failed to fail task(s) or alert comms', { error: String(err) });
+        }
+        // Reset state so future in_progress tasks start with a clean counter
+        wedgeRestartCount = 0;
+        lastWedgeIpMaxUpdatedAt = null;
+        return; // DO NOT restart
+      }
+    }
+
     log.warn('Orchestrator wedge detected — auto-restarting', {
       signalI,
       signalII,
       signalIII,
       timeoutMinutes,
+      wedgeRestartCount: signalI ? wedgeRestartCount : undefined,
     });
 
     restartWedgedOrchestrator(reasons.join('; '));
@@ -477,6 +603,14 @@ export function _resetForTesting(): void {
   orchSessionId = null;
   commsFileMissCount = 0;
   orchFileMissCount = 0;
+  // GATE 3 state
+  wedgeRestartCount = 0;
+  lastWedgeIpMaxUpdatedAt = null;
+}
+
+/** @internal Read GATE 3 restart-loop counter state for test assertions. */
+export function _getWedgeRestartStateForTesting(): { count: number; lastIpMaxUpdatedAt: string | null } {
+  return { count: wedgeRestartCount, lastIpMaxUpdatedAt: lastWedgeIpMaxUpdatedAt };
 }
 
 /** @internal Expose run() for direct testing (wedge detector + context tiers). */
