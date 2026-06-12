@@ -99,8 +99,11 @@ describe('orch-wedge-detector: signal (i) — frozen in_progress task (mutation-
   afterEach(teardown);
 
   it('KILLS and respawns the orchestrator when alive but in_progress task frozen beyond threshold', async () => {
-    // Orch alive, in_progress task updated 20 min ago (default threshold = 15 min)
-    insertOrchAgent(20);
+    // Orch alive with FRESH last_activity (5 min) — isolates signal(i) from signal(ii).
+    // in_progress task updated 20 min ago (default threshold = 15 min) — triggers signal(i).
+    // Without this isolation, signal(ii) would also fire when last_activity is stale,
+    // making the test pass even if signal(i) logic is removed (not mutation-killing).
+    insertOrchAgent(5);  // fresh last_activity — signal(ii) must NOT fire
     insertInProgressTask('task-frozen-1', 20);
 
     let killCalled = false;
