@@ -329,11 +329,14 @@ export function spawnWorker(opts: SpawnOptions): string {
   if (effectiveMaxTurns) sdkOptions.maxTurns = effectiveMaxTurns;
   if (opts.profile.effort) sdkOptions.effort = opts.profile.effort;
   if (opts.cwd) sdkOptions.cwd = opts.cwd;
-  if (opts.env) {
-    // Merge caller-supplied env vars on top of the current process environment.
-    // This is how KITHKIT_AGENT_TOKEN reaches the spawned Claude Code subprocess.
-    sdkOptions.env = { ...process.env, ...opts.env };
-  }
+  // Always set env so CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY is injected into every worker
+  // subprocess regardless of whether the caller supplied extra vars. Caller-supplied vars
+  // (opts.env) are spread last so they can override if ever needed.
+  sdkOptions.env = {
+    ...process.env,
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',
+    ...opts.env,
+  };
 
   if (opts.profile.permissionMode === 'bypassPermissions') {
     sdkOptions.permissionMode = 'bypassPermissions';
