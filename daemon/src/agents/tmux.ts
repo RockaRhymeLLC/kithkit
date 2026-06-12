@@ -316,6 +316,22 @@ export function injectMessage(agentId: string, text: string): boolean {
  * On startup, it polls the task queue for pending work. The daemon injects nudges via
  * send-keys when new tasks arrive or when shutdown is needed.
  */
+
+/** Build the environment object passed to the orchestrator tmux spawn call. */
+function buildOrchSpawnEnv(): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    PATH: `${process.env.HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
+    CLAUDECODE: '',  // Clear nesting guard — orchestrator is a separate session
+    CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY: '1',
+  };
+}
+
+/** @internal Exposed for unit tests only — returns the spawn env for mutation-kill assertions. */
+export function _buildOrchSpawnEnvForTesting(): NodeJS.ProcessEnv {
+  return buildOrchSpawnEnv();
+}
+
 export function spawnOrchestratorSession(): string | null {
   const session = resolveSession('orchestrator')!;
 
@@ -370,11 +386,7 @@ export function spawnOrchestratorSession(): string | null {
       claudeBin, '--agent', 'orchestrator', '--dangerously-skip-permissions',
     ], {
       timeout: 10000,
-      env: {
-        ...process.env,
-        PATH: `${process.env.HOME}/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin`,
-        CLAUDECODE: '',  // Clear nesting guard — orchestrator is a separate session
-      },
+      env: buildOrchSpawnEnv(),
     });
 
     log.info('Orchestrator session spawned with profile', { session, projectDir });
