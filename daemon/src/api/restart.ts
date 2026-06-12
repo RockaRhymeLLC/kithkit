@@ -19,15 +19,48 @@
  * Workers should call:
  *   curl -s -X POST http://localhost:<port>/api/daemon/restart
  * instead of calling launchctl directly.
+ *
+ * RESTART-LOOP GUARD (todo #852, fast-follow to #436/#98):
+ *   Defense-in-depth against a wedged or looping worker hammering this
+ *   endpoint. After RESTART_LOOP_MAX_COUNT successful accepts within a
+ *   RESTART_LOOP_WINDOW_MS sliding window, further requests are refused
+ *   with 429 and a warning is logged. The endpoint deliberately has no
+ *   authentication (workers are legitimate callers); this guard is the
+ *   rate-limiting layer.
  */
 
 import type http from 'node:http';
+import { createLogger } from '../core/logger.js';
 import { json, withTimestamp } from './helpers.js';
 
-// ── Constants ────────────────────────────────────────────────
+const logger = createLogger('restart');
+
+// ── Deferred-restart constants ────────────────────────────────
 
 /** Grace period between the 202 response and the actual shutdown call (ms). */
 export const DEFERRED_RESTART_DELAY_MS = 2000;
+
+// ── Restart-loop guard constants ──────────────────────────────
+
+/**
+ * Maximum number of restart requests accepted within a RESTART_LOOP_WINDOW_MS
+ * sliding window. The (RESTART_LOOP_MAX_COUNT+1)th request in-window is
+ * refused with 429.
+ *
+ * Default: 5 per minute. Configurable at construction time via env
+ * KITHKIT_RESTART_LOOP_MAX (parsed at module load, useful for integration
+ * tests; prefer the _setNowFn seam for unit tests).
+ */
+export const RESTART_LOOP_MAX_COUNT: number = (() => {
+  const v = Number(process.env['KITHKIT_RESTART_LOOP_MAX']);
+  return Number.isFinite(v) && v > 0 ? v : 5;
+})();
+
+/**
+ * Sliding-window duration in milliseconds for the restart-loop guard.
+ * Timestamps older than this are evicted from the window.
+ */
+export const RESTART_LOOP_WINDOW_MS = 60_000;
 
 // ── Injectable shutdown function (for testing) ───────────────
 
@@ -55,6 +88,42 @@ export function _getPendingRestartTimer(): ReturnType<typeof setTimeout> | null 
   return _pendingRestartTimer;
 }
 
+// ── Restart-loop guard state ──────────────────────────────────
+
+/** Timestamps of recent accepted restart requests within the current window. */
+let _restartTimestamps: number[] = [];
+
+/**
+ * Clock seam — injectable for deterministic time control in tests.
+ * Production code uses Date.now; tests inject a fake clock.
+ */
+let _nowFn: () => number = Date.now;
+
+/**
+ * @internal Inject a clock function for deterministic testing.
+ * Allows tests to control the "current time" without real wall-clock sleeps.
+ */
+export function _setNowFn(fn: () => number): void {
+  _nowFn = fn;
+}
+
+/**
+ * Warn-sink type used by the restart-loop guard when it refuses a request.
+ * Receives a human-readable message plus structured fields.
+ */
+type WarnFn = (msg: string, data: { count: number; window_ms: number }) => void;
+
+const _defaultWarnFn: WarnFn = (msg, data) => logger.warn(msg, data);
+let _warnFn: WarnFn = _defaultWarnFn;
+
+/**
+ * @internal Inject a warn sink for test observation of guard log events.
+ * Pass null to restore the default (structured logger) sink.
+ */
+export function _setWarnFn(fn: WarnFn | null): void {
+  _warnFn = fn ?? _defaultWarnFn;
+}
+
 /** @internal Reset module state between tests. */
 export function _resetRestartForTesting(): void {
   if (_pendingRestartTimer !== null) {
@@ -62,6 +131,9 @@ export function _resetRestartForTesting(): void {
     _pendingRestartTimer = null;
   }
   _shutdownFn = null;
+  _restartTimestamps = [];
+  _nowFn = Date.now;
+  _warnFn = _defaultWarnFn;
 }
 
 // ── Route handler ────────────────────────────────────────────
@@ -75,6 +147,34 @@ export async function handleRestartRoute(
 
   // POST /api/daemon/restart
   if (pathname === '/api/daemon/restart' && method === 'POST') {
+    // ── Restart-loop guard (defense-in-depth, todo #852) ─────
+    // Slide the window: evict timestamps older than RESTART_LOOP_WINDOW_MS.
+    const now = _nowFn();
+    _restartTimestamps = _restartTimestamps.filter((t) => now - t < RESTART_LOOP_WINDOW_MS);
+
+    if (_restartTimestamps.length >= RESTART_LOOP_MAX_COUNT) {
+      // (N+1)th restart in-window: refuse and log.
+      const count = _restartTimestamps.length;
+      _warnFn(
+        `restart-loop guard: refusing restart — ${count} restarts in ${RESTART_LOOP_WINDOW_MS}ms window (max ${RESTART_LOOP_MAX_COUNT})`,
+        { count, window_ms: RESTART_LOOP_WINDOW_MS },
+      );
+      const retryAfterSeconds = Math.ceil(
+        (_restartTimestamps[0]! + RESTART_LOOP_WINDOW_MS - now) / 1000,
+      );
+      res.setHeader('Retry-After', String(retryAfterSeconds));
+      json(res, 429, withTimestamp({
+        error: 'Restart rate limit exceeded',
+        detail: `Maximum ${RESTART_LOOP_MAX_COUNT} restarts allowed per ${RESTART_LOOP_WINDOW_MS / 1000}s window`,
+        retry_after_seconds: retryAfterSeconds,
+      }));
+      return true;
+    }
+
+    // Record this restart in the window before responding.
+    _restartTimestamps.push(now);
+
+    // ─────────────────────────────────────────────────────────
     // Respond 202 BEFORE scheduling the shutdown.
     // This is the core of the fix: the calling worker receives its response
     // and can exit cleanly before the daemon goes down.
