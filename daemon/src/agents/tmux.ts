@@ -375,7 +375,7 @@ export function spawnOrchestratorSession(): string | null {
     })();
 
     // Create a new detached tmux session running Claude with the orchestrator profile
-    execFileSync(TMUX_BIN, [
+    const orchSpawnArgs = [
       '-S', TMUX_SOCKET,
       'new-session',
       '-d',             // detached
@@ -383,11 +383,18 @@ export function spawnOrchestratorSession(): string | null {
       '-c', projectDir, // working directory
       '-x', '200',      // width
       '-y', '50',       // height
+      '-e', 'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1', // set pane env explicitly (server-env bypass)
+      '-e', 'CLAUDECODE=',                            // clear nesting guard (server-env bypass)
       claudeBin, '--agent', 'orchestrator', '--dangerously-skip-permissions',
-    ], {
-      timeout: 10000,
-      env: buildOrchSpawnEnv(),
-    });
+    ];
+    if (_testingDeps?.newSessionArgs) {
+      _testingDeps.newSessionArgs(orchSpawnArgs);
+    } else {
+      execFileSync(TMUX_BIN, orchSpawnArgs, {
+        timeout: 10000,
+        env: buildOrchSpawnEnv(),
+      });
+    }
 
     log.info('Orchestrator session spawned with profile', { session, projectDir });
 
@@ -674,6 +681,15 @@ interface TmuxTestDeps {
    * was recorded. Folding C-m into the text payload removes this call → test RED.
    */
   sendKeys?: (session: string, args: string[]) => void;
+  /**
+   * Intercept the tmux new-session args inside spawnOrchestratorSession for
+   * args-capture unit tests. When set, replaces the real execFileSync call so
+   * tests can assert the exact args array without spawning a real tmux session.
+   *
+   * Mutation-kill usage: record the args array; assert -e flags are present
+   * before the claudeBin argument. Removing the -e pairs from tmux.ts → test RED.
+   */
+  newSessionArgs?: (args: string[]) => void;
   /**
    * Override capture-pane output for submit-verify testing.
    * Called by capturePaneContent() instead of the real tmux capture-pane.

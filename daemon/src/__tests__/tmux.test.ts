@@ -24,6 +24,7 @@ import {
   isOrchestratorAlive,
   getOrchestratorState,
   ORCH_SESSION_PATTERN,
+  spawnOrchestratorSession,
 } from '../agents/tmux.js';
 
 // ── Session name helpers ──────────────────────────────────────
@@ -662,5 +663,116 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
     const verified = verifySubmitLanded('orch1', baseline);
     assert.equal(verified, false,
       'verifySubmitLanded must return false when capturePane content does not change (submit not confirmed)');
+  });
+});
+
+// ── spawnOrchestratorSession: args-capture (fix/870) ─────────
+//
+// WHAT THIS TEST CATCHES:
+//   The prior buildOrchSpawnEnv return-value test only checked what env map was
+//   built, NOT whether those vars were actually propagated to the pane. When a
+//   tmux SERVER pre-exists, `execFileSync({env})` is a no-op — panes inherit the
+//   SERVER's frozen env. R2 verified CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY ABSENT
+//   via `ps eww`. The fix is to pass -e flags on the new-session command line,
+//   which sets pane env explicitly regardless of server state.
+//
+// MUTATION-KILL (RED-on-revert proof):
+//   Remove the two '-e','CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1' and '-e','CLAUDECODE='
+//   pairs from the orchSpawnArgs array in tmux.ts, rebuild, run this test →
+//   the assertions below fail (args array lacks the -e pairs) → RED.
+//   Restore the pairs → GREEN.
+//
+// HOW THE SEAM WORKS:
+//   _testingDeps.newSessionArgs intercepts the new-session execFileSync call
+//   (same _testingDeps pattern as sendKeys). sessionExists: () => false ensures
+//   the function proceeds past the "already running" check without real tmux I/O.
+
+describe('spawnOrchestratorSession — tmux new-session args-capture (fix/870)', () => {
+  afterEach(() => {
+    _setTmuxDepsForTesting(null);
+  });
+
+  it('MUTATION-KILL: new-session args contain -e CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 and -e CLAUDECODE= before claudeBin', () => {
+    let capturedArgs: string[] | null = null;
+
+    _setTmuxDepsForTesting({
+      sessionExists: () => false, // session does not exist → proceed to spawn
+      newSessionArgs: (args) => { capturedArgs = args; },
+    });
+
+    spawnOrchestratorSession();
+
+    assert.ok(capturedArgs !== null, 'newSessionArgs seam must have been called — spawnOrchestratorSession did not reach the spawn step');
+
+    const args = capturedArgs as string[];
+
+    // ── Assert -e CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 is present ──
+    const surveyIdx = args.indexOf('CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1');
+    assert.ok(
+      surveyIdx !== -1,
+      `args must contain 'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1' — got: ${JSON.stringify(args)}`,
+    );
+    assert.equal(
+      args[surveyIdx - 1],
+      '-e',
+      `'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1' must be immediately preceded by '-e' — got args[${surveyIdx - 1}]='${args[surveyIdx - 1]}'`,
+    );
+
+    // ── Assert -e CLAUDECODE= is present ──
+    const claudecodeIdx = args.indexOf('CLAUDECODE=');
+    assert.ok(
+      claudecodeIdx !== -1,
+      `args must contain 'CLAUDECODE=' — got: ${JSON.stringify(args)}`,
+    );
+    assert.equal(
+      args[claudecodeIdx - 1],
+      '-e',
+      `'CLAUDECODE=' must be immediately preceded by '-e' — got args[${claudecodeIdx - 1}]='${args[claudecodeIdx - 1]}'`,
+    );
+
+    // ── Assert both -e options appear BEFORE the claudeBin argument (tmux ordering) ──
+    // claudeBin is the first arg that does not start with '-' and is not a tmux
+    // option value (i.e. the actual command to run). We find it by locating the
+    // boundary: the first arg after all tmux option pairs.
+    // Strategy: claudeBin appears after '-y', '50' in the args list, so its index
+    // is after the last tmux option value. We know the static prefix length is 12
+    // (indices 0–11: -S SOCKET new-session -d -s NAME -c DIR -x 200 -y 50),
+    // then the two -e pairs (indices 12–15), then claudeBin at index 16.
+    // We assert using actual indexOf of the known value 'claude' or any path.
+    const newSessionIdx = args.indexOf('new-session');
+    assert.ok(newSessionIdx !== -1, 'args must contain new-session subcommand');
+
+    // Find claudeBin: after '-y' '50', the next non -e-value arg that looks like a binary path.
+    // Simplest robust check: survey + claudecode -e pairs must both appear before any
+    // arg that contains 'claude' as a standalone binary name (the command portion).
+    // We look for the claudeBin candidate: the first arg that ends with 'claude' or equals 'claude'
+    // and appears AFTER the '-y' option.
+    const yIdx = args.indexOf('-y');
+    assert.ok(yIdx !== -1, 'args must contain -y (height)');
+
+    // After '-y VALUE -e K -e K' comes claudeBin. Its index must be > surveyIdx and > claudecodeIdx.
+    // We find it as the first arg after the -e pairs that doesn't start with '-'.
+    const postY = args.slice(yIdx + 2); // skip '-y' and '50'
+    let claudeBinIdx = -1;
+    for (let i = 0; i < postY.length; i++) {
+      const a = postY[i];
+      if (!a.startsWith('-') && a !== 'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1' && a !== 'CLAUDECODE=') {
+        claudeBinIdx = (yIdx + 2) + i;
+        break;
+      }
+    }
+    assert.ok(
+      claudeBinIdx !== -1,
+      `could not find claudeBin in args — got postY: ${JSON.stringify(postY)}`,
+    );
+
+    assert.ok(
+      surveyIdx < claudeBinIdx,
+      `MUTATION-KILL: '-e CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1' (idx ${surveyIdx}) must appear BEFORE claudeBin (idx ${claudeBinIdx}) — tmux requires -e before the shell command`,
+    );
+    assert.ok(
+      claudecodeIdx < claudeBinIdx,
+      `MUTATION-KILL: '-e CLAUDECODE=' (idx ${claudecodeIdx}) must appear BEFORE claudeBin (idx ${claudeBinIdx}) — tmux requires -e before the shell command`,
+    );
   });
 });
