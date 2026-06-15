@@ -22,7 +22,7 @@
     "better-sqlite3": "^12.6.2",
     "botframework-connector": "^4.23.3",
     "cron-parser": "^5.5.0",
-    "js-yaml": "^4.1.1",
+    "js-yaml": "^4.2.0",
     "sqlite-vec": "^0.1.7-alpha.2",
     "ws": "^8.19.0"
   },

@@ -32,6 +32,16 @@
       "id": "GHSA-G7R4-M6W7-QQQR",
       "expires": "2026-12-15",
       "reason": "Transitive esbuild advisory (arbitrary file read when running esbuild's development server on Windows). esbuild is build/dev-only, pulled transitively via kithkit-a2a-client -> tsx -> esbuild@0.28.0; NOT a direct or runtime daemon dependency. kithkit never runs esbuild's dev server, and the fleet is macOS (the advisory is Windows-specific) - doubly unreachable. Accepted as unreachable until the upstream tsx transitive bumps esbuild. Re-evaluate by 2026-12-15."
+    },
+    {
+      "id": "GHSA-HMW2-7CC7-3QXX",
+      "expires": "2026-12-15",
+      "reason": "Deep transitive advisory via botframework -> axios FormData polyfill; the polyfill is never invoked — the daemon uses JSON-only REST. Not reachable. Accepted as unreachable until the upstream SDK transitive updates. Re-evaluate by 2026-12-15."
+    },
+    {
+      "id": "GHSA-F38Q-MGVJ-VPH7",
+      "expires": "2026-12-15",
+      "reason": "Deep transitive advisory via onnxruntime-web bundled static schemas; kithkit's only protobufjs use is all-MiniLM embeddings with no user-controlled .proto input. Not reachable. Accepted as unreachable until the upstream transitive updates. Re-evaluate by 2026-12-15."
     }
   ]
 }
