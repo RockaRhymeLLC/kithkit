@@ -57,6 +57,66 @@ export const _testHelpers = {
 export function _resetForTesting(): void {
   _tmuxPath = null;
   _commsSessionExistsOverride = null;
+  _sbDeps = null;
+}
+
+// ── injectText seam (mirrors tmux.ts TmuxTestDeps.sendKeys / capturePane) ──
+//
+// Injectable dependencies for injectText() send-keys calls.
+// Mirroring the seam shape introduced for injectMessage() in #440 (34c9ed84)
+// so mutation-kill tests can assert the standalone Enter submit keystroke fires.
+//
+interface SbTestDeps {
+  /**
+   * Intercept tmux send-keys calls inside injectText for mutation-kill testing.
+   * Called instead of the real execFileSync for every send-keys invocation —
+   * both the text payload (-l) and the separate Enter submit keystroke.
+   *
+   * Presence of this seam also suppresses sleeps and capturePane polling inside
+   * injectText so tests complete without real delays.
+   *
+   * Mutation-kill usage: record all calls; assert a standalone ['Enter'] call
+   * was recorded. Folding Enter into the text payload removes this call → RED.
+   */
+  sendKeys?: (session: string, args: string[]) => void;
+  /**
+   * Override sessionExists() for testing. When set, bypasses real tmux check.
+   */
+  sessionExists?: (name: string) => boolean;
+  /**
+   * Override capturePane() return value for the submit-verify retry loop.
+   * When set, the retry loop treats any return value as "text no longer pending"
+   * (fast path: break immediately) and suppresses sleep delays.
+   */
+  capturePane?: (session: string) => string;
+}
+
+let _sbDeps: SbTestDeps | null = null;
+
+/**
+ * Set injectable dependencies for injectText() — for mutation-kill tests only.
+ * Pass null to restore production behaviour.
+ * @internal
+ */
+export function _setSbDepsForTesting(deps: SbTestDeps | null): void {
+  _sbDeps = deps;
+}
+
+/**
+ * Execute a tmux send-keys call for injectText, routing through the test seam
+ * when available so mutation-kill tests can assert each send-keys call
+ * independently without performing real tmux I/O.
+ *
+ * Mirrors execSendKeys() in tmux.ts (added in #440 / 34c9ed84).
+ */
+function execSbSendKeys(tmux: string, session: string, args: string[]): void {
+  if (_sbDeps?.sendKeys) {
+    _sbDeps.sendKeys(session, args);
+    return;
+  }
+  execFileSync(tmux, ['send-keys', '-t', `${session}:`, ...args], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
 }
 
 /**
@@ -236,7 +296,8 @@ export function injectText(
   const addTimestamp = options?.timestamp ?? true;
   const tmux = getTmuxPath();
 
-  if (!sessionExists(session)) {
+  const sessionExistsFn = _sbDeps?.sessionExists ?? sessionExists;
+  if (!sessionExistsFn(session)) {
     log.warn('Cannot inject: no tmux session', { session });
     return false;
   }
@@ -244,25 +305,35 @@ export function injectText(
   const stamped = addTimestamp ? `${estTimestamp()} ${text}` : text;
 
   try {
-    execFileSync(tmux, ['send-keys', '-t', `${session}:`, '-l', stamped], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
+    // Send the message text as literal keystrokes (-l prevents key-name expansion).
+    execSbSendKeys(tmux, session, ['-l', stamped]);
 
     if (pressEnter) {
-      execFileSync('/bin/sleep', ['0.3'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      // Small delay before submitting. Suppressed in seam test mode (sendKeys set).
+      if (!_sbDeps?.sendKeys) {
+        execFileSync('/bin/sleep', ['0.3'], { stdio: ['pipe', 'pipe', 'pipe'] });
+      }
 
       const MAX_ENTER_ATTEMPTS = 3;
       const ENTER_DELAYS = [300, 500, 800];
       for (let attempt = 1; attempt <= MAX_ENTER_ATTEMPTS; attempt++) {
-        execFileSync(tmux, ['send-keys', '-t', `${session}:`, 'Enter'], {
-          stdio: ['pipe', 'pipe', 'pipe'],
-        });
+        // Send the submit keystroke as a SEPARATE send-keys call.
+        // It must NOT be folded into the text payload (the -l literal flag
+        // treats 'Enter' as the literal characters E, n, t, e, r — not as
+        // a newline). Keeping it separate also means no sanitizer or length
+        // cap can accidentally swallow it (cf. injectMessage fix in #440).
+        execSbSendKeys(tmux, session, ['Enter']);
 
         const delay = ENTER_DELAYS[attempt - 1] ?? 800;
-        execFileSync('/bin/sleep', [String(delay / 1000)], { stdio: ['pipe', 'pipe', 'pipe'] });
+        // Suppress sleep delays in seam test mode.
+        if (!_sbDeps?.sendKeys) {
+          execFileSync('/bin/sleep', [String(delay / 1000)], { stdio: ['pipe', 'pipe', 'pipe'] });
+        }
 
         if (attempt < MAX_ENTER_ATTEMPTS) {
-          const pane = capturePane(session);
+          // Seam test mode: treat capturePane as returning "not pending" to
+          // break immediately without real tmux I/O.
+          const pane = _sbDeps?.capturePane ? _sbDeps.capturePane(session) : capturePane(session);
           const lines = pane.split('\n').filter(l => l.trim().length > 0);
           const lastLines = lines.slice(-5);
           const textStillPending = lastLines.some(l => l.includes(text.slice(0, 40)));
