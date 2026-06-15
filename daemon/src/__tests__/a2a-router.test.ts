@@ -730,6 +730,87 @@ describe('A2A Router — Spec Bug Fixes', () => {
     }
   });
 
+  // ── Group mismatch detection ─────────────────────────────────────────────────
+
+  it('returns PEER_NOT_FOUND with actionable message when to value matches a known group name', async () => {
+    const deps = createMockDeps({
+      getNetworkClient: () => ({
+        send: async () => ({ status: 'delivered' as const, messageId: 'r1' }),
+        sendToGroup: async () => ({ messageId: 'g1', delivered: [], queued: [], failed: [] }),
+        getGroups: async () => [{ id: 'abc-123', name: 'home-agents' }],
+      }),
+    });
+    const router = new UnifiedA2ARouter(deps);
+    const result = await router.send({ to: 'home-agents', payload: { type: 'text', text: 'hello' } });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, A2A_ERROR_CODES.PEER_NOT_FOUND);
+      assert.ok(
+        result.error.includes("'home-agents' is a group, not a peer"),
+        `Expected group mismatch hint, got: ${result.error}`,
+      );
+      assert.ok(
+        result.error.includes("Use the 'group' field instead of 'to'"),
+        `Expected field hint in error, got: ${result.error}`,
+      );
+    }
+  });
+
+  it('group mismatch detection is case-insensitive', async () => {
+    const deps = createMockDeps({
+      getNetworkClient: () => ({
+        send: async () => ({ status: 'delivered' as const, messageId: 'r1' }),
+        sendToGroup: async () => ({ messageId: 'g1', delivered: [], queued: [], failed: [] }),
+        getGroups: async () => [{ id: 'abc-123', name: 'Home-Agents' }],
+      }),
+    });
+    const router = new UnifiedA2ARouter(deps);
+    const result = await router.send({ to: 'home-agents', payload: { type: 'text', text: 'hello' } });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.ok(result.error.includes("'home-agents' is a group, not a peer"));
+    }
+  });
+
+  it('does not return group mismatch when to value is a real peer name', async () => {
+    const deps = createMockDeps({
+      getNetworkClient: () => ({
+        send: async () => ({ status: 'delivered' as const, messageId: 'r1' }),
+        sendToGroup: async () => ({ messageId: 'g1', delivered: [], queued: [], failed: [] }),
+        getGroups: async () => [{ id: 'abc-123', name: 'home-agents' }],
+      }),
+      sendViaLAN: async () => ({ ok: true }),
+    });
+    const router = new UnifiedA2ARouter(deps);
+    const result = await router.send({ to: 'agent-a', payload: { type: 'text', text: 'hello' } });
+
+    assert.equal(result.ok, true, 'DM to known peer should succeed');
+  });
+
+  it('skips group mismatch check gracefully when getGroups throws', async () => {
+    const deps = createMockDeps({
+      getNetworkClient: () => ({
+        send: async () => ({ status: 'delivered' as const, messageId: 'r1' }),
+        sendToGroup: async () => ({ messageId: 'g1', delivered: [], queued: [], failed: [] }),
+        getGroups: async () => { throw new Error('Network unavailable'); },
+      }),
+      sendViaLAN: async () => ({ ok: true }),
+    });
+    const router = new UnifiedA2ARouter(deps);
+    // Must not throw; falls through to normal peer resolution
+    const result = await router.send({ to: 'agent-a', payload: { type: 'text', text: 'hello' } });
+
+    assert.ok(result !== undefined);
+    if (!result.ok) {
+      assert.ok(
+        !result.error.includes('is a group, not a peer'),
+        `Must not produce group mismatch when getGroups throws: ${result.error}`,
+      );
+    }
+  });
+
   it('Relay queued status propagated in auto-fallback path (SPEC BUG 7)', async () => {
     const deps = createMockDeps({
       sendViaLAN: async () => ({ ok: false, error: 'LAN failed' }),
