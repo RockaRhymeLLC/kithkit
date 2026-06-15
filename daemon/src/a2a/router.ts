@@ -214,6 +214,33 @@ export class UnifiedA2ARouter {
     return { error: `Group '${nameOrId}' not found` };
   }
 
+  // ── Check Group Mismatch ──────────────────────────────────────
+  //
+  // Detects the common mistake of putting a group name in the `to` field
+  // instead of the `group` field. Returns an actionable error string if the
+  // `to` value matches a known group name, or null if not.
+
+  private async checkGroupMismatch(name: string): Promise<string | null> {
+    const network = this.deps.getNetworkClient();
+    if (!network) return null;
+
+    try {
+      const groups = await (network as { getGroups?(): Promise<Array<{ id?: string; groupId?: string; name: string }>> }).getGroups?.();
+      if (Array.isArray(groups)) {
+        const match = groups.find(
+          (g) => typeof g.name === 'string' && g.name.toLowerCase() === name.toLowerCase(),
+        );
+        if (match) {
+          return `'${name}' is a group, not a peer. Use the 'group' field instead of 'to' to send to groups.`;
+        }
+      }
+    } catch {
+      // Don't fail the send if group lookup fails — just skip the hint
+    }
+
+    return null;
+  }
+
   // ── Normalize Payload ────────────────────────────────────────
   //
   // Guards against two common caller mistakes:
@@ -294,6 +321,17 @@ export class UnifiedA2ARouter {
     const target = request.to!;
     const route = request.route ?? 'auto';
     const { peer, qualified } = this.resolvePeer(target);
+
+    // Check if the caller accidentally put a group name in 'to' instead of 'group'
+    const groupMismatch = await this.checkGroupMismatch(target);
+    if (groupMismatch) {
+      return {
+        ok: false,
+        error: groupMismatch,
+        code: A2A_ERROR_CODES.PEER_NOT_FOUND,
+        timestamp: new Date().toISOString(),
+      };
+    }
 
     // Forced LAN
     if (route === 'lan') {
