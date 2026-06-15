@@ -22,6 +22,16 @@
       "id": "GHSA-W5HQ-G745-H8PQ",
       "expires": "2026-12-12",
       "reason": "Transitive uuid advisory (buffer bounds check in v3/v5/v6 when buf is provided) pulled via botframework-connector/msal. Unreachable in kithkit: no direct uuid dependency, no uuid imports in daemon/src, and UUIDs are generated exclusively via node:crypto randomUUID (41 call sites) - the vulnerable uuid v3/v5/v6 buf code path is never executed. Accepted as unreachable until the upstream SDK bumps its uuid transitive. Re-evaluate by 2026-12-12."
+    },
+    {
+      "id": "GHSA-GV7W-RQVM-QJHR",
+      "expires": "2026-12-15",
+      "reason": "Transitive esbuild advisory (missing binary integrity verification in the Deno module, enabling RCE via a malicious NPM_CONFIG_REGISTRY at install time). esbuild is build/dev-only, pulled transitively via kithkit-a2a-client -> tsx -> esbuild@0.28.0; NOT a direct or runtime daemon dependency (absent from package.json deps, not imported in daemon/src). The vector requires installing from an attacker-controlled npm registry; kithkit installs are controlled (trusted registry, no NPM_CONFIG_REGISTRY override in CI/deploy), so it is unreachable. Accepted as unreachable until the upstream tsx transitive bumps esbuild. Re-evaluate by 2026-12-15."
+    },
+    {
+      "id": "GHSA-G7R4-M6W7-QQQR",
+      "expires": "2026-12-15",
+      "reason": "Transitive esbuild advisory (arbitrary file read when running esbuild's development server on Windows). esbuild is build/dev-only, pulled transitively via kithkit-a2a-client -> tsx -> esbuild@0.28.0; NOT a direct or runtime daemon dependency. kithkit never runs esbuild's dev server, and the fleet is macOS (the advisory is Windows-specific) - doubly unreachable. Accepted as unreachable until the upstream tsx transitive bumps esbuild. Re-evaluate by 2026-12-15."
     }
   ]
 }
