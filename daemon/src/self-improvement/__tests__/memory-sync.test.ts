@@ -62,13 +62,13 @@ function getAllMemories(): MemoryRow[] {
   return query<MemoryRow>('SELECT * FROM memories ORDER BY id ASC');
 }
 
-function enableMemorySync(tmpDir: string, peers: string[] = ['bmo']): void {
+function enableMemorySync(tmpDir: string, peers: string[] = ['alpha']): void {
   const peersYaml = peers.map((p) => `    - ${p}`).join('\n');
   fs.writeFileSync(
     path.join(tmpDir, 'kithkit.config.yaml'),
     [
       'agent:',
-      '  name: skippy',
+      '  name: beta',
       'self_improvement:',
       '  enabled: true',
       '  memory_sync:',
@@ -86,7 +86,7 @@ function makeShareableMemory(overrides: Partial<Record<string, unknown>> = {}): 
     content: 'Always use payload.text not payload.body',
     category: 'api-format',
     tags: '[]',
-    origin_agent: 'skippy',
+    origin_agent: 'beta',
     trigger: 'retro',
     decay_policy: 'default',
     shareable: 1,
@@ -106,7 +106,7 @@ describe('syncToPeers sends to all configured peers', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-memsync-'));
     _resetDbForTesting();
     openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
-    enableMemorySync(tmpDir, ['bmo', 'r2d2']);
+    enableMemorySync(tmpDir, ['alpha', 'gamma']);
 
     capturedBodies = [];
     _setSendA2AFnForTesting(async (body) => {
@@ -127,8 +127,8 @@ describe('syncToPeers sends to all configured peers', () => {
 
     assert.equal(capturedBodies.length, 2, 'should send to both peers');
     const targets = capturedBodies.map((b) => b.to);
-    assert.ok(targets.includes('bmo'), 'should send to bmo');
-    assert.ok(targets.includes('r2d2'), 'should send to r2d2');
+    assert.ok(targets.includes('alpha'), 'should send to alpha');
+    assert.ok(targets.includes('gamma'), 'should send to gamma');
   });
 
   it('payload contains memory-sync type and learning data', async () => {
@@ -142,7 +142,7 @@ describe('syncToPeers sends to all configured peers', () => {
     const learning = payload.learning as Record<string, unknown>;
     assert.equal(learning.content, 'Test content for sync');
     assert.equal(learning.category, 'api-format');
-    assert.equal(learning.origin_agent, 'skippy');
+    assert.equal(learning.origin_agent, 'beta');
   });
 });
 
@@ -157,7 +157,7 @@ describe('syncToPeers skips non-shareable memories', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-memsync-'));
     _resetDbForTesting();
     openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
-    enableMemorySync(tmpDir, ['bmo']);
+    enableMemorySync(tmpDir, ['alpha']);
 
     capturedBodies = [];
     _setSendA2AFnForTesting(async (body) => {
@@ -200,7 +200,7 @@ describe('syncToPeers skips when memory_sync disabled', () => {
     // Memory sync disabled
     fs.writeFileSync(
       path.join(tmpDir, 'kithkit.config.yaml'),
-      'self_improvement:\n  enabled: true\n  memory_sync:\n    enabled: false\n    peers:\n      - bmo\n',
+      'self_improvement:\n  enabled: true\n  memory_sync:\n    enabled: false\n    peers:\n      - alpha\n',
     );
     loadConfig(tmpDir);
 
@@ -235,7 +235,7 @@ describe('syncToPeers does not echo back to origin agent', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-memsync-'));
     _resetDbForTesting();
     openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
-    enableMemorySync(tmpDir, ['bmo', 'r2d2']);
+    enableMemorySync(tmpDir, ['alpha', 'gamma']);
 
     capturedBodies = [];
     _setSendA2AFnForTesting(async (body) => {
@@ -251,18 +251,18 @@ describe('syncToPeers does not echo back to origin agent', () => {
   });
 
   it('skips peer that matches origin_agent', async () => {
-    // Memory originated from bmo — should not send back to bmo
-    const memory = makeShareableMemory({ origin_agent: 'bmo' });
+    // Memory originated from alpha — should not send back to alpha
+    const memory = makeShareableMemory({ origin_agent: 'alpha' });
     await syncToPeers(memory);
 
-    assert.equal(capturedBodies.length, 1, 'should send to r2d2 only');
-    assert.equal(capturedBodies[0]!.to, 'r2d2');
+    assert.equal(capturedBodies.length, 1, 'should send to gamma only');
+    assert.equal(capturedBodies[0]!.to, 'gamma');
   });
 
   it('sends to all peers when origin_agent is self', async () => {
-    const memory = makeShareableMemory({ origin_agent: 'skippy' });
+    const memory = makeShareableMemory({ origin_agent: 'beta' });
     await syncToPeers(memory);
-    assert.equal(capturedBodies.length, 2, 'should send to both bmo and r2d2');
+    assert.equal(capturedBodies.length, 2, 'should send to both alpha and gamma');
   });
 });
 
@@ -287,10 +287,10 @@ describe('handleMemorySync stores learning with correct attribution', () => {
   it('stores the learning with trigger=sync and correct origin_agent', async () => {
     await handleMemorySync({
       learning: {
-        content: 'BMO learning: always check daemon health before spawning',
+        content: 'Alpha learning: always check daemon health before spawning',
         category: 'process',
         tags: ['daemon', 'health'],
-        origin_agent: 'bmo',
+        origin_agent: 'alpha',
         trigger: 'retro',
         decay_policy: 'default',
         created_at: new Date().toISOString(),
@@ -300,8 +300,8 @@ describe('handleMemorySync stores learning with correct attribution', () => {
     const memories = getAllMemories();
     assert.equal(memories.length, 1);
     const m = memories[0]!;
-    assert.equal(m.content, 'BMO learning: always check daemon health before spawning');
-    assert.equal(m.origin_agent, 'bmo');
+    assert.equal(m.content, 'Alpha learning: always check daemon health before spawning');
+    assert.equal(m.origin_agent, 'alpha');
     assert.equal(m.trigger, 'sync');
     assert.equal(m.shareable, 1);
     assert.equal(m.category, 'process');
@@ -330,22 +330,22 @@ describe('handleMemorySync same-origin conflict: newer incoming wins', () => {
     const oldTs = new Date('2026-01-01T00:00:00Z').toISOString();
     const newTs = new Date('2026-06-01T00:00:00Z').toISOString();
 
-    // Existing memory from bmo
+    // Existing memory from alpha
     insertMemory({
-      content: 'BMO learning about memory sync performance OLD',
+      content: 'Alpha learning about memory sync performance OLD',
       category: 'process',
-      origin_agent: 'bmo',
+      origin_agent: 'alpha',
       trigger: 'retro',
       created_at: oldTs,
     });
 
-    // Incoming: same origin (bmo), same category, high similarity, newer
+    // Incoming: same origin (alpha), same category, high similarity, newer
     await handleMemorySync({
       learning: {
-        content: 'BMO learning about memory sync performance UPDATED',
+        content: 'Alpha learning about memory sync performance UPDATED',
         category: 'process',
         tags: [],
-        origin_agent: 'bmo',
+        origin_agent: 'alpha',
         trigger: 'retro',
         decay_policy: 'default',
         created_at: newTs,
@@ -384,22 +384,22 @@ describe('handleMemorySync same-origin conflict: newer existing wins (skip incom
     const oldTs = new Date('2026-01-01T00:00:00Z').toISOString();
     const newTs = new Date('2026-06-01T00:00:00Z').toISOString();
 
-    // Existing memory from bmo — NEWER
+    // Existing memory from alpha — NEWER
     insertMemory({
-      content: 'BMO learning about memory sync performance CURRENT',
+      content: 'Alpha learning about memory sync performance CURRENT',
       category: 'process',
-      origin_agent: 'bmo',
+      origin_agent: 'alpha',
       trigger: 'retro',
       created_at: newTs,
     });
 
-    // Incoming: same origin (bmo), same category, high similarity, OLDER
+    // Incoming: same origin (alpha), same category, high similarity, OLDER
     await handleMemorySync({
       learning: {
-        content: 'BMO learning about memory sync performance STALE',
+        content: 'Alpha learning about memory sync performance STALE',
         category: 'process',
         tags: [],
-        origin_agent: 'bmo',
+        origin_agent: 'alpha',
         trigger: 'retro',
         decay_policy: 'default',
         created_at: oldTs,
@@ -434,21 +434,21 @@ describe('handleMemorySync cross-agent conflict: keeps both with attribution', (
   });
 
   it('stores both memories when origins differ', async () => {
-    // Existing memory from skippy
+    // Existing memory from beta
     insertMemory({
       content: 'Always validate memory payloads before processing sync data',
       category: 'process',
-      origin_agent: 'skippy',
+      origin_agent: 'beta',
       trigger: 'retro',
     });
 
-    // Incoming: from bmo — similar content, different origin
+    // Incoming: from alpha — similar content, different origin
     await handleMemorySync({
       learning: {
         content: 'Always validate memory payloads before processing sync messages',
         category: 'process',
         tags: [],
-        origin_agent: 'bmo',
+        origin_agent: 'alpha',
         trigger: 'sync',
         decay_policy: 'default',
         created_at: new Date().toISOString(),
@@ -459,8 +459,8 @@ describe('handleMemorySync cross-agent conflict: keeps both with attribution', (
     assert.equal(memories.length, 2, 'should store both memories for cross-agent conflict');
 
     const origins = memories.map((m) => m.origin_agent);
-    assert.ok(origins.includes('skippy'), 'should keep skippy memory');
-    assert.ok(origins.includes('bmo'), 'should store bmo memory');
+    assert.ok(origins.includes('beta'), 'should keep beta memory');
+    assert.ok(origins.includes('alpha'), 'should store alpha memory');
   });
 });
 
@@ -481,16 +481,16 @@ describe('pullFromPeers pulls memories newer than last_sync_timestamp', () => {
       path.join(tmpDir, 'kithkit.config.yaml'),
       [
         'agent:',
-        '  name: skippy',
+        '  name: beta',
         'self_improvement:',
         '  enabled: true',
         '  memory_sync:',
         '    enabled: true',
         '    peers:',
-        '      - bmo',
+        '      - alpha',
         'agent-comms:',
         '  peers:',
-        '    - name: bmo',
+        '    - name: alpha',
         '      host: 127.0.0.1',
         '      port: 39999',
       ].join('\n') + '\n',
@@ -548,7 +548,7 @@ describe('pullFromPeers updates last_sync_timestamp after successful pull', () =
       path.join(tmpDir, 'kithkit.config.yaml'),
       [
         'agent:',
-        '  name: skippy',
+        '  name: beta',
         'self_improvement:',
         '  enabled: true',
         '  memory_sync:',
@@ -655,19 +655,18 @@ describe('Conflict resolution uses 0.85 similarity threshold', () => {
     insertMemory({
       content: 'Always validate memory payloads before processing them carefully in sync',
       category: 'process',
-      origin_agent: 'bmo',
+      origin_agent: 'alpha',
       trigger: 'retro',
     });
 
     // High-similarity incoming (same origin — should replace if newer)
-    const now = new Date().toISOString();
     const future = new Date(Date.now() + 60000).toISOString();
     await handleMemorySync({
       learning: {
         content: 'Always validate memory payloads before processing them carefully in sync',
         category: 'process',
         tags: [],
-        origin_agent: 'bmo',
+        origin_agent: 'alpha',
         trigger: 'retro',
         decay_policy: 'default',
         created_at: future, // newer — should replace
@@ -684,7 +683,7 @@ describe('Conflict resolution uses 0.85 similarity threshold', () => {
         content: 'Use fetch API with AbortSignal timeout for remote peer calls',
         category: 'process',
         tags: [],
-        origin_agent: 'bmo',
+        origin_agent: 'alpha',
         trigger: 'retro',
         decay_policy: 'default',
         created_at: future,
@@ -700,7 +699,14 @@ describe('Conflict resolution uses 0.85 similarity threshold', () => {
 //
 // MUTATION-KILLING: this test MUST go RED if normalizeOriginAgent() is removed
 // or its call is reverted at the sync-insert stamp point.  It asserts the
-// collapsed value ('bmo'), not the raw passthrough ('BMO comms').
+// collapsed value ('alpha'), not the raw passthrough ('alpha comms').
+
+// Generic test config — fleet agent set and alias map supplied as parameters.
+// Fleet names here are intentionally generic (alpha, beta, gamma) — no instance-specific ids.
+const TEST_NORM_CFG = {
+  fleetAgents: new Set(['alpha', 'beta', 'gamma']),
+  aliases: { ga: 'gamma' } as Record<string, string>,
+};
 
 describe('normalizeOriginAgent collapses non-normalized variants to canonical fleet id', () => {
   let tmpDir: string;
@@ -721,54 +727,54 @@ describe('normalizeOriginAgent collapses non-normalized variants to canonical fl
   // Unit tests for the normalizeOriginAgent helper
 
   it('normalizeOriginAgent: lowercases and trims', () => {
-    assert.equal(normalizeOriginAgent('  BMO  '), 'bmo');
-    assert.equal(normalizeOriginAgent('Skippy'), 'skippy');
+    assert.equal(normalizeOriginAgent('  ALPHA  ', TEST_NORM_CFG), 'alpha');
+    assert.equal(normalizeOriginAgent('Beta', TEST_NORM_CFG), 'beta');
   });
 
   it('normalizeOriginAgent: collapses internal whitespace', () => {
-    assert.equal(normalizeOriginAgent('BMO  comms'), 'bmo');
+    assert.equal(normalizeOriginAgent('ALPHA  comms', TEST_NORM_CFG), 'alpha');
   });
 
   it('normalizeOriginAgent: strips space-separated role suffix for known fleet agents', () => {
-    assert.equal(normalizeOriginAgent('BMO comms'), 'bmo');
-    assert.equal(normalizeOriginAgent('bmo comms'), 'bmo');
-    assert.equal(normalizeOriginAgent('skippy comms'), 'skippy');
-    assert.equal(normalizeOriginAgent('skippy orch'), 'skippy');
-    assert.equal(normalizeOriginAgent('skippy orchestrator'), 'skippy');
-    assert.equal(normalizeOriginAgent('skippy worker'), 'skippy');
-    assert.equal(normalizeOriginAgent('r2 comms'), 'r2d2');
+    assert.equal(normalizeOriginAgent('ALPHA comms', TEST_NORM_CFG), 'alpha');
+    assert.equal(normalizeOriginAgent('alpha comms', TEST_NORM_CFG), 'alpha');
+    assert.equal(normalizeOriginAgent('beta comms', TEST_NORM_CFG), 'beta');
+    assert.equal(normalizeOriginAgent('beta orch', TEST_NORM_CFG), 'beta');
+    assert.equal(normalizeOriginAgent('beta orchestrator', TEST_NORM_CFG), 'beta');
+    assert.equal(normalizeOriginAgent('beta worker', TEST_NORM_CFG), 'beta');
+    assert.equal(normalizeOriginAgent('ga comms', TEST_NORM_CFG), 'gamma');  // via alias
   });
 
   it('normalizeOriginAgent: strips hyphen-separated role suffix', () => {
-    assert.equal(normalizeOriginAgent('bmo-comms'), 'bmo');
-    assert.equal(normalizeOriginAgent('bmo-orch'), 'bmo');
-    assert.equal(normalizeOriginAgent('skippy-worker'), 'skippy');
+    assert.equal(normalizeOriginAgent('alpha-comms', TEST_NORM_CFG), 'alpha');
+    assert.equal(normalizeOriginAgent('alpha-orch', TEST_NORM_CFG), 'alpha');
+    assert.equal(normalizeOriginAgent('beta-worker', TEST_NORM_CFG), 'beta');
   });
 
   it('normalizeOriginAgent: strips underscore-separated role suffix', () => {
-    assert.equal(normalizeOriginAgent('bmo_comms'), 'bmo');
-    assert.equal(normalizeOriginAgent('bmo_orchestrator'), 'bmo');
+    assert.equal(normalizeOriginAgent('alpha_comms', TEST_NORM_CFG), 'alpha');
+    assert.equal(normalizeOriginAgent('alpha_orchestrator', TEST_NORM_CFG), 'alpha');
   });
 
   it('normalizeOriginAgent: does NOT strip suffix for unknown agents', () => {
-    // 'bridget comms' — 'bridget' is not a known fleet agent → preserve as-is
-    assert.equal(normalizeOriginAgent('bridget comms'), 'bridget comms');
+    // 'delta comms' — 'delta' is not a known fleet agent → preserve as-is
+    assert.equal(normalizeOriginAgent('delta comms', TEST_NORM_CFG), 'delta comms');
   });
 
   it('normalizeOriginAgent: leaves already-canonical ids unchanged', () => {
-    assert.equal(normalizeOriginAgent('bmo'), 'bmo');
-    assert.equal(normalizeOriginAgent('skippy'), 'skippy');
-    assert.equal(normalizeOriginAgent('unknown'), 'unknown');
+    assert.equal(normalizeOriginAgent('alpha', TEST_NORM_CFG), 'alpha');
+    assert.equal(normalizeOriginAgent('beta', TEST_NORM_CFG), 'beta');
+    assert.equal(normalizeOriginAgent('unknown', TEST_NORM_CFG), 'unknown');
   });
 
-  // r2 → r2d2 unification: r2 and r2d2 are the same agent (R2's config stamps r2d2
-  // outbound); all 'r2' variants must collapse to 'r2d2' to avoid split attribution.
-  it('normalizeOriginAgent: r2 and all its suffixed variants collapse to r2d2', () => {
-    assert.equal(normalizeOriginAgent('r2'), 'r2d2');
-    assert.equal(normalizeOriginAgent('r2 comms'), 'r2d2');
-    assert.equal(normalizeOriginAgent('r2-orch'), 'r2d2');
-    assert.equal(normalizeOriginAgent('R2 Comms'), 'r2d2');
-    assert.equal(normalizeOriginAgent('r2d2 comms'), 'r2d2');
+  // Alias unification: 'ga' is an alias for 'gamma' via the aliases map.
+  // All 'ga' variants must collapse to 'gamma' to avoid split attribution.
+  it('normalizeOriginAgent: alias and all its suffixed variants collapse to canonical', () => {
+    assert.equal(normalizeOriginAgent('ga', TEST_NORM_CFG), 'gamma');
+    assert.equal(normalizeOriginAgent('ga comms', TEST_NORM_CFG), 'gamma');
+    assert.equal(normalizeOriginAgent('ga-orch', TEST_NORM_CFG), 'gamma');
+    assert.equal(normalizeOriginAgent('GA Comms', TEST_NORM_CFG), 'gamma');
+    assert.equal(normalizeOriginAgent('gamma comms', TEST_NORM_CFG), 'gamma');
   });
 
   // Integration (mutation-killing): verify the normalization is applied at the
@@ -776,12 +782,28 @@ describe('normalizeOriginAgent collapses non-normalized variants to canonical fl
   // This test FAILS (RED) if the normalizeOriginAgent() call is reverted.
 
   it('[MUTATION-KILLING] handleMemorySync stores canonical id when origin_agent is non-normalized variant', async () => {
+    // Write config so buildNormCfg() knows fleet agents: self=alpha, peer=beta
+    fs.writeFileSync(
+      path.join(tmpDir, 'kithkit.config.yaml'),
+      [
+        'agent:',
+        '  name: alpha',
+        'self_improvement:',
+        '  enabled: true',
+        '  memory_sync:',
+        '    enabled: true',
+        '    peers:',
+        '      - beta',
+      ].join('\n') + '\n',
+    );
+    loadConfig(tmpDir);
+
     await handleMemorySync({
       learning: {
         content: 'Always validate payloads before processing sync data from peers',
         category: 'process',
         tags: [],
-        origin_agent: 'BMO comms',   // non-normalized variant — must collapse to 'bmo'
+        origin_agent: 'Alpha Comms',   // non-normalized variant — must collapse to 'alpha'
         trigger: 'retro',
         decay_policy: 'default',
         created_at: new Date().toISOString(),
@@ -791,11 +813,11 @@ describe('normalizeOriginAgent collapses non-normalized variants to canonical fl
     const memories = getAllMemories();
     assert.equal(memories.length, 1);
     // MUTATION-KILLING assertion: stored value must be the collapsed base id, not the raw input.
-    // Reverting the normalizeOriginAgent() call causes this to receive 'BMO comms' → FAIL.
+    // Reverting the normalizeOriginAgent() call causes this to receive 'alpha comms' → FAIL.
     assert.equal(
       memories[0]!.origin_agent,
-      'bmo',
-      `expected stored origin_agent 'bmo' but got '${memories[0]!.origin_agent}' — normalization missing at sync-insert?`,
+      'alpha',
+      `expected stored origin_agent 'alpha' but got '${memories[0]!.origin_agent}' — normalization missing at sync-insert?`,
     );
   });
 });

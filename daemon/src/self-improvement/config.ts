@@ -32,6 +32,8 @@ export interface SelfImprovementConfig {
   memory_sync: {
     enabled: boolean;
     peers: string[];
+    /** Instance-specific alias map: alternate id → canonical id. Empty in public defaults. */
+    origin_aliases: Record<string, string>;
   };
   lifecycle: {
     consolidation_threshold: number;
@@ -71,6 +73,7 @@ const DEFAULTS: SelfImprovementConfig = {
   memory_sync: {
     enabled: false,
     peers: [],
+    origin_aliases: {},
   },
   lifecycle: {
     consolidation_threshold: 0.85,
@@ -105,7 +108,7 @@ type RawSelfImprovement = Partial<{
     max_memories_injected: number;
     min_relevance_score: number;
   }>;
-  memory_sync: Partial<{ enabled: boolean; peers: string[] }>;
+  memory_sync: Partial<{ enabled: boolean; peers: string[]; origin_aliases: Record<string, string> }>;
   lifecycle: Partial<{
     consolidation_threshold: number;
     category_cap: number;
@@ -162,6 +165,7 @@ export function getSelfImprovementConfig(): SelfImprovementConfig {
     memory_sync: {
       enabled: raw.memory_sync?.enabled ?? DEFAULTS.memory_sync.enabled,
       peers: raw.memory_sync?.peers ?? DEFAULTS.memory_sync.peers,
+      origin_aliases: raw.memory_sync?.origin_aliases ?? DEFAULTS.memory_sync.origin_aliases,
     },
     lifecycle: {
       consolidation_threshold:
