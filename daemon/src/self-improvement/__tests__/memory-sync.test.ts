@@ -14,6 +14,7 @@ import {
   handleMemorySync,
   pullFromPeers,
   computeSimilarity,
+  normalizeOriginAgent,
   CONFLICT_THRESHOLD,
   _setSendA2AFnForTesting,
 } from '../memory-sync.js';
@@ -692,5 +693,99 @@ describe('Conflict resolution uses 0.85 similarity threshold', () => {
 
     const memoriesAfterSecond = getAllMemories();
     assert.equal(memoriesAfterSecond.length, 2, 'low-similarity should be stored as new memory');
+  });
+});
+
+// ── Test 13: normalizeOriginAgent — unit + mutation-killing integration ──
+//
+// MUTATION-KILLING: this test MUST go RED if normalizeOriginAgent() is removed
+// or its call is reverted at the sync-insert stamp point.  It asserts the
+// collapsed value ('bmo'), not the raw passthrough ('BMO comms').
+
+describe('normalizeOriginAgent collapses non-normalized variants to canonical fleet id', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    _resetConfigForTesting();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-memsync-'));
+    _resetDbForTesting();
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+  });
+
+  afterEach(() => {
+    _resetConfigForTesting();
+    _resetDbForTesting();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // Unit tests for the normalizeOriginAgent helper
+
+  it('normalizeOriginAgent: lowercases and trims', () => {
+    assert.equal(normalizeOriginAgent('  BMO  '), 'bmo');
+    assert.equal(normalizeOriginAgent('Skippy'), 'skippy');
+  });
+
+  it('normalizeOriginAgent: collapses internal whitespace', () => {
+    assert.equal(normalizeOriginAgent('BMO  comms'), 'bmo');
+  });
+
+  it('normalizeOriginAgent: strips space-separated role suffix for known fleet agents', () => {
+    assert.equal(normalizeOriginAgent('BMO comms'), 'bmo');
+    assert.equal(normalizeOriginAgent('bmo comms'), 'bmo');
+    assert.equal(normalizeOriginAgent('skippy comms'), 'skippy');
+    assert.equal(normalizeOriginAgent('skippy orch'), 'skippy');
+    assert.equal(normalizeOriginAgent('skippy orchestrator'), 'skippy');
+    assert.equal(normalizeOriginAgent('skippy worker'), 'skippy');
+    assert.equal(normalizeOriginAgent('r2 comms'), 'r2');
+  });
+
+  it('normalizeOriginAgent: strips hyphen-separated role suffix', () => {
+    assert.equal(normalizeOriginAgent('bmo-comms'), 'bmo');
+    assert.equal(normalizeOriginAgent('bmo-orch'), 'bmo');
+    assert.equal(normalizeOriginAgent('skippy-worker'), 'skippy');
+  });
+
+  it('normalizeOriginAgent: strips underscore-separated role suffix', () => {
+    assert.equal(normalizeOriginAgent('bmo_comms'), 'bmo');
+    assert.equal(normalizeOriginAgent('bmo_orchestrator'), 'bmo');
+  });
+
+  it('normalizeOriginAgent: does NOT strip suffix for unknown agents', () => {
+    // 'bridget comms' — 'bridget' is not a known fleet agent → preserve as-is
+    assert.equal(normalizeOriginAgent('bridget comms'), 'bridget comms');
+  });
+
+  it('normalizeOriginAgent: leaves already-canonical ids unchanged', () => {
+    assert.equal(normalizeOriginAgent('bmo'), 'bmo');
+    assert.equal(normalizeOriginAgent('skippy'), 'skippy');
+    assert.equal(normalizeOriginAgent('unknown'), 'unknown');
+  });
+
+  // Integration (mutation-killing): verify the normalization is applied at the
+  // sync-insert stamp point inside handleMemorySync.
+  // This test FAILS (RED) if the normalizeOriginAgent() call is reverted.
+
+  it('[MUTATION-KILLING] handleMemorySync stores canonical id when origin_agent is non-normalized variant', async () => {
+    await handleMemorySync({
+      learning: {
+        content: 'Always validate payloads before processing sync data from peers',
+        category: 'process',
+        tags: [],
+        origin_agent: 'BMO comms',   // non-normalized variant — must collapse to 'bmo'
+        trigger: 'retro',
+        decay_policy: 'default',
+        created_at: new Date().toISOString(),
+      },
+    });
+
+    const memories = getAllMemories();
+    assert.equal(memories.length, 1);
+    // MUTATION-KILLING assertion: stored value must be the collapsed base id, not the raw input.
+    // Reverting the normalizeOriginAgent() call causes this to receive 'BMO comms' → FAIL.
+    assert.equal(
+      memories[0]!.origin_agent,
+      'bmo',
+      `expected stored origin_agent 'bmo' but got '${memories[0]!.origin_agent}' — normalization missing at sync-insert?`,
+    );
   });
 });

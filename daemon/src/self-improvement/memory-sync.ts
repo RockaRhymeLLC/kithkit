@@ -15,6 +15,46 @@ import { isCanaryOrFixtureContent, logSkippedFixtureContent } from '../api/memor
 
 const log = createLogger('self-improvement:memory-sync');
 
+// ── Origin-agent normalization ────────────────────────────────
+
+/**
+ * Known fleet agent base IDs. Suffixed/multi-token variants of these agents
+ * (e.g. 'BMO comms', 'bmo-orch') collapse to the base id on sync-insert.
+ * Add new fleet agents here when onboarded. Keep this list small and auditable.
+ */
+const KNOWN_FLEET_AGENTS = new Set(['bmo', 'skippy', 'r2', 'r2d2']);
+
+/**
+ * Role suffixes stripped when they follow a known fleet agent id.
+ * Separator may be a space, hyphen, or underscore (case-insensitive).
+ */
+const ROLE_SUFFIX_RE = /[- _](comms|orch|orchestrator|worker)$/i;
+
+/**
+ * Normalize an origin_agent string to a canonical fleet id.
+ *
+ * Rules (applied in order):
+ *   a. Lowercase + trim whitespace; collapse internal whitespace runs to a single space.
+ *   b. Strip a trailing role suffix (comms|orch|orchestrator|worker, separated by
+ *      space/hyphen/underscore) when the resulting base id is a known fleet agent
+ *      (see KNOWN_FLEET_AGENTS). This collapses 'BMO comms', 'bmo-orch',
+ *      'bmo_orchestrator', etc. → 'bmo'.
+ *   c. Unknown agents: return the lowercased+trimmed value unchanged (never dropped).
+ */
+export function normalizeOriginAgent(raw: string): string {
+  // Step a: lowercase, trim, collapse internal whitespace
+  const lowered = raw.toLowerCase().trim().replace(/\s+/g, ' ');
+
+  // Step b: attempt to strip a role suffix to reach a known fleet base id
+  const stripped = lowered.replace(ROLE_SUFFIX_RE, '');
+  if (stripped !== lowered && KNOWN_FLEET_AGENTS.has(stripped)) {
+    return stripped;
+  }
+
+  // Step c: no matching suffix (or unknown agent) — return lowercased+trimmed value
+  return lowered;
+}
+
 // ── Testability hooks ─────────────────────────────────────────
 
 type SendA2AFn = (body: Record<string, unknown>) => Promise<void>;
@@ -175,7 +215,7 @@ export async function syncToPeers(memory: Record<string, unknown>): Promise<void
           category: memory.category ?? null,
           tags,
           importance: memory.importance ?? 1,
-          origin_agent: memory.origin_agent ?? agentName,
+          origin_agent: normalizeOriginAgent(String(memory.origin_agent ?? agentName)),
           trigger: memory.trigger ?? null,
           decay_policy: memory.decay_policy ?? 'default',
           created_at: memory.created_at ?? new Date().toISOString(),
@@ -216,7 +256,10 @@ export async function handleMemorySync(payload: Record<string, unknown>): Promis
   const content = learning.content;
   const category = (learning.category as string | null) ?? null;
   const tags = Array.isArray(learning.tags) ? (learning.tags as string[]) : [];
-  const originAgent = (learning.origin_agent as string | null) ?? null;
+  const originAgent =
+    learning.origin_agent != null
+      ? normalizeOriginAgent(String(learning.origin_agent))
+      : null;
   const trigger = (learning.trigger as string | null) ?? 'sync';
   const decayPolicy = (learning.decay_policy as string | null) ?? 'default';
   const incomingCreatedAt = learning.created_at as string | undefined;
@@ -368,3 +411,4 @@ export async function pullFromPeers(): Promise<void> {
 
 export { CONFLICT_THRESHOLD };
 export { loadSyncTimestamps, saveSyncTimestamps };
+export { KNOWN_FLEET_AGENTS, ROLE_SUFFIX_RE };
