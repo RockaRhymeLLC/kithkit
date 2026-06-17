@@ -135,7 +135,13 @@ def format_hint(memory: dict) -> str:
     if len(content) > MAX_CHARS_PER_HIT:
         content = content[:MAX_CHARS_PER_HIT].rsplit(" ", 1)[0] + "…"
     category = memory.get("category", "")
-    prefix = f"[{category}] " if category else ""
+    origin = memory.get("origin_agent") or None
+    if category and origin:
+        prefix = f"[{category}, from: {origin}] "
+    elif category:
+        prefix = f"[{category}] "
+    else:
+        prefix = ""
     return f"  - {prefix}{content}"
 
 
