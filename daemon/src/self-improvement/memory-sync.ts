@@ -21,8 +21,11 @@ const log = createLogger('self-improvement:memory-sync');
  * Known fleet agent base IDs. Suffixed/multi-token variants of these agents
  * (e.g. 'BMO comms', 'bmo-orch') collapse to the base id on sync-insert.
  * Add new fleet agents here when onboarded. Keep this list small and auditable.
+ *
+ * Note: 'r2' is intentionally absent — it is an alias for 'r2d2' (see AGENT_ALIASES).
+ * R2's config stamps 'r2d2' on outbound; AGENT_ALIASES handles any legacy 'r2' variants.
  */
-const KNOWN_FLEET_AGENTS = new Set(['bmo', 'skippy', 'r2', 'r2d2']);
+const KNOWN_FLEET_AGENTS = new Set(['bmo', 'skippy', 'r2d2']);
 
 /**
  * Role suffixes stripped when they follow a known fleet agent id.
@@ -31,28 +34,44 @@ const KNOWN_FLEET_AGENTS = new Set(['bmo', 'skippy', 'r2', 'r2d2']);
 const ROLE_SUFFIX_RE = /[- _](comms|orch|orchestrator|worker)$/i;
 
 /**
+ * Alias map applied after suffix-stripping. Collapses legacy or alternate agent
+ * ids to the canonical fleet id. 'r2' → 'r2d2' because R2's config agent.name=R2D2
+ * and outbound already stamps 'r2d2'; keeping both distinct splits attribution.
+ */
+const AGENT_ALIASES: Record<string, string> = { r2: 'r2d2' };
+
+/**
  * Normalize an origin_agent string to a canonical fleet id.
  *
  * Rules (applied in order):
  *   a. Lowercase + trim whitespace; collapse internal whitespace runs to a single space.
  *   b. Strip a trailing role suffix (comms|orch|orchestrator|worker, separated by
  *      space/hyphen/underscore) when the resulting base id is a known fleet agent
- *      (see KNOWN_FLEET_AGENTS). This collapses 'BMO comms', 'bmo-orch',
- *      'bmo_orchestrator', etc. → 'bmo'.
- *   c. Unknown agents: return the lowercased+trimmed value unchanged (never dropped).
+ *      (see KNOWN_FLEET_AGENTS) or a known alias (see AGENT_ALIASES). This collapses
+ *      'BMO comms', 'bmo-orch', 'bmo_orchestrator', etc. → 'bmo';
+ *      'r2-orch', 'r2 comms', 'R2 Comms', etc. → 'r2d2' (via alias).
+ *   c. Apply AGENT_ALIASES (e.g. 'r2' → 'r2d2') — handles both bare aliases and
+ *      suffix-stripped aliases.
+ *   d. Unknown agents: return the lowercased+trimmed value unchanged (never dropped).
  */
 export function normalizeOriginAgent(raw: string): string {
   // Step a: lowercase, trim, collapse internal whitespace
   const lowered = raw.toLowerCase().trim().replace(/\s+/g, ' ');
 
-  // Step b: attempt to strip a role suffix to reach a known fleet base id
+  // Step b: strip role suffix when result is a known fleet agent OR a known alias
   const stripped = lowered.replace(ROLE_SUFFIX_RE, '');
-  if (stripped !== lowered && KNOWN_FLEET_AGENTS.has(stripped)) {
-    return stripped;
+  const base =
+    stripped !== lowered && (KNOWN_FLEET_AGENTS.has(stripped) || stripped in AGENT_ALIASES)
+      ? stripped
+      : lowered;
+
+  // Step c: apply alias map (r2 → r2d2)
+  if (base in AGENT_ALIASES) {
+    return AGENT_ALIASES[base]!;
   }
 
-  // Step c: no matching suffix (or unknown agent) — return lowercased+trimmed value
-  return lowered;
+  // Step d: known fleet agent or unknown — return as-is (lowercased+trimmed)
+  return base;
 }
 
 // ── Testability hooks ─────────────────────────────────────────
@@ -411,4 +430,4 @@ export async function pullFromPeers(): Promise<void> {
 
 export { CONFLICT_THRESHOLD };
 export { loadSyncTimestamps, saveSyncTimestamps };
-export { KNOWN_FLEET_AGENTS, ROLE_SUFFIX_RE };
+export { KNOWN_FLEET_AGENTS, ROLE_SUFFIX_RE, AGENT_ALIASES };

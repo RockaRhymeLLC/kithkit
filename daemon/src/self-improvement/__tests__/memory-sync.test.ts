@@ -736,7 +736,7 @@ describe('normalizeOriginAgent collapses non-normalized variants to canonical fl
     assert.equal(normalizeOriginAgent('skippy orch'), 'skippy');
     assert.equal(normalizeOriginAgent('skippy orchestrator'), 'skippy');
     assert.equal(normalizeOriginAgent('skippy worker'), 'skippy');
-    assert.equal(normalizeOriginAgent('r2 comms'), 'r2');
+    assert.equal(normalizeOriginAgent('r2 comms'), 'r2d2');
   });
 
   it('normalizeOriginAgent: strips hyphen-separated role suffix', () => {
@@ -759,6 +759,16 @@ describe('normalizeOriginAgent collapses non-normalized variants to canonical fl
     assert.equal(normalizeOriginAgent('bmo'), 'bmo');
     assert.equal(normalizeOriginAgent('skippy'), 'skippy');
     assert.equal(normalizeOriginAgent('unknown'), 'unknown');
+  });
+
+  // r2 → r2d2 unification: r2 and r2d2 are the same agent (R2's config stamps r2d2
+  // outbound); all 'r2' variants must collapse to 'r2d2' to avoid split attribution.
+  it('normalizeOriginAgent: r2 and all its suffixed variants collapse to r2d2', () => {
+    assert.equal(normalizeOriginAgent('r2'), 'r2d2');
+    assert.equal(normalizeOriginAgent('r2 comms'), 'r2d2');
+    assert.equal(normalizeOriginAgent('r2-orch'), 'r2d2');
+    assert.equal(normalizeOriginAgent('R2 Comms'), 'r2d2');
+    assert.equal(normalizeOriginAgent('r2d2 comms'), 'r2d2');
   });
 
   // Integration (mutation-killing): verify the normalization is applied at the
