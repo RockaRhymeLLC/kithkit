@@ -781,8 +781,8 @@ describe('normalizeOriginAgent collapses non-normalized variants to canonical fl
   // sync-insert stamp point inside handleMemorySync.
   // This test FAILS (RED) if the normalizeOriginAgent() call is reverted.
 
-  it('[MUTATION-KILLING] handleMemorySync stores canonical id when origin_agent is non-normalized variant', async () => {
-    // Write config so buildNormCfg() knows fleet agents: self=alpha, peer=beta
+  it('[MUTATION-KILLING inbound] handleMemorySync stores canonical id when origin_agent is non-normalized variant', async () => {
+    // Write config so buildNormCfg() knows fleet agents: self=alpha, fleet_agents=[alpha]
     fs.writeFileSync(
       path.join(tmpDir, 'kithkit.config.yaml'),
       [
@@ -792,6 +792,8 @@ describe('normalizeOriginAgent collapses non-normalized variants to canonical fl
         '  enabled: true',
         '  memory_sync:',
         '    enabled: true',
+        '    fleet_agents:',
+        '      - alpha',
         '    peers:',
         '      - beta',
       ].join('\n') + '\n',
@@ -818,6 +820,84 @@ describe('normalizeOriginAgent collapses non-normalized variants to canonical fl
       memories[0]!.origin_agent,
       'alpha',
       `expected stored origin_agent 'alpha' but got '${memories[0]!.origin_agent}' — normalization missing at sync-insert?`,
+    );
+  });
+
+  // Gate 2: no-op guard — empty fleet roster + empty aliases → raw input returned verbatim.
+  it('normalizeOriginAgent: is a strict no-op (verbatim) when fleet roster and aliases are both empty', () => {
+    const emptyCfg = { fleetAgents: new Set<string>(), aliases: {} as Record<string, string> };
+    // Must return raw unchanged — no lowercase, no trim, no strip
+    assert.equal(normalizeOriginAgent('SomeUser Comms', emptyCfg), 'SomeUser Comms');
+    assert.equal(normalizeOriginAgent('  Spaced  ', emptyCfg), '  Spaced  ');
+    assert.equal(normalizeOriginAgent('UPPERCASE', emptyCfg), 'UPPERCASE');
+    assert.equal(normalizeOriginAgent('alpha comms', emptyCfg), 'alpha comms');
+  });
+});
+
+// ── Test 14: Outbound mutation-kill — normalizeOriginAgent at syncToPeers stamp ──
+//
+// MUTATION-KILLING (outbound): this test MUST go RED if the normalizeOriginAgent()
+// call is reverted or removed at the syncToPeers outbound stamp point.
+// It asserts the outbound payload carries the collapsed canonical id ('alpha'),
+// not the raw non-normalized variant ('alpha comms').
+
+describe('syncToPeers outbound stamp normalizes origin_agent to canonical id', () => {
+  let tmpDir: string;
+  let capturedBodies: Record<string, unknown>[];
+
+  beforeEach(() => {
+    _resetConfigForTesting();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-memsync-'));
+    _resetDbForTesting();
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+
+    capturedBodies = [];
+    _setSendA2AFnForTesting(async (body) => {
+      capturedBodies.push(body);
+    });
+  });
+
+  afterEach(() => {
+    _resetConfigForTesting();
+    _setSendA2AFnForTesting(null);
+    _resetDbForTesting();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('[MUTATION-KILLING outbound] syncToPeers stamps canonical id when memory origin_agent is non-normalized', async () => {
+    // fleet_agents includes 'alpha' so buildNormCfg() can collapse 'Alpha Comms' → 'alpha'
+    fs.writeFileSync(
+      path.join(tmpDir, 'kithkit.config.yaml'),
+      [
+        'agent:',
+        '  name: beta',
+        'self_improvement:',
+        '  enabled: true',
+        '  memory_sync:',
+        '    enabled: true',
+        '    fleet_agents:',
+        '      - alpha',
+        '      - beta',
+        '    peers:',
+        '      - alpha',
+      ].join('\n') + '\n',
+    );
+    loadConfig(tmpDir);
+
+    // Memory with a non-normalized origin_agent — the outbound normalizeOriginAgent()
+    // call must collapse 'Alpha Comms' → 'alpha' before stamping the payload.
+    const memory = makeShareableMemory({ origin_agent: 'Alpha Comms' });
+    await syncToPeers(memory);
+
+    assert.equal(capturedBodies.length, 1, 'should send to alpha peer');
+    const learning = (capturedBodies[0]!.payload as Record<string, unknown>).learning as Record<string, unknown>;
+    // MUTATION-KILLING assertion: outbound stamp must carry collapsed id, not raw variant.
+    // Reverting the normalizeOriginAgent() call in syncToPeers causes this to receive
+    // 'alpha comms' and fail.
+    assert.equal(
+      learning.origin_agent,
+      'alpha',
+      `expected outbound origin_agent 'alpha' but got '${String(learning.origin_agent)}' — normalization missing at outbound stamp?`,
     );
   });
 });
