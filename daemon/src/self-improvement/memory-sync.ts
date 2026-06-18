@@ -15,6 +15,91 @@ import { isCanaryOrFixtureContent, logSkippedFixtureContent } from '../api/memor
 
 const log = createLogger('self-improvement:memory-sync');
 
+// ── Origin-agent normalization ────────────────────────────────
+
+/**
+ * Role suffixes stripped when they follow a known fleet agent id.
+ * Separator may be a space, hyphen, or underscore (case-insensitive).
+ */
+const ROLE_SUFFIX_RE = /[- _](comms|orch|orchestrator|worker)$/i;
+
+/** Configuration for normalizeOriginAgent. Supplied by call sites from instance config. */
+export interface NormalizeOriginCfg {
+  /**
+   * Set of canonical fleet agent ids (lowercase).
+   * Derived from memory_sync.fleet_agents (authoritative roster) + agent.name (self).
+   */
+  fleetAgents: Set<string>;
+  /**
+   * Alias map: alternate id → canonical id.
+   * Read from memory_sync.origin_aliases in instance config; empty by default in public framework.
+   * Example: { 'ga': 'gamma' }
+   */
+  aliases: Record<string, string>;
+}
+
+/**
+ * Normalize an origin_agent string to a canonical fleet id.
+ *
+ * Rules (applied in order):
+ *   a. Lowercase + trim whitespace; collapse internal whitespace runs to a single space.
+ *   b. Strip a trailing role suffix (comms|orch|orchestrator|worker, separated by
+ *      space/hyphen/underscore) when the resulting base id is a member of fleetAgents
+ *      or a key in aliases. This collapses 'Agent comms', 'agent-orch', etc. → base id.
+ *   c. Apply alias map — collapses alternate ids to their canonical form.
+ *   d. Unknown agents: return the lowercased+trimmed value unchanged (never dropped).
+ *
+ * @param raw  The raw origin_agent string from a memory row or sync payload.
+ * @param cfg  Fleet agent set and alias map from instance config. See buildNormCfg().
+ */
+export function normalizeOriginAgent(raw: string, cfg: NormalizeOriginCfg): string {
+  const { fleetAgents, aliases } = cfg;
+
+  // Fast-path no-op: when no fleet roster and no aliases are configured (the public default),
+  // return the raw input verbatim — no lowercasing, trimming, or stripping.
+  if (fleetAgents.size === 0 && Object.keys(aliases).length === 0) return raw;
+
+  // Step a: lowercase, trim, collapse internal whitespace
+  const lowered = raw.toLowerCase().trim().replace(/\s+/g, ' ');
+
+  // Step b: strip role suffix when result is a known fleet agent OR a known alias
+  const stripped = lowered.replace(ROLE_SUFFIX_RE, '');
+  const base =
+    stripped !== lowered && (fleetAgents.has(stripped) || stripped in aliases)
+      ? stripped
+      : lowered;
+
+  // Step c: apply alias map
+  if (base in aliases) {
+    return aliases[base]!;
+  }
+
+  // Step d: known fleet agent or unknown — return as-is (lowercased+trimmed)
+  return base;
+}
+
+/**
+ * Build the normalization config from the loaded daemon config.
+ * Derives the fleet agent set from memory_sync.fleet_agents (authoritative roster)
+ * unioned with agent.name (self), and reads the alias map from
+ * memory_sync.origin_aliases (empty by default in public framework).
+ */
+function buildNormCfg(): NormalizeOriginCfg {
+  const config = loadConfig() as unknown as Record<string, unknown>;
+  const agentConfig = config.agent as { name?: string } | undefined;
+  const selfName = agentConfig?.name?.toLowerCase().trim() ?? '';
+
+  const siCfg = getSelfImprovementConfig();
+  const rosterNames = siCfg.memory_sync.fleet_agents
+    .map((p: string) => p.toLowerCase().trim())
+    .filter(Boolean);
+
+  const fleetAgents = new Set([...(selfName ? [selfName] : []), ...rosterNames]);
+  const aliases = siCfg.memory_sync.origin_aliases;
+
+  return { fleetAgents, aliases };
+}
+
 // ── Testability hooks ─────────────────────────────────────────
 
 type SendA2AFn = (body: Record<string, unknown>) => Promise<void>;
@@ -175,7 +260,7 @@ export async function syncToPeers(memory: Record<string, unknown>): Promise<void
           category: memory.category ?? null,
           tags,
           importance: memory.importance ?? 1,
-          origin_agent: memory.origin_agent ?? agentName,
+          origin_agent: normalizeOriginAgent(String(memory.origin_agent ?? agentName), buildNormCfg()),
           trigger: memory.trigger ?? null,
           decay_policy: memory.decay_policy ?? 'default',
           created_at: memory.created_at ?? new Date().toISOString(),
@@ -216,7 +301,10 @@ export async function handleMemorySync(payload: Record<string, unknown>): Promis
   const content = learning.content;
   const category = (learning.category as string | null) ?? null;
   const tags = Array.isArray(learning.tags) ? (learning.tags as string[]) : [];
-  const originAgent = (learning.origin_agent as string | null) ?? null;
+  const originAgent =
+    learning.origin_agent != null
+      ? normalizeOriginAgent(String(learning.origin_agent), buildNormCfg())
+      : null;
   const trigger = (learning.trigger as string | null) ?? 'sync';
   const decayPolicy = (learning.decay_policy as string | null) ?? 'default';
   const incomingCreatedAt = learning.created_at as string | undefined;
@@ -368,3 +456,4 @@ export async function pullFromPeers(): Promise<void> {
 
 export { CONFLICT_THRESHOLD };
 export { loadSyncTimestamps, saveSyncTimestamps };
+export { ROLE_SUFFIX_RE };
