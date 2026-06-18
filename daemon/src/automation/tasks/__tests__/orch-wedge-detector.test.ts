@@ -680,3 +680,134 @@ describe('orch-wedge-detector: signal (iii) — bare </ no longer causes false-p
       'Pane with garbled <parameter tool XML must still trigger wedge kill');
   });
 });
+
+// ── Active-worker exemption (#462) ────────────────────────────────────────────
+//
+// Signal (ii) — frozen last_activity — must NOT restart the orchestrator when
+// active worker_jobs exist. The orch is legitimately waiting for a long-running
+// worker; its last_activity is frozen by design during that wait.
+//
+// Signals (i) and (iii) are NOT exempted by workers.
+
+describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  /** Insert a worker_job with the given status. */
+  function insertWorkerJob(id: string, status: 'running' | 'queued' | 'finished'): void {
+    exec(
+      `INSERT INTO worker_jobs (id, profile, prompt, status, created_at)
+       VALUES (?, 'coding', 'test prompt', ?, ?)`,
+      id, status, isoMinutesAgo(30),
+    );
+  }
+
+  /**
+   * Test 1 — #462 repro: orch last_activity frozen >15m, active worker running.
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: remove the active-worker exemption (restore the old `signalII = lastActivity < cutoffIso` line).
+   * Expected: killCalled becomes true → test goes RED (restarts orch during live worker wait).
+   * Restored: killCalled stays false → test GREEN (exemption suppresses false-positive restart).
+   */
+  it('does NOT restart orch when last_activity is frozen but an active worker_job is running (#462 repro)', async () => {
+    // last_activity frozen 20 min ago (> 15 min threshold) — signal(ii) would fire without the exemption.
+    // No in_progress tasks inserted — signal(i) does not fire.
+    // Pane is normal — signal(iii) does not fire.
+    insertOrchAgent(20);
+    // A worker is actively running — the orch is healthy-waiting, not wedged.
+    insertWorkerJob('worker-462-1', 'running');
+
+    let killCalled = false;
+    const commsMessages: string[] = [];
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-should-not-spawn',
+      captureOrchestratorPane: () => '> ',  // normal pane — signal(iii) does not fire
+      sendMessage: (msg) => {
+        commsMessages.push(msg.body);
+        return { messageId: 1, delivered: false };
+      },
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, false,
+      '#462 repro: killOrchestratorSession must NOT be called when last_activity is frozen ' +
+      'but an active worker_job is running — the orch is healthy-waiting; ' +
+      'reverting the active-worker exemption makes this RED');
+
+    const wedgeRestartAlert = commsMessages.find(b => {
+      try { return JSON.parse(b)?.alert === 'orchestrator_wedge_restart'; } catch { return false; }
+    });
+    assert.equal(wedgeRestartAlert, undefined,
+      '#462 repro: orchestrator_wedge_restart alert must NOT be sent when worker is active');
+  });
+
+  /**
+   * Test 2 — real wedge preserved: last_activity frozen, no active workers → still restarts.
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: make the active-worker exemption unconditional (always suppress signal(ii)).
+   * Expected: killCalled stays false → test goes RED (real wedge goes undetected).
+   * Restored: killCalled becomes true → test GREEN (no workers = no exemption = real wedge fires).
+   */
+  it('STILL restarts orch when last_activity is frozen and NO active workers (real wedge)', async () => {
+    // last_activity frozen 20 min ago — signal(ii) fires.
+    // No workers in worker_jobs — no exemption applies.
+    insertOrchAgent(20);
+    // Explicitly no workers inserted — any 'finished' jobs do not count
+    insertWorkerJob('worker-finished-1', 'finished');
+
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-respawned',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, true,
+      'Real wedge must still fire when last_activity is frozen and no workers are active — ' +
+      'making the exemption unconditional would make this RED');
+  });
+
+  /**
+   * Test 3 — pane-content trigger unchanged: active workers do NOT suppress signal(iii).
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: extend the active-worker exemption to cover signal(iii) as well.
+   * Expected: killCalled stays false → test goes RED (garbled pane goes undetected with active worker).
+   * Restored: killCalled becomes true → test GREEN (signal(iii) always fires, workers or not).
+   */
+  it('STILL restarts orch on pane-content signal (iii) even when active workers are running', async () => {
+    // Fresh last_activity — signal(ii) does NOT fire.
+    // Active worker running — exemption would apply IF we extended it to signal(iii).
+    // Pane shows feedback prompt — signal(iii) fires unconditionally.
+    insertOrchAgent(2);  // last_activity 2 min ago — well within 15-min threshold
+    insertWorkerJob('worker-pane-test-1', 'running');
+
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-pane-respawn',
+      captureOrchestratorPane: () => 'How is Claude doing this session?\n> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, true,
+      'Pane-content signal (iii) must fire regardless of active workers — ' +
+      'garbled pane or feedback prompt is always a real wedge; ' +
+      'extending the exemption to cover signal(iii) would make this RED');
+  });
+});
