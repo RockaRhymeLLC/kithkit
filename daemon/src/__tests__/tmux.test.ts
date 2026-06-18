@@ -164,6 +164,7 @@ describe('injectMessage log level for missing session (R2 guard)', () => {
   }
 
   let savedAllowInject: string | undefined;
+  let savedSuppress: string | undefined;
 
   beforeEach(() => {
     logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-tmux-test-'));
@@ -172,7 +173,9 @@ describe('injectMessage log level for missing session (R2 guard)', () => {
     // Opt in to real session-check logic (bypasses the test-runner guard in injectMessage)
     // so that the session lookup and its log calls actually execute.
     savedAllowInject = process.env.KITHKIT_ALLOW_TEST_INJECT;
+    savedSuppress = process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
     process.env.KITHKIT_ALLOW_TEST_INJECT = '1';
+    delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
   });
 
   afterEach(() => {
@@ -183,6 +186,11 @@ describe('injectMessage log level for missing session (R2 guard)', () => {
       delete process.env.KITHKIT_ALLOW_TEST_INJECT;
     } else {
       process.env.KITHKIT_ALLOW_TEST_INJECT = savedAllowInject;
+    }
+    if (savedSuppress === undefined) {
+      delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    } else {
+      process.env.KITHKIT_SUPPRESS_NOTIFICATIONS = savedSuppress;
     }
   });
 
