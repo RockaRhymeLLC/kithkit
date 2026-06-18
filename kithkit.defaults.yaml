@@ -211,10 +211,14 @@ self_improvement:
   memory_sync:
     enabled: false
     peers: []
+    # Authoritative full fleet roster — canonical agent ids (e.g. ['alpha', 'beta']).
+    # Configure identically on every instance regardless of sync topology.
+    # Ships empty in public defaults; populate per-instance in kithkit.config.yaml.
+    # Used as the primary source for origin-agent normalization.
+    fleet_agents: []
     # Instance-specific alias map: alternate agent id → canonical id.
     # Populate in your kithkit.config.yaml — e.g. { 'old-name': 'new-name' }.
-    # Public framework ships empty; the fleet agent set is derived at runtime
-    # from agent.name + memory_sync.peers.
+    # Public framework ships empty.
     origin_aliases: {}
   lifecycle:
     consolidation_threshold: 0.85

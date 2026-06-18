@@ -25,7 +25,10 @@ const ROLE_SUFFIX_RE = /[- _](comms|orch|orchestrator|worker)$/i;
 
 /** Configuration for normalizeOriginAgent. Supplied by call sites from instance config. */
 export interface NormalizeOriginCfg {
-  /** Set of canonical fleet agent ids (lowercase). Derived from agent.name + memory_sync.peers. */
+  /**
+   * Set of canonical fleet agent ids (lowercase).
+   * Derived from memory_sync.fleet_agents (authoritative roster) + agent.name (self).
+   */
   fleetAgents: Set<string>;
   /**
    * Alias map: alternate id → canonical id.
@@ -52,6 +55,10 @@ export interface NormalizeOriginCfg {
 export function normalizeOriginAgent(raw: string, cfg: NormalizeOriginCfg): string {
   const { fleetAgents, aliases } = cfg;
 
+  // Fast-path no-op: when no fleet roster and no aliases are configured (the public default),
+  // return the raw input verbatim — no lowercasing, trimming, or stripping.
+  if (fleetAgents.size === 0 && Object.keys(aliases).length === 0) return raw;
+
   // Step a: lowercase, trim, collapse internal whitespace
   const lowered = raw.toLowerCase().trim().replace(/\s+/g, ' ');
 
@@ -73,8 +80,9 @@ export function normalizeOriginAgent(raw: string, cfg: NormalizeOriginCfg): stri
 
 /**
  * Build the normalization config from the loaded daemon config.
- * Derives the fleet agent set from agent.name + memory_sync.peers,
- * and reads the alias map from memory_sync.origin_aliases (empty by default).
+ * Derives the fleet agent set from memory_sync.fleet_agents (authoritative roster)
+ * unioned with agent.name (self), and reads the alias map from
+ * memory_sync.origin_aliases (empty by default in public framework).
  */
 function buildNormCfg(): NormalizeOriginCfg {
   const config = loadConfig() as unknown as Record<string, unknown>;
@@ -82,11 +90,11 @@ function buildNormCfg(): NormalizeOriginCfg {
   const selfName = agentConfig?.name?.toLowerCase().trim() ?? '';
 
   const siCfg = getSelfImprovementConfig();
-  const peerNames = siCfg.memory_sync.peers
+  const rosterNames = siCfg.memory_sync.fleet_agents
     .map((p: string) => p.toLowerCase().trim())
     .filter(Boolean);
 
-  const fleetAgents = new Set([...(selfName ? [selfName] : []), ...peerNames]);
+  const fleetAgents = new Set([...(selfName ? [selfName] : []), ...rosterNames]);
   const aliases = siCfg.memory_sync.origin_aliases;
 
   return { fleetAgents, aliases };
