@@ -779,6 +779,54 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
   });
 
   /**
+   * Test 2b — running-only: last_activity frozen, ONLY a 'queued' job (no 'running') → STILL restarts.
+   *
+   * Locks the running-only change: a stale 'queued' job must NOT exempt a genuinely-wedged orch.
+   * The queued-inflation failure seen 2026-06-17 showed that a stuck 'queued' job that never
+   * dispatches would shield a wedged orch indefinitely when the old IN('queued','running') query
+   * was used. Only a 'running' job is strong evidence the orch is healthy-waiting.
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: change `status = 'running'` back to `status IN ('queued', 'running')` in
+   * context-watchdog.ts signal(ii) query.
+   * Expected: killCalled stays false → test goes RED (queued job exempts the wedged orch).
+   * Restored: killCalled becomes true → test GREEN (queued job is ignored; wedge fires).
+   */
+  it('STILL restarts orch when last_activity is frozen and ONLY a queued (not running) worker exists (running-only lock)', async () => {
+    // last_activity frozen 20 min ago — signal(ii) should fire.
+    // Only a 'queued' job exists — NOT 'running' — so the running-only exemption must NOT apply.
+    insertOrchAgent(20);
+    insertWorkerJob('worker-queued-only-1', 'queued');
+
+    let killCalled = false;
+    const commsMessages: string[] = [];
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-queued-only-respawn',
+      captureOrchestratorPane: () => '> ',  // normal pane — signal(iii) does not fire
+      sendMessage: (msg) => {
+        commsMessages.push(msg.body);
+        return { messageId: 1, delivered: false };
+      },
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, true,
+      'queued-only: killOrchestratorSession MUST be called when last_activity is frozen and ' +
+      'only a queued (never-dispatched) worker exists — a queued job is NOT strong evidence ' +
+      'the orch is healthy-waiting; reverting to IN(\'queued\',\'running\') makes this RED');
+
+    const wedgeRestartAlert = commsMessages.find(b => {
+      try { return JSON.parse(b)?.alert === 'orchestrator_wedge_restart'; } catch { return false; }
+    });
+    assert.ok(wedgeRestartAlert,
+      'queued-only: orchestrator_wedge_restart alert MUST be sent when only a queued job is present');
+  });
+
+  /**
    * Test 3 — pane-content trigger unchanged: active workers do NOT suppress signal(iii).
    *
    * MUTATION-KILL PROOF:
