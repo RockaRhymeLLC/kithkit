@@ -458,6 +458,18 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
   }
 
   // Signal (ii): agents.last_activity frozen for > threshold (while orch alive)
+  //
+  // ACTIVE-WORKER EXEMPTION (#462): When the orchestrator is waiting for a long-running
+  // worker (runtime > wedge threshold), its last_activity is legitimately frozen — it
+  // has no turns of its own while waiting. Restarting it during a healthy worker wait
+  // kills the running worker and creates false restart storms.
+  //
+  // Before signalling, query for active worker_jobs (reusing the same check as the
+  // idle-shutdown guard in orchestrator-idle.ts). If workers are running, the orch is
+  // healthy-waiting — suppress signal(ii) and skip restart.
+  //
+  // Signals (i) and (iii) are NOT exempted: a frozen task updated_at or a garbled
+  // pane is always a real wedge regardless of whether workers are running.
   let signalII = false;
   let lastActivity: string | null = null;
   try {
@@ -465,7 +477,20 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
       "SELECT last_activity FROM agents WHERE id = 'orchestrator'",
     );
     lastActivity = agentRows[0]?.last_activity ?? null;
-    signalII = lastActivity !== null && lastActivity < cutoffIso;
+    if (lastActivity !== null && lastActivity < cutoffIso) {
+      const activeWorkerRows = query<{ count: number }>(
+        "SELECT COUNT(*) as count FROM worker_jobs WHERE status IN ('queued', 'running')",
+      );
+      if ((activeWorkerRows[0]?.count ?? 0) > 0) {
+        log.debug(
+          'Wedge detector: last_activity frozen but active worker(s) running — orch is healthy-waiting, exempting signal(ii) (#462)',
+          { lastActivity, activeWorkerCount: activeWorkerRows[0]?.count ?? 0, cutoffIso },
+        );
+        // signalII stays false — frozen last_activity is expected during long worker wait
+      } else {
+        signalII = true;
+      }
+    }
   } catch (err) {
     log.debug('Wedge detector: could not query agents.last_activity', { error: String(err) });
   }
