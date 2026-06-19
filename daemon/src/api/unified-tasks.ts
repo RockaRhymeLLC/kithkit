@@ -843,8 +843,8 @@ export async function handleUnifiedTasksRoute(
                WHERE id = ? AND status IN ('queued', 'running')`,
               ts, w.worker_id,
             );
-          } catch {
-            // Worker may not exist or already finished
+          } catch (err) {
+            log.warn('Failed to mark worker job as cancelled; worker may already be finished', { workerId: w.worker_id, error: String(err) });
           }
         }
       }
