@@ -16,6 +16,11 @@ let _pipeline: any = null;
 let _embedder: any = null;
 let _initPromise: Promise<void> | null = null;
 
+// Serialization lock: ensures at most one ONNX inference runs at a time.
+// Concurrent calls to _embedder hit a non-reentrant native ONNX session and
+// cause a std::system_error mutex crash in libc++ (kithkit#468).
+let _inferLock: Promise<unknown> = Promise.resolve();
+
 // ── Initialization ───────────────────────────────────────────
 
 async function ensureInitialized(): Promise<void> {
@@ -40,7 +45,10 @@ async function ensureInitialized(): Promise<void> {
 export async function generateEmbedding(text: string): Promise<Float32Array> {
   await ensureInitialized();
 
-  const output = await _embedder!(text, { pooling: 'mean', normalize: true });
+  // Serialize inference: chain onto _inferLock so only one ONNX call runs at a time.
+  const run = _inferLock.then(() => _embedder!(text, { pooling: 'mean', normalize: true }));
+  _inferLock = run.catch(() => undefined);
+  const output = await run;
 
   // output.data is a Float32Array of length 384
   return new Float32Array(output.data);
@@ -84,4 +92,12 @@ export function _resetEmbeddingsForTesting(): void {
   _embedder = null;
   _pipeline = null;
   _initPromise = null;
+  _inferLock = Promise.resolve();
+}
+
+/** Inject a mock embedder for testing (bypasses model loading). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function _setEmbedderForTesting(fn: any): void {
+  _embedder = fn;
+  _initPromise = Promise.resolve(); // mark as initialized
 }
