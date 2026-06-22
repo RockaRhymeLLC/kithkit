@@ -19,6 +19,15 @@
 --   Re-applying this migration on Skippy's manually-backfilled DB is a no-op.
 --   Fresh installs (empty todos table) → UPDATE affects 0 rows → no-op.
 --
+-- NOTE — silent dupe-skip on (title, created_at) collisions:
+--   If two tasks rows share the same (title, created_at) composite key, the
+--   LIMIT 1 sub-select picks one arbitrarily and the other task row keeps
+--   external_id = NULL (effectively skipped).  This is safe for the legacy
+--   122-row dataset but would produce a silent data gap on large or
+--   duplicate-heavy datasets.  The migration runner is SQL-only and cannot
+--   emit a WARN log here.  If a post-migration integrity check is needed,
+--   query: SELECT COUNT(*) FROM tasks WHERE kind='todo' AND external_id IS NULL
+--
 -- The original `todos` table was intentionally left in place by migration 024
 -- as a rollback safety net.  We rely on it here for the backfill join.
 

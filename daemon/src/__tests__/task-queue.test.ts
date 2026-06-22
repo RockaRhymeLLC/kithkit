@@ -11,8 +11,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { openDatabase, _resetDbForTesting, query } from '../core/db.js';
-import { handleTaskQueueRoute } from '../api/task-queue.js';
+import { openDatabase, _resetDbForTesting, query, exec } from '../core/db.js';
+import { handleTaskQueueRoute, legacyIntToPriorityText, priorityTextToLegacyInt } from '../api/task-queue.js';
 
 const TEST_PORT = 19870;
 
@@ -662,6 +662,159 @@ describe('Task Queue API', { concurrency: 1 }, () => {
       );
       assert.equal(msgs.length, 0, 'should NOT send comms message for non-terminal transitions');
     });
+  });
+});
+
+// ── Priority helpers — round-trip tests ──────────────────────────────────────
+//
+// Covers: priorityTextToLegacyInt + legacyIntToPriorityText directly,
+// and through the HTTP shim (POST creates task with legacy int, GET returns it).
+//
+// LOSSY STEP: 'high' (a migration-era text value) and 'medium' both map to
+// legacy int 1.  Once stored, a 'high'-priority task is indistinguishable
+// from a 'medium'-priority task via the legacy API.  This is intentional —
+// 'high' is not a valid input via the HTTP shim, only 'medium' is.
+describe('Priority helpers — round-trip', () => {
+  let server: http.Server;
+  let tmpDir: string;
+
+  function setupPri(): Promise<void> {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-tqpri-'));
+    _resetDbForTesting();
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+
+    server = http.createServer((inReq, res) => {
+      const url = new URL(inReq.url ?? '/', `http://localhost:${TEST_PORT + 2}`);
+      res.setHeader('X-Timestamp', new Date().toISOString());
+      handleTaskQueueRoute(inReq, res, url.pathname, url.searchParams)
+        .then((handled) => {
+          if (!handled) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not found', timestamp: new Date().toISOString() }));
+          }
+        })
+        .catch((err) => {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: String(err), timestamp: new Date().toISOString() }));
+          }
+        });
+    });
+
+    return new Promise<void>((resolve) => {
+      server.listen(TEST_PORT + 2, '127.0.0.1', resolve);
+    });
+  }
+
+  function teardownPri(): Promise<void> {
+    return new Promise<void>((resolve) => {
+      _resetDbForTesting();
+      if (server?.listening) {
+        server.close(() => {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+          resolve();
+        });
+      } else {
+        if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+        resolve();
+      }
+    });
+  }
+
+  function reqPri(method: string, urlPath: string, body?: unknown): Promise<{ status: number; body: string }> {
+    return new Promise((resolve, reject) => {
+      const opts: http.RequestOptions = {
+        host: '127.0.0.1',
+        port: TEST_PORT + 2,
+        path: urlPath,
+        method,
+        timeout: 5000,
+        headers: {
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+          'Connection': 'close',
+        },
+      };
+      const r = http.request(opts, (res) => {
+        let data = '';
+        res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+        res.on('end', () => resolve({ status: res.statusCode ?? 0, body: data }));
+      });
+      r.on('error', reject);
+      r.on('timeout', () => { r.destroy(); reject(new Error('timeout')); });
+      if (body !== undefined) r.write(JSON.stringify(body));
+      r.end();
+    });
+  }
+
+  beforeEach(setupPri);
+  afterEach(teardownPri);
+
+  // ── Helper function tests (direct) ──────────────────────────────────────
+
+  it('legacyIntToPriorityText: maps 0/1/2 to low/medium/urgent', () => {
+    assert.equal(legacyIntToPriorityText(0), 'low');
+    assert.equal(legacyIntToPriorityText(1), 'medium');
+    assert.equal(legacyIntToPriorityText(2), 'urgent');
+    // Out-of-range values clamp
+    assert.equal(legacyIntToPriorityText(-1), 'low');
+    assert.equal(legacyIntToPriorityText(3), 'urgent');
+  });
+
+  it('priorityTextToLegacyInt: maps low/medium/urgent to 0/1/2', () => {
+    assert.equal(priorityTextToLegacyInt('low'), 0);
+    assert.equal(priorityTextToLegacyInt('medium'), 1);
+    assert.equal(priorityTextToLegacyInt('urgent'), 2);
+    // null and unknown fall back to 0
+    assert.equal(priorityTextToLegacyInt(null), 0);
+    assert.equal(priorityTextToLegacyInt('unknown'), 0);
+  });
+
+  it('priorityTextToLegacyInt: lossy step — high and medium both collapse to 1', () => {
+    // 'high' is a migration-era text value that has no distinct legacy int.
+    // It maps to 1 (same as 'medium'), making them indistinguishable via the
+    // legacy API.  This is intentional per the priorityTextToLegacyInt comments.
+    assert.equal(priorityTextToLegacyInt('high'), 1, 'high collapses to 1');
+    assert.equal(priorityTextToLegacyInt('medium'), 1, 'medium is also 1');
+    assert.equal(
+      priorityTextToLegacyInt('high'),
+      priorityTextToLegacyInt('medium'),
+      'high and medium are indistinguishable in the legacy int representation',
+    );
+  });
+
+  // ── HTTP shim round-trip tests ───────────────────────────────────────────
+
+  it('HTTP shim round-trip: priority 0/1/2 survive POST→GET', async () => {
+    for (const p of [0, 1, 2] as const) {
+      const createRes = await reqPri('POST', '/api/orchestrator/tasks', { title: `Task pri${p}`, priority: p });
+      assert.equal(createRes.status, 201, `create with priority ${p}`);
+      const created = JSON.parse(createRes.body);
+      assert.equal(created.priority, p, `create response: priority ${p} returned`);
+
+      const getRes = await reqPri('GET', `/api/orchestrator/tasks/${created.id}`);
+      assert.equal(getRes.status, 200);
+      const fetched = JSON.parse(getRes.body);
+      assert.equal(fetched.priority, p, `GET after create: priority ${p} round-trips cleanly`);
+    }
+  });
+
+  it('HTTP shim lossy step: task with DB-level priority="high" returns 1 via GET', async () => {
+    // Simulate migration-era data: insert a task row with priority='high' directly.
+    // The shim cannot accept 'high' as input (only 0/1/2), but pre-migration rows may
+    // have this value.  The GET shim must map it to 1 (same as 'medium').
+    const ts = new Date().toISOString();
+    const extId = 'test-high-priority-uuid';
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, description, status, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'High-priority task', 'legacy', 'pending', 'high', ?, ?)`,
+      extId, ts, ts,
+    );
+
+    const getRes = await reqPri('GET', `/api/orchestrator/tasks/${extId}`);
+    assert.equal(getRes.status, 200);
+    const body = JSON.parse(getRes.body);
+    // 'high' text → priorityTextToLegacyInt → 1 (same as 'medium', lossy)
+    assert.equal(body.priority, 1, 'migration-era "high" maps to legacy int 1 (same as medium — lossy step)');
   });
 });
 

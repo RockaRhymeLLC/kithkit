@@ -203,8 +203,9 @@ function complexityToInt(s: Complexity | null | undefined): number | null {
  * Inverts legacyIntToPriorityText to preserve round-trip for 0/1/2:
  *   low→0, medium→1, urgent→2
  * Also handles migration-era values: high→1 (closest to medium), mapped data.
+ * NOTE: 'high' and 'medium' both collapse to 1 — this is a lossy step.
  */
-function priorityTextToLegacyInt(p: string | null): number {
+export function priorityTextToLegacyInt(p: string | null): number {
   if (!p) return 0;
   const map: Record<string, number> = { low: 0, medium: 1, high: 1, urgent: 2 };
   return map[p] ?? 0;
@@ -623,8 +624,8 @@ export async function handleTaskQueueRoute(
               `UPDATE worker_jobs SET status = 'failed', error = 'parent task cancelled', finished_at = ? WHERE id = ? AND status IN ('queued', 'running')`,
               ts, w.worker_id,
             );
-          } catch {
-            // Worker may not exist or already finished
+          } catch (err) {
+            log.warn('Failed to mark worker job as cancelled; worker may already be finished', { workerId: w.worker_id, error: String(err) });
           }
         }
       }
