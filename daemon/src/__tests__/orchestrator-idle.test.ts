@@ -391,6 +391,10 @@ describe('Orchestrator idle: liveness check', () => {
       killOrchestratorSession: () => { throw new Error('should nudge, not kill'); },
       injectMessage: (_target: string, text: string) => { injectedText = text; return true; },
       cleanupSessionDirs: () => 0,
+      // Must mock isClaudeProcessRunning to false so Check 0 does not intercept.
+      // Without this, the real function may return true in a live tmux environment,
+      // causing an early return before the idle-shutdown nudge path is reached.
+      isClaudeProcessRunning: () => false,
     });
 
     // Set last_activity to 15 minutes ago (past 10 min default)
@@ -412,6 +416,11 @@ describe('Orchestrator idle: liveness check', () => {
       killOrchestratorSession: () => { throw new Error('should not kill'); },
       injectMessage: (_target: string, text: string) => { injectedText = text; return true; },
       cleanupSessionDirs: () => 0,
+      // Must mock isClaudeProcessRunning to false so Check 0 does not intercept.
+      // Without this, the real function may return true in a live tmux environment,
+      // causing an early return (the pending-tasks pending-nudge in the early-return
+      // block does NOT include the task title; only Check 3 does).
+      isClaudeProcessRunning: () => false,
     });
 
     // Set last_activity to 15 minutes ago (past 10 min default)
