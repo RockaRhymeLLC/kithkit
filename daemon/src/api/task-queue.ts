@@ -166,6 +166,8 @@ const VALID_ACTIVITY_TYPES: readonly ActivityType[] = ['progress', 'note'];
 
 /**
  * Valid status transitions. Key = current status, value = allowed next statuses.
+ * failed has escape-valve transitions (→completed, →cancelled) in addition to
+ * the retry path (→pending) to allow rescue of false-failed-but-done tasks.
  */
 const VALID_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   pending: ['assigned', 'failed', 'cancelled'],
@@ -173,7 +175,7 @@ const VALID_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
   in_progress: ['completed', 'failed', 'cancelled', 'awaiting_approval'],
   awaiting_approval: ['in_progress', 'cancelled'],
   completed: [],
-  failed: ['pending'],  // retry: failed → pending
+  failed: ['pending', 'completed', 'cancelled'],  // retry + corrective escape-valve
   cancelled: [],
 };
 
@@ -898,7 +900,12 @@ export async function handleTaskQueueRoute(
 
       // awaiting_approval is not terminal — it can transition back to in_progress.
       // Terminal tasks block non-feedback updates; comms-feedback-only updates are allowed.
-      if (TERMINAL_STATUSES.includes(task.status as TaskStatus)) {
+      // Exception: failed tasks have escape-valve transitions (→completed, →cancelled) so
+      // a status-only update on a failed task is allowed even though it is terminal.
+      const isFailedEscapeValve = task.status === 'failed'
+        && body.status !== undefined
+        && VALID_TRANSITIONS.failed.includes(body.status as TaskStatus);
+      if (TERMINAL_STATUSES.includes(task.status as TaskStatus) && !isFailedEscapeValve) {
         if (hasNonFeedbackFields || !hasCommsFeedback) {
           json(res, 409, withTimestamp({ error: `Cannot update ${task.status} task` }));
           return true;

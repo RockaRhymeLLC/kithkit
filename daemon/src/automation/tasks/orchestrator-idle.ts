@@ -196,12 +196,25 @@ function cleanupZombieTasks(): number {
   return zombies.length;
 }
 
+// Grace window for "recently active" — tasks updated within this many ms of NOW
+// are not considered orphaned even if they predate the current orch's started_at.
+const ORPHAN_RECENT_ACTIVITY_MS = 5 * 60 * 1000; // 5 minutes
+
 /**
  * Detect tasks orphaned by a previous orchestrator instance.
  * When a new orchestrator spawns (e.g., via task escalation) while the old one's
  * tasks are still in_progress/assigned, those tasks belong to the dead instance.
  * We detect this by comparing task timestamps against the current orchestrator's started_at.
- * Returns count of orphaned tasks cleaned up.
+ *
+ * NOT swept (preferred recovery):
+ *   (a) recently active — updated_at is within ORPHAN_RECENT_ACTIVITY_MS of NOW
+ *       (worker may still be running or orch is mid-synthesis)
+ *   (b) has a completed worker_job (worker finished, orch died before synthesis)
+ *       → reset to 'assigned' so fresh orch can synthesize
+ *
+ * Truly orphaned (no live/completed worker, no recent activity) → mark failed.
+ *
+ * Returns count of tasks marked failed.
  */
 function cleanupOrphanedTasks(): number {
   // Get the current orchestrator's started_at
@@ -212,13 +225,14 @@ function cleanupOrphanedTasks(): number {
   if (!orchStartedAt) return 0;
 
   const ts = new Date().toISOString();
+  const recentCutoff = new Date(Date.now() - ORPHAN_RECENT_ACTIVITY_MS).toISOString();
 
   // Find tasks that are in_progress or assigned but whose relevant timestamp
   // predates the current orchestrator's started_at.
   // For in_progress: use started_at (when it transitioned to in_progress), fall back to created_at.
   // For assigned: use assigned_at, fall back to created_at.
-  const orphans = query<{ id: string; status: string }>(
-    `SELECT external_id AS id, status FROM tasks
+  const candidates = query<{ id: string; int_id: number; status: string; updated_at: string }>(
+    `SELECT external_id AS id, id AS int_id, status, updated_at FROM tasks
      WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned')
      AND (
        (status = 'in_progress' AND COALESCE(started_at, created_at) < ?)
@@ -228,7 +242,38 @@ function cleanupOrphanedTasks(): number {
     orchStartedAt, orchStartedAt,
   );
 
-  for (const task of orphans) {
+  let failedCount = 0;
+  for (const task of candidates) {
+    // (a) Recently active — skip; worker may still be running or orch mid-synthesis
+    if (task.updated_at >= recentCutoff) {
+      log.debug('Orphan sweep: skipping recently-active task', { taskId: task.id, updatedAt: task.updated_at });
+      continue;
+    }
+
+    // (b) Has a completed worker_job — worker is done, orch died before synthesis.
+    // Reset to 'assigned' so a fresh orch can re-synthesize.
+    const completedWorkers = query<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM task_workers tw
+       JOIN worker_jobs wj ON tw.worker_id = wj.id
+       WHERE tw.task_id = ? AND wj.status = 'completed'`,
+      task.int_id,
+    );
+    if ((completedWorkers[0]?.count ?? 0) > 0) {
+      exec(
+        `UPDATE tasks SET status = 'assigned', error = NULL, updated_at = ? WHERE kind = 'orchestrator' AND external_id = ?`,
+        ts, task.id,
+      );
+      exec(
+        `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
+         SELECT id, 'daemon', 'note', 'recovery', ?, ?
+         FROM tasks WHERE kind = 'orchestrator' AND external_id = ?`,
+        'Task reset to assigned: worker completed but orchestrator restarted before synthesis', ts, task.id,
+      );
+      log.info('Orphan sweep: reset task to assigned (completed worker awaiting synthesis)', { taskId: task.id });
+      continue;
+    }
+
+    // Truly orphaned — no live/completed worker, no recent activity. Mark failed.
     exec(
       `UPDATE tasks SET status = 'failed', error = 'orchestrator_restarted', completed_at = ?, updated_at = ? WHERE kind = 'orchestrator' AND external_id = ?`,
       ts, ts, task.id,
@@ -243,14 +288,19 @@ function cleanupOrphanedTasks(): number {
     try {
       void evaluateTask(task.id);
     } catch { /* best-effort — cleanup must not be interrupted */ }
+    failedCount++;
   }
-  if (orphans.length > 0) {
+
+  if (failedCount > 0) {
     log.info('Cleaned up orphaned tasks from previous orchestrator instance', {
-      count: orphans.length,
-      taskIds: orphans.map(t => t.id),
+      count: failedCount,
+      taskIds: candidates.filter(t => {
+        // log only the ones that were actually failed (not recovered or skipped)
+        return t.updated_at < recentCutoff;
+      }).map(t => t.id).slice(0, 10),
     });
   }
-  return orphans.length;
+  return failedCount;
 }
 
 /**
@@ -1021,3 +1071,6 @@ export function _getInProgressNudgeStateForTesting(): { ticks: number; updatedAt
 
 /** @internal The no-progress tick budget for Check 3b (exposed for test assertions). */
 export const _IN_PROGRESS_NO_PROGRESS_BUDGET = IN_PROGRESS_NO_PROGRESS_BUDGET;
+
+/** @internal The recent-activity grace window for orphan sweep (exposed for test assertions). */
+export const _ORPHAN_RECENT_ACTIVITY_MS = ORPHAN_RECENT_ACTIVITY_MS;

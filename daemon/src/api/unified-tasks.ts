@@ -980,8 +980,14 @@ export async function handleUnifiedTasksRoute(
         }
       }
 
-      // Terminal tasks block non-feedback updates
-      if (TERMINAL_STATUSES.includes(task.status)) {
+      // Terminal tasks block non-feedback updates.
+      // Exception: failed tasks have escape-valve transitions (→completed, →cancelled) so
+      // a status-only update on a failed orchestrator task is allowed even though it is terminal.
+      const isFailedEscapeValve = task.status === 'failed'
+        && task.kind !== 'todo'
+        && body.status !== undefined
+        && validateTransition(task.status, body.status as TaskStatus);
+      if (TERMINAL_STATUSES.includes(task.status) && !isFailedEscapeValve) {
         if (hasNonFeedbackFields || !hasCommsFeedback) {
           json(res, 409, withTimestamp({ error: `Cannot update ${task.status} task` }));
           return true;
