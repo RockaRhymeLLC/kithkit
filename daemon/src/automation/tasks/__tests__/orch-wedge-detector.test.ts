@@ -94,6 +94,17 @@ function insertInProgressTask(extId: string, updatedMinutesAgo: number): void {
   );
 }
 
+/** Insert a pending orchestrator task (open-queue entry, not in_progress). */
+function insertPendingTask(extId: string): void {
+  exec(
+    `INSERT INTO tasks (external_id, kind, title, status, created_at, updated_at)
+     VALUES (?, 'orchestrator', 'Pending task', 'pending', ?, ?)`,
+    extId,
+    isoMinutesAgo(30),
+    isoMinutesAgo(30),
+  );
+}
+
 // ── Primary mutation-kill test ─────────────────────────────────
 
 describe('orch-wedge-detector: signal (i) — frozen in_progress task (mutation-kill)', () => {
@@ -219,10 +230,14 @@ describe('orch-wedge-detector: signal (ii) — frozen agents.last_activity', () 
   beforeEach(setup);
   afterEach(teardown);
 
-  it('KILLS orchestrator when alive but last_activity frozen beyond threshold', async () => {
-    // last_activity 20 min ago, no in_progress tasks, normal pane
+  it('KILLS orchestrator when alive but last_activity frozen beyond threshold (with open queue work)', async () => {
+    // last_activity 20 min ago, one pending task in queue, normal pane.
+    // Signal (i) does not fire (no in_progress task). Signal (ii) fires because the
+    // orch has an open pending task it is ignoring while last_activity is frozen.
+    // NOTE: per #922, an orch with frozen last_activity but an EMPTY queue is idle,
+    // not wedged. A pending task is included here so signal(ii) legitimately fires.
     insertOrchAgent(20);
-    // No in_progress tasks — signal (i) does not fire; signal (ii) should
+    insertPendingTask('task-signal2-pending-baseline');
 
     let killCalled = false;
 
@@ -237,12 +252,15 @@ describe('orch-wedge-detector: signal (ii) — frozen agents.last_activity', () 
     await runWatchdog({ wedge_timeout_minutes: 15 });
 
     assert.equal(killCalled, true,
-      'killOrchestratorSession MUST be called when last_activity is frozen beyond threshold');
+      'killOrchestratorSession MUST be called when last_activity is frozen and the orch is ignoring open queue work');
   });
 
   it('respects custom wedge_timeout_minutes config knob', async () => {
-    // last_activity 10 min ago — would NOT trigger at default 15 min, but SHOULD at custom 8 min
+    // last_activity 10 min ago — would NOT trigger at default 15 min, but SHOULD at custom 8 min.
+    // A pending task is present so the idle-queue exemption (#922) does not suppress signal(ii):
+    // the orch has open work it is ignoring.
     insertOrchAgent(10);
+    insertPendingTask('task-knob-test-pending');
 
     let killCalled = false;
 
@@ -266,6 +284,83 @@ describe('orch-wedge-detector: signal (ii) — frozen agents.last_activity', () 
   it('DEFAULT_WEDGE_TIMEOUT_MINUTES is 15 (regression guard)', () => {
     assert.equal(DEFAULT_WEDGE_TIMEOUT_MINUTES, 15,
       'Default wedge timeout must be 15 minutes — change this test if you intentionally change the default');
+  });
+
+  // ── Idle / empty-queue exemption (#922) ───────────────────────────────────
+  //
+  // Signal (ii) — frozen last_activity — must NOT restart the orchestrator when the
+  // task queue is entirely empty (no pending / assigned / in_progress tasks).
+  // An idle orch legitimately has frozen last_activity: it has no turns when there
+  // is nothing to do. This is not a wedge; it is a stood-down state.
+  //
+  // MUTATION-KILL PROOF for the idle-queue exemption:
+  // Revert: remove the empty-queue check so `signalII = true` fires unconditionally
+  //   (restore the old `else { signalII = true; }` without the open-task guard).
+  // Expected: spawnCalled becomes true → test 1 goes RED.
+  // Restored: spawnCalled stays false → test 1 GREEN.
+  //
+  // NARROWNESS: the exemption is scoped tightly — test 2 proves that the same frozen
+  // last_activity WITH a pending task still triggers a restart (orch ignoring open work).
+
+  it('does NOT restart orch when last_activity is frozen and task queue is EMPTY — idle/stood-down exemption (#922) [MUTATION-KILL]', async () => {
+    // last_activity frozen 20 min ago (> 15 min threshold).
+    // NO tasks in queue (pending / assigned / in_progress = 0) — orch is idle.
+    // NO running workers.
+    // Normal pane — signal (iii) does not fire.
+    // Signal (i) does not fire (no in_progress task).
+    // Signal (ii) must NOT fire: empty queue = legitimately idle, not wedged.
+    insertOrchAgent(20);
+    // Intentionally no tasks inserted — queue is empty.
+
+    let spawnCalled = false;
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => { spawnCalled = true; return 'orch-should-not-spawn'; },
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(spawnCalled, false,
+      '#922: spawnOrchestratorSession must NOT be called when last_activity is frozen but the ' +
+      'task queue is empty — the orch is idle/stood-down, not wedged; removing the ' +
+      'idle-queue exemption makes this RED (mutation-kill proof)');
+    assert.equal(killCalled, false,
+      '#922: killOrchestratorSession must NOT be called when orch is idle with empty queue');
+  });
+
+  it('STILL restarts orch when last_activity is frozen, no workers, but a pending task is waiting — exemption is narrow (#922) [NARROWNESS GUARD]', async () => {
+    // last_activity frozen 20 min ago, no running workers, normal pane.
+    // ONE pending task in queue — the orch is ignoring open work.
+    // Signal (i) does not fire (pending != in_progress).
+    // Signal (ii) MUST fire: frozen last_activity + open queue work = wedged.
+    // This test proves the exemption does not mask a genuine stuck-ignoring-queue case.
+    insertOrchAgent(20);
+    insertPendingTask('task-922-narrowness-pending');
+
+    let spawnCalled = false;
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => { spawnCalled = true; return 'orch-respawned-narrowness'; },
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(spawnCalled, true,
+      '#922 narrowness: spawnOrchestratorSession MUST be called when last_activity is frozen ' +
+      'and a pending task is waiting — the exemption must not suppress a wedged orch ignoring open work; ' +
+      'making the exemption unconditional (always skip signal(ii)) would make this RED');
+    assert.equal(killCalled, true,
+      '#922 narrowness: killOrchestratorSession MUST be called when orch is wedged with pending work');
   });
 });
 
@@ -756,10 +851,13 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
    */
   it('STILL restarts orch when last_activity is frozen and NO active workers (real wedge)', async () => {
     // last_activity frozen 20 min ago — signal(ii) fires.
-    // No workers in worker_jobs — no exemption applies.
+    // No running workers — running-worker exemption (#462) does not apply.
+    // A finished job does not count as a running worker.
+    // A pending task is present — orch is ignoring open work, so idle-queue exemption (#922)
+    // does not apply either. This is a real wedge.
     insertOrchAgent(20);
-    // Explicitly no workers inserted — any 'finished' jobs do not count
     insertWorkerJob('worker-finished-1', 'finished');
+    insertPendingTask('task-real-wedge-pending-1');  // open work the orch is ignoring
 
     let killCalled = false;
 
@@ -774,8 +872,8 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
     await runWatchdog({ wedge_timeout_minutes: 15 });
 
     assert.equal(killCalled, true,
-      'Real wedge must still fire when last_activity is frozen and no workers are active — ' +
-      'making the exemption unconditional would make this RED');
+      'Real wedge must still fire when last_activity is frozen, no workers are active, and open work exists — ' +
+      'making the active-worker exemption unconditional would make this RED');
   });
 
   /**
@@ -795,8 +893,11 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
   it('STILL restarts orch when last_activity is frozen and ONLY a queued (not running) worker exists (running-only lock)', async () => {
     // last_activity frozen 20 min ago — signal(ii) should fire.
     // Only a 'queued' job exists — NOT 'running' — so the running-only exemption must NOT apply.
+    // A pending task is present so the idle-queue exemption (#922) also does not apply.
+    // This is a real wedge: orch ignoring open work with no running workers and no runner.
     insertOrchAgent(20);
     insertWorkerJob('worker-queued-only-1', 'queued');
+    insertPendingTask('task-queued-only-pending-1');  // open work the orch is ignoring
 
     let killCalled = false;
     const commsMessages: string[] = [];
