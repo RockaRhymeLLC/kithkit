@@ -4,15 +4,21 @@
  * Tests vector similarity search and hybrid keyword+vector merging.
  * NOTE: These tests load the ONNX model (~80MB first run, cached after).
  * They are slower than other tests (~5-10s for model loading).
+ *
+ * Embedding is now provided by a forked embed worker (kithkit#471).
+ * The test starts the worker in a top-level before() hook and stops it in after().
+ * Set KITHKIT_EMBED_FAKE=1 to use a deterministic fake vector (skips semantic assertions).
  */
 
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import url from 'node:url';
 import os from 'node:os';
 import { openDatabase, closeDatabase, insert, query } from '../core/db.js';
 import { generateEmbedding, embeddingToBuffer, EMBEDDING_DIMENSIONS } from '../memory/embeddings.js';
+import { startEmbedWorker, stopEmbedWorker, _resetForTesting as resetEmbedClient } from '../memory/embed-client.js';
 import {
   initVectorSearch,
   indexEmbedding,
@@ -20,6 +26,12 @@ import {
   hybridSearch,
   _resetVectorSearchForTesting,
 } from '../memory/vector-search.js';
+
+const __dirname = path.dirname(url.fileURLToPath(import.meta.url));
+// dist/__tests__/vector-search.test.js → project root is ../../..
+// Path: /kithkit/daemon/dist/__tests__/vector-search.test.js → /kithkit
+const PROJECT_DIR = path.resolve(__dirname, '..', '..', '..');
+const FAKE_MODE = process.env['KITHKIT_EMBED_FAKE'] === '1';
 
 let tmpDir: string;
 
@@ -61,7 +73,18 @@ async function storeMemoryWithEmbedding(content: string, opts?: { category?: str
   return mem.id;
 }
 
-describe('Vector Search', { concurrency: 1, timeout: 60000 }, () => {
+describe('Vector Search', { concurrency: 1, timeout: 180000 }, () => {
+
+  // ── Embed worker lifecycle ──────────────────────────────────
+  before(async () => {
+    resetEmbedClient();
+    await startEmbedWorker(PROJECT_DIR);
+  });
+
+  after(() => {
+    stopEmbedWorker();
+    resetEmbedClient();
+  });
 
   // ── t-128: Vector similarity search ────────────────────────
 
@@ -93,7 +116,9 @@ describe('Vector Search', { concurrency: 1, timeout: 60000 }, () => {
       assert.equal(rows[0]!.embedding!.length, EMBEDDING_DIMENSIONS * 4, 'Should be 384 * 4 bytes (float32)');
     });
 
-    it('finds semantically similar memories (cat/feline)', async () => {
+    it('finds semantically similar memories (cat/feline)', {
+      skip: FAKE_MODE ? 'KITHKIT_EMBED_FAKE=1: semantic similarity not meaningful with fake vectors' : false,
+    }, async () => {
       await storeMemoryWithEmbedding('The cat sat on the mat');
       await storeMemoryWithEmbedding('Dogs enjoy playing fetch in the park');
       await storeMemoryWithEmbedding('Python is a programming language used for data science');
@@ -104,7 +129,9 @@ describe('Vector Search', { concurrency: 1, timeout: 60000 }, () => {
         'Cat memory should be ranked first for feline query');
     });
 
-    it('finds semantically similar memories (programming/software)', async () => {
+    it('finds semantically similar memories (programming/software)', {
+      skip: FAKE_MODE ? 'KITHKIT_EMBED_FAKE=1: semantic similarity not meaningful with fake vectors' : false,
+    }, async () => {
       await storeMemoryWithEmbedding('The cat sat on the mat');
       await storeMemoryWithEmbedding('Dogs enjoy playing fetch in the park');
       await storeMemoryWithEmbedding('Python is a programming language used for data science');
@@ -147,7 +174,9 @@ describe('Vector Search', { concurrency: 1, timeout: 60000 }, () => {
     beforeEach(() => { setupDb(); });
     afterEach(() => { teardownDb(); });
 
-    it('returns results from both keyword and vector matches', async () => {
+    it('returns results from both keyword and vector matches', {
+      skip: FAKE_MODE ? 'KITHKIT_EMBED_FAKE=1: top-3 semantic ordering not meaningful with fake vectors' : false,
+    }, async () => {
       // Store diverse memories
       await storeMemoryWithEmbedding('API configuration settings for the web server');
       await storeMemoryWithEmbedding('Database connection pool management');

@@ -1,68 +1,72 @@
 /**
- * Embeddings module — generate 384-dim vectors using all-MiniLM-L6-v2 via HuggingFace Transformers.
+ * Embeddings module — thin delegation layer to the embed worker child process.
  *
- * Lazy-loads the model on first use. Model is downloaded and cached automatically
- * by the transformers library (~80MB, one-time download).
+ * The actual ONNX model (all-MiniLM-L6-v2) runs in a forked child process
+ * (embed-worker.ts) to prevent the native libc++ mutex abort that fires when
+ * child_process.fork() and ONNX inference coexist in the same process
+ * (kithkit#469/#471).
+ *
+ * Public API is preserved exactly — zero call-site changes required.
+ *
+ * Testing shims: _setEmbedderForTesting / _resetEmbeddingsForTesting are kept
+ * for backward compatibility. When a test embedder is set via
+ * _setEmbedderForTesting, generateEmbedding() uses it directly (bypassing the
+ * worker process), preserving the existing concurrency-lock tests (t-468).
  */
 
-// ── Types ────────────────────────────────────────────────────
+import {
+  embed,
+  embedBatch,
+  isEmbedWorkerReady,
+  _resetForTesting as _clientReset,
+} from './embed-client.js';
+
+// ── Constants ────────────────────────────────────────────────
 
 export const EMBEDDING_DIMENSIONS = 384;
 
-// We use dynamic import because @huggingface/transformers is ESM-only in some builds
+// ── Testing shim state ───────────────────────────────────────
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _pipeline: any = null;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let _embedder: any = null;
-let _initPromise: Promise<void> | null = null;
+let _testEmbedder: ((text: string, opts: unknown) => Promise<{ data: Float32Array }>) | null = null;
 
-// Serialization lock: ensures at most one ONNX inference runs at a time.
-// Concurrent calls to _embedder hit a non-reentrant native ONNX session and
-// cause a std::system_error mutex crash in libc++ (kithkit#468).
-let _inferLock: Promise<unknown> = Promise.resolve();
-
-// ── Initialization ───────────────────────────────────────────
-
-async function ensureInitialized(): Promise<void> {
-  if (_embedder) return;
-  if (_initPromise) return _initPromise;
-
-  _initPromise = (async () => {
-    const mod = await import('@huggingface/transformers');
-    _pipeline = mod.pipeline;
-    _embedder = await _pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2');
-  })();
-
-  return _initPromise;
-}
+// Serialization lock for the test embedder path (mirrors the worker's own lock).
+// Without this, the t-468 concurrency test would fail because the test embedder
+// runs in-process and is not serialized by the worker.
+let _testInferLock: Promise<unknown> = Promise.resolve();
 
 // ── Public API ───────────────────────────────────────────────
 
 /**
  * Generate a 384-dimensional embedding for the given text.
  * Returns a Float32Array suitable for sqlite-vec storage.
+ *
+ * When a test embedder is set via _setEmbedderForTesting, uses it directly
+ * (with serialization lock) instead of delegating to the worker.
  */
 export async function generateEmbedding(text: string): Promise<Float32Array> {
-  await ensureInitialized();
-
-  // Serialize inference: chain onto _inferLock so only one ONNX call runs at a time.
-  const run = _inferLock.then(() => _embedder!(text, { pooling: 'mean', normalize: true }));
-  _inferLock = run.catch(() => undefined);
-  const output = await run;
-
-  // output.data is a Float32Array of length 384
-  return new Float32Array(output.data);
+  if (_testEmbedder) {
+    // Test path: serialize through _testInferLock so t-468 observes max concurrency = 1
+    const run = _testInferLock.then(() => _testEmbedder!(text, { pooling: 'mean', normalize: true }));
+    _testInferLock = run.catch(() => undefined);
+    const output = await run;
+    return new Float32Array(output.data);
+  }
+  return embed(text);
 }
 
 /**
  * Generate embeddings for multiple texts in batch.
  */
 export async function generateEmbeddings(texts: string[]): Promise<Float32Array[]> {
-  const results: Float32Array[] = [];
-  for (const text of texts) {
-    results.push(await generateEmbedding(text));
+  if (_testEmbedder) {
+    const results: Float32Array[] = [];
+    for (const text of texts) {
+      results.push(await generateEmbedding(text));
+    }
+    return results;
   }
-  return results;
+  return embedBatch(texts);
 }
 
 /**
@@ -81,23 +85,31 @@ export function bufferToEmbedding(buffer: Buffer): Float32Array {
 }
 
 /**
- * Check if the model is loaded and ready.
+ * Check if the embed worker is running and ready.
+ * Returns true if the child process is alive and ready.
+ * When a test embedder is set, returns true (mock is always "ready").
  */
 export function isModelLoaded(): boolean {
-  return _embedder !== null;
+  if (_testEmbedder) return true;
+  return isEmbedWorkerReady();
 }
 
-/** Reset for testing. */
+// ── Testing shims ────────────────────────────────────────────
+
+/** Reset for testing — clears the test embedder and delegates to embed-client reset. */
 export function _resetEmbeddingsForTesting(): void {
-  _embedder = null;
-  _pipeline = null;
-  _initPromise = null;
-  _inferLock = Promise.resolve();
+  _testEmbedder = null;
+  _testInferLock = Promise.resolve();
+  _clientReset();
 }
 
-/** Inject a mock embedder for testing (bypasses model loading). */
+/**
+ * Inject a mock embedder for testing (bypasses the worker process).
+ * When set, generateEmbedding() calls this function with the same signature
+ * as the real embedder: (text, opts) => Promise<{ data: Float32Array }>.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export function _setEmbedderForTesting(fn: any): void {
-  _embedder = fn;
-  _initPromise = Promise.resolve(); // mark as initialized
+  _testEmbedder = fn;
+  _testInferLock = Promise.resolve(); // reset lock for each test run
 }

@@ -48,6 +48,8 @@ import { registerCoreTasks } from '../automation/tasks/index.js';
 import { JobsWatcher } from '../automation/jobs-watcher.js';
 import { commsSessionExists } from '../core/session-bridge.js';
 import { enableVectorSearch } from '../api/memory.js';
+import { startEmbedWorker, stopEmbedWorker } from '../memory/embed-client.js';
+import { getProjectDir } from '../core/config.js';
 import { readKeychain } from '../core/keychain.js';
 import { parseBody } from '../api/helpers.js';
 import { UnifiedA2ARouter } from '../a2a/router.js';
@@ -468,6 +470,20 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
   // Start P2P rate limiter cleanup
   p2pRateLimiter.startCleanup();
 
+  // Start the ONNX embed worker child process BEFORE enabling vector search.
+  // Isolation prevents the native libc++ mutex abort that fires when fork()
+  // and ONNX inference coexist in the same process (kithkit#469/#471).
+  try {
+    const projectDir = getProjectDir();
+    await startEmbedWorker(projectDir);
+    log.info('Embed worker started');
+  } catch (err) {
+    log.error('Embed worker failed to start — vector search will be unavailable', {
+      error: err instanceof Error ? err.message : String(err),
+    });
+    // Degraded mode: no vector search rather than crashing the daemon
+  }
+
   // Enable vector search (sqlite-vec + ONNX embeddings)
   enableVectorSearch();
 
@@ -630,6 +646,8 @@ async function onShutdown(): Promise<void> {
     _scheduler.stop();
     _scheduler = null;
   }
+  // Stop the ONNX embed worker child process (symmetric to voice stopWorker)
+  stopEmbedWorker();
   _initialized = false;
   log.info('Agent extension shut down');
 }
