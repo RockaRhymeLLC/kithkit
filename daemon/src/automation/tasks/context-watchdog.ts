@@ -261,6 +261,9 @@ function monitorOrchestrator(): void {
 /** Default N (minutes) before a live orch with no progress is considered wedged. */
 export const DEFAULT_WEDGE_TIMEOUT_MINUTES = 15;
 
+/** Default grace window (minutes) after a worker completes during which signal(i) is suppressed (#940). */
+export const DEFAULT_SYNTHESIS_GRACE_MINUTES = 15;
+
 // Patterns that indicate the orch pane is showing the feedback prompt (signal iii-a)
 const FEEDBACK_PROMPT_PATTERNS = [
   /How is Claude doing this session/i,
@@ -455,6 +458,34 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
     signalI = ipCount > 0 && ipMaxUpdated !== null && ipMaxUpdated < cutoffIso;
   } catch (err) {
     log.debug('Wedge detector: could not query in_progress tasks', { error: String(err) });
+  }
+
+  // Signal (i) synthesis-grace exemption (#940):
+  // When signalI fires but the orchestrator recently had a worker complete, it is
+  // legitimately in its synthesis phase (processing results). Exempt to avoid
+  // restarting a healthy orch that simply hasn't written its task update yet.
+  // FAIL-SAFE: any query error leaves signalI as-is (conservative — never masks a real wedge).
+  if (signalI) {
+    const graceMinutes = typeof config.synthesis_grace_minutes === 'number'
+      ? config.synthesis_grace_minutes
+      : DEFAULT_SYNTHESIS_GRACE_MINUTES;
+    const graceCutoffIso = new Date(Date.now() - graceMinutes * 60 * 1000).toISOString();
+    try {
+      const recentCompletionRows = query<{ finished_at: string | null }>(
+        `SELECT MAX(finished_at) as finished_at FROM worker_jobs WHERE status = 'completed'`,
+      );
+      const lastCompleted = recentCompletionRows[0]?.finished_at ?? null;
+      if (lastCompleted !== null && lastCompleted >= graceCutoffIso) {
+        log.debug(
+          'Wedge detector: signal(i) suppressed — worker completed within synthesis grace window (#940)',
+          { lastCompleted, graceMinutes, graceCutoffIso },
+        );
+        signalI = false;
+      }
+    } catch (err) {
+      // FAIL-SAFE: do NOT exempt on query error — treat as no recent completion
+      log.debug('Wedge detector: could not query worker_jobs for synthesis grace (#940)', { error: String(err) });
+    }
   }
 
   // Signal (ii): agents.last_activity frozen for > threshold (while orch alive)
