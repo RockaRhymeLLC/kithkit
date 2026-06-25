@@ -18,6 +18,8 @@ import type {
   InboundMessage,
   Verbosity,
 } from './adapter.js';
+import { loadConfig } from '../core/config.js';
+import { insert } from '../core/db.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -147,6 +149,37 @@ export async function routeMessage(
         ...message,
         text: formattedText,
       };
+
+      // ── Conversation persistence (outbound) ───────────────────
+      // Capture outbound agent replies on teams/telegram, gated by feature flag.
+      // Only captures when sender_agent==='comms' so daemon-role scheduler sends
+      // (digests, briefings) are excluded from the conversation record.
+      if (loadConfig().features?.conversation_persistence) {
+        const meta = message.metadata ?? {};
+        const senderAgent = typeof meta.sender_agent === 'string' ? meta.sender_agent : 'unknown';
+        if ((channelName === 'teams' || channelName === 'telegram') && senderAgent === 'comms') {
+          try {
+            insert('conversation_messages', {
+              direction: 'outbound',
+              channel: channelName,
+              sender: loadConfig().agent?.name ?? 'agent',
+              recipient: typeof meta.chatId === 'string' ? meta.chatId : null,
+              text: message.text,
+              metadata: JSON.stringify({
+                sender_agent: senderAgent,
+                recipients: Array.isArray(meta.recipients) ? meta.recipients : [],
+              }),
+            });
+          } catch (err) {
+            // eslint-disable-next-line no-console
+            console.warn('[channel-router] outbound: failed to persist conversation message', {
+              channel: channelName,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      }
+      // ── End conversation persistence ──────────────────────────
 
       // ── Outbound gate ────────────────────────────────────────
       if (_outboundGate) {

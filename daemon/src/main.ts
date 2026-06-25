@@ -23,6 +23,7 @@ import { evaluateTask } from './self-improvement/retro-evaluator.js';
 import { cleanupOrphanedResources } from './core/orphan-cleanup.js';
 import { handleMessagesRoute } from './api/messages.js';
 import { handleSendRoute } from './api/send.js';
+import { handleConversationMessagesRoute } from './api/conversation-messages.js';
 import { handleTasksRoute } from './api/tasks.js';
 import { handleUnifiedTasksRoute } from './api/unified-tasks.js';
 import { handleConfigRoute, setConfigWatcher, setCurrentDbPath, setConfigFilePath } from './api/config.js';
@@ -345,6 +346,7 @@ const server = http.createServer((req, res) => {
         () => handleTaskQueueRoute(req, res, url.pathname, url.searchParams),
         () => handleContactsRoute(req, res, url.pathname, url.searchParams),
         () => handleSendRoute(req, res, url.pathname),
+        () => handleConversationMessagesRoute(req, res, url.pathname, url.searchParams),
         () => handleStateRoute(req, res, url.pathname, url.searchParams),
         () => handleMessagesRoute(req, res, url.pathname, url.searchParams),
         () => handleMemoryRoute(req, res, url.pathname),

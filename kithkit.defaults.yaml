@@ -272,3 +272,13 @@ self_improvement:
 # Default: empty — no channels are gated until the operator configures policies.
 # Start with 'all' for any capability that sends outbound communications.
 approval_policies: {}
+
+# ── Feature toggles ───────────────────────────────────────────
+# Opt-in capabilities that are DISABLED by default. Enable them in your
+# kithkit.config.yaml when the underlying infrastructure is in place.
+features:
+  # When true, inbound and outbound channel messages are persisted to the
+  # conversation_messages SQLite table at the channel seam. Requires
+  # migration 039-conversation-messages.sql to have run. Safe to enable
+  # on any install that has run migrations. Default: false.
+  conversation_persistence: false

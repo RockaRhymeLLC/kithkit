@@ -155,6 +155,12 @@ export async function handleSendRoute(
       const metadata: Record<string, unknown> = {
         ...(body.metadata as Record<string, unknown> | undefined),
       };
+      // Tag the sender role so conversation_persistence can distinguish comms-agent
+      // replies (captured) from daemon scheduler sends (excluded). Caller-supplied
+      // sender_agent takes precedence so tests can override it.
+      if (!metadata.sender_agent) {
+        metadata.sender_agent = identity.role;
+      }
       if (typeof body.chat_id === 'string' && !metadata.chatId) {
         metadata.chatId = body.chat_id;
       }
