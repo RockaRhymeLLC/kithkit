@@ -235,11 +235,14 @@ export async function handleOrchestratorRoute(
           session, ts, ts, ts,
         );
       } catch {
-        // May already exist from previous run — update instead
+        // May already exist from previous run — update instead.
+        // Reset last_activity to spawn time (#922 facet-b): prevents a fresh orch from
+        // inheriting a dead predecessor's stale last_activity and false-triggering signal(ii).
         update('agents', 'orchestrator', {
           status: 'running',
           tmux_session: session,
           started_at: ts,
+          last_activity: ts,
           updated_at: ts,
         });
       }

@@ -1062,3 +1062,154 @@ describe('orch-wedge-detector: signal (i) synthesis-grace exemption (#940)', () 
       'making the exemption unconditional would make this RED (narrowness guard)');
   });
 });
+
+// ── Signal (ii) facet-b: started_at freshness guard (#922) ────────────────────
+//
+// R2's exact repro scenario:
+//   - Fresh orch: started_at = now (spawned after the cutoff)
+//   - agents.last_activity = STALE (inherited from dead predecessor — older than threshold)
+//   - PENDING task in queue (non-empty, but not in_progress — signal(i) does not fire)
+//   - NO running worker (active-worker exemption does not apply)
+//
+// Signal(ii) must NOT fire: the orch is only seconds old; the stale last_activity is
+// from a dead predecessor, not a genuine wedge.
+//
+// MUTATION-KILL PROOF:
+//   Revert: remove the `if (startedAt !== null && startedAt >= cutoffIso)` guard
+//   (e.g. delete the started_at column from the SELECT and the guard block).
+//   Expected: killCalled becomes true → test goes RED (fresh orch false-restarted).
+//   Restored: killCalled stays false → test GREEN (fresh orch exempted).
+
+describe('orch-wedge-detector: signal (ii) facet-b — started_at freshness guard (#922)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  /**
+   * Primary mutation-kill test: R2's exact repro.
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: remove the `if (startedAt !== null && startedAt >= cutoffIso)` exemption in
+   * context-watchdog.ts signal(ii) (or remove started_at from the SELECT and the guard block).
+   * Expected: killCalled becomes true → test goes RED (fresh orch is false-restarted on
+   * inherited stale last_activity with a pending task and no running worker).
+   * Restored: killCalled stays false → test GREEN (started_at guard exempts fresh orch).
+   */
+  it('does NOT restart fresh orch when last_activity is stale but started_at is within threshold (#922 repro)', async () => {
+    // Fresh orch: started_at = 1 min ago (well within the 15-min threshold).
+    // last_activity = 20 min ago (stale — inherited from dead predecessor).
+    // This is the exact facet-b scenario: fresh spawn over a dead orch row.
+    insertOrchAgent(20, 1);  // last_activity 20 min ago, started_at 1 min ago
+
+    // Pending task in queue — ensures the queue is non-empty (R2's repro had awaiting_plan_approval).
+    // Status is 'pending', NOT 'in_progress', so signal(i) does NOT fire.
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, status, created_at, updated_at)
+       VALUES ('task-facetb-pending', 'orchestrator', 'Awaiting plan approval', 'pending', ?, ?)`,
+      isoMinutesAgo(60),
+      isoMinutesAgo(30),
+    );
+
+    // No running workers — active-worker exemption (#462) does NOT apply.
+    // This isolates the facet-b guard as the sole reason for exemption.
+
+    let killCalled = false;
+    const commsMessages: string[] = [];
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-should-not-spawn',
+      captureOrchestratorPane: () => '> ',  // normal pane — signal(iii) does not fire
+      sendMessage: (msg) => {
+        commsMessages.push(msg.body);
+        return { messageId: 1, delivered: false };
+      },
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, false,
+      '#922 facet-b: killOrchestratorSession must NOT be called when last_activity is stale ' +
+      'but started_at is within the threshold — fresh orch cannot have been frozen for the ' +
+      'threshold duration; removing the started_at guard makes this RED (mutation-kill proof)');
+
+    const wedgeAlert = commsMessages.find(b => {
+      try { return JSON.parse(b)?.alert === 'orchestrator_wedge_restart'; } catch { return false; }
+    });
+    assert.equal(wedgeAlert, undefined,
+      '#922 facet-b: orchestrator_wedge_restart alert must NOT be sent for a fresh orch');
+  });
+
+  /**
+   * Narrowness guard: an orch with stale BOTH last_activity AND started_at must still be restarted.
+   *
+   * Ensures the facet-b guard does not accidentally exempt genuinely-wedged orchs
+   * whose started_at pre-dates the cutoff.
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: make the started_at guard unconditional (always suppress signal(ii)).
+   * Expected: killCalled stays false → test goes RED (genuine wedge goes undetected).
+   * Restored: killCalled becomes true → test GREEN (stale started_at = no exemption = real wedge fires).
+   */
+  it('STILL restarts orch when both last_activity and started_at are stale (genuine wedge, narrowness guard)', async () => {
+    // Old orch: started_at = 60 min ago (well beyond the 15-min threshold).
+    // last_activity = 20 min ago (stale — genuine wedge, not inherited stamp).
+    // Both fields predate the cutoff → no freshness exemption → signal(ii) must fire.
+    insertOrchAgent(20, 60);  // last_activity 20 min ago, started_at 60 min ago
+
+    // A pending task is present so the idle-queue exemption (#922/#475) does NOT apply.
+    // Without this the test passes for the wrong reason: the empty-queue exemption
+    // suppresses signal(ii) before the started_at guard is ever the deciding factor.
+    // With a pending task, all 3 exemptions are traversed and signal(ii) fires correctly.
+    insertPendingTask('task-922-narrowness-stale-pending-1');
+
+    // No workers — active-worker exemption (#462) does not apply.
+
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-922-genuine-respawn',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, true,
+      '#922 narrowness: killOrchestratorSession MUST be called when both last_activity and ' +
+      'started_at are stale (genuine wedge, not a fresh-spawn scenario) — ' +
+      'making the started_at guard unconditional would make this RED');
+  });
+
+  /**
+   * Near-boundary: orch started_at just inside the threshold (14 min ago with a 15-min threshold)
+   * must be treated as fresh and NOT restarted.
+   *
+   * Ensures that any spawn within the threshold window is correctly exempted, not just
+   * extreme near-zero cases. This also validates the >= semantics (14 min ago is clearly
+   * inside the window: started_at > cutoffIso because 14-min-ago > 15-min-ago).
+   */
+  it('exempts orch whose started_at is just inside the threshold window (14 min ago, 15-min threshold)', async () => {
+    // started_at 14 min ago — just inside the 15-min threshold (started after cutoff).
+    // last_activity 20 min ago — stale (beyond threshold), as if inherited from predecessor.
+    insertOrchAgent(20, 14);  // last_activity 20 min ago, started_at 14 min ago
+
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-near-boundary-spawn',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, false,
+      '#922 near-boundary: orch with started_at 14 min ago (inside 15-min threshold) must NOT be restarted — ' +
+      'stale last_activity from a dead predecessor should not false-trigger when orch spawned inside the window');
+  });
+});

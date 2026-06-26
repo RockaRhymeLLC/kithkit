@@ -18,7 +18,8 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { openDatabase, _resetDbForTesting, query } from '../core/db.js';
+import { openDatabase, _resetDbForTesting, query, exec } from '../core/db.js';
+import { loadConfig, _resetConfigForTesting } from '../core/config.js';
 import { buildTaskFields, handleOrchestratorRoute, _setDepsForTesting } from '../api/orchestrator.js';
 import { initLogger, _resetLoggerForTesting } from '../core/logger.js';
 
@@ -329,6 +330,178 @@ describe('Escalate handler — inject-fail graceful handling (#110)', { concurre
     assert.ok(
       warnEntries.length > 0,
       `expected a warn log containing 'inject failed' when injectMessage returns false, got: ${JSON.stringify(entries)}`,
+    );
+  });
+});
+
+// ── Reset-on-spawn mutation-kill (#922 facet-b) ───────────────────────────────
+//
+// When the orchestrator is DEAD and a new escalate call spawns a fresh session,
+// the catch branch in the escalate handler (agents row already exists from the dead
+// predecessor) must reset agents.last_activity to the spawn timestamp.
+//
+// Without this reset, a fresh orch inherits the dead predecessor's stale
+// last_activity — which is the root cause of the false signal(ii) wedge trigger
+// that the started_at guard (facet-b, PR #479) was written to exempt.
+//
+// MUTATION-KILL PROOF:
+//   Revert: remove `last_activity: ts` from the update() call in the escalate
+//   handler catch branch (orchestrator.ts ~line 245).
+//   Expected: agents.last_activity stays at the seeded stale value → test RED.
+//   Restored: agents.last_activity is reset to spawn time → test GREEN.
+
+const RESET_ON_SPAWN_PORT = 19873;
+
+function resetSpawnRequest(
+  method: string,
+  urlPath: string,
+  body?: unknown,
+): Promise<{ status: number; json: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const opts: http.RequestOptions = {
+      host: '127.0.0.1',
+      port: RESET_ON_SPAWN_PORT,
+      path: urlPath,
+      method,
+      timeout: 5000,
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        'Connection': 'close',
+      },
+    };
+    const r = http.request(opts, (res) => {
+      let data = '';
+      res.on('data', (chunk: Buffer) => { data += chunk.toString(); });
+      res.on('end', () => {
+        try {
+          resolve({ status: res.statusCode ?? 0, json: JSON.parse(data) as Record<string, unknown> });
+        } catch {
+          resolve({ status: res.statusCode ?? 0, json: { raw: data } });
+        }
+      });
+    });
+    r.on('error', reject);
+    r.on('timeout', () => { r.destroy(); reject(new Error('timeout')); });
+    if (body !== undefined) r.write(JSON.stringify(body));
+    r.end();
+  });
+}
+
+describe('Escalate handler — reset-on-spawn mutation-kill (#922 facet-b)', { concurrency: 1 }, () => {
+  let server: http.Server;
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kkit-spawn-reset-'));
+    _resetConfigForTesting();
+    _resetDbForTesting();
+    fs.writeFileSync(path.join(tmpDir, 'kithkit.config.yaml'), 'agent:\n  name: test\n');
+    loadConfig(tmpDir);
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+    initLogger({ logDir: tmpDir, minLevel: 'warn' });
+
+    _setDepsForTesting({
+      getOrchestratorState: () => 'dead',
+      spawnOrchestratorSession: () => 'orch-reset-spawn-test',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+      injectMessage: () => false,
+    });
+
+    server = http.createServer((req, res) => {
+      const url = new URL(req.url ?? '/', `http://127.0.0.1:${RESET_ON_SPAWN_PORT}`);
+      handleOrchestratorRoute(req, res, url.pathname)
+        .then((handled) => {
+          if (!handled) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Not found' }));
+          }
+        })
+        .catch((err) => {
+          if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: String(err) }));
+          }
+        });
+    });
+
+    await new Promise<void>((resolve) => server.listen(RESET_ON_SPAWN_PORT, '127.0.0.1', resolve));
+  });
+
+  afterEach(async () => {
+    _setDepsForTesting(null);
+    _resetDbForTesting();
+    _resetConfigForTesting();
+    _resetLoggerForTesting({ logDir: os.tmpdir(), minLevel: 'info' });
+    await new Promise<void>((resolve) => {
+      if (server?.listening) {
+        server.close(() => {
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+          resolve();
+        });
+      } else {
+        if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+        resolve();
+      }
+    });
+  });
+
+  /**
+   * MUTATION-KILL: escalating with orch=DEAD resets agents.last_activity to spawn time.
+   *
+   * Scenario:
+   *   - A dead predecessor left a stale agents row with last_activity = 60 min ago.
+   *   - A new escalate call finds orch DEAD, spawns a fresh session, and must reset
+   *     last_activity to the spawn timestamp (the catch branch in orchestrator.ts).
+   *
+   * MUTATION-KILL PROOF:
+   *   Revert: remove `last_activity: ts` from the update() call in the catch branch
+   *   of the escalate handler (orchestrator.ts, the block starting with
+   *   "// Reset last_activity to spawn time (#922 facet-b)").
+   *   Expected: agents.last_activity stays at '60-min-ago-stale' → test RED.
+   *   Restored: agents.last_activity is reset to ~spawn-time (within 5s of now) → test GREEN.
+   */
+  it('MUTATION-KILL: escalate with orch=DEAD resets agents.last_activity to spawn time (#922 facet-b)', async () => {
+    const staleActivity = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 60 min ago
+
+    // Pre-seed a stale agents row simulating a dead predecessor whose last_activity is 60 min old.
+    // The escalate handler's INSERT will fail (row already exists) and fall into the catch branch,
+    // where reset-on-spawn must update last_activity to the fresh spawn timestamp.
+    exec(
+      `INSERT INTO agents (id, type, profile, status, tmux_session, last_activity, started_at, created_at, updated_at)
+       VALUES ('orchestrator', 'orchestrator', 'orchestrator', 'stopped', 'dead-session',
+               ?, ?, ?, ?)`,
+      staleActivity,
+      staleActivity,
+      staleActivity,
+      staleActivity,
+    );
+
+    const beforeSpawn = Date.now();
+
+    const res = await resetSpawnRequest('POST', '/api/orchestrator/escalate', {
+      task: 'Reset-on-spawn mutation-kill test task',
+    });
+
+    assert.equal(res.status, 202, `expected 202 spawned, got ${res.status}: ${JSON.stringify(res.json)}`);
+    assert.equal(res.json.status, 'spawned', 'response status should be spawned');
+
+    // The agents row must have last_activity reset to ~spawn time (within 5 seconds of beforeSpawn).
+    const rows = query<{ last_activity: string; started_at: string }>(
+      "SELECT last_activity, started_at FROM agents WHERE id = 'orchestrator'",
+    );
+    assert.equal(rows.length, 1, 'agents row must exist');
+
+    const resetActivity = new Date(rows[0]!.last_activity).getTime();
+    assert.ok(
+      resetActivity >= beforeSpawn - 1000,
+      `agents.last_activity must be reset to spawn time (>= ${new Date(beforeSpawn).toISOString()}), ` +
+      `got ${rows[0]!.last_activity} — reverting reset-on-spawn makes this RED`,
+    );
+
+    assert.ok(
+      resetActivity > new Date(staleActivity).getTime(),
+      `agents.last_activity (${rows[0]!.last_activity}) must be newer than stale value (${staleActivity}) — ` +
+      `reverting reset-on-spawn makes this RED (stale value persists)`,
     );
   });
 });
