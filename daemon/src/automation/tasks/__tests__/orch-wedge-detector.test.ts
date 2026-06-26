@@ -1157,7 +1157,13 @@ describe('orch-wedge-detector: signal (ii) facet-b — started_at freshness guar
     // Both fields predate the cutoff → no freshness exemption → signal(ii) must fire.
     insertOrchAgent(20, 60);  // last_activity 20 min ago, started_at 60 min ago
 
-    // No workers, no in_progress tasks — only signal(ii) fires.
+    // A pending task is present so the idle-queue exemption (#922/#475) does NOT apply.
+    // Without this the test passes for the wrong reason: the empty-queue exemption
+    // suppresses signal(ii) before the started_at guard is ever the deciding factor.
+    // With a pending task, all 3 exemptions are traversed and signal(ii) fires correctly.
+    insertPendingTask('task-922-narrowness-stale-pending-1');
+
+    // No workers — active-worker exemption (#462) does not apply.
 
     let killCalled = false;
 
