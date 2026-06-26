@@ -108,6 +108,11 @@ describe('orchestrator-idle reads unified tasks table', { concurrency: 1 }, () =
       killOrchestratorSession: () => { throw new Error('should not kill'); },
       injectMessage: (target: string, text: string) => { injectCalls.push({ target, text }); return true; },
       cleanupSessionDirs: () => 0,
+      // Must mock isClaudeProcessRunning to false so Check 0 does not intercept and
+      // return early before reaching Check 3 (the pending-task wake path with task title).
+      // Without this, a live tmux environment may cause Check 0 to fire and inject a
+      // different (generic queue-reminder) message that does NOT include the task title.
+      isClaudeProcessRunning: () => false,
     });
 
     // Make last_activity old enough to trigger the idle-timeout path

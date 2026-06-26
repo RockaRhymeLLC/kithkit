@@ -37,17 +37,23 @@ describe('VALID_STATUSES', () => {
 // ── TERMINAL_STATUSES ─────────────────────────────────────────────────────────
 
 describe('TERMINAL_STATUSES', () => {
-  it('contains exactly completed, abandoned, cancelled', () => {
-    assert.equal(TERMINAL_STATUSES.length, 3);
+  // #470: 'failed' added to TERMINAL_STATUSES so ack-guard and escape-valve work.
+  // Escape-valve transitions (failed→completed, failed→cancelled) let comms close
+  // a false-failed-but-done task without clearing the terminal guard for others.
+  it('contains exactly completed, abandoned, cancelled, failed (#470)', () => {
+    assert.equal(TERMINAL_STATUSES.length, 4, `Expected 4 terminal statuses, got ${TERMINAL_STATUSES.length}: ${[...TERMINAL_STATUSES].join(', ')}`);
     assert.ok(TERMINAL_STATUSES.includes('completed'));
     assert.ok(TERMINAL_STATUSES.includes('abandoned'));
     assert.ok(TERMINAL_STATUSES.includes('cancelled'));
+    assert.ok(TERMINAL_STATUSES.includes('failed'), 'failed must be terminal per #470 escape-valve fix');
   });
 
-  it('does not include in_progress, failed, or pending', () => {
+  it('does not include in_progress or pending (#470: failed IS now terminal)', () => {
     assert.ok(!TERMINAL_STATUSES.includes('in_progress'));
-    assert.ok(!TERMINAL_STATUSES.includes('failed'));
     assert.ok(!TERMINAL_STATUSES.includes('pending'));
+    // Note: 'failed' IS now in TERMINAL_STATUSES by design (#470) — removed from this
+    // "not included" assertion. The escape-valve transitions (failed→completed/cancelled)
+    // allow closure of false-failed tasks despite the terminal status.
   });
 });
 
@@ -76,6 +82,9 @@ describe('validateTransition', () => {
     ['blocked',           'failed'],
     ['blocked',           'abandoned'],
     ['failed',            'pending'],
+    // #470 escape-valve: allow rescue of false-failed-but-done tasks
+    ['failed',            'completed'],
+    ['failed',            'cancelled'],
   ];
 
   for (const [from, to] of valid) {
@@ -97,8 +106,9 @@ describe('validateTransition', () => {
     ['in_progress', 'pending'],       // no backwards skip
     ['in_progress', 'assigned'],
     ['blocked',     'completed'],     // must go via in_progress
-    ['failed',      'assigned'],      // can only retry to pending
-    ['failed',      'completed'],
+    ['failed',      'assigned'],      // can only retry to pending (or escape-valve to completed/cancelled)
+    // Note: 'failed → completed' and 'failed → cancelled' are now VALID (#470 escape-valve).
+    // Removed from invalid list — they are tested in the valid list above.
   ];
 
   for (const [from, to] of invalid) {
@@ -133,8 +143,13 @@ describe('allowedTransitions', () => {
     assert.deepEqual([...allowedTransitions('cancelled')], []);
   });
 
-  it('returns [pending] for failed (retry only)', () => {
-    assert.deepEqual([...allowedTransitions('failed')], ['pending']);
+  it('returns [pending, completed, cancelled] for failed (#470 retry + escape-valve)', () => {
+    // #470: escape-valve transitions added so a false-failed-but-done task can be
+    // rescued via PUT {status:'completed'} or PUT {status:'cancelled'} without needing
+    // to go through pending→assigned→in_progress again.
+    // MUTATION-KILL: removing failed→completed or failed→cancelled from VALID_TRANSITIONS
+    // causes this test to fail.
+    assert.deepEqual([...allowedTransitions('failed')].sort(), ['cancelled', 'completed', 'pending']);
   });
 
   it('returns correct targets for in_progress', () => {

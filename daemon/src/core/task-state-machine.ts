@@ -48,6 +48,7 @@ export const VALID_STATUSES: readonly TaskStatus[] = [
 
 export const TERMINAL_STATUSES: readonly TaskStatus[] = [
   'completed',
+  'failed',
   'abandoned',
   'cancelled',
 ];
@@ -77,8 +78,10 @@ export function normalizeStatusAlias(raw: unknown): unknown {
 /**
  * Private map of all valid transitions.
  * Each key is a "from" status; the value is the set of statuses it may
- * transition to.  Terminal statuses either have no outgoing edges at all
- * (completed, abandoned, cancelled) or a single retry edge (failed → pending).
+ * transition to.  Most terminal statuses (completed, abandoned, cancelled)
+ * have no outgoing edges.  failed has a retry edge (failed → pending) and
+ * corrective escape-valve edges (failed → completed, failed → cancelled) to
+ * allow rescue of false-failed-but-actually-done tasks.
  */
 const VALID_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   proposed:          ['pending', 'cancelled'],
@@ -88,8 +91,9 @@ const VALID_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
   awaiting_approval: ['in_progress', 'planning', 'abandoned'],
   in_progress:       ['blocked', 'completed', 'failed', 'abandoned'],
   blocked:           ['in_progress', 'failed', 'abandoned'],
-  failed:            ['pending'],
-  // Terminal — no outgoing transitions
+  // failed has outgoing escape-valve transitions: retry (→pending) + corrective (→completed/cancelled)
+  failed:            ['pending', 'completed', 'cancelled'],
+  // Truly terminal — no outgoing transitions
   completed:         [],
   abandoned:         [],
   cancelled:         [],
