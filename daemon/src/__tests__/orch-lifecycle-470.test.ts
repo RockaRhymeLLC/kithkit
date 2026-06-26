@@ -194,7 +194,7 @@ describe('#470 escape-valve via PUT /api/orchestrator/tasks/:id (shim — task-q
     // MUTATION-KILL: revert VALID_TRANSITIONS.failed escape-valve in task-queue.ts
     // (change failed:['pending','completed','cancelled'] back to ['pending']) →
     // the transition guard returns 409 "cannot transition from failed to completed" → RED.
-    const extId = 'shim-esc-0001-0002-0003-000000000001';
+    const extId = 'shim-esc-0001-0002-0003-00000000ab01';
     seedShimTask(extId, 'failed');
 
     const res = await request(PORT_SHIM, 'PUT', `/api/orchestrator/tasks/${extId}`, {
@@ -211,7 +211,7 @@ describe('#470 escape-valve via PUT /api/orchestrator/tasks/:id (shim — task-q
 
   it('shim: failed → cancelled returns 200 (#470 escape-valve on shim endpoint)', async () => {
     // MUTATION-KILL: revert failed→cancelled from shim VALID_TRANSITIONS → 409 → RED.
-    const extId = 'shim-esc-0001-0002-0003-000000000002';
+    const extId = 'shim-esc-0001-0002-0003-00000000ab02';
     seedShimTask(extId, 'failed');
 
     const res = await request(PORT_SHIM, 'PUT', `/api/orchestrator/tasks/${extId}`, {
@@ -227,7 +227,7 @@ describe('#470 escape-valve via PUT /api/orchestrator/tasks/:id (shim — task-q
   it('shim: terminal-block still applies to non-escape-valve transitions on failed tasks', async () => {
     // Confirm isFailedEscapeValve does NOT widen the gate beyond pending/completed/cancelled.
     // This is a safety/guard test — it should stay green with or without the fix.
-    const extId = 'shim-esc-0001-0002-0003-000000000003';
+    const extId = 'shim-esc-0001-0002-0003-00000000ab03';
     seedShimTask(extId, 'failed');
 
     const res = await request(PORT_SHIM, 'PUT', `/api/orchestrator/tasks/${extId}`, {
@@ -288,7 +288,7 @@ scheduler:
 
     const oldStarted = new Date(Date.now() - 10 * 60_000).toISOString(); // 10 min ago
     const recentUpdated = new Date(Date.now() - 60_000).toISOString();    // 1 min ago (within 5min window)
-    const extId = 'orphan-recent-0001-0002-000000000001';
+    const extId = 'orphan-recent-0001-0002-00000000ab01';
     seedOrphanTask(extId, 'in_progress', oldStarted, recentUpdated);
 
     _setIdleDepsForTesting({
@@ -317,7 +317,7 @@ scheduler:
 
     // Task timestamps: old enough to be a candidate AND old enough to NOT be "recently active"
     const oldTime = new Date(Date.now() - 10 * 60_000).toISOString();
-    const extId = 'orphan-compw-0001-0002-000000000001';
+    const extId = 'orphan-compw-0001-0002-00000000ab01';
     const taskIntId = seedOrphanTask(extId, 'in_progress', oldTime, oldTime);
 
     // Seed a completed worker_job linked to this task.
@@ -351,7 +351,7 @@ scheduler:
 
     // Old timestamps — outside the recent-activity window, no completed worker
     const oldTime = new Date(Date.now() - 10 * 60_000).toISOString();
-    const extId = 'orphan-truly-0001-0002-000000000001';
+    const extId = 'orphan-truly-0001-0002-00000000ab01';
     seedOrphanTask(extId, 'in_progress', oldTime, oldTime);
 
     _setIdleDepsForTesting({

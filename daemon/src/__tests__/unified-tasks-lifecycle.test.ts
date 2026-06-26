@@ -121,7 +121,7 @@ describe('#470 escape-valve via PUT /api/tasks/:id (unified-tasks)', { concurren
   it('failed → completed returns 200 (#470 escape-valve on canonical endpoint)', async () => {
     // MUTATION-KILL: revert failed→completed escape-valve in VALID_TRANSITIONS or
     // revert the isFailedEscapeValve guard → this returns 409/422
-    const extId = 'aabbccdd-0001-0002-0003-000000000001';
+    const extId = 'aabbccdd-0001-0002-0003-00000000ab01';
     seedOrchestratorTask(extId, 'failed');
 
     const res = await request('PUT', `/api/tasks/${extId}`, {
@@ -135,7 +135,7 @@ describe('#470 escape-valve via PUT /api/tasks/:id (unified-tasks)', { concurren
 
   it('failed → cancelled returns 200 (#470 escape-valve on canonical endpoint)', async () => {
     // MUTATION-KILL: revert failed→cancelled escape-valve → this returns 422
-    const extId = 'aabbccdd-0001-0002-0003-000000000002';
+    const extId = 'aabbccdd-0001-0002-0003-00000000ab02';
     seedOrchestratorTask(extId, 'failed');
 
     const res = await request('PUT', `/api/tasks/${extId}`, { status: 'cancelled' });
@@ -146,7 +146,7 @@ describe('#470 escape-valve via PUT /api/tasks/:id (unified-tasks)', { concurren
   it('acknowledged_at is writable on a failed task via canonical endpoint (#470)', async () => {
     // MUTATION-KILL: revert failed-terminal (remove 'failed' from TERMINAL_STATUSES) →
     // this returns 409 "acknowledged_at can only be set on terminal tasks"
-    const extId = 'aabbccdd-0001-0002-0003-000000000003';
+    const extId = 'aabbccdd-0001-0002-0003-00000000ab03';
     seedOrchestratorTask(extId, 'failed');
 
     const ackTime = new Date().toISOString();
@@ -161,7 +161,7 @@ describe('#470 escape-valve via PUT /api/tasks/:id (unified-tasks)', { concurren
 
   it('failed → completed + acknowledged_at in one PUT (#470 — full closure path)', async () => {
     // MUTATION-KILL: revert either escape-valve or failed-terminal → this fails
-    const extId = 'aabbccdd-0001-0002-0003-000000000004';
+    const extId = 'aabbccdd-0001-0002-0003-00000000ab04';
     seedOrchestratorTask(extId, 'failed');
 
     const ackTime = new Date().toISOString();
@@ -179,7 +179,7 @@ describe('#470 escape-valve via PUT /api/tasks/:id (unified-tasks)', { concurren
 
   it('completed tasks remain blocked from non-feedback status updates', async () => {
     // Confirm the terminal guard is still enforced for completed (not regressed)
-    const extId = 'aabbccdd-0001-0002-0003-000000000005';
+    const extId = 'aabbccdd-0001-0002-0003-00000000ab05';
     seedOrchestratorTask(extId, 'completed');
 
     const res = await request('PUT', `/api/tasks/${extId}`, { status: 'pending' });
