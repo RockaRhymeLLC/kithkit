@@ -522,7 +522,45 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
         );
         // signalII stays false — frozen last_activity is expected during long worker wait
       } else {
-        signalII = true;
+        // No running workers — check whether the task queue has any open work.
+        //
+        // IDLE / EMPTY-QUEUE EXEMPTION (#922):
+        // A bare frozen last_activity with an EMPTY task queue means the orchestrator is
+        // legitimately idle (stood down / waiting for new work) — it has no turns when there
+        // is nothing to do. This is NOT a wedge. Signal(ii) must only fire when the orch is
+        // provably ignoring open work (pending / assigned / in_progress tasks it should be
+        // acting on). Without this guard the wedge detector false-restarts an idle orch every
+        // ~15 min: last_activity stays frozen, no workers, queue empty → signal(ii) fires →
+        // respawn → perpetual false-wedge cycle.
+        //
+        // Signals (i) and (iii) remain fully unexempted: a frozen in_progress task updated_at
+        // or a garbled pane is always a real wedge regardless of queue state.
+        //
+        // FAIL SAFE: on query error, default to existing behavior (treat as wedged) so a
+        // genuinely-wedged orch is never silently masked by a transient DB error.
+        try {
+          const openTaskRows = query<{ count: number }>(
+            "SELECT COUNT(*) as count FROM tasks WHERE kind = 'orchestrator' AND status IN ('pending','assigned','in_progress')",
+          );
+          const openTaskCount = openTaskRows[0]?.count ?? 0;
+          if (openTaskCount === 0) {
+            log.debug(
+              'Wedge detector: last_activity frozen but task queue is empty — orch is idle/stood-down, exempting signal(ii) (#922)',
+              { lastActivity, cutoffIso },
+            );
+            // signalII stays false — empty queue means idle, not wedged
+          } else {
+            signalII = true;
+          }
+        } catch (err) {
+          // Fail safe toward existing behavior: if the open-task count cannot be
+          // determined, do not suppress — a genuinely-wedged orch must not be masked.
+          log.debug(
+            'Wedge detector: could not query open task count for idle-queue exemption — failing safe, signal(ii) fires (#922)',
+            { error: String(err) },
+          );
+          signalII = true;
+        }
       }
     }
   } catch (err) {
