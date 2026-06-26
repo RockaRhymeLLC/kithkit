@@ -859,3 +859,105 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
       'extending the exemption to cover signal(iii) would make this RED');
   });
 });
+
+// ── Signal (i) synthesis-grace exemption (#940) ───────────────
+//
+// When the orch has a frozen in_progress task BUT a worker recently completed,
+// signal(i) must be suppressed — the orch is in its synthesis phase.
+// When no worker completed recently (or none at all), signal(i) must STILL fire.
+
+describe('orch-wedge-detector: signal (i) synthesis-grace exemption (#940)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  /** Insert a completed worker_job with finished_at set to the given number of minutes ago. */
+  function insertCompletedWorkerJob(id: string, finishedMinutesAgo: number): void {
+    exec(
+      `INSERT INTO worker_jobs (id, profile, prompt, status, created_at, finished_at)
+       VALUES (?, 'coding', 'test prompt', 'completed', ?, ?)`,
+      id,
+      isoMinutesAgo(60),
+      isoMinutesAgo(finishedMinutesAgo),
+    );
+  }
+
+  /**
+   * Case A — mutation-kill: orch in_progress frozen past threshold AND a worker completed
+   * within the grace window → signal(i) must be SUPPRESSED (no restart).
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: remove the synthesis-grace exemption (leave signalI = true even when recent completion exists).
+   * Expected: killCalled becomes true → test goes RED (restarts orch during synthesis phase).
+   * Restored: killCalled stays false → test GREEN (grace window correctly suppresses the restart).
+   */
+  it('Case A: does NOT restart orch when frozen in_progress task BUT worker completed within grace window', async () => {
+    // Orch alive with fresh last_activity (signal(ii) must NOT fire).
+    insertOrchAgent(5);
+    // in_progress task frozen 20 min ago (> 15 min threshold) — signal(i) would fire without grace.
+    insertInProgressTask('task-940-a', 20);
+    // Worker completed 5 min ago — within the default 15-min grace window.
+    insertCompletedWorkerJob('worker-940-a', 5);
+
+    let killCalled = false;
+    const commsMessages: string[] = [];
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-should-not-spawn',
+      captureOrchestratorPane: () => '> ',  // normal pane — signal(iii) does not fire
+      sendMessage: (msg) => {
+        commsMessages.push(msg.body);
+        return { messageId: 1, delivered: false };
+      },
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15, synthesis_grace_minutes: 15 });
+
+    assert.equal(killCalled, false,
+      '#940 Case A: killOrchestratorSession must NOT be called when in_progress task is frozen ' +
+      'but a worker completed within the synthesis grace window — ' +
+      'reverting the grace exemption makes this RED (mutation-kill proof)');
+
+    const wedgeAlert = commsMessages.find(b => {
+      try { return JSON.parse(b)?.alert === 'orchestrator_wedge_restart'; } catch { return false; }
+    });
+    assert.equal(wedgeAlert, undefined,
+      '#940 Case A: orchestrator_wedge_restart must NOT be sent during synthesis grace window');
+  });
+
+  /**
+   * Case B — narrowness guard: orch in_progress frozen, NO recent worker completion
+   * (last completion older than grace window) → signal(i) must STILL fire (genuine wedge).
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: make the grace exemption unconditional (always suppress signal(i)).
+   * Expected: killCalled stays false → test goes RED (real wedge goes undetected).
+   * Restored: killCalled becomes true → test GREEN (stale completion = no grace = real wedge fires).
+   */
+  it('Case B: STILL restarts orch when in_progress frozen and no recent worker completion (genuine wedge)', async () => {
+    // Orch alive with fresh last_activity (signal(ii) must NOT fire).
+    insertOrchAgent(5);
+    // in_progress task frozen 20 min ago (> 15 min threshold).
+    insertInProgressTask('task-940-b', 20);
+    // Worker completed 30 min ago — OUTSIDE the 15-min grace window — no exemption.
+    insertCompletedWorkerJob('worker-940-b-stale', 30);
+
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-940-b-respawn',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15, synthesis_grace_minutes: 15 });
+
+    assert.equal(killCalled, true,
+      '#940 Case B: killOrchestratorSession MUST be called when in_progress task is frozen ' +
+      'and the last worker completion is older than the grace window — ' +
+      'making the exemption unconditional would make this RED (narrowness guard)');
+  });
+});

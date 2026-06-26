@@ -57,6 +57,7 @@ scheduler:
       enabled: true
       config:
         requires_session: true
+        synthesis_grace_minutes: 15
 
     - name: todo-reminder
       interval: "30m"
