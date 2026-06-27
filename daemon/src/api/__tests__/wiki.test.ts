@@ -18,6 +18,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { openDatabase, _resetDbForTesting, getDatabase } from '../../core/db.js';
 import { runMigrations, getMigrationsDir } from '../../core/migrations.js';
@@ -647,7 +648,11 @@ describe('Graceful degradation', { concurrency: 1 }, () => {
     //     pass  # Never block on wiki failure
     //
     // We verify the hook file has this guard in place (structural test).
-    const hookPath = path.join(process.cwd(), '.claude', 'hooks', 'memory-context.py');
+    // Use import.meta.url so the path resolves relative to the compiled test file
+    // (daemon/dist/api/__tests__/wiki.test.js) rather than process.cwd() which
+    // is daemon/ in CI — causing the existsSync check to miss the hook at repo root.
+    // 4× '../' from daemon/dist/api/__tests__/ reaches the repo root.
+    const hookPath = fileURLToPath(new URL('../../../../.claude/hooks/memory-context.py', import.meta.url));
     if (fs.existsSync(hookPath)) {
       const hookContent = fs.readFileSync(hookPath, 'utf8');
       assert.ok(hookContent.includes('except Exception'), 'Hook must have try/except guard around wiki call');
