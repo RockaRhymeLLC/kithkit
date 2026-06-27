@@ -156,31 +156,40 @@ function wikiKeywordSearch(
   const words = queryText.trim().split(/\s+/).filter(w => w.length > 0);
   if (words.length === 0) return [];
 
+  const wordPatterns = words.map(w => `%${w}%`);
+
+  // Build score expression — SELECT clause comes before WHERE in SQL,
+  // so score params must be bound first.
+  const scoreParts = words.map(() =>
+    'CASE WHEN LOWER(title) LIKE LOWER(?) THEN 2 WHEN LOWER(summary) LIKE LOWER(?) THEN 1 WHEN LOWER(body) LIKE LOWER(?) THEN 1 ELSE 0 END'
+  );
+  const scoreExpr = scoreParts.join(' + ');
+
+  // Score params (for SELECT clause — bound first in SQLite left-to-right)
+  const scoreParams: unknown[] = [];
+  for (const p of wordPatterns) {
+    scoreParams.push(p, p, p);
+  }
+
+  // WHERE clause conditions
   const conditions: string[] = ['status = ?'];
-  const params: unknown[] = [statusFilter];
+  const condParams: unknown[] = [statusFilter];
 
   const orClauses = words.map(() =>
     '(LOWER(title) LIKE LOWER(?) OR LOWER(summary) LIKE LOWER(?) OR LOWER(body) LIKE LOWER(?))'
   );
   conditions.push(`(${orClauses.join(' OR ')})`);
-  for (const w of words) {
-    params.push(`%${w}%`, `%${w}%`, `%${w}%`);
+  for (const p of wordPatterns) {
+    condParams.push(p, p, p);
   }
 
   if (category) {
     conditions.push('category = ?');
-    params.push(category);
+    condParams.push(category);
   }
 
-  const scoreParts = words.map(() =>
-    'CASE WHEN LOWER(title) LIKE LOWER(?) THEN 2 WHEN LOWER(summary) LIKE LOWER(?) THEN 1 WHEN LOWER(body) LIKE LOWER(?) THEN 1 ELSE 0 END'
-  );
-  const scoreExpr = scoreParts.join(' + ');
-  for (const w of words) {
-    params.push(`%${w}%`, `%${w}%`, `%${w}%`);
-  }
-
-  params.push(limit);
+  // Bind order: score params, then WHERE params, then LIMIT
+  const params = [...scoreParams, ...condParams, limit];
 
   const sql = `
     SELECT id, slug, title, summary, category, tags, status,

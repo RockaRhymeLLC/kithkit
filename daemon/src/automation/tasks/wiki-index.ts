@@ -19,13 +19,30 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { getDatabase } from '../../core/db.js';
-import { embed, embedBatch } from '../../memory/embed-client.js';
+import { embed as _embed, embedBatch as _embedBatch } from '../../memory/embed-client.js';
 import { embeddingToBuffer } from '../../memory/embeddings.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 import yaml from 'js-yaml';
 
 const log = createLogger('wiki-index');
+
+// ── Injectable embed functions (overridable for testing) ──────
+
+type EmbedFn = (text: string) => Promise<Float32Array>;
+type EmbedBatchFn = (texts: string[]) => Promise<Float32Array[]>;
+
+let _embedFn: EmbedFn = _embed;
+let _embedBatchFn: EmbedBatchFn = _embedBatch;
+
+/** Override embed functions for testing. Pass null to restore defaults. */
+export function _setEmbedFnsForTesting(
+  embedFn: EmbedFn | null,
+  embedBatchFn: EmbedBatchFn | null,
+): void {
+  _embedFn = embedFn ?? _embed;
+  _embedBatchFn = embedBatchFn ?? _embedBatch;
+}
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -242,14 +259,14 @@ export async function runWikiIndex(rawConfig: Record<string, unknown>): Promise<
 
     let embeddings: Float32Array[];
     try {
-      embeddings = await embedBatch(embedTexts);
+      embeddings = await _embedBatchFn(embedTexts);
     } catch (err) {
       log.warn('wiki-index: embedBatch failed — falling back to per-file embed', { error: String(err) });
       // Fallback: embed one-by-one, skip failures
       embeddings = await Promise.all(
         embedTexts.map(async (text, i) => {
           try {
-            return await embed(text);
+            return await _embedFn(text);
           } catch (e) {
             log.warn(`wiki-index: embed failed for ${parsed[i]!.filename}`, { error: String(e) });
             summary.embed_failures++;
