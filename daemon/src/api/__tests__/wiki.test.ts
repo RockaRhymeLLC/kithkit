@@ -653,13 +653,10 @@ describe('Graceful degradation', { concurrency: 1 }, () => {
     // is daemon/ in CI — causing the existsSync check to miss the hook at repo root.
     // 4× '../' from daemon/dist/api/__tests__/ reaches the repo root.
     const hookPath = fileURLToPath(new URL('../../../../.claude/hooks/memory-context.py', import.meta.url));
-    if (fs.existsSync(hookPath)) {
-      const hookContent = fs.readFileSync(hookPath, 'utf8');
-      assert.ok(hookContent.includes('except Exception'), 'Hook must have try/except guard around wiki call');
-      assert.ok(hookContent.includes('WIKI_URL'), 'Hook must reference WIKI_URL');
-      assert.ok(hookContent.includes('search_wiki'), 'Hook must call search_wiki');
-    }
-    // If hook file doesn't exist in cwd (test running from different location), pass
-    assert.ok(true);
+    assert.ok(fs.existsSync(hookPath), `memory-context hook must exist at ${hookPath}`);
+    const hookContent = fs.readFileSync(hookPath, 'utf8');
+    assert.ok(hookContent.includes('except Exception'), 'Hook must have try/except guard around wiki call');
+    assert.ok(hookContent.includes('WIKI_URL'), 'Hook must reference WIKI_URL');
+    assert.ok(hookContent.includes('search_wiki'), 'Hook must call search_wiki');
   });
 });
