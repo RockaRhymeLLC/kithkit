@@ -37,6 +37,7 @@ import { handleSelfImprovementRoute } from './api/self-improvement.js';
 import { handleExtensionsRoute } from './api/extensions.js';
 import { handleNetworkRoute } from './api/network.js';
 import { handleRestartRoute, setShutdownFn } from './api/restart.js';
+import { handleWikiRoute } from './api/wiki.js';
 import { initPluginManager, getPluginManager } from './core/plugin-extensions.js';
 import { getScheduler } from './api/tasks.js';
 import { registerFactVerifier } from './agents/fact-verifier.js';
@@ -348,6 +349,7 @@ const server = http.createServer((req, res) => {
         () => handleStateRoute(req, res, url.pathname, url.searchParams),
         () => handleMessagesRoute(req, res, url.pathname, url.searchParams),
         () => handleMemoryRoute(req, res, url.pathname),
+        () => handleWikiRoute(req, res, url.pathname),
         () => handleTasksRoute(req, res, url.pathname),
         () => handleConfigRoute(req, res, url.pathname),
         () => handleSyncClaudeRoute(req, res, url.pathname),

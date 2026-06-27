@@ -161,6 +161,12 @@ scheduler:
           tool-usage: null
           communication: null
 
+    - name: wiki-index
+      interval: 1800000   # 30 min
+      enabled: true
+      config:
+        memory_dir: auto   # resolve from project path; override with absolute path
+
 orchestrator:
   plan_review_sla_minutes: 10
 
