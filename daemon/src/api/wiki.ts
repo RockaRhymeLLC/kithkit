@@ -20,6 +20,8 @@ import { generateEmbedding, embeddingToBuffer, EMBEDDING_DIMENSIONS } from '../m
 import { parseTags } from '../memory/vector-search.js';
 import { createLogger } from '../core/logger.js';
 import { json, withTimestamp, parseBody } from './helpers.js';
+import { loadConfig } from '../core/config.js';
+import type { WikiAutolinkConfig } from '../core/config.js';
 
 const log = createLogger('wiki-api');
 const require = createRequire(import.meta.url);
@@ -76,7 +78,43 @@ export function _resetWikiVectorForTesting(): void {
   _wikiVecLoaded = false;
 }
 
+// ── Phase 2: testing hooks ────────────────────────────────────
+
+/**
+ * Override the autolink config for testing (bypasses loadConfig dependency).
+ * Pass null to restore default (reads from loadConfig()).
+ */
+let _autoLinkConfigOverride: WikiAutolinkConfig | null = null;
+export function _setWikiAutolinkConfigForTesting(cfg: WikiAutolinkConfig | null): void {
+  _autoLinkConfigOverride = cfg;
+}
+
+/**
+ * Override wikiVectorSearchByEmbedding for testing (bypasses sqlite-vec dependency).
+ * Pass null to restore real implementation.
+ */
+type WikiVecSearchFn = (embedding: Float32Array, limit: number) => Promise<WikiVecCandidate[]>;
+let _wikiVecSearchOverride: WikiVecSearchFn | null = null;
+export function _setWikiVecSearchFnForTesting(fn: WikiVecSearchFn | null): void {
+  _wikiVecSearchOverride = fn;
+}
+
+/** Reset all Phase 2 test hooks. */
+export function _resetWikiPhase2ForTesting(): void {
+  _autoLinkConfigOverride = null;
+  _wikiVecSearchOverride = null;
+}
+
 // ── Types ────────────────────────────────────────────────────
+
+/** Candidate returned by wikiVectorSearchByEmbedding. */
+export interface WikiVecCandidate {
+  article_id: number;
+  score: number;
+  /** Raw JSON tags string as stored in wiki_articles.tags. */
+  tags: string;
+  category: string | null;
+}
 
 interface WikiArticleRow {
   id: number;
@@ -345,6 +383,149 @@ async function wikiHybridSearch(
     .map(r => ({ ...r, score: r.combined_score }));
 }
 
+// ── Phase 2: vector search by precomputed embedding ──────────
+
+/**
+ * Search wiki_vec using an already-computed Float32Array embedding (no re-embed).
+ * Returns candidates sorted highest-score-first.
+ *
+ * Accepts a testing override via _setWikiVecSearchFnForTesting so that sqlite-vec
+ * is not required in unit tests.
+ */
+export async function wikiVectorSearchByEmbedding(
+  embedding: Float32Array,
+  limit: number,
+): Promise<WikiVecCandidate[]> {
+  // Test override bypasses sqlite-vec entirely
+  if (_wikiVecSearchOverride) {
+    return _wikiVecSearchOverride(embedding, limit);
+  }
+
+  if (!_wikiVecLoaded) return [];
+
+  const db = getDatabase();
+  const queryBuf = embeddingToBuffer(embedding);
+
+  interface VecRow { rowid: number; distance: number }
+
+  const vecRows = db.prepare(`
+    SELECT rowid, distance
+    FROM wiki_vec
+    WHERE embedding MATCH ?
+    ORDER BY distance
+    LIMIT ?
+  `).all(queryBuf, limit * 2) as VecRow[];
+
+  if (vecRows.length === 0) return [];
+
+  const vecRowids = vecRows.map(r => r.rowid);
+  const placeholders = vecRowids.map(() => '?').join(',');
+
+  interface MapRow { article_id: number; vec_rowid: number }
+  const mapRows = db.prepare(
+    `SELECT article_id, vec_rowid FROM vec_wiki_map WHERE vec_rowid IN (${placeholders})`,
+  ).all(...vecRowids) as MapRow[];
+
+  const vecToArticle = new Map(mapRows.map(m => [Number(m.vec_rowid), m.article_id]));
+
+  const articleIds = vecRows
+    .map(vr => vecToArticle.get(Number(vr.rowid)))
+    .filter((id): id is number => id !== undefined);
+
+  if (articleIds.length === 0) return [];
+
+  const artPlaceholders = articleIds.map(() => '?').join(',');
+
+  interface ArticleHitRow { id: number; tags: string; category: string | null; status: string }
+  const articles = db.prepare(
+    `SELECT id, tags, category, status
+     FROM wiki_articles
+     WHERE id IN (${artPlaceholders}) AND status = 'published'`,
+  ).all(...articleIds) as ArticleHitRow[];
+
+  const artMap = new Map(articles.map(a => [a.id, a]));
+
+  return vecRows
+    .map(vr => {
+      const artId = vecToArticle.get(Number(vr.rowid));
+      if (!artId) return null;
+      const art = artMap.get(artId);
+      if (!art) return null;
+      // L2 distance → cosine similarity (normalized vectors): 1 - d²/2
+      const score = Math.max(0, 1 - (vr.distance * vr.distance) / 2);
+      return { article_id: artId, score, tags: art.tags, category: art.category };
+    })
+    .filter((r): r is WikiVecCandidate => r !== null)
+    .slice(0, limit);
+}
+
+// ── Phase 2: auto-link helper ─────────────────────────────────
+
+/**
+ * Auto-link a newly stored memory to relevant wiki articles.
+ *
+ * Called from both POST /api/memory/store and storeMemoryInternal() after the
+ * memory's embedding has already been computed (no re-embed).
+ *
+ * Feature is config-gated and DEFAULT OFF — see wiki.autolink.enabled in
+ * kithkit.defaults.yaml. Wrap all callers in try/catch; this must be non-fatal.
+ *
+ * @param memoryId   - The newly inserted memory's id
+ * @param embedding  - Already-computed embedding (reuse from store — no re-embed)
+ * @param tags       - Memory tags (used for shared-tag gate)
+ * @param category   - Memory category (used as shared-category fallback)
+ */
+export async function autoLinkMemoryToWiki(
+  memoryId: number,
+  embedding: Float32Array,
+  tags: string[],
+  category: string | null,
+): Promise<void> {
+  // Resolve autolink config — test override or real config
+  const autolink: WikiAutolinkConfig | undefined =
+    _autoLinkConfigOverride ?? loadConfig().wiki?.autolink;
+
+  // DEFAULT OFF: return immediately if feature is not explicitly enabled
+  if (!autolink?.enabled) return;
+
+  // Skip if wiki vector search is unavailable (and no test override in place)
+  if (!_wikiVecSearchOverride && !_wikiVecLoaded) return;
+
+  const threshold = autolink.similarity_threshold ?? 0.75;
+  const maxLinks = autolink.max_links ?? 1;
+  const requireSharedTag = autolink.require_shared_tag ?? true;
+
+  // Fetch candidates using precomputed embedding — fetch a generous batch to
+  // allow threshold + tag filtering before capping at max_links
+  const candidates = await wikiVectorSearchByEmbedding(embedding, maxLinks * 10);
+
+  const db = getDatabase();
+  // INSERT OR IGNORE respects the UNIQUE(article_id, memory_id) constraint
+  const insertStmt = db.prepare(`
+    INSERT OR IGNORE INTO wiki_memory_links (article_id, memory_id, link_type)
+    VALUES (?, ?, 'related')
+  `);
+
+  let linked = 0;
+  for (const candidate of candidates) {
+    if (linked >= maxLinks) break;
+
+    // Threshold gate
+    if (candidate.score < threshold) continue;
+
+    // Shared-tag gate (tag OR category match)
+    if (requireSharedTag) {
+      const artTags = parseTags(candidate.tags);
+      const sharedTag = tags.some(t => artTags.includes(t));
+      const sharedCategory = category !== null && candidate.category === category;
+      if (!sharedTag && !sharedCategory) continue;
+    }
+
+    insertStmt.run(candidate.article_id, memoryId);
+    linked++;
+  }
+}
+
 // ── Route handler ─────────────────────────────────────────────
 
 export async function handleWikiRoute(
@@ -403,6 +584,59 @@ export async function handleWikiRoute(
       return true;
     }
 
+    // POST /api/wiki/memory-links — explicit consolidation links (Phase 2, ITEM 2)
+    // Creates or upgrades a wiki_memory_links row.  link_type must be one of
+    // {related, derived_from, contradicts, supersedes}.  Re-POSTing with a new
+    // type upgrades the existing row (ON CONFLICT DO UPDATE).
+    // NOTE: this is a LINK (DB join), not an article — no article CRUD here.
+    if (pathname === '/api/wiki/memory-links' && method === 'POST') {
+      const body = await parseBody(req);
+
+      const VALID_LINK_TYPES = ['related', 'derived_from', 'contradicts', 'supersedes'];
+
+      const articleId = body['article_id'];
+      const memoryId = body['memory_id'];
+      const linkType = (body['link_type'] as string) ?? 'related';
+
+      if (typeof articleId !== 'number' || !Number.isInteger(articleId) || articleId <= 0) {
+        json(res, 400, withTimestamp({ error: 'article_id must be a positive integer' }));
+        return true;
+      }
+
+      if (typeof memoryId !== 'number' || !Number.isInteger(memoryId) || memoryId <= 0) {
+        json(res, 400, withTimestamp({ error: 'memory_id must be a positive integer' }));
+        return true;
+      }
+
+      if (!VALID_LINK_TYPES.includes(linkType)) {
+        json(res, 400, withTimestamp({
+          error: `link_type must be one of: ${VALID_LINK_TYPES.join(', ')}`,
+          received: linkType,
+        }));
+        return true;
+      }
+
+      const db = getDatabase();
+
+      // INSERT OR UPDATE — explicit type upgrades an auto 'related'
+      db.prepare(`
+        INSERT INTO wiki_memory_links (article_id, memory_id, link_type)
+        VALUES (?, ?, ?)
+        ON CONFLICT(article_id, memory_id) DO UPDATE SET link_type = excluded.link_type
+      `).run(articleId, memoryId, linkType);
+
+      interface MemLinkRow {
+        id: number; article_id: number; memory_id: number;
+        link_type: string; created_at: string;
+      }
+      const link = db.prepare(
+        'SELECT * FROM wiki_memory_links WHERE article_id = ? AND memory_id = ?',
+      ).get(articleId, memoryId) as MemLinkRow;
+
+      json(res, 201, withTimestamp({ data: link }));
+      return true;
+    }
+
     // GET /api/wiki/articles
     if (pathname === '/api/wiki/articles' && method === 'GET') {
       // Parse query params from the request URL
@@ -412,6 +646,41 @@ export async function handleWikiRoute(
       const statusFilter = urlObj.searchParams.get('status') ?? 'published';
       const limit = Math.min(Number(urlObj.searchParams.get('limit') ?? '50'), 200);
       const offset = Number(urlObj.searchParams.get('offset') ?? '0');
+      const linkedMemoryIdParam = urlObj.searchParams.get('linked_memory_id');
+
+      // Phase 2, ITEM 3: memory → articles reverse read
+      // GET /api/wiki/articles?linked_memory_id=N — articles linked to this memory
+      if (linkedMemoryIdParam !== null) {
+        const memId = Number(linkedMemoryIdParam);
+        if (!Number.isInteger(memId) || memId <= 0) {
+          json(res, 400, withTimestamp({ error: 'linked_memory_id must be a positive integer' }));
+          return true;
+        }
+
+        interface MemLinkedArticle {
+          id: number; slug: string; title: string; summary: string | null;
+          category: string | null; tags: string; status: string; link_type: string;
+        }
+
+        // Uses idx_wiki_mem_memory index for efficiency
+        const db = getDatabase();
+        const articles = db.prepare(`
+          SELECT a.id, a.slug, a.title, a.summary, a.category, a.tags, a.status,
+                 wml.link_type
+          FROM wiki_memory_links wml
+          JOIN wiki_articles a ON a.id = wml.article_id
+          WHERE wml.memory_id = ?
+          ORDER BY wml.created_at DESC
+        `).all(memId) as MemLinkedArticle[];
+
+        json(res, 200, withTimestamp({
+          data: articles.map(a => ({
+            ...formatArticleSummary(a as unknown as WikiArticleRow),
+            link_type: a.link_type,
+          })),
+        }));
+        return true;
+      }
 
       if (slug) {
         // Single article by slug — return full body + links
