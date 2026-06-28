@@ -279,3 +279,13 @@ self_improvement:
 # Default: empty — no channels are gated until the operator configures policies.
 # Start with 'all' for any capability that sends outbound communications.
 approval_policies: {}
+
+# Agent-Wiki Bridge (Phase 2) — memory <-> article auto-linking.
+# DEFAULT OFF — set enabled: true only after Phase 1 is validated in production.
+# See docs/specs/20260626-agent-wiki-bridge.spec.md §5 Phase 2, item 1.
+wiki:
+  autolink:
+    enabled: false              # MUST remain false — opt-in only
+    similarity_threshold: 0.75  # Cosine similarity floor for linking
+    max_links: 1                # Max wiki articles to link per memory store
+    require_shared_tag: true    # Only link when memory and article share a tag/category
