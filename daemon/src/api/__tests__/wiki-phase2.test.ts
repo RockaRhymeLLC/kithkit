@@ -40,8 +40,9 @@ import {
   autoLinkMemoryToWiki,
   type WikiVecCandidate,
 } from '../wiki.js';
-import { handleMemoryRoute, _resetVectorForTesting } from '../memory.js';
-import { _resetConfigForTesting } from '../../core/config.js';
+import { handleMemoryRoute, _resetVectorForTesting, storeMemoryInternal, _setVectorEnabledForTesting } from '../memory.js';
+import { _resetConfigForTesting, DEFAULTS } from '../../core/config.js';
+import { _setEmbedderForTesting, _resetEmbeddingsForTesting } from '../../memory/embeddings.js';
 
 // ── Constants ─────────────────────────────────────────────────
 
@@ -747,5 +748,147 @@ describe('P2-8: GET /api/wiki/articles?linked_memory_id=N — reverse read', { c
     assert.equal(reverseRes.status, 200, 'Reverse lookup must work');
     const reverseBody = JSON.parse(reverseRes.body);
     assert.equal(reverseBody.data.length, 1);
+  });
+});
+
+// ── CONFIG DEFAULTS assertion ──────────────────────────────────
+
+describe('CONFIG DEFAULTS: wiki.autolink.enabled defaults to false', { concurrency: 1 }, () => {
+  it('DEFAULTS.wiki.autolink.enabled is false (fleet-safe default)', () => {
+    assert.equal(
+      DEFAULTS.wiki?.autolink?.enabled,
+      false,
+      'wiki.autolink.enabled MUST default to false — changing this is a fleet-wide breaking change',
+    );
+  });
+});
+
+// ── Helper: create stub vec tables so indexEmbedding succeeds ──
+
+/**
+ * Create lightweight stub tables that mirror the shape used by indexEmbedding().
+ * These allow _vectorEnabled=true + a mock embedder to work in tests without
+ * the sqlite-vec extension (which is unavailable in CI and test environments).
+ */
+function createStubVecTables(): void {
+  const db = getDatabase();
+  db.exec(`CREATE TABLE IF NOT EXISTS vec_memories (embedding BLOB)`);
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS vec_memory_map (
+      memory_id INTEGER PRIMARY KEY,
+      vec_rowid INTEGER NOT NULL
+    )
+  `);
+}
+
+/** Fake embedder: returns a constant unit-vector. Compatible with _setEmbedderForTesting(). */
+async function fakeEmbedderFn(_text: string, _opts: unknown): Promise<{ data: Float32Array }> {
+  return { data: new Float32Array(FAKE_DIM).fill(1 / Math.sqrt(FAKE_DIM)) };
+}
+
+// ── P2-NON-FATAL-B: MUTATION-KILLING — route try/catch at :506 ─
+
+describe('P2-NON-FATAL-B: route try/catch at :506 swallows autolink throw (mutation-killing)', { concurrency: 1 }, () => {
+  beforeEach(async () => {
+    await setup();
+    createStubVecTables();
+    _setVectorEnabledForTesting(true);
+    _setEmbedderForTesting(fakeEmbedderFn);
+    _setWikiAutolinkConfigForTesting({
+      enabled: true,
+      similarity_threshold: 0.75,
+      max_links: 1,
+      require_shared_tag: false,
+    });
+    _setWikiVecSearchFnForTesting(async () => { throw new Error('boom — forced throw for mutation test'); });
+  });
+
+  afterEach(async () => {
+    _setVectorEnabledForTesting(false);
+    _resetEmbeddingsForTesting();
+    await teardown();
+  });
+
+  it('Test B — POST /api/memory/store returns 201 when autoLinkMemoryToWiki throws', async () => {
+    const res = await request('POST', '/api/memory/store', {
+      content: 'Force-throw route test — unique content for P2-NON-FATAL-B',
+      category: 'technical',
+      tags: ['ssh'],
+    });
+
+    // Must succeed despite the autolink throw
+    assert.equal(res.status, 201, 'Route must return 201 even when autoLinkMemoryToWiki throws');
+    const body = JSON.parse(res.body);
+    assert.ok(body.id, 'Response must include the new memory id');
+    assert.ok(body.content, 'Response must include content');
+
+    // Memory must actually be persisted in the DB
+    const db = getDatabase();
+    const row = db.prepare('SELECT id, content FROM memories WHERE id = ?').get(body.id) as
+      | { id: number; content: string }
+      | undefined;
+    assert.ok(row, 'Memory row must exist in DB — store must not roll back on autolink failure');
+    assert.equal(
+      row!.content,
+      'Force-throw route test — unique content for P2-NON-FATAL-B',
+      'Persisted content must match what was sent',
+    );
+
+    // No spurious links created
+    assert.equal(countLinks(), 0, 'No wiki_memory_links rows on a failed autolink');
+  });
+});
+
+// ── P2-NON-FATAL-A: MUTATION-KILLING — storeMemoryInternal try/catch at :303 ─
+
+describe('P2-NON-FATAL-A: storeMemoryInternal try/catch at :303 swallows autolink throw (mutation-killing)', { concurrency: 1 }, () => {
+  beforeEach(async () => {
+    await setup();
+    createStubVecTables();
+    _setVectorEnabledForTesting(true);
+    _setEmbedderForTesting(fakeEmbedderFn);
+    _setWikiAutolinkConfigForTesting({
+      enabled: true,
+      similarity_threshold: 0.75,
+      max_links: 1,
+      require_shared_tag: false,
+    });
+    _setWikiVecSearchFnForTesting(async () => { throw new Error('boom — forced throw for mutation test'); });
+  });
+
+  afterEach(async () => {
+    _setVectorEnabledForTesting(false);
+    _resetEmbeddingsForTesting();
+    await teardown();
+  });
+
+  it('Test A — storeMemoryInternal does NOT throw when autoLinkMemoryToWiki throws', async () => {
+    // Assert storeMemoryInternal resolves without throwing
+    await assert.doesNotReject(
+      () => storeMemoryInternal({
+        content: 'Force-throw internal test — unique content for P2-NON-FATAL-A',
+        category: 'technical',
+        tags: ['ssh'],
+      }),
+      'storeMemoryInternal must not throw — autolink failures must be swallowed by the try/catch at :303',
+    );
+
+    // Memory must actually be persisted in the DB
+    const db = getDatabase();
+    const rows = db
+      .prepare('SELECT id, content FROM memories WHERE content = ?')
+      .all('Force-throw internal test — unique content for P2-NON-FATAL-A') as Array<{
+      id: number;
+      content: string;
+    }>;
+    assert.equal(rows.length, 1, 'Memory must be persisted even though autolink threw');
+    assert.equal(
+      rows[0]!.content,
+      'Force-throw internal test — unique content for P2-NON-FATAL-A',
+      'Persisted content must match what was stored',
+    );
+
+    // No spurious links created
+    assert.equal(countLinks(), 0, 'No wiki_memory_links rows on a failed autolink');
   });
 });

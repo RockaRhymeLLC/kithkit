@@ -113,6 +113,14 @@ export function _resetVectorForTesting(): void {
   _vectorEnabled = false;
 }
 
+/**
+ * Force-enable (or disable) vector search for testing without loading sqlite-vec.
+ * Use with manually-created vec_memories / vec_memory_map tables and a mock embedder.
+ */
+export function _setVectorEnabledForTesting(val: boolean): void {
+  _vectorEnabled = val;
+}
+
 // ── Helpers ──────────────────────────────────────────────────
 
 import { json, withTimestamp, parseBody } from './helpers.js';

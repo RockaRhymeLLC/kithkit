@@ -223,7 +223,8 @@ export interface KithkitConfig {
 
 // ── Defaults ─────────────────────────────────────────────────
 
-const DEFAULTS: KithkitConfig = {
+// Exported for testing only — read-only reference to the in-code defaults object.
+export const DEFAULTS: KithkitConfig = {
   agent: { name: 'Assistant' },
   daemon: {
     port: 3847,
