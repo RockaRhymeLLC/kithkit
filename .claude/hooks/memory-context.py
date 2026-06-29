@@ -14,8 +14,10 @@ import urllib.request
 import re
 
 DAEMON_URL = "http://localhost:3847/api/memory/search"
+WIKI_URL = "http://localhost:3847/api/wiki/search"
 MAX_HITS = 3
 MAX_CHARS_PER_HIT = 100
+WIKI_SUMMARY_CHARS = 120
 MIN_INPUT_LENGTH = 10
 
 # Common stopwords to strip before searching
@@ -145,6 +147,63 @@ def format_hint(memory: dict) -> str:
     return f"  - {prefix}{content}"
 
 
+def search_wiki(keywords: list[str]) -> list:
+    """Search wiki articles — top-1 result only.
+
+    Uses the same progressive keyword narrowing as search_memories.
+    Returns empty list on any failure (graceful degradation — must never
+    block memory hints or the prompt itself).
+    """
+    attempts = [keywords]
+    if len(keywords) > 3:
+        attempts.append(keywords[:3])
+    if len(keywords) > 2:
+        attempts.append(keywords[:2])
+
+    for kw_subset in attempts:
+        query = " ".join(kw_subset)
+        payload = json.dumps({
+            "query": query,
+            "limit": 1,
+        }).encode()
+
+        req = urllib.request.Request(
+            WIKI_URL,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+
+        try:
+            with urllib.request.urlopen(req, timeout=2) as resp:
+                data = json.loads(resp.read())
+                results = data.get("data", [])
+                if results:
+                    return results[:1]
+        except Exception:
+            return []
+
+    return []
+
+
+def format_wiki_hint(article: dict) -> str:
+    """Format a wiki article as a brief hint line."""
+    title = article.get("title", article.get("slug", ""))
+    summary = article.get("summary") or ""
+    summary = summary.replace("\n", " ").strip()
+    if len(summary) > WIKI_SUMMARY_CHARS:
+        summary = summary[:WIKI_SUMMARY_CHARS].rsplit(" ", 1)[0] + "…"
+    category = article.get("category") or ""
+    slug = article.get("slug", "")
+    cat_prefix = f"[{category}] " if category else ""
+    hint = f"  - {cat_prefix}{title}"
+    if summary:
+        hint += f": {summary}"
+    if slug:
+        hint += f"\n    (slug: {slug} — full body via GET /api/wiki/articles?slug={slug})"
+    return hint
+
+
 def main():
     # Read hook input from stdin
     try:
@@ -181,6 +240,16 @@ def main():
     print("Memory hints (from hybrid search):")
     print("\n".join(hints))
     print("  (Search daemon memory for deeper context if needed)")
+
+    # Wiki article hint — additive, independently guarded.
+    # A failure here MUST NOT suppress the memory hints above.
+    try:
+        wiki_results = search_wiki(keywords)
+        if wiki_results:
+            print("Wiki article (curated):")
+            print(format_wiki_hint(wiki_results[0]))
+    except Exception:
+        pass  # Never block on wiki failure
 
 
 if __name__ == "__main__":

@@ -113,11 +113,20 @@ export function _resetVectorForTesting(): void {
   _vectorEnabled = false;
 }
 
+/**
+ * Force-enable (or disable) vector search for testing without loading sqlite-vec.
+ * Use with manually-created vec_memories / vec_memory_map tables and a mock embedder.
+ */
+export function _setVectorEnabledForTesting(val: boolean): void {
+  _vectorEnabled = val;
+}
+
 // ── Helpers ──────────────────────────────────────────────────
 
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { syncToPeers } from '../self-improvement/memory-sync.js';
 import { isCanaryOrFixtureContent, logSkippedFixtureContent } from './memory-fixture-guard.js';
+import { autoLinkMemoryToWiki } from './wiki.js';
 
 function extractId(pathname: string, prefix: string): string | null {
   if (!pathname.startsWith(prefix + '/')) return null;
@@ -282,6 +291,7 @@ export async function storeMemoryInternal(opts: {
   const memory = insert<Memory>('memories', data);
 
   // Auto-generate embedding if vector search is available (non-fatal on failure)
+  let _storedEmbeddingInternal: Float32Array | null = null;
   try {
     if (_vectorEnabled) {
       const embedding = await generateEmbedding(content);
@@ -289,9 +299,25 @@ export async function storeMemoryInternal(opts: {
       const db = getDatabase();
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(buf, memory.id);
       indexEmbedding(memory.id, embedding);
+      _storedEmbeddingInternal = embedding;
     }
   } catch {
     // Embedding failure is non-fatal
+  }
+
+  // Auto-link to wiki articles using the already-computed embedding (config-gated, non-fatal).
+  // Feature defaults OFF — see wiki.autolink.enabled in kithkit.defaults.yaml.
+  if (_storedEmbeddingInternal) {
+    try {
+      await autoLinkMemoryToWiki(
+        memory.id,
+        _storedEmbeddingInternal,
+        tags ?? [],
+        category ?? null,
+      );
+    } catch {
+      // Auto-link failure is non-fatal — never block the memory store
+    }
   }
 }
 
@@ -468,6 +494,7 @@ export async function handleMemoryRoute(
       const memory = insert<Memory>('memories', data);
 
       // Auto-generate embedding if vector search is available
+      let _storedEmbeddingRoute: Float32Array | null = null;
       try {
         if (_vectorEnabled) {
           const embedding = await generateEmbedding(body.content as string);
@@ -475,9 +502,25 @@ export async function handleMemoryRoute(
           const db = getDatabase();
           db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(buf, memory.id);
           indexEmbedding(memory.id, embedding);
+          _storedEmbeddingRoute = embedding;
         }
       } catch {
         // Embedding generation failure is non-fatal — memory is still stored
+      }
+
+      // Auto-link to wiki articles using the already-computed embedding (config-gated, non-fatal).
+      // Feature defaults OFF — see wiki.autolink.enabled in kithkit.defaults.yaml.
+      if (_storedEmbeddingRoute) {
+        try {
+          await autoLinkMemoryToWiki(
+            memory.id,
+            _storedEmbeddingRoute,
+            Array.isArray(body.tags) ? (body.tags as string[]) : [],
+            typeof body.category === 'string' ? body.category : null,
+          );
+        } catch {
+          // Auto-link failure is non-fatal — never block the memory store
+        }
       }
 
       // Async outbound sync to peers (non-blocking, fire-and-forget)

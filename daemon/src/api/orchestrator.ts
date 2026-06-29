@@ -202,14 +202,27 @@ export async function handleOrchestratorRoute(
         log.info('Cancelled pending shutdown timer — new task spawning orchestrator');
       }
 
-      const session = spawnOrchestratorSession();
+      // Bounded retry: transient tmux-socket / name-collision failures should not
+      // permanently fail a fresh task.  Try up to 3 times with 500ms back-off.
+      const SPAWN_MAX_ATTEMPTS = 3;
+      const SPAWN_RETRY_DELAY_MS = 500;
+      let session: string | null = null;
+      for (let attempt = 1; attempt <= SPAWN_MAX_ATTEMPTS; attempt++) {
+        session = spawnOrchestratorSession();
+        if (session) break;
+        if (attempt < SPAWN_MAX_ATTEMPTS) {
+          log.warn('Orchestrator spawn attempt failed — retrying', { attempt, taskId });
+          await new Promise<void>(resolve => setTimeout(resolve, SPAWN_RETRY_DELAY_MS));
+        }
+      }
 
       if (!session) {
-        // Mark task as failed since we couldn't spawn
+        // All attempts exhausted — mark task as failed
         exec(
           `UPDATE tasks SET status = 'failed', error = 'Failed to spawn orchestrator session', updated_at = ? WHERE external_id = ? AND kind = 'orchestrator'`,
           new Date().toISOString(), taskId,
         );
+        log.error('Orchestrator spawn failed after all attempts', { attempts: SPAWN_MAX_ATTEMPTS, taskId });
         json(res, 500, withTimestamp({ error: 'Failed to spawn orchestrator session' }));
         return true;
       }
@@ -222,11 +235,14 @@ export async function handleOrchestratorRoute(
           session, ts, ts, ts,
         );
       } catch {
-        // May already exist from previous run — update instead
+        // May already exist from previous run — update instead.
+        // Reset last_activity to spawn time (#922 facet-b): prevents a fresh orch from
+        // inheriting a dead predecessor's stale last_activity and false-triggering signal(ii).
         update('agents', 'orchestrator', {
           status: 'running',
           tmux_session: session,
           started_at: ts,
+          last_activity: ts,
           updated_at: ts,
         });
       }

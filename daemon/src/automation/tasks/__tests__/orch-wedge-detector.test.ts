@@ -94,6 +94,17 @@ function insertInProgressTask(extId: string, updatedMinutesAgo: number): void {
   );
 }
 
+/** Insert a pending orchestrator task (open-queue entry, not in_progress). */
+function insertPendingTask(extId: string): void {
+  exec(
+    `INSERT INTO tasks (external_id, kind, title, status, created_at, updated_at)
+     VALUES (?, 'orchestrator', 'Pending task', 'pending', ?, ?)`,
+    extId,
+    isoMinutesAgo(30),
+    isoMinutesAgo(30),
+  );
+}
+
 // ── Primary mutation-kill test ─────────────────────────────────
 
 describe('orch-wedge-detector: signal (i) — frozen in_progress task (mutation-kill)', () => {
@@ -219,10 +230,14 @@ describe('orch-wedge-detector: signal (ii) — frozen agents.last_activity', () 
   beforeEach(setup);
   afterEach(teardown);
 
-  it('KILLS orchestrator when alive but last_activity frozen beyond threshold', async () => {
-    // last_activity 20 min ago, no in_progress tasks, normal pane
+  it('KILLS orchestrator when alive but last_activity frozen beyond threshold (with open queue work)', async () => {
+    // last_activity 20 min ago, one pending task in queue, normal pane.
+    // Signal (i) does not fire (no in_progress task). Signal (ii) fires because the
+    // orch has an open pending task it is ignoring while last_activity is frozen.
+    // NOTE: per #922, an orch with frozen last_activity but an EMPTY queue is idle,
+    // not wedged. A pending task is included here so signal(ii) legitimately fires.
     insertOrchAgent(20);
-    // No in_progress tasks — signal (i) does not fire; signal (ii) should
+    insertPendingTask('task-signal2-pending-baseline');
 
     let killCalled = false;
 
@@ -237,12 +252,15 @@ describe('orch-wedge-detector: signal (ii) — frozen agents.last_activity', () 
     await runWatchdog({ wedge_timeout_minutes: 15 });
 
     assert.equal(killCalled, true,
-      'killOrchestratorSession MUST be called when last_activity is frozen beyond threshold');
+      'killOrchestratorSession MUST be called when last_activity is frozen and the orch is ignoring open queue work');
   });
 
   it('respects custom wedge_timeout_minutes config knob', async () => {
-    // last_activity 10 min ago — would NOT trigger at default 15 min, but SHOULD at custom 8 min
+    // last_activity 10 min ago — would NOT trigger at default 15 min, but SHOULD at custom 8 min.
+    // A pending task is present so the idle-queue exemption (#922) does not suppress signal(ii):
+    // the orch has open work it is ignoring.
     insertOrchAgent(10);
+    insertPendingTask('task-knob-test-pending');
 
     let killCalled = false;
 
@@ -266,6 +284,83 @@ describe('orch-wedge-detector: signal (ii) — frozen agents.last_activity', () 
   it('DEFAULT_WEDGE_TIMEOUT_MINUTES is 15 (regression guard)', () => {
     assert.equal(DEFAULT_WEDGE_TIMEOUT_MINUTES, 15,
       'Default wedge timeout must be 15 minutes — change this test if you intentionally change the default');
+  });
+
+  // ── Idle / empty-queue exemption (#922) ───────────────────────────────────
+  //
+  // Signal (ii) — frozen last_activity — must NOT restart the orchestrator when the
+  // task queue is entirely empty (no pending / assigned / in_progress tasks).
+  // An idle orch legitimately has frozen last_activity: it has no turns when there
+  // is nothing to do. This is not a wedge; it is a stood-down state.
+  //
+  // MUTATION-KILL PROOF for the idle-queue exemption:
+  // Revert: remove the empty-queue check so `signalII = true` fires unconditionally
+  //   (restore the old `else { signalII = true; }` without the open-task guard).
+  // Expected: spawnCalled becomes true → test 1 goes RED.
+  // Restored: spawnCalled stays false → test 1 GREEN.
+  //
+  // NARROWNESS: the exemption is scoped tightly — test 2 proves that the same frozen
+  // last_activity WITH a pending task still triggers a restart (orch ignoring open work).
+
+  it('does NOT restart orch when last_activity is frozen and task queue is EMPTY — idle/stood-down exemption (#922) [MUTATION-KILL]', async () => {
+    // last_activity frozen 20 min ago (> 15 min threshold).
+    // NO tasks in queue (pending / assigned / in_progress = 0) — orch is idle.
+    // NO running workers.
+    // Normal pane — signal (iii) does not fire.
+    // Signal (i) does not fire (no in_progress task).
+    // Signal (ii) must NOT fire: empty queue = legitimately idle, not wedged.
+    insertOrchAgent(20);
+    // Intentionally no tasks inserted — queue is empty.
+
+    let spawnCalled = false;
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => { spawnCalled = true; return 'orch-should-not-spawn'; },
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(spawnCalled, false,
+      '#922: spawnOrchestratorSession must NOT be called when last_activity is frozen but the ' +
+      'task queue is empty — the orch is idle/stood-down, not wedged; removing the ' +
+      'idle-queue exemption makes this RED (mutation-kill proof)');
+    assert.equal(killCalled, false,
+      '#922: killOrchestratorSession must NOT be called when orch is idle with empty queue');
+  });
+
+  it('STILL restarts orch when last_activity is frozen, no workers, but a pending task is waiting — exemption is narrow (#922) [NARROWNESS GUARD]', async () => {
+    // last_activity frozen 20 min ago, no running workers, normal pane.
+    // ONE pending task in queue — the orch is ignoring open work.
+    // Signal (i) does not fire (pending != in_progress).
+    // Signal (ii) MUST fire: frozen last_activity + open queue work = wedged.
+    // This test proves the exemption does not mask a genuine stuck-ignoring-queue case.
+    insertOrchAgent(20);
+    insertPendingTask('task-922-narrowness-pending');
+
+    let spawnCalled = false;
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => { spawnCalled = true; return 'orch-respawned-narrowness'; },
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(spawnCalled, true,
+      '#922 narrowness: spawnOrchestratorSession MUST be called when last_activity is frozen ' +
+      'and a pending task is waiting — the exemption must not suppress a wedged orch ignoring open work; ' +
+      'making the exemption unconditional (always skip signal(ii)) would make this RED');
+    assert.equal(killCalled, true,
+      '#922 narrowness: killOrchestratorSession MUST be called when orch is wedged with pending work');
   });
 });
 
@@ -756,10 +851,13 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
    */
   it('STILL restarts orch when last_activity is frozen and NO active workers (real wedge)', async () => {
     // last_activity frozen 20 min ago — signal(ii) fires.
-    // No workers in worker_jobs — no exemption applies.
+    // No running workers — running-worker exemption (#462) does not apply.
+    // A finished job does not count as a running worker.
+    // A pending task is present — orch is ignoring open work, so idle-queue exemption (#922)
+    // does not apply either. This is a real wedge.
     insertOrchAgent(20);
-    // Explicitly no workers inserted — any 'finished' jobs do not count
     insertWorkerJob('worker-finished-1', 'finished');
+    insertPendingTask('task-real-wedge-pending-1');  // open work the orch is ignoring
 
     let killCalled = false;
 
@@ -774,8 +872,8 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
     await runWatchdog({ wedge_timeout_minutes: 15 });
 
     assert.equal(killCalled, true,
-      'Real wedge must still fire when last_activity is frozen and no workers are active — ' +
-      'making the exemption unconditional would make this RED');
+      'Real wedge must still fire when last_activity is frozen, no workers are active, and open work exists — ' +
+      'making the active-worker exemption unconditional would make this RED');
   });
 
   /**
@@ -795,8 +893,11 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
   it('STILL restarts orch when last_activity is frozen and ONLY a queued (not running) worker exists (running-only lock)', async () => {
     // last_activity frozen 20 min ago — signal(ii) should fire.
     // Only a 'queued' job exists — NOT 'running' — so the running-only exemption must NOT apply.
+    // A pending task is present so the idle-queue exemption (#922) also does not apply.
+    // This is a real wedge: orch ignoring open work with no running workers and no runner.
     insertOrchAgent(20);
     insertWorkerJob('worker-queued-only-1', 'queued');
+    insertPendingTask('task-queued-only-pending-1');  // open work the orch is ignoring
 
     let killCalled = false;
     const commsMessages: string[] = [];
@@ -857,5 +958,258 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
       'Pane-content signal (iii) must fire regardless of active workers — ' +
       'garbled pane or feedback prompt is always a real wedge; ' +
       'extending the exemption to cover signal(iii) would make this RED');
+  });
+});
+
+// ── Signal (i) synthesis-grace exemption (#940) ───────────────
+//
+// When the orch has a frozen in_progress task BUT a worker recently completed,
+// signal(i) must be suppressed — the orch is in its synthesis phase.
+// When no worker completed recently (or none at all), signal(i) must STILL fire.
+
+describe('orch-wedge-detector: signal (i) synthesis-grace exemption (#940)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  /** Insert a completed worker_job with finished_at set to the given number of minutes ago. */
+  function insertCompletedWorkerJob(id: string, finishedMinutesAgo: number): void {
+    exec(
+      `INSERT INTO worker_jobs (id, profile, prompt, status, created_at, finished_at)
+       VALUES (?, 'coding', 'test prompt', 'completed', ?, ?)`,
+      id,
+      isoMinutesAgo(60),
+      isoMinutesAgo(finishedMinutesAgo),
+    );
+  }
+
+  /**
+   * Case A — mutation-kill: orch in_progress frozen past threshold AND a worker completed
+   * within the grace window → signal(i) must be SUPPRESSED (no restart).
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: remove the synthesis-grace exemption (leave signalI = true even when recent completion exists).
+   * Expected: killCalled becomes true → test goes RED (restarts orch during synthesis phase).
+   * Restored: killCalled stays false → test GREEN (grace window correctly suppresses the restart).
+   */
+  it('Case A: does NOT restart orch when frozen in_progress task BUT worker completed within grace window', async () => {
+    // Orch alive with fresh last_activity (signal(ii) must NOT fire).
+    insertOrchAgent(5);
+    // in_progress task frozen 20 min ago (> 15 min threshold) — signal(i) would fire without grace.
+    insertInProgressTask('task-940-a', 20);
+    // Worker completed 5 min ago — within the default 15-min grace window.
+    insertCompletedWorkerJob('worker-940-a', 5);
+
+    let killCalled = false;
+    const commsMessages: string[] = [];
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-should-not-spawn',
+      captureOrchestratorPane: () => '> ',  // normal pane — signal(iii) does not fire
+      sendMessage: (msg) => {
+        commsMessages.push(msg.body);
+        return { messageId: 1, delivered: false };
+      },
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15, synthesis_grace_minutes: 15 });
+
+    assert.equal(killCalled, false,
+      '#940 Case A: killOrchestratorSession must NOT be called when in_progress task is frozen ' +
+      'but a worker completed within the synthesis grace window — ' +
+      'reverting the grace exemption makes this RED (mutation-kill proof)');
+
+    const wedgeAlert = commsMessages.find(b => {
+      try { return JSON.parse(b)?.alert === 'orchestrator_wedge_restart'; } catch { return false; }
+    });
+    assert.equal(wedgeAlert, undefined,
+      '#940 Case A: orchestrator_wedge_restart must NOT be sent during synthesis grace window');
+  });
+
+  /**
+   * Case B — narrowness guard: orch in_progress frozen, NO recent worker completion
+   * (last completion older than grace window) → signal(i) must STILL fire (genuine wedge).
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: make the grace exemption unconditional (always suppress signal(i)).
+   * Expected: killCalled stays false → test goes RED (real wedge goes undetected).
+   * Restored: killCalled becomes true → test GREEN (stale completion = no grace = real wedge fires).
+   */
+  it('Case B: STILL restarts orch when in_progress frozen and no recent worker completion (genuine wedge)', async () => {
+    // Orch alive with fresh last_activity (signal(ii) must NOT fire).
+    insertOrchAgent(5);
+    // in_progress task frozen 20 min ago (> 15 min threshold).
+    insertInProgressTask('task-940-b', 20);
+    // Worker completed 30 min ago — OUTSIDE the 15-min grace window — no exemption.
+    insertCompletedWorkerJob('worker-940-b-stale', 30);
+
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-940-b-respawn',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15, synthesis_grace_minutes: 15 });
+
+    assert.equal(killCalled, true,
+      '#940 Case B: killOrchestratorSession MUST be called when in_progress task is frozen ' +
+      'and the last worker completion is older than the grace window — ' +
+      'making the exemption unconditional would make this RED (narrowness guard)');
+  });
+});
+
+// ── Signal (ii) facet-b: started_at freshness guard (#922) ────────────────────
+//
+// R2's exact repro scenario:
+//   - Fresh orch: started_at = now (spawned after the cutoff)
+//   - agents.last_activity = STALE (inherited from dead predecessor — older than threshold)
+//   - PENDING task in queue (non-empty, but not in_progress — signal(i) does not fire)
+//   - NO running worker (active-worker exemption does not apply)
+//
+// Signal(ii) must NOT fire: the orch is only seconds old; the stale last_activity is
+// from a dead predecessor, not a genuine wedge.
+//
+// MUTATION-KILL PROOF:
+//   Revert: remove the `if (startedAt !== null && startedAt >= cutoffIso)` guard
+//   (e.g. delete the started_at column from the SELECT and the guard block).
+//   Expected: killCalled becomes true → test goes RED (fresh orch false-restarted).
+//   Restored: killCalled stays false → test GREEN (fresh orch exempted).
+
+describe('orch-wedge-detector: signal (ii) facet-b — started_at freshness guard (#922)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  /**
+   * Primary mutation-kill test: R2's exact repro.
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: remove the `if (startedAt !== null && startedAt >= cutoffIso)` exemption in
+   * context-watchdog.ts signal(ii) (or remove started_at from the SELECT and the guard block).
+   * Expected: killCalled becomes true → test goes RED (fresh orch is false-restarted on
+   * inherited stale last_activity with a pending task and no running worker).
+   * Restored: killCalled stays false → test GREEN (started_at guard exempts fresh orch).
+   */
+  it('does NOT restart fresh orch when last_activity is stale but started_at is within threshold (#922 repro)', async () => {
+    // Fresh orch: started_at = 1 min ago (well within the 15-min threshold).
+    // last_activity = 20 min ago (stale — inherited from dead predecessor).
+    // This is the exact facet-b scenario: fresh spawn over a dead orch row.
+    insertOrchAgent(20, 1);  // last_activity 20 min ago, started_at 1 min ago
+
+    // Pending task in queue — ensures the queue is non-empty (R2's repro had awaiting_plan_approval).
+    // Status is 'pending', NOT 'in_progress', so signal(i) does NOT fire.
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, status, created_at, updated_at)
+       VALUES ('task-facetb-pending', 'orchestrator', 'Awaiting plan approval', 'pending', ?, ?)`,
+      isoMinutesAgo(60),
+      isoMinutesAgo(30),
+    );
+
+    // No running workers — active-worker exemption (#462) does NOT apply.
+    // This isolates the facet-b guard as the sole reason for exemption.
+
+    let killCalled = false;
+    const commsMessages: string[] = [];
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-should-not-spawn',
+      captureOrchestratorPane: () => '> ',  // normal pane — signal(iii) does not fire
+      sendMessage: (msg) => {
+        commsMessages.push(msg.body);
+        return { messageId: 1, delivered: false };
+      },
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, false,
+      '#922 facet-b: killOrchestratorSession must NOT be called when last_activity is stale ' +
+      'but started_at is within the threshold — fresh orch cannot have been frozen for the ' +
+      'threshold duration; removing the started_at guard makes this RED (mutation-kill proof)');
+
+    const wedgeAlert = commsMessages.find(b => {
+      try { return JSON.parse(b)?.alert === 'orchestrator_wedge_restart'; } catch { return false; }
+    });
+    assert.equal(wedgeAlert, undefined,
+      '#922 facet-b: orchestrator_wedge_restart alert must NOT be sent for a fresh orch');
+  });
+
+  /**
+   * Narrowness guard: an orch with stale BOTH last_activity AND started_at must still be restarted.
+   *
+   * Ensures the facet-b guard does not accidentally exempt genuinely-wedged orchs
+   * whose started_at pre-dates the cutoff.
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: make the started_at guard unconditional (always suppress signal(ii)).
+   * Expected: killCalled stays false → test goes RED (genuine wedge goes undetected).
+   * Restored: killCalled becomes true → test GREEN (stale started_at = no exemption = real wedge fires).
+   */
+  it('STILL restarts orch when both last_activity and started_at are stale (genuine wedge, narrowness guard)', async () => {
+    // Old orch: started_at = 60 min ago (well beyond the 15-min threshold).
+    // last_activity = 20 min ago (stale — genuine wedge, not inherited stamp).
+    // Both fields predate the cutoff → no freshness exemption → signal(ii) must fire.
+    insertOrchAgent(20, 60);  // last_activity 20 min ago, started_at 60 min ago
+
+    // A pending task is present so the idle-queue exemption (#922/#475) does NOT apply.
+    // Without this the test passes for the wrong reason: the empty-queue exemption
+    // suppresses signal(ii) before the started_at guard is ever the deciding factor.
+    // With a pending task, all 3 exemptions are traversed and signal(ii) fires correctly.
+    insertPendingTask('task-922-narrowness-stale-pending-1');
+
+    // No workers — active-worker exemption (#462) does not apply.
+
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-922-genuine-respawn',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, true,
+      '#922 narrowness: killOrchestratorSession MUST be called when both last_activity and ' +
+      'started_at are stale (genuine wedge, not a fresh-spawn scenario) — ' +
+      'making the started_at guard unconditional would make this RED');
+  });
+
+  /**
+   * Near-boundary: orch started_at just inside the threshold (14 min ago with a 15-min threshold)
+   * must be treated as fresh and NOT restarted.
+   *
+   * Ensures that any spawn within the threshold window is correctly exempted, not just
+   * extreme near-zero cases. This also validates the >= semantics (14 min ago is clearly
+   * inside the window: started_at > cutoffIso because 14-min-ago > 15-min-ago).
+   */
+  it('exempts orch whose started_at is just inside the threshold window (14 min ago, 15-min threshold)', async () => {
+    // started_at 14 min ago — just inside the 15-min threshold (started after cutoff).
+    // last_activity 20 min ago — stale (beyond threshold), as if inherited from predecessor.
+    insertOrchAgent(20, 14);  // last_activity 20 min ago, started_at 14 min ago
+
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-near-boundary-spawn',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, false,
+      '#922 near-boundary: orch with started_at 14 min ago (inside 15-min threshold) must NOT be restarted — ' +
+      'stale last_activity from a dead predecessor should not false-trigger when orch spawned inside the window');
   });
 });

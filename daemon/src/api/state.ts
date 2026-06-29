@@ -37,6 +37,7 @@ interface Todo {
   due_date: string | null;
   tags: string; // JSON
   snooze_until: string | null;
+  source: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -203,6 +204,8 @@ export async function handleStateRoute(
       if (status && VALID_TODO_STATUSES.includes(status)) filter.status = status;
       const priority = searchParams.get('priority');
       if (priority && VALID_PRIORITIES.includes(priority)) filter.priority = priority;
+      const source = searchParams.get('source');
+      if (source) filter.source = source;
       const todos = list<Todo>('tasks', filter, 'created_at DESC');
       json(res, 200, withTimestamp({ data: todos.map(mapTodoResponse) }));
       return true;
@@ -232,6 +235,14 @@ export async function handleStateRoute(
       if (incomingStatus) data.status = incomingStatus;
       if (body.due_date) data.due_date = body.due_date;
       if (body.tags) data.tags = JSON.stringify(body.tags);
+      // Source: use explicit value from body, or fall back to todos.default_source from config
+      if (body.source !== undefined && body.source !== null) {
+        data.source = body.source;
+      } else {
+        const todosConfig = (loadConfig() as unknown as Record<string, unknown>)['todos'] as
+          { default_source?: string } | undefined;
+        if (todosConfig?.default_source) data.source = todosConfig.default_source;
+      }
 
       const todo = insert<Todo>('tasks', data);
       // Native-first: do NOT stamp external_id on new todos — native tasks.id is the

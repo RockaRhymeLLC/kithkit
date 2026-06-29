@@ -261,6 +261,9 @@ function monitorOrchestrator(): void {
 /** Default N (minutes) before a live orch with no progress is considered wedged. */
 export const DEFAULT_WEDGE_TIMEOUT_MINUTES = 15;
 
+/** Default grace window (minutes) after a worker completes during which signal(i) is suppressed (#940). */
+export const DEFAULT_SYNTHESIS_GRACE_MINUTES = 15;
+
 // Patterns that indicate the orch pane is showing the feedback prompt (signal iii-a)
 const FEEDBACK_PROMPT_PATTERNS = [
   /How is Claude doing this session/i,
@@ -393,10 +396,13 @@ function restartWedgedOrchestrator(reason: string): void {
         session, ts, ts, ts,
       );
     } catch {
+      // Reset last_activity to respawn time (#922 facet-b): prevents the respawned orch
+      // from inheriting the previous orch's stale last_activity on subsequent watchdog ticks.
       update('agents', 'orchestrator', {
         status: 'running',
         tmux_session: session,
         started_at: ts,
+        last_activity: ts,
         updated_at: ts,
       });
     }
@@ -457,7 +463,78 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
     log.debug('Wedge detector: could not query in_progress tasks', { error: String(err) });
   }
 
+  // Signal (i) synthesis-grace exemption (#940):
+  // When signalI fires but the orchestrator recently had a worker complete, it is
+  // legitimately in its synthesis phase (processing results). Exempt to avoid
+  // restarting a healthy orch that simply hasn't written its task update yet.
+  // FAIL-SAFE: any query error leaves signalI as-is (conservative — never masks a real wedge).
+  if (signalI) {
+    const graceMinutes = typeof config.synthesis_grace_minutes === 'number'
+      ? config.synthesis_grace_minutes
+      : DEFAULT_SYNTHESIS_GRACE_MINUTES;
+    const graceCutoffIso = new Date(Date.now() - graceMinutes * 60 * 1000).toISOString();
+    try {
+      const recentCompletionRows = query<{ finished_at: string | null }>(
+        `SELECT MAX(finished_at) as finished_at FROM worker_jobs WHERE status = 'completed'`,
+      );
+      const lastCompleted = recentCompletionRows[0]?.finished_at ?? null;
+      if (lastCompleted !== null && lastCompleted >= graceCutoffIso) {
+        log.debug(
+          'Wedge detector: signal(i) suppressed — worker completed within synthesis grace window (#940)',
+          { lastCompleted, graceMinutes, graceCutoffIso },
+        );
+        signalI = false;
+      }
+    } catch (err) {
+      // FAIL-SAFE: do NOT exempt on query error — treat as no recent completion
+      log.debug('Wedge detector: could not query worker_jobs for synthesis grace (#940)', { error: String(err) });
+    }
+  }
+
+  // Signal (i) active-running-worker exemption (#462):
+  // When the orchestrator is waiting for a currently-running worker whose runtime exceeds
+  // the wedge threshold, the in_progress task's updated_at is legitimately frozen — the orch
+  // has no turns of its own while waiting on the worker. Restarting here would kill a healthy
+  // orch mid-work. This mirrors the #462 exemption already applied to signal(ii).
+  //
+  // Only status='running' qualifies — a 'queued' job that never dispatches would exempt a
+  // genuinely-wedged orch indefinitely (queued-inflation failure seen 2026-06-17). 'queued'
+  // adds no protection for a healthy orch waiting on real work anyway.
+  //
+  // Composes with #940: either exemption (running worker OR recent completion within grace)
+  // suppresses signal(i). The #940 check above may have already cleared signalI; this block
+  // only runs if signalI is still true.
+  //
+  // FAIL-SAFE: on query error, do NOT exempt (leave signalI as-is) — never mask a real wedge.
+  if (signalI) {
+    try {
+      const runningWorkerRows = query<{ count: number }>(
+        "SELECT COUNT(*) as count FROM worker_jobs WHERE status = 'running'",
+      );
+      if ((runningWorkerRows[0]?.count ?? 0) > 0) {
+        log.debug(
+          'Wedge detector: signal(i) suppressed — running worker(s) present, orch is healthy-waiting (#462)',
+          { activeWorkerCount: runningWorkerRows[0]?.count ?? 0, cutoffIso },
+        );
+        signalI = false;
+      }
+    } catch (err) {
+      // FAIL-SAFE: do NOT exempt on query error — treat as no running workers
+      log.debug('Wedge detector: could not query worker_jobs for running-worker exemption (#462)', { error: String(err) });
+    }
+  }
+
   // Signal (ii): agents.last_activity frozen for > threshold (while orch alive)
+  //
+  // FACET-B FRESHNESS GUARD (#922): When a fresh orchestrator is spawned over a dead
+  // predecessor, the agents row's last_activity is NOT reset on spawn — the fresh orch
+  // inherits the prior dead orch's stale stamp. With a non-empty queue and no running
+  // worker, signal(ii) would false-fire and restart an orch that is only seconds old.
+  //
+  // Fix: also read started_at from the same row. If the orch was spawned AFTER the
+  // cutoff (started_at >= cutoffIso), it cannot have been frozen for the threshold
+  // duration — skip signal(ii). The stale last_activity is from a dead predecessor,
+  // not a genuine wedge.
   //
   // ACTIVE-WORKER EXEMPTION (#462): When the orchestrator is waiting for a long-running
   // worker (runtime > wedge threshold), its last_activity is legitimately frozen — it
@@ -471,27 +548,78 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
   // healthy-waiting. Signal (ii) only fires when last_activity is already frozen >15m,
   // so 'queued' adds no protection for healthy orchs anyway.
   //
-  // Signals (i) and (iii) are NOT exempted: a frozen task updated_at or a garbled
-  // pane is always a real wedge regardless of whether workers are running.
+  // Signal (i) IS now running-worker-exempted (#462) — see the block above: if a worker
+  // is actively running, the in_progress task's frozen updated_at is expected (orch is
+  // healthy-waiting). Signal (iii) remains fully unexempted: a garbled pane is always a
+  // real wedge regardless of whether workers are running. Note: only status='running'
+  // qualifies for the exemption — 'queued' must NOT exempt, per #462's rationale.
   let signalII = false;
   let lastActivity: string | null = null;
   try {
-    const agentRows = query<{ last_activity: string | null }>(
-      "SELECT last_activity FROM agents WHERE id = 'orchestrator'",
+    const agentRows = query<{ last_activity: string | null; started_at: string | null }>(
+      "SELECT last_activity, started_at FROM agents WHERE id = 'orchestrator'",
     );
     lastActivity = agentRows[0]?.last_activity ?? null;
     if (lastActivity !== null && lastActivity < cutoffIso) {
-      const activeWorkerRows = query<{ count: number }>(
-        "SELECT COUNT(*) as count FROM worker_jobs WHERE status = 'running'",
-      );
-      if ((activeWorkerRows[0]?.count ?? 0) > 0) {
+      // FACET-B guard (#922): fresh orch inheriting a dead predecessor's stale stamp
+      const startedAt = agentRows[0]?.started_at ?? null;
+      if (startedAt !== null && startedAt >= cutoffIso) {
         log.debug(
-          'Wedge detector: last_activity frozen but running worker(s) present — orch is healthy-waiting, exempting signal(ii) (#462)',
-          { lastActivity, activeWorkerCount: activeWorkerRows[0]?.count ?? 0, cutoffIso },
+          'Wedge detector: last_activity frozen but orch spawned after cutoff — fresh orch inheriting predecessor stamp, exempting signal(ii) (#922)',
+          { lastActivity, startedAt, cutoffIso },
         );
-        // signalII stays false — frozen last_activity is expected during long worker wait
+        // signalII stays false — fresh orch cannot have been genuinely frozen for threshold duration
       } else {
-        signalII = true;
+        const activeWorkerRows = query<{ count: number }>(
+          "SELECT COUNT(*) as count FROM worker_jobs WHERE status = 'running'",
+        );
+        if ((activeWorkerRows[0]?.count ?? 0) > 0) {
+          log.debug(
+            'Wedge detector: last_activity frozen but running worker(s) present — orch is healthy-waiting, exempting signal(ii) (#462)',
+            { lastActivity, activeWorkerCount: activeWorkerRows[0]?.count ?? 0, cutoffIso },
+          );
+          // signalII stays false — frozen last_activity is expected during long worker wait
+        } else {
+          // No running workers — check whether the task queue has any open work.
+          //
+          // IDLE / EMPTY-QUEUE EXEMPTION (#922):
+          // A bare frozen last_activity with an EMPTY task queue means the orchestrator is
+          // legitimately idle (stood down / waiting for new work) — it has no turns when there
+          // is nothing to do. This is NOT a wedge. Signal(ii) must only fire when the orch is
+          // provably ignoring open work (pending / assigned / in_progress tasks it should be
+          // acting on). Without this guard the wedge detector false-restarts an idle orch every
+          // ~15 min: last_activity stays frozen, no workers, queue empty → signal(ii) fires →
+          // respawn → perpetual false-wedge cycle.
+          //
+          // Signals (i) and (iii) remain fully unexempted: a frozen in_progress task updated_at
+          // or a garbled pane is always a real wedge regardless of queue state.
+          //
+          // FAIL SAFE: on query error, default to existing behavior (treat as wedged) so a
+          // genuinely-wedged orch is never silently masked by a transient DB error.
+          try {
+            const openTaskRows = query<{ count: number }>(
+              "SELECT COUNT(*) as count FROM tasks WHERE kind = 'orchestrator' AND status IN ('pending','assigned','in_progress')",
+            );
+            const openTaskCount = openTaskRows[0]?.count ?? 0;
+            if (openTaskCount === 0) {
+              log.debug(
+                'Wedge detector: last_activity frozen but task queue is empty — orch is idle/stood-down, exempting signal(ii) (#922)',
+                { lastActivity, cutoffIso },
+              );
+              // signalII stays false — empty queue means idle, not wedged
+            } else {
+              signalII = true;
+            }
+          } catch (err) {
+            // Fail safe toward existing behavior: if the open-task count cannot be
+            // determined, do not suppress — a genuinely-wedged orch must not be masked.
+            log.debug(
+              'Wedge detector: could not query open task count for idle-queue exemption — failing safe, signal(ii) fires (#922)',
+              { error: String(err) },
+            );
+            signalII = true;
+          }
+        }
       }
     }
   } catch (err) {

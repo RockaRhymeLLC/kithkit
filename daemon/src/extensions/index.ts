@@ -48,6 +48,7 @@ import { registerCoreTasks } from '../automation/tasks/index.js';
 import { JobsWatcher } from '../automation/jobs-watcher.js';
 import { commsSessionExists } from '../core/session-bridge.js';
 import { enableVectorSearch } from '../api/memory.js';
+import { initWikiVectorSearch } from '../api/wiki.js';
 import { startEmbedWorker, stopEmbedWorker } from '../memory/embed-client.js';
 import { getProjectDir } from '../core/config.js';
 import { readKeychain } from '../core/keychain.js';
@@ -486,6 +487,9 @@ async function onInit(config: KithkitConfig, _server: http.Server): Promise<void
 
   // Enable vector search (sqlite-vec + ONNX embeddings)
   enableVectorSearch();
+
+  // Enable wiki vector search (creates wiki_vec and vec_wiki_map after sqlite-vec loads)
+  initWikiVectorSearch();
 
   // Initialize agent-to-agent comms (LAN + P2P SDK)
   initAgentComms(_config);

@@ -183,6 +183,21 @@ export interface FeaturesConfig {
   conversation_persistence?: boolean;
 }
 
+export interface WikiAutolinkConfig {
+  /** Whether auto-linking is enabled. MUST default to false — opt-in only. */
+  enabled: boolean;
+  /** Minimum cosine similarity for a wiki article to be linked (0–1). */
+  similarity_threshold: number;
+  /** Maximum number of wiki articles to link per memory store. */
+  max_links: number;
+  /** When true, only link articles that share at least one tag or category with the memory. */
+  require_shared_tag: boolean;
+}
+
+export interface WikiConfig {
+  autolink: WikiAutolinkConfig;
+}
+
 export interface KithkitConfig {
   agent: AgentConfig;
   tmux?: TmuxConfig;
@@ -207,11 +222,17 @@ export interface KithkitConfig {
    * See approval-workflow.md for the full spec.
    */
   approval_policies?: ApprovalPolicies;
+  /**
+   * Agent-Wiki Bridge configuration.
+   * See docs/specs/20260626-agent-wiki-bridge.spec.md §5 (Phase 2).
+   */
+  wiki?: WikiConfig;
 }
 
 // ── Defaults ─────────────────────────────────────────────────
 
-const DEFAULTS: KithkitConfig = {
+// Exported for testing only — read-only reference to the in-code defaults object.
+export const DEFAULTS: KithkitConfig = {
   agent: { name: 'Assistant' },
   daemon: {
     port: 3847,
@@ -239,6 +260,14 @@ const DEFAULTS: KithkitConfig = {
   },
   email: {
     fastmail_jmap_session_url: 'https://api.fastmail.com/.well-known/jmap',
+  },
+  wiki: {
+    autolink: {
+      enabled: false,           // DEFAULT OFF — must remain false unless explicitly opted in
+      similarity_threshold: 0.75,
+      max_links: 1,
+      require_shared_tag: true,
+    },
   },
 };
 
