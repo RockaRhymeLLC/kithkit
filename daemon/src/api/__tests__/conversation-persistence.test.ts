@@ -3,6 +3,8 @@
  * 1. Outbound flag+scope gating (captured vs excluded)
  * 2. API endpoint token gating
  * 3. Archival move logic
+ * 4. Real-seam gate: drives actual channel-router routeMessage() to verify the
+ *    loadConfig().features?.conversation_persistence guard in channel-router.ts
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -11,9 +13,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type http from 'node:http';
-import { openDatabase, _resetDbForTesting, getDatabase, insert, query } from '../../core/db.js';
+import { openDatabase, closeDatabase, _resetDbForTesting, getDatabase, insert, query } from '../../core/db.js';
 import { issueToken } from '../../auth/agent-tokens.js';
 import { handleConversationMessagesRoute } from '../conversation-messages.js';
+import {
+  routeMessage,
+  registerAdapter,
+  _resetForTesting as _resetChannelRouterForTesting,
+} from '../../comms/channel-router.js';
+import { loadConfig, _resetConfigForTesting } from '../../core/config.js';
+import type { ChannelAdapter } from '../../comms/adapter.js';
 
 // ── Test helpers ─────────────────────────────────────────────
 
@@ -316,5 +325,93 @@ describe('GET /api/conversation-messages: token gating', { concurrency: 1 }, () 
       new URLSearchParams(),
     );
     assert.equal(handled, false);
+  });
+});
+
+// ── Real-seam gate: drives the ACTUAL channel-router code path ────────
+//
+// R2 concern: the tests above re-implement the predicate locally (evalPredicate)
+// so they don't catch a deleted/bypassed gate in channel-router.ts itself.
+// These tests import and exercise routeMessage() directly — no re-implementation.
+// MUTATION-KILL PROOF: temporarily remove the `if (loadConfig().features?.conversation_persistence)`
+// guard in channel-router.ts and the "flag OFF → 0 rows" test goes RED.
+
+/** Build a minimal stub adapter that records send calls but returns true. */
+function makeStubAdapter(channelName: string): ChannelAdapter & { sends: number } {
+  return {
+    name: channelName,
+    sends: 0,
+    async send() { this.sends++; return true; },
+    async receive() { return []; },
+    formatMessage(text) { return text; },
+    capabilities() {
+      return { markdown: false, images: false, buttons: false, html: false, maxLength: null };
+    },
+  };
+}
+
+describe('channel-router: real-seam conversation_persistence gate', { concurrency: 1 }, () => {
+  let seamDir: string;
+
+  beforeEach(() => {
+    seamDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-cr-seam-'));
+    _resetDbForTesting();
+    openDatabase(seamDir, path.join(seamDir, 'test.db'));
+    _resetChannelRouterForTesting();
+    _resetConfigForTesting();
+  });
+
+  afterEach(() => {
+    _resetChannelRouterForTesting();
+    _resetConfigForTesting();
+    closeDatabase();
+    _resetDbForTesting();
+    fs.rmSync(seamDir, { recursive: true, force: true });
+  });
+
+  it('flag OFF (default) → routeMessage persists 0 rows to conversation_messages', async () => {
+    // No features.conversation_persistence in config → defaults to false/absent
+    fs.writeFileSync(
+      path.join(seamDir, 'kithkit.config.yaml'),
+      'agent:\n  name: TestAgent\n',
+    );
+    loadConfig(seamDir);
+
+    const stub = makeStubAdapter('telegram');
+    registerAdapter(stub);
+
+    await routeMessage(
+      { text: 'hello from comms', metadata: { sender_agent: 'comms', recipients: [] } },
+      ['telegram'],
+    );
+
+    const rows = query<{ id: number }>('SELECT id FROM conversation_messages');
+    assert.equal(rows.length, 0, 'flag=OFF: gate must suppress persistence; 0 rows expected');
+  });
+
+  it('flag ON + comms/telegram message → routeMessage persists exactly 1 row', async () => {
+    fs.writeFileSync(
+      path.join(seamDir, 'kithkit.config.yaml'),
+      [
+        'agent:',
+        '  name: TestAgent',
+        'features:',
+        '  conversation_persistence: true',
+      ].join('\n'),
+    );
+    loadConfig(seamDir);
+
+    const stub = makeStubAdapter('telegram');
+    registerAdapter(stub);
+
+    await routeMessage(
+      { text: 'hello from comms', metadata: { sender_agent: 'comms', recipients: [] } },
+      ['telegram'],
+    );
+
+    const rows = query<{ direction: string; channel: string }>('SELECT direction, channel FROM conversation_messages');
+    assert.equal(rows.length, 1, 'flag=ON: exactly 1 row must be persisted');
+    assert.equal(rows[0]!.direction, 'outbound');
+    assert.equal(rows[0]!.channel, 'telegram');
   });
 });
