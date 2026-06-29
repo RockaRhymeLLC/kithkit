@@ -491,6 +491,39 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
     }
   }
 
+  // Signal (i) active-running-worker exemption (#462):
+  // When the orchestrator is waiting for a currently-running worker whose runtime exceeds
+  // the wedge threshold, the in_progress task's updated_at is legitimately frozen — the orch
+  // has no turns of its own while waiting on the worker. Restarting here would kill a healthy
+  // orch mid-work. This mirrors the #462 exemption already applied to signal(ii).
+  //
+  // Only status='running' qualifies — a 'queued' job that never dispatches would exempt a
+  // genuinely-wedged orch indefinitely (queued-inflation failure seen 2026-06-17). 'queued'
+  // adds no protection for a healthy orch waiting on real work anyway.
+  //
+  // Composes with #940: either exemption (running worker OR recent completion within grace)
+  // suppresses signal(i). The #940 check above may have already cleared signalI; this block
+  // only runs if signalI is still true.
+  //
+  // FAIL-SAFE: on query error, do NOT exempt (leave signalI as-is) — never mask a real wedge.
+  if (signalI) {
+    try {
+      const runningWorkerRows = query<{ count: number }>(
+        "SELECT COUNT(*) as count FROM worker_jobs WHERE status = 'running'",
+      );
+      if ((runningWorkerRows[0]?.count ?? 0) > 0) {
+        log.debug(
+          'Wedge detector: signal(i) suppressed — running worker(s) present, orch is healthy-waiting (#462)',
+          { activeWorkerCount: runningWorkerRows[0]?.count ?? 0, cutoffIso },
+        );
+        signalI = false;
+      }
+    } catch (err) {
+      // FAIL-SAFE: do NOT exempt on query error — treat as no running workers
+      log.debug('Wedge detector: could not query worker_jobs for running-worker exemption (#462)', { error: String(err) });
+    }
+  }
+
   // Signal (ii): agents.last_activity frozen for > threshold (while orch alive)
   //
   // FACET-B FRESHNESS GUARD (#922): When a fresh orchestrator is spawned over a dead
@@ -515,8 +548,11 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
   // healthy-waiting. Signal (ii) only fires when last_activity is already frozen >15m,
   // so 'queued' adds no protection for healthy orchs anyway.
   //
-  // Signals (i) and (iii) are NOT exempted: a frozen task updated_at or a garbled
-  // pane is always a real wedge regardless of whether workers are running.
+  // Signal (i) IS now running-worker-exempted (#462) — see the block above: if a worker
+  // is actively running, the in_progress task's frozen updated_at is expected (orch is
+  // healthy-waiting). Signal (iii) remains fully unexempted: a garbled pane is always a
+  // real wedge regardless of whether workers are running. Note: only status='running'
+  // qualifies for the exemption — 'queued' must NOT exempt, per #462's rationale.
   let signalII = false;
   let lastActivity: string | null = null;
   try {
