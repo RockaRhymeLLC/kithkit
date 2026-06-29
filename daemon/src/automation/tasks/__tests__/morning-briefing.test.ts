@@ -51,7 +51,7 @@ function seedTodo(
   status: string = 'pending',
 ): void {
   exec(
-    `INSERT INTO todos (title, priority, status) VALUES (?, ?, ?)`,
+    `INSERT INTO tasks (kind, title, priority, status) VALUES ('todo', ?, ?, ?)`,
     title,
     priority,
     status,
@@ -137,8 +137,8 @@ describe('morning-briefing gatherTodos — todo bounding (t-briefing-bound)', ()
   it('done and cancelled todos are excluded from the count and display', () => {
     seedTodo('Active pending', 'high', 'pending');
     seedTodo('Active in_progress', 'medium', 'in_progress');
-    seedTodo('Done — should be hidden', 'high', 'done');
-    seedTodo('Cancelled — should be hidden', 'critical', 'cancelled');
+    seedTodo('Completed — should be hidden', 'high', 'completed');
+    seedTodo('Cancelled — should be hidden', 'low', 'cancelled');
 
     const result = gatherTodos();
     const lines = result.split('\n');
@@ -146,13 +146,13 @@ describe('morning-briefing gatherTodos — todo bounding (t-briefing-bound)', ()
 
     // Only the 2 open ones should appear
     assert.equal(bulletLines.length, 2, 'Only non-done, non-cancelled todos shown');
-    assert.ok(!result.includes('Done — should be hidden'), 'Done todo must not appear');
+    assert.ok(!result.includes('Completed — should be hidden'), 'Completed todo must not appear');
     assert.ok(!result.includes('Cancelled — should be hidden'), 'Cancelled todo must not appear');
   });
 
   it('zero open todos → returns "No open todos." sentinel', () => {
     // Seed only closed todos — nothing open
-    seedTodo('Already done', 'medium', 'done');
+    seedTodo('Already completed', 'medium', 'completed');
 
     const result = gatherTodos();
     assert.equal(result, 'No open todos.');

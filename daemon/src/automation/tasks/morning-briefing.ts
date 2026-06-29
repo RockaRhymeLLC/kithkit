@@ -380,25 +380,51 @@ async function gatherReminders(): Promise<string> {
 const TODO_CAP = 20;
 
 /**
- * Fetch open to-dos from the daemon DB, bounded to TODO_CAP.
+ * Fetch open to-dos from the unified tasks table, bounded to TODO_CAP.
  * Sorted by priority descending (critical first) then recency
  * (most recently updated first).
  *
+ * When audienceSource is provided, only todos matching that source value
+ * are returned — preventing cross-audience data leakage in briefings.
+ *
  * Exported for unit testing.
  */
-export function gatherTodos(): string {
+export function gatherTodos(audienceSource?: string): string {
   try {
+    let sql: string;
+    let params: unknown[];
+
+    if (audienceSource !== undefined) {
+      sql = `SELECT id, title, priority, due_date FROM tasks
+             WHERE kind = 'todo'
+             AND status NOT IN ('completed', 'cancelled', 'done')
+             AND source = ?
+             ORDER BY CASE priority
+               WHEN 'critical' THEN 0
+               WHEN 'high'     THEN 1
+               WHEN 'medium'   THEN 2
+               WHEN 'low'      THEN 3
+               ELSE                 4
+             END ASC,
+             updated_at DESC`;
+      params = [audienceSource];
+    } else {
+      sql = `SELECT id, title, priority, due_date FROM tasks
+             WHERE kind = 'todo'
+             AND status NOT IN ('completed', 'cancelled', 'done')
+             ORDER BY CASE priority
+               WHEN 'critical' THEN 0
+               WHEN 'high'     THEN 1
+               WHEN 'medium'   THEN 2
+               WHEN 'low'      THEN 3
+               ELSE                 4
+             END ASC,
+             updated_at DESC`;
+      params = [];
+    }
+
     const rows = query<{ id: number; title: string; priority: string; due_date: string | null }>(
-      `SELECT id, title, priority, due_date FROM todos
-       WHERE status NOT IN ('done', 'cancelled')
-       ORDER BY CASE priority
-         WHEN 'critical' THEN 0
-         WHEN 'high'     THEN 1
-         WHEN 'medium'   THEN 2
-         WHEN 'low'      THEN 3
-         ELSE                 4
-       END ASC,
-       updated_at DESC`,
+      sql, ...params,
     );
 
     if (rows.length === 0) return 'No open todos.';
@@ -533,9 +559,13 @@ async function run(config: Record<string, unknown>): Promise<string> {
 
   // Synchronous DB/filesystem queries
   const internalCal = gatherInternalCalendar();
-  const todos = gatherTodos();
   const email = gatherEmailSummary();
   const overnight = gatherOvernightMessages();
+
+  // Audience-scoped todos: only include when todo_source is explicitly configured.
+  // This prevents dumping unscoped todos into a briefing intended for a specific audience.
+  const todoSource = config.todo_source as string | undefined;
+  const todosSection = todoSource ? gatherTodos(todoSource) : null;
 
   // Format as Telegram-friendly HTML
   const parts: string[] = [
@@ -549,10 +579,13 @@ async function run(config: Record<string, unknown>): Promise<string> {
   ];
 
   parts.push('', '<b>Reminders</b>', reminders);
-  parts.push('', '<b>To-Dos</b>', todos);
 
   if (internalCal) {
     parts.push('', '<b>Agent Notes</b>', internalCal);
+  }
+
+  if (todosSection !== null) {
+    parts.push('', '<b>To-Dos</b>', todosSection);
   }
 
   if (email !== 'No recent email data.') {
