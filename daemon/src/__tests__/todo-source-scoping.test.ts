@@ -17,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { openDatabase, _resetDbForTesting, exec, query, getDatabase } from '../core/db.js';
-import { _resetConfigForTesting } from '../core/config.js';
+import { _resetConfigForTesting, loadConfig } from '../core/config.js';
 import { handleStateRoute } from '../api/state.js';
 import { gatherTodos } from '../automation/tasks/morning-briefing.js';
 
@@ -64,6 +64,10 @@ function setup(): Promise<void> {
   _resetDbForTesting();
   _resetConfigForTesting();
   openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+  // Prime config from tmpDir (fresh temp dir has no kithkit.config.yaml → no
+  // todos.default_source). Without this, loadConfig() in the POST handler falls
+  // back to process.cwd() which may have an instance-specific default_source.
+  loadConfig(tmpDir);
 
   server = http.createServer((inReq, res) => {
     const url = new URL(inReq.url ?? '/', `http://localhost:${TEST_PORT}`);
@@ -174,13 +178,6 @@ describe('Todo source scoping', { concurrency: 1 }, () => {
       // Reset config cache so it re-reads from tmpDir
       _resetConfigForTesting();
       // Reload config from tmpDir (simulates a running daemon in that dir)
-      // The loadConfig call in state.ts uses process.cwd() or cached dir.
-      // We need to trigger a re-read from the correct path.
-      // Since config is cached and loadConfig() uses _projectDir or cwd,
-      // we write the config and reset so the next call re-reads it from cwd.
-      // Override process.cwd to tmpDir isn't feasible, so we use the import path.
-      // Instead, import and call loadConfig with projectDir explicitly.
-      const { loadConfig } = await import('../core/config.js');
       loadConfig(tmpDir);
 
       const res = await request('POST', '/api/todos', { title: 'Default source todo' });
