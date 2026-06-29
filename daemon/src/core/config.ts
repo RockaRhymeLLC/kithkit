@@ -177,6 +177,12 @@ export interface ApprovalPolicies {
   [channel: string]: ApprovalPolicyEntry;
 }
 
+/** Optional feature toggles — all default to false/disabled. */
+export interface FeaturesConfig {
+  /** Persist inbound and outbound channel messages to conversation_messages table. */
+  conversation_persistence?: boolean;
+}
+
 export interface WikiAutolinkConfig {
   /** Whether auto-linking is enabled. MUST default to false — opt-in only. */
   enabled: boolean;
@@ -208,6 +214,8 @@ export interface KithkitConfig {
   email?: EmailConfig;
   calendar?: CalendarConfig;
   self_improvement?: Record<string, unknown>;
+  /** Feature toggles — opt-in capabilities disabled by default. */
+  features?: FeaturesConfig;
   /**
    * Outbound-send approval policies, keyed by channel/capability identifier.
    * If a channel has no entry, it is not gated (passes through).

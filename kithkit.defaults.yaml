@@ -280,6 +280,16 @@ self_improvement:
 # Start with 'all' for any capability that sends outbound communications.
 approval_policies: {}
 
+# ── Feature toggles ───────────────────────────────────────────
+# Opt-in capabilities that are DISABLED by default. Enable them in your
+# kithkit.config.yaml when the underlying infrastructure is in place.
+features:
+  # When true, inbound and outbound channel messages are persisted to the
+  # conversation_messages SQLite table at the channel seam. Requires
+  # migration 039-conversation-messages.sql to have run. Safe to enable
+  # on any install that has run migrations. Default: false.
+  conversation_persistence: false
+
 # Agent-Wiki Bridge (Phase 2) — memory <-> article auto-linking.
 # DEFAULT OFF — set enabled: true only after Phase 1 is validated in production.
 # See docs/specs/20260626-agent-wiki-bridge.spec.md §5 Phase 2, item 1.

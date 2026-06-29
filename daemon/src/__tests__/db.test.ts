@@ -27,14 +27,18 @@ import {
 
 const EXPECTED_TABLES = [
   'agent_activity_log',
+  'agent_sent_recipients',
   'agent_tokens',
   'agents',
   'api_metrics_hourly',
   'api_request_logs',
+  'approval_decisions',
   'calendar',
   'config',
   'contact_actions',
   'contacts',
+  'conversation_messages',
+  'conversation_messages_archive',
   'feature_state',
   'memories',
   'messages',
