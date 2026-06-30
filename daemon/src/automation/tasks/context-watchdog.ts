@@ -350,6 +350,11 @@ let lastWedgeIpMaxUpdatedAt: string | null = null;
 /** Count of consecutive signal(i) detections where updated_at did NOT advance since last restart. */
 let wedgeRestartCount = 0;
 
+/** Consecutive ticks where at least one signal(i/ii) fired without being cleared. Resets on a clear tick or after a restart. */
+let consecutiveWedgeSignals = 0;
+/** Number of consecutive signal(i/ii) ticks required before acting (debounce). Signal(iii) bypasses this. */
+const WEDGE_DEBOUNCE_THRESHOLD = 2;
+
 /**
  * Auto-restart the orchestrator after detecting a wedge condition.
  *
@@ -637,6 +642,35 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
     log.debug('Wedge detector: could not capture orch pane', { error: String(err) });
   }
 
+  // ── DEBOUNCE GATE ──────────────────────────────────────────────────────────
+  // Filters single-tick signal(i/ii) transients caused by the fanout-start race:
+  // when the orch kicks off workers, a brief window exists where the task's
+  // updated_at is frozen but workers are not yet 'running' in the DB. The very
+  // next tick the running-worker exemption fires and clears the signal. Requiring
+  // WEDGE_DEBOUNCE_THRESHOLD consecutive ticks avoids restarting a healthy orch
+  // during that transient window.
+  //
+  // Signal(iii) (garbled pane) is always a real wedge — bypasses debounce.
+  // No signal — reset the counter (a clear tick means the transient passed).
+  if (!signalI && !signalII && !signalIII) {
+    consecutiveWedgeSignals = 0;
+    // fall through to existing healthy-log below
+  } else if (!signalIII) {
+    // signalI and/or signalII only — apply debounce
+    consecutiveWedgeSignals++;
+    if (consecutiveWedgeSignals < WEDGE_DEBOUNCE_THRESHOLD) {
+      log.debug('wedge signal below debounce threshold — deferring pending confirmation', {
+        consecutiveWedgeSignals,
+        WEDGE_DEBOUNCE_THRESHOLD,
+        signalI,
+        signalII,
+      });
+      return;
+    }
+    // >= WEDGE_DEBOUNCE_THRESHOLD — fall through to GATE-3 + restart
+  }
+  // else: signalIII — bypass debounce entirely, fall through to restart immediately
+
   if (signalI || signalII || signalIII) {
     const reasons: string[] = [];
     if (signalI) reasons.push(`in_progress task frozen since ${ipMaxUpdated} (>${timeoutMinutes}m, cutoff ${cutoffIso})`);
@@ -721,6 +755,7 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
     });
 
     restartWedgedOrchestrator(reasons.join('; '));
+    consecutiveWedgeSignals = 0;
     return;
   }
 
@@ -762,6 +797,8 @@ export function _resetForTesting(): void {
   // GATE 3 state
   wedgeRestartCount = 0;
   lastWedgeIpMaxUpdatedAt = null;
+  // Debounce state
+  consecutiveWedgeSignals = 0;
 }
 
 /** @internal Read GATE 3 restart-loop counter state for test assertions. */
