@@ -316,3 +316,32 @@ You are the orchestrator agent.`;
     assert.ok(body.includes('You are the orchestrator agent'), 'body should be extracted correctly');
   });
 });
+
+// D1 SOP — orchestrator fanout mandate (#1009)
+// Validates that the inline orchestrator system prompt mandates POST /api/agents/spawn
+// for worker fanout, explicitly forbids the built-in Agent/Task tool, and explains
+// the wedge-detector false-positive risk (signal-i) when workers bypass the API.
+describe('Orchestrator inline prompt fanout SOP mandate (D1 #1009)', () => {
+  it('inline prompt mandates POST /api/agents/spawn and forbids Agent/Task tool fanout', () => {
+    const srcPath = path.resolve(
+      path.dirname(new URL(import.meta.url).pathname),
+      '..',
+      'api',
+      'orchestrator.ts',
+    );
+    const src = fs.readFileSync(srcPath, 'utf8');
+
+    assert.ok(
+      src.includes('MUST spawn workers'),
+      'orchestrator.ts inline prompt must mandate worker spawning via POST /api/agents/spawn',
+    );
+    assert.ok(
+      src.includes('FORBIDDEN') && src.includes('Agent/Task tool'),
+      'orchestrator.ts inline prompt must explicitly forbid using the built-in Agent/Task tool for worker fanout',
+    );
+    assert.ok(
+      src.includes('worker_jobs') && src.includes('wedge-detector'),
+      'orchestrator.ts inline prompt must explain the wedge-detector false-positive risk (signal-i)',
+    );
+  });
+});
