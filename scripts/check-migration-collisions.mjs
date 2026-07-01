@@ -53,8 +53,12 @@ function parseArgs(argv) {
 // ── Core logic ──────────────────────────────────────────────────────────────
 
 /**
- * Scan a directory for migration files and return a map of prefix → filenames[].
+ * Scan a directory for migration files and return a map of
+ * normalised version number → filenames[].
+ *
  * Only files matching /^\d+-.*\.sql$/ are considered.
+ * Prefixes are normalised via parseInt so that "016", "16", and "0016"
+ * all map to the same version (16), matching the runner's keying behaviour.
  */
 function groupByPrefix(dir) {
   if (!fs.existsSync(dir)) {
@@ -63,30 +67,31 @@ function groupByPrefix(dir) {
   }
 
   const entries = fs.readdirSync(dir).filter(f => /^\d+-.+\.sql$/.test(f));
-  /** @type {Map<string, string[]>} */
+  /** @type {Map<number, string[]>} */
   const groups = new Map();
 
   for (const file of entries) {
-    const prefix = file.match(/^(\d+)-/)[1];
-    if (!groups.has(prefix)) groups.set(prefix, []);
-    groups.get(prefix).push(file);
+    const rawPrefix = file.match(/^(\d+)-/)[1];
+    const version = parseInt(rawPrefix, 10);
+    if (!groups.has(version)) groups.set(version, []);
+    groups.get(version).push(file);
   }
 
   return groups;
 }
 
 /**
- * Check for duplicate prefixes.
- * Returns an array of { prefix, files } for every prefix with >1 file.
+ * Check for duplicate prefixes (by normalised version number).
+ * Returns an array of { version, files } for every version with >1 file.
  */
 function findCollisions(groups) {
   const collisions = [];
-  for (const [prefix, files] of groups) {
+  for (const [version, files] of groups) {
     if (files.length > 1) {
-      collisions.push({ prefix, files: files.sort() });
+      collisions.push({ version, files: files.sort() });
     }
   }
-  return collisions.sort((a, b) => a.prefix.localeCompare(b.prefix, undefined, { numeric: true }));
+  return collisions.sort((a, b) => a.version - b.version);
 }
 
 // ── Entry point ─────────────────────────────────────────────────────────────
@@ -102,8 +107,8 @@ if (collisions.length === 0) {
 
 console.error('check-migration-collisions: FAIL — duplicate migration prefixes detected');
 console.error('');
-for (const { prefix, files } of collisions) {
-  console.error(`  Prefix ${prefix}:`);
+for (const { version, files } of collisions) {
+  console.error(`  Version ${version} (normalised) — ${files.length} files:`);
   for (const f of files) {
     console.error(`    ${f}`);
   }
