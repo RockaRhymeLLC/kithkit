@@ -349,6 +349,10 @@ scheduler:
     // recently-completed worker, a genuinely-wedged orch must still trigger a restart.
     // Removing the exemption block from the fix does NOT affect this test — it was RED
     // before the fix and must remain GREEN after.
+    //
+    // RECONCILED for debounce: signal(i/ii) now requires WEDGE_DEBOUNCE_THRESHOLD=2
+    // consecutive ticks before restarting. Trigger twice (same stale task, same state)
+    // so the debounce threshold is reached.
     seedFreshOrchAgent();
     seedStaleTask(2 * 60_000);  // task stale beyond 1-min threshold
     // Completed worker with finished_at OUTSIDE the 5-minute grace window (6 min ago)
@@ -356,12 +360,171 @@ scheduler:
     seedWorkerJob('completed-worker-stale', 'completed', staleFinishedAt);
     // No running worker — status='completed' only (does NOT satisfy COUNT WHERE status='running')
 
+    // Tick 1: signal(i) fires but debounce defers (consecutiveWedgeSignals = 1 < 2)
+    await _runForTesting(wedgeConfig);
+    assert.equal(restartCalled, false, '[NEGATIVE GUARD] tick 1: debounce must defer');
+
+    // Tick 2: consecutive signal(i) → debounce threshold reached → restart
     await _runForTesting(wedgeConfig);
 
     assert.equal(
       restartCalled, true,
-      '[NEGATIVE GUARD] signal(i) MUST fire when there is no running worker and no recent ' +
-      'completion within grace. The exemption must not over-widen and mask real wedges.',
+      '[NEGATIVE GUARD] signal(i) MUST fire after 2 consecutive ticks when there is no running ' +
+      'worker and no recent completion within grace. The exemption must not over-widen and mask real wedges.',
+    );
+  });
+});
+
+// ── Wedge detector: debounce gate ─────────────────────────────────────────────────────────────────
+
+/**
+ * Tests for the debounce gate added to monitorOrchestratorWedge().
+ *
+ * The fanout-start race: when the orchestrator kicks off workers, a brief window exists where
+ * the task's updated_at is frozen but workers are not yet 'running' in the DB. A single
+ * signal(i/ii) tick may be a transient. The debounce gate requires WEDGE_DEBOUNCE_THRESHOLD=2
+ * consecutive ticks before acting.
+ *
+ * Signal(iii) (garbled pane) is always a real wedge and bypasses the debounce.
+ *
+ * MUTATION-KILL: the '[MUTATION-KILL]' test verifies that removing the debounce gate causes
+ * a restart on a single signal(i) tick — making the test RED if the gate is absent.
+ */
+describe('Wedge detector: debounce gate', { concurrency: 1 }, () => {
+  let tmpDir: string;
+  let restartCalled: boolean;
+
+  function seedStaleTask(updatedAtMsAgo: number): void {
+    const ts = new Date(Date.now() - updatedAtMsAgo).toISOString();
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, status, priority, source, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Debounce test task', 'in_progress', 'medium', 'human', ?, ?)`,
+      `debounce-test-task-${Date.now()}`, ts, ts,
+    );
+  }
+
+  function seedFreshOrchAgent(): void {
+    const ts = new Date().toISOString();
+    insert('agents', {
+      id: 'orchestrator',
+      type: 'orchestrator',
+      status: 'running',
+      started_at: ts,
+      last_activity: ts,
+      updated_at: ts,
+    });
+  }
+
+  // 1-minute wedge threshold, 1-second synthesis grace (so completed workers don't exempt).
+  const wedgeConfig = { wedge_timeout_minutes: 1, synthesis_grace_minutes: 0.01 };
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-wedge-debounce-'));
+    fs.writeFileSync(path.join(tmpDir, 'kithkit.config.yaml'), `
+agent:
+  name: test-agent
+scheduler:
+  tasks: []
+`);
+    _resetConfigForTesting();
+    loadConfig(tmpDir);
+    _resetDbForTesting();
+    openDatabase(tmpDir);
+    _resetForTesting();
+
+    restartCalled = false;
+
+    _setWedgeDepsForTesting({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { restartCalled = true; return true; },
+      spawnOrchestratorSession: () => null,
+      captureOrchestratorPane: () => '',  // empty → signal(iii) = false
+      sendMessage: () => ({ messageId: 0, delivered: false }),
+    });
+  });
+
+  afterEach(() => {
+    _setWedgeDepsForTesting(null);
+    _resetForTesting();
+    _resetDbForTesting();
+    _resetConfigForTesting();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('[MUTATION-KILL] single signal(i) tick → NO restart (debounce defers)', async () => {
+    // MUTATION-KILL: remove the debounce gate (`else if (!signalIII)` branch in
+    // monitorOrchestratorWedge) so signal(i) triggers immediately on tick 1.
+    // Without the gate: signalI=true, GATE-3 passes (count=1 < CAP=3) →
+    // restartWedgedOrchestrator() called → restartCalled=true → assertion FAILS → RED.
+    // With the gate: consecutiveWedgeSignals=1 < WEDGE_DEBOUNCE_THRESHOLD=2 → return
+    // without restart → restartCalled=false → GREEN.
+    seedFreshOrchAgent();
+    seedStaleTask(2 * 60_000);  // 2 min stale — well beyond 1-min threshold
+    // No running workers, no recent completions → no exemptions → signalI fires
+
+    await _runForTesting(wedgeConfig);
+
+    assert.equal(
+      restartCalled, false,
+      '[MUTATION-KILL] A single signal(i) tick must be deferred by the debounce gate. ' +
+      'MUTATION-KILL: remove the debounce gate → restartCalled becomes true → RED.',
+    );
+  });
+
+  it('2 consecutive signal(i) ticks → restart (threshold reached)', async () => {
+    seedFreshOrchAgent();
+    seedStaleTask(2 * 60_000);
+
+    // Tick 1: debounce defers
+    await _runForTesting(wedgeConfig);
+    assert.equal(restartCalled, false, 'tick 1 must be deferred (consecutiveWedgeSignals=1 < 2)');
+
+    // Tick 2: threshold reached → restart
+    await _runForTesting(wedgeConfig);
+    assert.equal(
+      restartCalled, true,
+      '2 consecutive signal(i) ticks must reach WEDGE_DEBOUNCE_THRESHOLD=2 and trigger a restart.',
+    );
+  });
+
+  it('signal(i) then clear tick → counter resets → single signal deferred again', async () => {
+    seedFreshOrchAgent();
+    seedStaleTask(2 * 60_000);
+
+    // Tick 1: signal(i) → defer, consecutiveWedgeSignals = 1
+    await _runForTesting(wedgeConfig);
+    assert.equal(restartCalled, false, 'tick 1: must be deferred');
+
+    // Clear: mark the stale task completed so signal(i) does not fire
+    exec("UPDATE tasks SET status = 'completed' WHERE kind = 'orchestrator' AND status = 'in_progress'");
+
+    // Tick 2 (clear tick): all signals false → consecutiveWedgeSignals reset to 0
+    await _runForTesting(wedgeConfig);
+    assert.equal(restartCalled, false, 'clear tick: no restart expected');
+
+    // Introduce a fresh stale task and run again — counter should be 0, so deferred (not restarted)
+    seedStaleTask(2 * 60_000);
+    await _runForTesting(wedgeConfig);
+    assert.equal(
+      restartCalled, false,
+      'after counter reset, first signal(i) tick on a new task must be deferred again (counter=1 < 2)',
+    );
+  });
+
+  it('signal(iii) → immediate restart (bypasses debounce)', async () => {
+    // signal(iii) = garbled pane. No stale task needed — pane alone triggers restart.
+    seedFreshOrchAgent();
+    // Override pane mock to return garbled XML
+    _setWedgeDepsForTesting({
+      captureOrchestratorPane: () => '<invoke tool="some-tool">garbled</invoke>',
+    });
+
+    // Single tick — must restart immediately without debounce deferral
+    await _runForTesting(wedgeConfig);
+
+    assert.equal(
+      restartCalled, true,
+      'signal(iii) (garbled pane) must bypass the debounce gate and trigger an immediate restart.',
     );
   });
 });
