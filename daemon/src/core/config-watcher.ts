@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import type { KithkitConfig } from './config.js';
-import { ConfigValidationError, mergeWithDefaults } from './config.js';
+import { ConfigValidationError, mergeWithDefaults, applyConfig } from './config.js';
 
 // ── Types ───────────────────────────────────────────────────
 
@@ -69,6 +69,7 @@ export function createConfigWatcher(
 
       const newConfig = mergeWithDefaults(parsed as Record<string, unknown>, path.dirname(configPath));
       _config = newConfig;
+      applyConfig(newConfig); // sync config.ts singleton so loadConfig() returns the refreshed config
 
       for (const cb of callbacks) {
         try {

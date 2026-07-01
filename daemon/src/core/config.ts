@@ -450,3 +450,14 @@ export function _resetConfigForTesting(): void {
   _config = null;
   _projectDir = '';
 }
+
+/**
+ * Apply a pre-merged config as the active singleton.
+ * Used by the hot-reload path (config-watcher) to keep this module's
+ * cached _config in sync when a reload completes.
+ * (#997: POST /api/config/reload previously left _config stale, causing
+ * getSelfImprovementConfig() to read the startup snapshot forever.)
+ */
+export function applyConfig(config: KithkitConfig): void {
+  _config = config;
+}

@@ -1289,15 +1289,17 @@ export async function handleUnifiedTasksRoute(
           const _sic = _getSIC();
           const perTaskRetro = updated.generate_retro === 1;
           const globalAll = _sic.retro.retro_all_terminal;
-          if (perTaskRetro || globalAll) {
+          if (_sic.retro.enabled && (perTaskRetro || globalAll)) {
             _evalFn(updated.external_id).catch(err =>
               log.warn('Retro evaluation (forced) failed', { taskId: task.id, error: String(err) }),
             );
-          } else {
+          } else if (_sic.retro.enabled) {
+            // Standard signal-based evaluation — shouldTriggerRetro inside _evalFn gates the actual spawn
             _evalFn(updated.external_id).catch(err =>
               log.warn('Retro evaluation failed', { taskId: task.id, error: String(err) }),
             );
           }
+          // else: retro disabled globally — skip
         }
       }
 
