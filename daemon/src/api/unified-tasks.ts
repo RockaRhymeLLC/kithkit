@@ -1312,9 +1312,13 @@ export async function handleUnifiedTasksRoute(
         updates.comms_outcome !== task.comms_outcome &&
         updated.kind === 'orchestrator' && updated.external_id
       ) {
-        _evalFn(updated.external_id).catch(err =>
-          log.warn('Retro evaluation (comms correction) failed', { taskId: task.id, error: String(err) }),
-        );
+        const { getSelfImprovementConfig: _getSIC } = await import('../self-improvement/config.js');
+        if (_getSIC().retro.enabled) {
+          _evalFn(updated.external_id).catch(err =>
+            log.warn('Retro evaluation (comms correction) failed', { taskId: task.id, error: String(err) }),
+          );
+        }
+        // else: retro disabled globally — skip
       }
 
       json(res, 200, withTimestamp(serializeTask(updated)));

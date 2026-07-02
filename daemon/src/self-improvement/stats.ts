@@ -10,6 +10,7 @@ import { getSelfImprovementConfig } from './config.js';
 
 export interface SelfImprovementStats {
   enabled: boolean;
+  transcript_review_enabled: boolean;
   learnings: {
     total: number;
     by_category: Record<string, number>;
@@ -162,6 +163,7 @@ export async function getSelfImprovementStats(db: Database.Database): Promise<Se
 
   return {
     enabled: config.enabled,
+    transcript_review_enabled: config.transcript_review.enabled,
     learnings: {
       total,
       by_category,

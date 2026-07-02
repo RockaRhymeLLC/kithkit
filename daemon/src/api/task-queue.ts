@@ -1148,8 +1148,12 @@ export async function handleTaskQueueRoute(
         (updates.comms_outcome === 'corrected' || updates.comms_outcome === 'redirected') &&
         updates.comms_outcome !== task.comms_outcome
       ) {
-        const evalId = updated.external_id ?? String(updated.id);
-        _evalFn(evalId).catch(err => log.warn('Retro evaluation (comms correction) failed', { taskId, error: String(err) }));
+        const { getSelfImprovementConfig: _getSIC } = await import('../self-improvement/config.js');
+        if (_getSIC().retro.enabled) {
+          const evalId = updated.external_id ?? String(updated.id);
+          _evalFn(evalId).catch(err => log.warn('Retro evaluation (comms correction) failed', { taskId, error: String(err) }));
+        }
+        // else: retro disabled globally — skip
       }
 
       json(res, 200, withTimestamp(mappedUpdated));
