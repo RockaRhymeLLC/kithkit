@@ -32,6 +32,17 @@ cd my-agent
 npm install
 ```
 
+### Git identity
+
+Kithkit commits on your behalf (scheduler tasks, worker auto-commits). Before first run, confirm your global git identity is set — commits with missing or `.local` email addresses are blocked at the PR gate:
+
+```bash
+git config --global user.name  "Your Name"
+git config --global user.email "your@email.com"
+```
+
+macOS boxes that have never configured git often default to `<user>@<hostname>.local`. Run `git config --global user.email` to check.
+
 ## Init Wizard
 
 Run the init wizard to configure your agent:

@@ -142,3 +142,22 @@ jobs:
           fi
 
           echo "Leak check passed — no instance-specific content in changed files."
+
+  commit-identity:
+    # Guard: fail if any commit in this PR has a .local or empty author/committer
+    # email. Only meaningful on pull_request — push events have no useful range.
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Self-test identity check script
+        run: bash scripts/test-check-commit-identity.sh
+
+      - name: Check PR commit identities
+        run: |
+          bash scripts/check-commit-identity.sh \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}"
