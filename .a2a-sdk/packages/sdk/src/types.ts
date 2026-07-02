@@ -57,6 +57,12 @@ export interface Message {
   timestamp: string;
   payload: Record<string, unknown>;
   verified: boolean;
+  /**
+   * ISO timestamp set by the SDK when the message is emitted to listeners.
+   * Undefined on duplicate messageIds (dedup'd before emit).
+   * Mirrors the daemon's injected_at DB column for delivery-integrity semantics.
+   */
+  injectedAt?: string;
 }
 
 export interface ContactRequest {
@@ -109,6 +115,40 @@ export interface GroupMessage {
   timestamp: string;
   payload: Record<string, unknown>;
   verified: boolean;
+  /**
+   * ISO timestamp set by the SDK when the message is emitted to listeners.
+   * Mirrors the daemon's injected_at DB column for delivery-integrity semantics.
+   */
+  injectedAt?: string;
+}
+
+/**
+ * Delivery-integrity hook — called with the decoded, verified message BEFORE
+ * the 'message' or 'group-message' event is emitted to SDK consumers.
+ *
+ * Mirrors the daemon's persist-on-receive seam (sendMessage call in wireMessageEvent /
+ * wireGroupMessageEvent, daemon/src/extensions/comms/network/sdk-bridge.ts).
+ *
+ * Contract: the hook MUST persist the message durably before returning. If it
+ * throws, the SDK dead-letters the message (does NOT emit the event), so the
+ * caller can recover without data loss.
+ *
+ * Idempotency: the hook is never called twice for the same messageId — the SDK's
+ * dedup layer (seenMessageIds / seenGroupMessageIds) filters duplicates before
+ * the hook fires.
+ */
+export type ReceivePersistFn = (msg: Message | GroupMessage) => Promise<void>;
+
+/**
+ * Dead-letter entry — populated when persistFn throws.
+ * Message was received and verified but NOT emitted to SDK consumers.
+ * Retrieve via A2ANetwork.getDeadLetterQueue(); retry or alert as appropriate.
+ */
+export interface DeadLetterEntry {
+  messageId: string;
+  msg: Message | GroupMessage;
+  error: string;
+  receivedAt: string;
 }
 
 export interface ContactActionResult {

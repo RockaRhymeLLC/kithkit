@@ -202,7 +202,7 @@ function createDeliverFn(env: TestEnv, recipientNetwork?: A2ANetwork, shouldFail
     if (shouldFail) return false;
     if (recipientNetwork) {
       try {
-        recipientNetwork.receiveMessage(envelope);
+        await recipientNetwork.receiveMessage(envelope);
         return true;
       } catch {
         return false;
@@ -377,10 +377,10 @@ describe('t-063: SDK E2E: send encrypted, receive + verify + decrypt', () => {
     let bob: A2ANetwork;
 
     const aliceDeliverFn = async (_ep: string, envelope: WireEnvelope) => {
-      try { bob.receiveMessage(envelope); return true; } catch { return false; }
+      try { await bob.receiveMessage(envelope); return true; } catch { return false; }
     };
     const bobDeliverFn = async (_ep: string, envelope: WireEnvelope) => {
-      try { alice.receiveMessage(envelope); return true; } catch { return false; }
+      try { await alice.receiveMessage(envelope); return true; } catch { return false; }
     };
 
     alice = createNetworkClient(env, 'alice', aliceDeliverFn);
@@ -440,7 +440,7 @@ describe('t-063: SDK E2E: send encrypted, receive + verify + decrypt', () => {
       signature: 'fake',
     };
 
-    assert.throws(() => bob.receiveMessage(fakeEnvelope), /not a contact/i);
+    await assert.rejects(async () => await bob.receiveMessage(fakeEnvelope), /not a contact/i);
   });
 
   // Additional: message with invalid signature is rejected
@@ -468,7 +468,7 @@ describe('t-063: SDK E2E: send encrypted, receive + verify + decrypt', () => {
     const tampered = { ...capturedEnvelope! };
     tampered.signature = Buffer.from('invalid-signature-data').toString('base64');
 
-    assert.throws(() => bob.receiveMessage(tampered), /Invalid signature/i);
+    await assert.rejects(async () => await bob.receiveMessage(tampered), /Invalid signature/i);
   });
 
   // Additional: message with old timestamp is rejected
@@ -582,7 +582,7 @@ describe('t-064: SDK presence-gated: offline → queued → retry → delivered'
       env.deliveredEnvelopes.push(envelope);
       if (!bobNetwork) return false; // Bob offline
       try {
-        bobNetwork.receiveMessage(envelope);
+        await bobNetwork.receiveMessage(envelope);
         return true;
       } catch {
         return false;

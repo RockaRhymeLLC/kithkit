@@ -38,6 +38,9 @@ export type {
   WireEnvelope,
   KeyRotationResult,
   KeyRotationCommunityResult,
+  // Delivery-integrity contract types (#585 / #620)
+  ReceivePersistFn,
+  DeadLetterEntry,
 } from './types.js';
 
 // Community management
