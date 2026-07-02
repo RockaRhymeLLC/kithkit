@@ -37,7 +37,7 @@ let getOrchestratorState = _getOrchestratorState;
 let spawnOrchestratorSession = _spawnOrchestratorSession;
 let killOrchestratorSession = _killOrchestratorSession;
 let sendMessage = _sendMessageImpl;
-let injectMessage = _injectMessage;
+let injectMessage: (target: string, text: string) => boolean | Promise<boolean> = _injectMessage;
 let isOrchestratorAlive = _isOrchestratorAlive;
 
 // ── Session identity helper (fix(3)) ─────────────────────────
@@ -67,7 +67,7 @@ export function _setDepsForTesting(deps: {
   getOrchestratorState?: () => 'active' | 'waiting' | 'dead';
   spawnOrchestratorSession?: () => string | null;
   sendMessage?: typeof _sendMessageImpl;
-  injectMessage?: (target: string, text: string) => boolean;
+  injectMessage?: (target: string, text: string) => boolean | Promise<boolean>;
   /** Override isOrchestratorAlive for handler-level tests (shutdown guard, status). */
   isOrchestratorAlive?: () => boolean;
   /** Override killOrchestratorSession to capture calls in tests. */
@@ -315,7 +315,7 @@ export async function handleOrchestratorRoute(
       }));
     } else {
       // Orchestrator is waiting (idle at prompt) — inject a nudge so it checks the queue
-      const nudged = injectMessage('orchestrator', `[System] New task queued (${taskId.slice(0, 8)}). Check pending tasks: curl -s 'http://localhost:${getConfigPort()}/api/orchestrator/tasks?status=pending'`);
+      const nudged = await injectMessage('orchestrator', `[System] New task queued (${taskId.slice(0, 8)}). Check pending tasks: curl -s 'http://localhost:${getConfigPort()}/api/orchestrator/tasks?status=pending'`);
       if (!nudged) {
         // Inject failed — session may have died between state-check and nudge.
         // The task is pending in the DB; the orchestrator-idle monitor will wake

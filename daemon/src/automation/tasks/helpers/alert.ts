@@ -90,7 +90,7 @@ function buildMessage(
 
 // ── Injectable deps (overridable for testing) ────────────────
 
-type InjectMessageFn = (agentId: string, text: string) => boolean;
+type InjectMessageFn = (agentId: string, text: string) => boolean | Promise<boolean>;
 
 let _tmuxInjectMessage: InjectMessageFn | null = null;
 
@@ -113,12 +113,12 @@ async function sendViaTelegram(message: string): Promise<void> {
 async function sendViaTmux(message: string): Promise<void> {
   const inject = _tmuxInjectMessage;
   if (inject !== null) {
-    inject('comms', message);
+    await inject('comms', message);
     return;
   }
   // Dynamic import — tmux module may fail if tmux is not running
   const { injectMessage } = await import('../../../agents/tmux.js');
-  injectMessage('comms', message);
+  await injectMessage('comms', message);
 }
 
 async function sendViaA2A(message: string, port: number, group: string): Promise<void> {

@@ -37,7 +37,7 @@ const log = createLogger('orchestrator-idle');
 
 let isOrchestratorAlive = _isOrchestratorAlive;
 let killOrchestratorSession = _killOrchestratorSession;
-let injectMessage = _injectMessage;
+let injectMessage: (target: string, text: string) => boolean | Promise<boolean> = _injectMessage;
 let spawnOrchestratorSession = _spawnOrchestratorSession;
 let cleanupSessionDirs = _cleanupSessionDirs;
 let evaluateTask: (taskId: string) => Promise<void> = _evaluateTask;
@@ -515,7 +515,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
         `Approve: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/approve-plan' -H 'Content-Type: application/json' -d '{}'\n` +
         `Reject: curl -s -X POST 'http://localhost:${fullConfig.daemon.port}/api/orchestrator/tasks/${plan.id}/reject-plan' -H 'Content-Type: application/json' -d '{"reason":"..."}'`;
       try {
-        injectMessage('comms', nudgeMsg);
+        await injectMessage('comms', nudgeMsg);
       } catch (e) {
         log.warn('Failed to inject SLA notification to comms', { taskId: plan.id, error: String(e) });
       }
@@ -687,7 +687,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
           spawnAgeMs,
         });
         try {
-          injectMessage(
+          await injectMessage(
             'orchestrator',
             `You have been spawned. Check the task queue for pending work: curl -s 'http://localhost:${port}/api/orchestrator/tasks?status=pending'`,
           );
@@ -723,7 +723,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
     if (pendingWhileActiveCount > 0) {
       log.debug('Pending tasks queued while Claude is active — injecting soft nudge', { pendingWhileActiveCount });
       try {
-        injectMessage(
+        await injectMessage(
           'orchestrator',
           `[System] ${pendingWhileActiveCount} pending task(s) in queue. Check GET /api/orchestrator/tasks?status=pending when your current work is done.`,
         );
@@ -771,7 +771,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
     log.warn('Orchestrator context backstop triggered', { contextUsed });
     let injected = false;
     try {
-      injected = injectMessage('orchestrator', buildShutdownPrompt(reason));
+      injected = await injectMessage('orchestrator', buildShutdownPrompt(reason));
     } catch (e) {
       log.warn('Failed to inject context shutdown nudge to orchestrator', { error: String(e) });
     }
@@ -840,7 +840,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
     log.info('Orchestrator idle but has pending tasks — waking instead of shutdown', { pendingTaskCount });
     let injected = false;
     try {
-      injected = injectMessage('orchestrator', wakeMsg);
+      injected = await injectMessage('orchestrator', wakeMsg);
     } catch (e) {
       log.warn('Failed to inject pending task wake to orchestrator', { error: String(e) });
     }
@@ -898,7 +898,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
       });
       let injected = false;
       try {
-        injected = injectMessage('orchestrator', resumeMsg);
+        injected = await injectMessage('orchestrator', resumeMsg);
       } catch (e) {
         log.warn('Failed to inject in-progress task resume nudge to orchestrator', { error: String(e) });
       }
@@ -950,7 +950,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
   log.info('Orchestrator idle — sending shutdown nudge', { idleMinutes: Math.round(idleMs / 60000) });
   let injected = false;
   try {
-    injected = injectMessage('orchestrator', buildShutdownPrompt(reason));
+    injected = await injectMessage('orchestrator', buildShutdownPrompt(reason));
   } catch (e) {
     log.warn('Failed to inject idle shutdown nudge to orchestrator', { error: String(e) });
   }
@@ -1022,7 +1022,7 @@ export async function _runForTesting(config: Record<string, unknown>): Promise<v
 export function _setDepsForTesting(deps: {
   isOrchestratorAlive?: () => boolean;
   killOrchestratorSession?: () => boolean;
-  injectMessage?: (target: string, text: string) => boolean;
+  injectMessage?: (target: string, text: string) => boolean | Promise<boolean>;
   spawnOrchestratorSession?: () => string | null;
   cleanupSessionDirs?: (maxAgeDays?: number) => number;
   evaluateTask?: (taskId: string) => Promise<void>;

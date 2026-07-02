@@ -18,7 +18,7 @@ import { handleMemoryRoute } from './api/memory.js';
 import { handleAgentsRoute, setProfilesDir } from './api/agents.js';
 import { configure as configureTmux } from './agents/tmux.js';
 import { recoverFromRestart } from './agents/recovery.js';
-import { setOnJobComplete } from './agents/lifecycle.js';
+import { setOnJobComplete, stopAllPolling } from './agents/lifecycle.js';
 import { evaluateTask } from './self-improvement/retro-evaluator.js';
 import { cleanupOrphanedResources } from './core/orphan-cleanup.js';
 import { handleMessagesRoute } from './api/messages.js';
@@ -644,7 +644,19 @@ if (config.daemon.lan?.enabled) {
 
 // ── Graceful shutdown ────────────────────────────────────────
 
+// Idempotent-shutdown guard: SIGTERM/SIGINT racing an uncaughtException (or a
+// double signal) must not run teardown twice — a second closeDatabase() /
+// server.close() pass throws and can crash the shutdown path itself
+// (kithkit#2743 incident hardening).
+let _shuttingDown = false;
+
 async function shutdown(signal: string): Promise<void> {
+  if (_shuttingDown) {
+    log.debug('Shutdown already in progress — ignoring re-entrant call', { signal });
+    return;
+  }
+  _shuttingDown = true;
+
   log.info(`Shutting down (${signal})`);
 
   // Plugin extensions first — their tasks must unregister while the
@@ -680,6 +692,13 @@ async function shutdown(signal: string): Promise<void> {
   }
 
   configWatcher.stop();
+
+  // Stop all worker-poll timers BEFORE closing the database — a late
+  // setInterval tick calling update()/get() after closeDatabase() throws
+  // "Database not initialized" as an uncaughtException (kithkit#2743 incident).
+  stopAllPolling();
+  log.info('Poll timers stopped');
+
   closeDatabase();
   log.info('Database closed');
 

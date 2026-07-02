@@ -94,7 +94,18 @@ export function notifyNewMessage(): void {
 // ── Injectable deps (overridable for testing) ────────────────
 
 type ListSessionsFn = () => string[];
-type InjectMessageFn = (agentId: string, text: string) => boolean;
+type InjectMessageFn = (agentId: string, text: string) => boolean | Promise<boolean>;
+
+/**
+ * Cap on the number of tmux injections performed within a single delivery
+ * cycle tick (kithkit#2743 fix). Each injectMessage() call now runs through
+ * an async, per-session-serialized tmux round-trip; capping the per-tick
+ * fanout keeps a single scheduler tick from queuing up a long chain of
+ * awaited injections (e.g. many agents becoming deliverable at once).
+ * Agents/messages beyond the cap are simply left undelivered and picked up
+ * on the next tick (a few seconds later) rather than blocking this one.
+ */
+const MAX_INJECTS_PER_CYCLE = 3;
 type GetOrchStateFn = () => 'active' | 'waiting' | 'dead';
 
 let _listSessionsImpl: ListSessionsFn = listSessions;
@@ -246,7 +257,15 @@ async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: S
     byAgent.set(msg.to_agent, existing);
   }
 
+  let injectsThisCycle = 0;
+
   for (const [agentId, messages] of byAgent) {
+    if (injectsThisCycle >= MAX_INJECTS_PER_CYCLE) {
+      log.info('Injection cap reached for this cycle — deferring remaining agents to next tick', {
+        agentId, cap: MAX_INJECTS_PER_CYCLE,
+      });
+      continue;
+    }
     const deliverable: Message[] = [];
     for (const msg of messages) {
       if (!liveSessions.has(agentId)) {
@@ -277,7 +296,8 @@ async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: S
 
     // Inject the full message content into the tmux session
     const contentText = formatBatchContent(deliverable);
-    const success = _injectMessageImpl(agentId, contentText);
+    const success = await _injectMessageImpl(agentId, contentText);
+    injectsThisCycle++;
 
     if (success) {
       const now = new Date().toISOString();
@@ -341,8 +361,16 @@ async function notifyWorkerCompletions(liveSessions: Set<string>): Promise<numbe
 
   const now = new Date().toISOString();
   let notified = 0;
+  let injectsThisCycle = 0;
 
   for (const job of completedJobs) {
+    if (injectsThisCycle >= MAX_INJECTS_PER_CYCLE) {
+      log.info('Injection cap reached for this cycle — deferring remaining worker-completion notifications to next tick', {
+        cap: MAX_INJECTS_PER_CYCLE,
+      });
+      break;
+    }
+
     const spawner = job.spawned_by;
 
     let pingText: string;
@@ -354,7 +382,8 @@ async function notifyWorkerCompletions(liveSessions: Set<string>): Promise<numbe
     }
 
     if (liveSessions.has(spawner)) {
-      _injectMessageImpl(spawner, pingText);
+      await _injectMessageImpl(spawner, pingText);
+      injectsThisCycle++;
     }
 
     exec('UPDATE worker_jobs SET spawner_notified_at = ? WHERE id = ?', now, job.id);

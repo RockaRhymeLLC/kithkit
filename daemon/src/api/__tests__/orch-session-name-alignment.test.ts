@@ -25,7 +25,7 @@ const SENTINEL = 'orch-test-sentinel-81';
 
 describe('orch-session-name-alignment (todo #81)', () => {
 
-  test('spawnOrchestratorSession returns the resolveSession result, not hardcoded orch1', () => {
+  test('spawnOrchestratorSession returns the resolveSession result, not hardcoded orch1', async () => {
     const seenSessions: string[] = [];
 
     _setTmuxDepsForTesting({
@@ -58,7 +58,7 @@ describe('orch-session-name-alignment (todo #81)', () => {
     );
   });
 
-  test('injectMessage passes the resolveSession result to sessionExists, not hardcoded orch1', () => {
+  test('injectMessage passes the resolveSession result to sessionExists, not hardcoded orch1', async () => {
     let seenSession: string | undefined;
 
     // Temporarily allow injectMessage to proceed past the test-runner guard so we can
@@ -76,7 +76,7 @@ describe('orch-session-name-alignment (todo #81)', () => {
 
     try {
       _resetInjectionAttempts();
-      injectMessage('orchestrator', 'regression-probe');
+      await injectMessage('orchestrator', 'regression-probe');
     } finally {
       // Restore env vars before any assertion that might throw
       if (savedSuppress !== undefined) {

@@ -9,7 +9,6 @@
  */
 
 import { insert, query, exec } from '../core/db.js';
-import { injectMessage } from './tmux.js';
 import { notifyNewMessage, recordDirectInjection } from '../automation/tasks/message-delivery.js';
 import { createLogger } from '../core/logger.js';
 import { getA2ARouter } from '../a2a/handler.js';
@@ -74,8 +73,28 @@ type TmuxInjector = (session: string, text: string) => boolean;
 
 let tmuxInjector: TmuxInjector = defaultTmuxInjector;
 
-function defaultTmuxInjector(agentId: string, text: string): boolean {
-  return injectMessage(agentId, text);
+/**
+ * sendMessage()'s `direct: true` fast path used to call the real
+ * (synchronous) injectMessage() here and return its receipt-verified result
+ * immediately. injectMessage() is now async (kithkit#2743 fix — see tmux.ts),
+ * and sendMessage() has 20+ synchronous callers across the codebase
+ * (a2a/router.ts, recovery.ts, agent-comms.ts, api/messages.ts,
+ * api/orchestrator.ts, api/send.ts, context-watchdog.ts, orchestrator-idle.ts).
+ * Cascading async through all of them is out of scope for this fix (two fixes,
+ * one branch, no drive-by refactors).
+ *
+ * Instead this deliberately always returns false, which drops the direct-inject
+ * fast path and falls through to the existing queued/scheduled delivery path
+ * (notifyNewMessage() → message-delivery.ts, which already awaits the async
+ * injectMessage() correctly). We do NOT fire-and-forget a real injectMessage()
+ * call here either: racing it against the scheduler's queued delivery risks
+ * double-injecting the same message into the tmux pane. Net effect: `direct`
+ * sends are now always queued instead of sometimes injected synchronously —
+ * a documented latency trade-off (one message-delivery cycle, ~seconds) in
+ * exchange for correctness and the event-loop fix.
+ */
+function defaultTmuxInjector(_agentId: string, _text: string): boolean {
+  return false;
 }
 
 // ── Public API ───────────────────────────────────────────────

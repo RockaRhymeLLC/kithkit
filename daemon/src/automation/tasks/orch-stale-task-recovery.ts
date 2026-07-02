@@ -53,13 +53,13 @@ const DEFAULT_IN_PROGRESS_STALE_MS = 60 * 60 * 1000; // 60 min
 type JobStatusLike = { status: string } | null;
 
 let isOrchestratorAlive: () => boolean = _isOrchestratorAlive;
-let injectMessage: (agentId: string, text: string) => boolean = _injectMessage;
+let injectMessage: (agentId: string, text: string) => boolean | Promise<boolean> = _injectMessage;
 let getJobStatus: (jobId: string) => JobStatusLike = _getJobStatus;
 let evaluateTask: (taskId: string) => Promise<void> = _evaluateTask;
 
 export function _setDepsForTesting(deps: {
   isOrchestratorAlive?: () => boolean;
-  injectMessage?: (agentId: string, text: string) => boolean;
+  injectMessage?: (agentId: string, text: string) => boolean | Promise<boolean>;
   getJobStatus?: (jobId: string) => JobStatusLike;
   evaluateTask?: (taskId: string) => Promise<void>;
 } | null): void {
@@ -262,7 +262,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
 
     if (recovered > 0) {
       try {
-        injectMessage(
+        await injectMessage(
           'comms',
           `[stale-recovery] ${recovered} task(s) marked failed — orchestrator session was dead and tasks were stale`,
         );

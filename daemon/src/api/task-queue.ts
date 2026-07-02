@@ -32,7 +32,7 @@ import { createLogger } from '../core/logger.js';
 
 // ── Tmux injection (injectable for testing) ──────────────────
 
-type TmuxInjectorFn = (agentId: string, text: string) => boolean;
+type TmuxInjectorFn = (agentId: string, text: string) => boolean | Promise<boolean>;
 let _injectMessage: TmuxInjectorFn = defaultInjectMessage;
 
 /** @internal Override tmux injector for test isolation. Pass null to restore the default. */
@@ -507,7 +507,7 @@ export async function handleTaskQueueRoute(
       // For progress updates, forward to comms session immediately
       if (type === 'progress') {
         const prefix = stage ? `${stage}: ` : '';
-        _injectMessage('comms', `[task ${task.title}] ${prefix}${body.message}`);
+        await _injectMessage('comms', `[task ${task.title}] ${prefix}${body.message}`);
       }
 
       const entry = query<TaskActivity>(
@@ -592,7 +592,7 @@ export async function handleTaskQueueRoute(
 
       // Alert comms after 2 consecutive failures
       if (newRetryCount >= 2) {
-        _injectMessage('comms', `[task alert] "${task.title}" has failed ${newRetryCount} times and is being retried (attempt ${newRetryCount + 1})`);
+        await _injectMessage('comms', `[task alert] "${task.title}" has failed ${newRetryCount} times and is being retried (attempt ${newRetryCount + 1})`);
       }
 
       const updated = getTask(taskId)!;
@@ -701,7 +701,7 @@ export async function handleTaskQueueRoute(
 
       // Also inject directly into comms tmux session for immediate visibility
       try {
-        _injectMessage('comms', notifyBody);
+        await _injectMessage('comms', notifyBody);
       } catch (e) {
         log.warn('Failed to inject plan submission notification to comms', { taskId, error: String(e) });
       }
@@ -758,7 +758,7 @@ export async function handleTaskQueueRoute(
       }
 
       try {
-        _injectMessage('orchestrator', approveMsg);
+        await _injectMessage('orchestrator', approveMsg);
       } catch (e) {
         log.warn('Failed to inject plan approval notification to orchestrator', { taskId, error: String(e) });
       }
@@ -820,7 +820,7 @@ export async function handleTaskQueueRoute(
       }
 
       try {
-        _injectMessage('orchestrator', rejectMsg);
+        await _injectMessage('orchestrator', rejectMsg);
       } catch (e) {
         log.warn('Failed to inject plan rejection notification to orchestrator', { taskId, error: String(e) });
       }
@@ -1093,7 +1093,7 @@ export async function handleTaskQueueRoute(
         }
 
         // Also inject directly into comms tmux session for immediate visibility
-        _injectMessage('comms', `[task ${updates.status}] ${updated.title.slice(0, 100)}`);
+        await _injectMessage('comms', `[task ${updates.status}] ${updated.title.slice(0, 100)}`);
       }
 
       // Auto-store completion memory when a task is marked completed with a result
