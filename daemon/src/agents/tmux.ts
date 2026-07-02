@@ -9,11 +9,14 @@
  */
 
 import { execFileSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { createLogger } from '../core/logger.js';
 import { loadConfig } from '../core/config.js';
 import { estTimestamp } from '../core/session-bridge.js';
 
 const log = createLogger('tmux');
+const execFileAsync = promisify(execFile);
 
 // ── Config ──────────────────────────────────────────────────
 
@@ -91,13 +94,17 @@ function isUnderTestRunner(): boolean {
  * Using a helper ensures the sendKeys seam intercepts ALL send-keys calls —
  * both the text payload and the separate C-m submit keystroke — so tests can
  * assert each call independently without performing real tmux I/O.
+ *
+ * Async (promisified execFile) so injectMessage's per-message tmux I/O never
+ * blocks the Node event loop (kithkit#2743 incident — sync execFileSync here
+ * stalled /health past the watchdog timeout during injection bursts).
  */
-function execSendKeys(session: string, args: string[]): void {
+async function execSendKeys(session: string, args: string[]): Promise<void> {
   if (_testingDeps?.sendKeys) {
     _testingDeps.sendKeys(session, args);
     return;
   }
-  execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', `${session}:`, ...args], {
+  await execFileAsync(TMUX_BIN, ['-S', TMUX_SOCKET, 'send-keys', '-t', `${session}:`, ...args], {
     timeout: 5000,
   });
 }
@@ -118,6 +125,25 @@ function capturePaneContent(session: string): string {
   return execFileSync(TMUX_BIN, [
     '-S', TMUX_SOCKET, 'capture-pane', '-t', `${session}:`, '-p', '-J',
   ], { timeout: 5000, encoding: 'utf8' });
+}
+
+/**
+ * Async twin of capturePaneContent(), used exclusively by injectMessage()'s
+ * per-message hot path so capture-pane I/O never blocks the event loop.
+ *
+ * Kept separate from the sync capturePaneContent() deliberately: that sync
+ * version backs the exported captureOrchestratorPane(), which is consumed
+ * synchronously by the context-watchdog wedge detector and has ~30 existing
+ * unit tests asserting a sync string return. Converting it to async would
+ * cascade well beyond this fix's two-fix scope (kithkit#2743). Both variants
+ * share the same _testingDeps.capturePane test seam.
+ */
+async function capturePaneContentAsync(session: string): Promise<string> {
+  if (_testingDeps?.capturePane) return _testingDeps.capturePane(session);
+  const { stdout } = await execFileAsync(TMUX_BIN, [
+    '-S', TMUX_SOCKET, 'capture-pane', '-t', `${session}:`, '-p', '-J',
+  ], { timeout: 5000, encoding: 'utf8' });
+  return stdout;
 }
 
 /**
@@ -143,11 +169,11 @@ const MAX_CM_RETRIES = 2;
  * Sleeps between retries are suppressed when _testingDeps.capturePane is active
  * so tests complete without real delay.
  */
-export function verifySubmitLanded(session: string, baselineContent: string): boolean {
+export async function verifySubmitLanded(session: string, baselineContent: string): Promise<boolean> {
   const baselineLen = baselineContent.length;
   for (let i = 0; i <= MAX_CM_RETRIES; i++) {
     try {
-      const current = capturePaneContent(session);
+      const current = await capturePaneContentAsync(session);
       // Pane grew or changed substantially → Claude is processing the input
       if (current.length > baselineLen + 5 || current !== baselineContent) {
         return true;
@@ -157,10 +183,35 @@ export function verifySubmitLanded(session: string, baselineContent: string): bo
     }
     // No delay between retries when seam is active (fast tests)
     if (i < MAX_CM_RETRIES && !_testingDeps?.capturePane) {
-      execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 });
+      await sleep(300);
     }
   }
   return false;
+}
+
+// ── Per-session serial queue ──────────────────────────────────
+
+/**
+ * Chains async work per tmux session so that concurrent injectMessage() calls
+ * targeting the SAME session run strictly one-at-a-time in FIFO order — two
+ * interleaved send-keys sequences to one pane can corrupt the input. Different
+ * sessions are independent and proceed concurrently (kithkit#2743).
+ */
+const _sessionQueues = new Map<string, Promise<unknown>>();
+
+function enqueueForSession<T>(session: string, fn: () => Promise<T>): Promise<T> {
+  const prior = _sessionQueues.get(session) ?? Promise.resolve();
+  const result = prior.then(fn, fn);
+  // Swallow rejections in the chain link itself so one failed injection never
+  // poisons the queue for subsequent injections to the same session; the real
+  // rejection/resolution still propagates to the caller via `result`.
+  _sessionQueues.set(session, result.catch(() => undefined));
+  return result;
+}
+
+/** @internal Exposed for unit tests to assert FIFO ordering directly. */
+export function _getSessionQueueSizeForTesting(): number {
+  return _sessionQueues.size;
 }
 
 // ── Message injection ───────────────────────────────────────
@@ -168,8 +219,15 @@ export function verifySubmitLanded(session: string, baselineContent: string): bo
 /**
  * Inject text into a tmux session via send-keys.
  * Returns true if injection succeeded, false if session doesn't exist.
+ *
+ * Fully async (promisified execFile + timers/promises setTimeout) so a burst
+ * of injections never blocks the Node event loop — the sync execFileSync +
+ * execFileSync('/bin/sleep', ...) implementation here previously stalled
+ * /health past the watchdog timeout for 3-6s per message (kithkit#2743).
+ * Concurrent calls to the same session are serialized via enqueueForSession();
+ * different sessions proceed concurrently.
  */
-export function injectMessage(agentId: string, text: string): boolean {
+export async function injectMessage(agentId: string, text: string): Promise<boolean> {
   if (process.env.KITHKIT_SUPPRESS_NOTIFICATIONS === '1') {
     return false; // test-isolation: suppress all live-session tmux injections
   }
@@ -194,13 +252,22 @@ export function injectMessage(agentId: string, text: string): boolean {
     return false;
   }
 
+  return enqueueForSession(session, () => injectMessageToSession(agentId, session, text));
+}
+
+/**
+ * Core injection logic for a single, already-resolved session. Split out from
+ * injectMessage() so the per-session serial queue can wrap just this part —
+ * the validation/guard checks above run immediately (unqueued).
+ */
+async function injectMessageToSession(agentId: string, session: string, text: string): Promise<boolean> {
   // Check if session exists first — use injectable for test isolation
   const sessionFound = _testingDeps?.sessionExists
     ? _testingDeps.sessionExists(session)
-    : (() => {
+    : await (async () => {
         try {
-          execFileSync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
-            timeout: 5000,
+          await execFileAsync(TMUX_BIN, ['-S', TMUX_SOCKET, 'has-session', '-t', `=${session}`], {
+            timeout: 500,
           });
           return true;
         } catch {
@@ -245,41 +312,41 @@ export function injectMessage(agentId: string, text: string): boolean {
   // Sleeps are suppressed when the capturePane seam is active (test mode).
   let preSendContent = '';
   try {
-    preSendContent = capturePaneContent(session);
-    const READY_ATTEMPTS = _testingDeps?.capturePane ? 1 : 10;
+    preSendContent = await capturePaneContentAsync(session);
+    const READY_ATTEMPTS = _testingDeps?.capturePane ? 1 : 3;
     for (let i = 0; i < READY_ATTEMPTS && !isInputPromptReady(preSendContent); i++) {
       if (!_testingDeps?.capturePane) {
-        execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 });
+        await sleep(200);
       }
-      preSendContent = capturePaneContent(session);
+      preSendContent = await capturePaneContentAsync(session);
     }
   } catch { /* non-fatal — proceed with send even if capture-pane fails */ }
 
   try {
     // Send the message text as literal keystrokes (-l prevents key-name expansion)
     const stamped = `${estTimestamp()} ${safeText}`;
-    execSendKeys(session, ['-l', stamped]);
+    await execSendKeys(session, ['-l', stamped]);
 
     // Small delay to let tmux buffer the text before the submit keystroke.
     // Suppressed in seam test mode (capturePane set) to keep tests fast.
     if (!_testingDeps?.capturePane) {
-      execFileSync('/bin/sleep', ['0.15'], { timeout: 2000 });
+      await sleep(150);
     }
 
     // Send the submit keystroke as a SEPARATE send-keys call.
     // It must NOT be folded into the text payload (the -l literal flag treats
     // 'C-m' as the literal characters C and m, not as Enter). Keeping it separate
     // also means no sanitizer or length cap can accidentally swallow it.
-    execSendKeys(session, ['C-m']);
+    await execSendKeys(session, ['C-m']);
 
     // Verify submit landed via capture-pane; retry C-m if the pane hasn't advanced.
     // This catches the race on slower boxes where the submit keystroke arrives before
     // Claude's readline is fully ready (trace 8069cbf0, todo #853/#2297).
-    let submitted = verifySubmitLanded(session, preSendContent);
+    let submitted = await verifySubmitLanded(session, preSendContent);
     if (!submitted) {
       for (let i = 0; i < MAX_CM_RETRIES; i++) {
-        execSendKeys(session, ['C-m']);
-        if (verifySubmitLanded(session, preSendContent)) { submitted = true; break; }
+        await execSendKeys(session, ['C-m']);
+        if (await verifySubmitLanded(session, preSendContent)) { submitted = true; break; }
       }
       if (!submitted) {
         log.warn('injectMessage: submit verify failed after retries (send-keys syscall succeeded)', {
@@ -400,15 +467,16 @@ export function spawnOrchestratorSession(): string | null {
 
     // Inject startup nudge after a short delay for Claude to initialize.
     // The nudge triggers the orchestrator to poll the task queue (per its profile SOP).
+    // Fire-and-forget: this callback isn't awaited by any caller, so we chain
+    // .catch() rather than await the now-async injectMessage().
     execFile('/bin/sleep', ['5'], () => {
-      try {
-        const port = loadConfig().daemon.port;
-        injectMessage('orchestrator', `You have been spawned. Check the task queue for pending work: curl -s 'http://localhost:${port}/api/orchestrator/tasks?status=pending'`);
-      } catch (err) {
-        log.warn('Failed to inject startup nudge', {
-          error: err instanceof Error ? err.message : String(err),
+      const port = loadConfig().daemon.port;
+      injectMessage('orchestrator', `You have been spawned. Check the task queue for pending work: curl -s 'http://localhost:${port}/api/orchestrator/tasks?status=pending'`)
+        .catch(err => {
+          log.warn('Failed to inject startup nudge', {
+            error: err instanceof Error ? err.message : String(err),
+          });
         });
-      }
     });
 
     return session;

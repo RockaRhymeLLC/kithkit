@@ -186,7 +186,7 @@ function monitorComms(): void {
  * Only runs when the orchestrator is alive. Uses injectMessage() to send
  * warnings to the orchestrator's tmux session (not the comms session).
  */
-function monitorOrchestrator(): void {
+async function monitorOrchestrator(): Promise<void> {
   if (!_isOrchestratorAlive()) {
     // Reset tracking when orchestrator dies — next spawn is a new session
     if (orchSessionId !== null) {
@@ -228,7 +228,7 @@ function monitorOrchestrator(): void {
   for (const tier of ORCH_TIERS) {
     if (used >= tier.threshold && !orchFiredTiers.has(tier.threshold)) {
       log.info(`Orchestrator context ${used}% used — firing tier ${tier.threshold}%`);
-      const injected = injectMessage('orchestrator', tier.message(used, remaining));
+      const injected = await injectMessage('orchestrator', tier.message(used, remaining));
       if (injected) {
         orchFiredTiers.add(tier.threshold);
         // Also notify comms so it has visibility into orchestrator context usage
@@ -768,7 +768,7 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
 
 async function run(config: Record<string, unknown>): Promise<void> {
   monitorComms();
-  monitorOrchestrator();
+  await monitorOrchestrator();
   monitorOrchestratorWedge(config);
 }
 

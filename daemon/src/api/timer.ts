@@ -126,51 +126,55 @@ function startNagCycle(entry: TimerEntry, firedAt: number): void {
   let consecutiveFailures = 0;
 
   entry.nagHandle = setInterval(() => {
-    // Guard: stop if timer was acked/cancelled/expired since last nag
-    if (entry.status !== 'fired') {
-      if (entry.nagHandle !== undefined) {
-        clearInterval(entry.nagHandle);
-        entry.nagHandle = undefined;
+    void (async () => {
+      // Guard: stop if timer was acked/cancelled/expired since last nag
+      if (entry.status !== 'fired') {
+        if (entry.nagHandle !== undefined) {
+          clearInterval(entry.nagHandle);
+          entry.nagHandle = undefined;
+        }
+        return;
       }
-      return;
-    }
 
-    const elapsed = Math.floor((Date.now() - firedAt) / 1000);
+      const elapsed = Math.floor((Date.now() - firedAt) / 1000);
 
-    if (elapsed >= MAX_NAG_DURATION_MS / 1000) {
-      complete(entry, 'expired');
-      injectMessage(entry.session, `[timer] ${entry.message} (expired — unacknowledged for 10 minutes)`);
-      return;
-    }
-
-    const nagText = `[timer] ${entry.message} (${elapsed}s ago, unacknowledged)`;
-    const nagOk = injectMessage(entry.session, nagText);
-    if (!nagOk) {
-      consecutiveFailures++;
-      log.warn('Nag injection failed', { id: entry.id, elapsed, consecutiveFailures });
-
-      // Circuit breaker: auto-expire after too many consecutive failures
-      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        log.warn('Circuit breaker: auto-expiring timer after consecutive injection failures', {
-          id: entry.id, session: entry.session, consecutiveFailures,
-        });
+      if (elapsed >= MAX_NAG_DURATION_MS / 1000) {
         complete(entry, 'expired');
+        await injectMessage(entry.session, `[timer] ${entry.message} (expired — unacknowledged for 10 minutes)`);
+        return;
       }
-    } else {
-      consecutiveFailures = 0; // reset on success
-      log.info('Timer nag sent', { id: entry.id, elapsed });
-    }
+
+      const nagText = `[timer] ${entry.message} (${elapsed}s ago, unacknowledged)`;
+      const nagOk = await injectMessage(entry.session, nagText);
+      if (!nagOk) {
+        consecutiveFailures++;
+        log.warn('Nag injection failed', { id: entry.id, elapsed, consecutiveFailures });
+
+        // Circuit breaker: auto-expire after too many consecutive failures
+        if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+          log.warn('Circuit breaker: auto-expiring timer after consecutive injection failures', {
+            id: entry.id, session: entry.session, consecutiveFailures,
+          });
+          complete(entry, 'expired');
+        }
+      } else {
+        consecutiveFailures = 0; // reset on success
+        log.info('Timer nag sent', { id: entry.id, elapsed });
+      }
+    })().catch(err => {
+      log.error('Nag cycle tick failed', { id: entry.id, error: err instanceof Error ? err.message : String(err) });
+    });
   }, NAG_INTERVAL_MS);
 }
 
 /** Fire the timer: inject first message and start the nag cycle. */
-function fireTimer(entry: TimerEntry): void {
+async function fireTimer(entry: TimerEntry): Promise<void> {
   entry.status = 'fired';
   entry.fired_at = new Date().toISOString();
   updateTimerDb(entry);
 
   // Initial fire
-  const ok = injectMessage(entry.session, `[timer] ${entry.message}`);
+  const ok = await injectMessage(entry.session, `[timer] ${entry.message}`);
   if (!ok) {
     log.warn('Timer fired but injection failed', { id: entry.id, session: entry.session });
   } else {
@@ -178,6 +182,13 @@ function fireTimer(entry: TimerEntry): void {
   }
 
   startNagCycle(entry, Date.now());
+}
+
+/** Fire-and-forget wrapper for scheduling fireTimer() from setTimeout callbacks. */
+function scheduleFireTimer(entry: TimerEntry): void {
+  fireTimer(entry).catch(err => {
+    log.error('fireTimer failed', { id: entry.id, error: err instanceof Error ? err.message : String(err) });
+  });
 }
 
 // ── Startup reload ────────────────────────────────────────────
@@ -234,7 +245,7 @@ export function initTimers(): void {
     } else {
       // pending or snoozed — re-schedule
       const remainingMs = Math.max(0, new Date(row.fires_at).getTime() - Date.now());
-      entry.handle = setTimeout(() => fireTimer(entry), remainingMs);
+      entry.handle = setTimeout(() => scheduleFireTimer(entry), remainingMs);
       log.info('Timer reloaded', { id: entry.id, remainingMs });
     }
   }
@@ -299,7 +310,7 @@ export async function handleTimerRoute(
     const fires_at = new Date(Date.now() + delay * 1000).toISOString();
     const created_at = new Date().toISOString();
 
-    const handle = setTimeout(() => fireTimer(entry), delay * 1000);
+    const handle = setTimeout(() => scheduleFireTimer(entry), delay * 1000);
 
     const entry: TimerEntry = {
       id, session, message, fires_at, created_at,
@@ -413,7 +424,7 @@ export async function handleTimerRoute(
     updateTimerDb(entry);
 
     // Reschedule
-    entry.handle = setTimeout(() => fireTimer(entry), snoozeDelay * 1000);
+    entry.handle = setTimeout(() => scheduleFireTimer(entry), snoozeDelay * 1000);
 
     log.info('Timer snoozed', { id, snoozeDelay, fires_at: entry.fires_at });
     json(res, 200, withTimestamp({ id, snoozed: true, fires_at: entry.fires_at }));

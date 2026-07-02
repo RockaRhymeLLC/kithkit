@@ -134,7 +134,7 @@ async function run(): Promise<void> {
   }
 
   const nudge = buildNudge(pendingWorkers.length);
-  const injected = injectMessage('comms', nudge);
+  const injected = await injectMessage('comms', nudge);
 
   if (injected) {
     // Acknowledge the workers we just notified about

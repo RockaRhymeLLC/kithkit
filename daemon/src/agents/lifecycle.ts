@@ -307,22 +307,33 @@ function startWorker(jobId: string, req: SpawnRequest): void {
  */
 function startPolling(jobId: string, sdkWorkerId: string): void {
   const timer = setInterval(() => {
-    const sdkState = sdkGetStatus(sdkWorkerId);
-    if (!sdkState) {
-      finishJob(jobId, 'failed', null, 'Worker disappeared from SDK tracking');
+    // A tick can fire after the daemon has begun shutting down (DB closed,
+    // etc.) if stopAllPolling() lost the race — wrap the body so a late tick
+    // logs instead of throwing an uncaughtException (kithkit#2743 incident:
+    // dist lifecycle.js:220 "Database not initialized" after closeDatabase()).
+    try {
+      const sdkState = sdkGetStatus(sdkWorkerId);
+      if (!sdkState) {
+        finishJob(jobId, 'failed', null, 'Worker disappeared from SDK tracking');
+        stopPolling(jobId);
+        return;
+      }
+
+      if (sdkState.status === 'running') {
+        update('agents', jobId, { last_activity: now(), updated_at: now() });
+        return;
+      }
+
+      // Terminal state reached
+      finishJob(jobId, sdkState.status, sdkState.result, sdkState.error, sdkState);
+      sdkRemove(sdkWorkerId);
       stopPolling(jobId);
-      return;
+    } catch (err) {
+      log.debug('Poll tick failed (likely a late tick during shutdown)', {
+        jobId,
+        error: err instanceof Error ? err.message : String(err),
+      });
     }
-
-    if (sdkState.status === 'running') {
-      update('agents', jobId, { last_activity: now(), updated_at: now() });
-      return;
-    }
-
-    // Terminal state reached
-    finishJob(jobId, sdkState.status, sdkState.result, sdkState.error, sdkState);
-    sdkRemove(sdkWorkerId);
-    stopPolling(jobId);
   }, POLL_INTERVAL_MS);
 
   pollTimers.set(jobId, timer);
@@ -334,6 +345,19 @@ function stopPolling(jobId: string): void {
     clearInterval(timer);
     pollTimers.delete(jobId);
   }
+}
+
+/**
+ * Clear every outstanding poll timer without touching any other lifecycle
+ * state (job queue, listeners, etc.) — intended for daemon shutdown, called
+ * BEFORE closeDatabase() so no late tick can run update()/get() against a
+ * closed database handle (kithkit#2743 incident).
+ */
+export function stopAllPolling(): void {
+  for (const timer of pollTimers.values()) {
+    clearInterval(timer);
+  }
+  pollTimers.clear();
 }
 
 /**
@@ -556,6 +580,15 @@ export function _getQueueLength(): number {
 
 export function _getPollTimerCount(): number {
   return pollTimers.size;
+}
+
+/**
+ * @internal Register a bare timer into the pollTimers map for shutdown-hygiene
+ * tests (kithkit#2743) — lets tests exercise stopAllPolling()'s clearing
+ * behavior deterministically without spinning up the full spawn/SDK path.
+ */
+export function _registerPollTimerForTesting(jobId: string, timer: ReturnType<typeof setInterval>): void {
+  pollTimers.set(jobId, timer);
 }
 
 /** @internal Override startWorker for testing spawn-failure containment. Pass null to restore. */

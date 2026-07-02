@@ -58,7 +58,7 @@ describe('injectMessage — KITHKIT_SUPPRESS_NOTIFICATIONS guard', () => {
     _resetInjectionAttempts();
   });
 
-  it('Test A: injectMessage increments attempt counter when flag is unset', () => {
+  it('Test A: injectMessage increments attempt counter when flag is unset', async () => {
     // Ensure flag is absent to exercise the env-var guard path.
     // IMPORTANT: deleting KITHKIT_SUPPRESS_NOTIFICATIONS does NOT cause real tmux
     // I/O here. The production isUnderTestRunner() guard in injectMessage() fires
@@ -66,14 +66,14 @@ describe('injectMessage — KITHKIT_SUPPRESS_NOTIFICATIONS guard', () => {
     // This test safely verifies the attempt counter without relying on tmux absence.
     delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
 
-    injectMessage('comms', 'test message');
+    await injectMessage('comms', 'test message');
     assert.equal(_getInjectionAttempts(), 1, 'should have attempted injection (no suppression)');
   });
 
-  it('Test B: injectMessage is a no-op when KITHKIT_SUPPRESS_NOTIFICATIONS=1', () => {
+  it('Test B: injectMessage is a no-op when KITHKIT_SUPPRESS_NOTIFICATIONS=1', async () => {
     process.env.KITHKIT_SUPPRESS_NOTIFICATIONS = '1';
 
-    const result = injectMessage('comms', 'test message');
+    const result = await injectMessage('comms', 'test message');
 
     assert.equal(result, false, 'should return false immediately');
     assert.equal(_getInjectionAttempts(), 0, 'should not attempt injection when suppressed');
@@ -123,7 +123,7 @@ describe('Production guard — blocks real tmux I/O under test runner (regressio
     _resetInjectionAttempts();
   });
 
-  it('injectMessage is blocked by the test-runner guard even when KITHKIT_SUPPRESS_NOTIFICATIONS is deleted', () => {
+  it('injectMessage is blocked by the test-runner guard even when KITHKIT_SUPPRESS_NOTIFICATIONS is deleted', async () => {
     // Reproduce the exact conditions of the comms-flood incident:
     //   - KITHKIT_SUPPRESS_NOTIFICATIONS deleted (as Test A previously did)
     //   - KITHKIT_ALLOW_TEST_INJECT absent (no opt-in)
@@ -132,7 +132,7 @@ describe('Production guard — blocks real tmux I/O under test runner (regressio
     delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
     delete process.env.KITHKIT_ALLOW_TEST_INJECT;
 
-    const result = injectMessage('comms', 'canary-regression-guard-test');
+    const result = await injectMessage('comms', 'canary-regression-guard-test');
 
     // The attempt counter is incremented before the production guard fires —
     // this is intentional so tests asserting the counter still pass.
@@ -194,13 +194,13 @@ describe('injectMessage log level for missing session (R2 guard)', () => {
     }
   });
 
-  it('logs debug (not warn) when orch session not found and orchestrator is gone', () => {
+  it('logs debug (not warn) when orch session not found and orchestrator is gone', async () => {
     _setTmuxDepsForTesting({
       sessionExists: () => false,   // simulate: tmux has-session fails
       isOrchAlive: () => false,     // orchestrator is confirmed gone
     });
 
-    const result = injectMessage('orchestrator', 'test nudge');
+    const result = await injectMessage('orchestrator', 'test nudge');
     assert.equal(result, false, 'should return false when session not found');
 
     const entries = readLogEntries();
@@ -211,13 +211,13 @@ describe('injectMessage log level for missing session (R2 guard)', () => {
     assert.equal(warnEntries.length, 0, `should not warn when orch is gone (stale ref), got: ${JSON.stringify(warnEntries)}`);
   });
 
-  it('logs warn when orch session not found but orchestrator appears alive (real delivery failure)', () => {
+  it('logs warn when orch session not found but orchestrator appears alive (real delivery failure)', async () => {
     _setTmuxDepsForTesting({
       sessionExists: () => false,   // simulate: tmux has-session fails
       isOrchAlive: () => true,      // orchestrator is alive (e.g. name-mismatch scenario)
     });
 
-    const result = injectMessage('orchestrator', 'test nudge');
+    const result = await injectMessage('orchestrator', 'test nudge');
     assert.equal(result, false, 'should return false when session not found');
 
     const entries = readLogEntries();
@@ -574,7 +574,7 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
     _resetInjectionAttempts();
   });
 
-  it('MUTATION-KILL (primary): a standalone C-m send-keys call fires after the text payload', () => {
+  it('MUTATION-KILL (primary): a standalone C-m send-keys call fires after the text payload', async () => {
     // This is the primary mutation-killer for the spawn-kickoff race fix.
     //
     // The REAL submit path: execSendKeys(session, ['C-m']) is a dedicated call
@@ -606,7 +606,7 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
       },
     });
 
-    const result = injectMessage('orchestrator', 'check queue');
+    const result = await injectMessage('orchestrator', 'check queue');
 
     // injectMessage must return true (syscall succeeded)
     assert.equal(result, true, 'injectMessage must return true when send-keys syscall succeeds');
@@ -634,7 +634,7 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
     );
   });
 
-  it('MUTATION-KILL (secondary): verifySubmitLanded detects pane-advanced via capturePane', () => {
+  it('MUTATION-KILL (secondary): verifySubmitLanded detects pane-advanced via capturePane', async () => {
     // Drives verifySubmitLanded() directly via the exported function.
     // The capturePane seam returns changed content → verify returns true.
     // Mutation: replace capturePaneContent() body with () => baselineContent
@@ -652,12 +652,12 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
     });
 
     const baseline = '> ';
-    const verified = verifySubmitLanded('orch1', baseline);
+    const verified = await verifySubmitLanded('orch1', baseline);
     assert.equal(verified, true,
       'verifySubmitLanded must return true when capturePane shows pane advanced');
   });
 
-  it('verifySubmitLanded returns false when pane content does not change (submit not received)', () => {
+  it('verifySubmitLanded returns false when pane content does not change (submit not received)', async () => {
     // COMMIT 4 receipt-based return precondition: if pane never changes,
     // verifySubmitLanded must return false so injectMessage can return false.
     _setTmuxDepsForTesting({
@@ -668,7 +668,7 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
     });
 
     const baseline = '> ';
-    const verified = verifySubmitLanded('orch1', baseline);
+    const verified = await verifySubmitLanded('orch1', baseline);
     assert.equal(verified, false,
       'verifySubmitLanded must return false when capturePane content does not change (submit not confirmed)');
   });
