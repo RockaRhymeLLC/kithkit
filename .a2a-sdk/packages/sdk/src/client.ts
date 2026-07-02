@@ -23,6 +23,8 @@ import type {
   WireEnvelope,
   KeyRotationResult,
   KeyRotationCommunityResult,
+  ReceivePersistFn,
+  DeadLetterEntry,
 } from './types.js';
 import {
   HttpRelayAPI,
@@ -88,6 +90,21 @@ export interface A2ANetworkInternalOptions extends A2ANetworkOptions {
   retryDelays?: number[];
   /** Custom retry process interval in ms (for testing). Default: 1000. */
   retryProcessInterval?: number;
+  /**
+   * Delivery-integrity hook — called with each decoded message BEFORE the SDK
+   * emits 'message' or 'group-message' events (persist-before-deliver).
+   *
+   * Mirrors the daemon's sendMessage seam in sdk-bridge.ts wireMessageEvent /
+   * wireGroupMessageEvent (daemon/src/extensions/comms/network/sdk-bridge.ts).
+   *
+   * The daemon registers this hook to INSERT the message into the messages table
+   * before session injection. SDK consumers without a DB may use it to write to
+   * any durable store.
+   *
+   * If the hook throws, the message is dead-lettered (not emitted). Retrieve via
+   * getDeadLetterQueue(). If omitted, events fire as before (backward-compatible).
+   */
+  persistFn?: ReceivePersistFn;
 }
 
 /** Regex for valid community names: alphanumeric + hyphen, 1-64 chars. */
@@ -160,6 +177,17 @@ export class A2ANetwork extends EventEmitter {
   private seenGroupMessageIds: Set<string> = new Set();
   private static MAX_SEEN_GROUP_MSG_IDS = 1000;
 
+  // ── Delivery-integrity state (#585 / #620) ────────────────────────────────
+  /** Dedup set for direct messages — mirrors seenGroupMessageIds pattern. */
+  private seenMessageIds: Set<string> = new Set();
+  private static MAX_SEEN_MSG_IDS = 1000;
+  /** Persist-before-deliver hook provided by the daemon (or any consumer with a durable store). */
+  private persistFn: ReceivePersistFn | undefined;
+  /** Dead-letter queue — populated when persistFn throws; message is NOT emitted. */
+  private deadLetterQueue: DeadLetterEntry[] = [];
+  private static MAX_DEAD_LETTER = 100;
+  // ─────────────────────────────────────────────────────────────────────────
+
   constructor(options: A2ANetworkInternalOptions) {
     super();
 
@@ -173,6 +201,9 @@ export class A2ANetwork extends EventEmitter {
       failoverThreshold: 3,
       ...options,
     };
+
+    // Wire delivery-integrity hook (persist-before-deliver seam)
+    this.persistFn = options.persistFn;
 
     // Convert Buffer (PKCS8 DER) to KeyObject and validate key type
     this.privateKeyObj = createPrivateKey({
@@ -612,10 +643,17 @@ export class A2ANetwork extends EventEmitter {
    * Verifies the sender is a contact, checks Ed25519 signature,
    * decrypts AES-256-GCM payload, and emits 'message' event.
    *
-   * Returns null if the message is not addressed to this agent.
+   * Delivery-integrity contract (mirrors daemon sdk-bridge.ts wireMessageEvent):
+   *   1. Dedup: if this messageId was already injected, returns without re-emitting.
+   *   2. Persist-before-deliver: if persistFn is configured, it is awaited BEFORE
+   *      the 'message' event fires. If persistFn throws, the message is dead-lettered
+   *      (not emitted) and recoverable via getDeadLetterQueue().
+   *   3. injectedAt: stamped on the Message object when emission occurs.
+   *
+   * Returns the decoded Message in all cases (including dedup/dead-letter).
    * Throws on non-contact sender, invalid signature, or decryption failure.
    */
-  receiveMessage(envelope: WireEnvelope): Message {
+  async receiveMessage(envelope: WireEnvelope): Promise<Message> {
     // Validate it's addressed to us
     if (envelope.recipient !== this.options.username) {
       throw new Error(`Message not addressed to us (to: ${envelope.recipient})`);
@@ -631,7 +669,7 @@ export class A2ANetwork extends EventEmitter {
       throw new Error(`No public key for sender '${envelope.sender}'`);
     }
 
-    // Verify signature + decrypt
+    // Verify signature + decrypt (throws on bad signature / decryption failure)
     const processed = processEnvelope({
       envelope,
       recipientPrivateKey: this.privateKeyObj,
@@ -646,9 +684,45 @@ export class A2ANetwork extends EventEmitter {
       verified: processed.verified,
     };
 
-    // Emit event
-    this.emit('message', msg);
+    // ── Delivery-integrity layer (#585 / #620) ────────────────────────────
+    // Idempotent injection: skip if this messageId was already delivered.
+    // Prevents double-persistence and double-emit on relay retransmit or
+    // duplicate P2P delivery under transition-period grace (#585).
+    if (this.seenMessageIds.has(msg.messageId)) {
+      return msg;
+    }
 
+    // Persist-before-deliver: call persistFn BEFORE emitting 'message'.
+    // Mirrors daemon sendMessage() call adjacent to wireMessageEvent emit
+    // (sdk-bridge.ts). If the hook throws, dead-letter the message — do NOT
+    // emit. The caller can recover from getDeadLetterQueue() without data loss.
+    if (this.persistFn) {
+      try {
+        await this.persistFn(msg);
+      } catch (err) {
+        this.deadLetterQueue.push({
+          messageId: msg.messageId,
+          msg,
+          error: err instanceof Error ? err.message : String(err),
+          receivedAt: new Date().toISOString(),
+        });
+        if (this.deadLetterQueue.length > A2ANetwork.MAX_DEAD_LETTER) {
+          this.deadLetterQueue.shift();
+        }
+        return msg;
+      }
+    }
+
+    // Mark as injected (idempotency + injected_at stamp)
+    this.seenMessageIds.add(msg.messageId);
+    if (this.seenMessageIds.size > A2ANetwork.MAX_SEEN_MSG_IDS) {
+      const first = this.seenMessageIds.values().next().value;
+      if (first) this.seenMessageIds.delete(first);
+    }
+    msg.injectedAt = new Date().toISOString();
+    // ─────────────────────────────────────────────────────────────────────
+
+    this.emit('message', msg);
     return msg;
   }
 
@@ -1016,6 +1090,12 @@ export class A2ANetwork extends EventEmitter {
    * validates sender is a group member, and emits 'group-message' event.
    * Deduplicates based on messageId (last 1000 seen). Returns null for duplicates.
    * If sender is not in the member cache, refreshes from relay before rejecting.
+   *
+   * Delivery-integrity contract (mirrors daemon sdk-bridge.ts wireGroupMessageEvent):
+   *   1. Dedup: if this messageId was already injected, returns null.
+   *   2. Persist-before-deliver: if persistFn is configured, awaited BEFORE emit.
+   *      If it throws, the message is dead-lettered (not emitted).
+   *   3. injectedAt: stamped on the GroupMessage when emission occurs.
    */
   async receiveGroupMessage(envelope: WireEnvelope): Promise<GroupMessage | null> {
     if (envelope.type !== 'group') {
@@ -1028,7 +1108,7 @@ export class A2ANetwork extends EventEmitter {
       throw new Error(`Message not addressed to us (to: ${envelope.recipient})`);
     }
 
-    // Dedup: skip already-seen messageIds
+    // Dedup: skip already-seen messageIds (idempotent injection)
     if (this.seenGroupMessageIds.has(envelope.messageId)) {
       return null;
     }
@@ -1061,13 +1141,6 @@ export class A2ANetwork extends EventEmitter {
       }
     }
 
-    // Track this messageId for dedup
-    this.seenGroupMessageIds.add(envelope.messageId);
-    if (this.seenGroupMessageIds.size > A2ANetwork.MAX_SEEN_GROUP_MSG_IDS) {
-      const first = this.seenGroupMessageIds.values().next().value;
-      if (first) this.seenGroupMessageIds.delete(first);
-    }
-
     const msg: GroupMessage = {
       groupId: envelope.groupId,
       sender: processed.sender,
@@ -1076,6 +1149,35 @@ export class A2ANetwork extends EventEmitter {
       payload: processed.payload,
       verified: processed.verified,
     };
+
+    // ── Delivery-integrity layer (#585 / #620) ────────────────────────────
+    // Persist-before-deliver: call persistFn BEFORE emitting 'group-message'.
+    // Mirrors daemon sendMessage() call in wireGroupMessageEvent (sdk-bridge.ts).
+    if (this.persistFn) {
+      try {
+        await this.persistFn(msg);
+      } catch (err) {
+        this.deadLetterQueue.push({
+          messageId: msg.messageId,
+          msg,
+          error: err instanceof Error ? err.message : String(err),
+          receivedAt: new Date().toISOString(),
+        });
+        if (this.deadLetterQueue.length > A2ANetwork.MAX_DEAD_LETTER) {
+          this.deadLetterQueue.shift();
+        }
+        return msg;
+      }
+    }
+
+    // Mark as injected (idempotency + injected_at stamp)
+    this.seenGroupMessageIds.add(envelope.messageId);
+    if (this.seenGroupMessageIds.size > A2ANetwork.MAX_SEEN_GROUP_MSG_IDS) {
+      const first = this.seenGroupMessageIds.values().next().value;
+      if (first) this.seenGroupMessageIds.delete(first);
+    }
+    msg.injectedAt = new Date().toISOString();
+    // ─────────────────────────────────────────────────────────────────────
 
     this.emit('group-message', msg);
     return msg;
@@ -1109,6 +1211,26 @@ export class A2ANetwork extends EventEmitter {
    */
   getDeliveryReport(messageId: string): DeliveryReport | undefined {
     return this.deliveryReports.get(messageId);
+  }
+
+  // --- Delivery-integrity (#585 / #620) ---
+
+  /**
+   * Return the dead-letter queue — messages that were received and verified
+   * but NOT emitted because persistFn threw.
+   *
+   * The caller (daemon or SDK consumer) should inspect entries, retry persistence,
+   * and remove them via clearDeadLetterQueue().
+   */
+  getDeadLetterQueue(): readonly DeadLetterEntry[] {
+    return this.deadLetterQueue;
+  }
+
+  /**
+   * Clear all dead-letter entries (call after successfully recovering entries).
+   */
+  clearDeadLetterQueue(): void {
+    this.deadLetterQueue = [];
   }
 
   // --- Internal ---
