@@ -362,4 +362,35 @@ describe('#1017 stats: transcript_review_enabled reflects config', { concurrency
       'transcript_review_enabled must be false by default',
     );
   });
+
+  it('transcript_review_enabled is false when config explicitly disables transcript_review (#1022)', async () => {
+    // Explicitly set transcript_review.enabled=false in config.
+    // This is DISTINCT from the default/absent case: here the config key is PRESENT with
+    // value false. It pins the stats wiring against mutations that check object-presence
+    // rather than reading the `.enabled` property (e.g. `!!config.transcript_review` would
+    // return true here because the object exists, but `.enabled` is false).
+    fs.writeFileSync(
+      path.join(tmpDir, 'kithkit.config.yaml'),
+      yaml.dump({
+        agent: { name: 'Test1022StatsDisabled' },
+        daemon: { port: 3847 },
+        self_improvement: { transcript_review: { enabled: false } },
+      }),
+    );
+    loadConfig(tmpDir);
+    openDatabase(tmpDir, path.join(tmpDir, 'test.db'));
+
+    const db = getDatabase();
+    const stats = await getSelfImprovementStats(db);
+
+    // Mutation-kill assertion: transcript_review_enabled must be false (explicit disabled).
+    // A mutation that reads `!!config.transcript_review` (object presence) instead of
+    // `config.transcript_review.enabled` would return true here (the object IS present) →
+    // this assertion goes RED with a VALUE mismatch, not a compile error.
+    assert.equal(
+      stats.transcript_review_enabled,
+      false,
+      'transcript_review_enabled must be false when self_improvement.transcript_review.enabled=false (#1022)',
+    );
+  });
 });
