@@ -267,12 +267,14 @@ async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: S
       continue;
     }
     const deliverable: Message[] = [];
+    const busyDeferred: Message[] = [];
     for (const msg of messages) {
       if (!liveSessions.has(agentId)) {
         if (deferredSessions.has(agentId)) {
           // Agent session exists but is busy (e.g., orch mid-run) — defer without
           // consuming the retry budget. Message stays pending until next tick.
           deferred++;
+          busyDeferred.push(msg);
           log.debug('Message deferred — target agent is busy', { id: msg.id, to: agentId });
           continue;
         }
@@ -290,6 +292,35 @@ async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: S
         continue;
       }
       deliverable.push(msg);
+    }
+
+    // Busy-orchestrator unread ping (todo 2769): a mid-task orchestrator never
+    // hits the idle nudge, so urgent messages could sit unread for the whole
+    // task (a 9:28p scope redirect sat 20+ min on 7/2). Inject a SHORT
+    // unread-count ping at the turn boundary — safe, same mechanism as manual
+    // tmux injection — while keeping full content delivery for the idle path.
+    // Anti-spam: each message triggers at most one ping (busy_pinged_at in
+    // metadata, durable across restarts).
+    if (agentId === 'orchestrator' && busyDeferred.length > 0 && injectsThisCycle < MAX_INJECTS_PER_CYCLE) {
+      const unpinged = busyDeferred.filter((m) => {
+        try { return !(m.metadata && JSON.parse(m.metadata).busy_pinged_at); } catch { return true; }
+      });
+      if (unpinged.length > 0) {
+        const ping = `[System] ${busyDeferred.length} unread message(s) queued for you (delivered in full when you go idle). If mid-task, check now with: curl -s 'http://localhost:${loadConfig().daemon.port}/api/messages?agent=orchestrator&limit=${busyDeferred.length}'`;
+        const pingOk = await _injectMessageImpl(agentId, ping);
+        injectsThisCycle++;
+        if (pingOk) {
+          const now = new Date().toISOString();
+          for (const msg of unpinged) {
+            let meta: Record<string, unknown> = {};
+            try { meta = msg.metadata ? JSON.parse(msg.metadata) : {}; } catch { /* keep {} */ }
+            exec('UPDATE messages SET metadata = ? WHERE id = ?', JSON.stringify({ ...meta, busy_pinged_at: now }), msg.id);
+          }
+          log.info('Busy-orchestrator unread ping injected', { unread: busyDeferred.length, newlyPinged: unpinged.length });
+        } else {
+          log.warn('Busy-orchestrator unread ping failed to inject', { unread: busyDeferred.length });
+        }
+      }
     }
 
     if (deliverable.length === 0) continue;
