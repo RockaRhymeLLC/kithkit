@@ -306,7 +306,7 @@ async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: S
         try { return !(m.metadata && JSON.parse(m.metadata).busy_pinged_at); } catch { return true; }
       });
       if (unpinged.length > 0) {
-        const ping = `[System] ${busyDeferred.length} unread message(s) queued for you (delivered in full when you go idle). If mid-task, check now with: curl -s 'http://localhost:3847/api/messages?agent=orchestrator&limit=${busyDeferred.length}'`;
+        const ping = `[System] ${busyDeferred.length} unread message(s) queued for you (delivered in full when you go idle). If mid-task, check now with: curl -s 'http://localhost:${loadConfig().daemon.port}/api/messages?agent=orchestrator&limit=${busyDeferred.length}'`;
         const pingOk = await _injectMessageImpl(agentId, ping);
         injectsThisCycle++;
         if (pingOk) {
