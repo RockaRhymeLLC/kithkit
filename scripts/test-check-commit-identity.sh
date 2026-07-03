@@ -111,6 +111,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Test 6: .local mid-domain (non-terminal) — must PASS  (#1024 anchor guard)
+# dev@host.local.com contains ".local" but it is NOT the TLD; the regex anchors
+# with `$` so only ".local" at end-of-host matches.  Dropping the `$` anchor in
+# check-commit-identity.sh would make this test FAIL (script rejects the address).
+# ---------------------------------------------------------------------------
+T5_BASE=$T5_HEAD
+
+git -c user.email="dev@host.local.com" -c user.name="Dev MidLocal" \
+  commit -q --allow-empty -m ".local mid-domain, not TLD"
+T6_HEAD=$(git rev-parse HEAD)
+
+if "$CHECK" "$T5_BASE" "$T6_HEAD" > /dev/null 2>&1; then
+  pass "Test 6: dev@host.local.com (.local mid-domain) correctly passes"
+else
+  fail "Test 6: dev@host.local.com should pass — script over-matched (anchor regression?)"
+fi
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 echo ""
