@@ -151,29 +151,39 @@ describe('message-delivery: orchestrator injection (bug fix)', () => {
 
   // ── Idle-guard tests (issue #135) ─────────────────────────────
 
-  it('does NOT inject when orch session is present but state=active (busy)', async () => {
-    const msgId = insertMessage({ from: 'comms', to: 'orchestrator', body: 'ping' });
+  it('injects only a SHORT unread ping (not full content) when orch is state=active (busy) — todo 2769', async () => {
+    const msgId = insertMessage({ from: 'comms', to: 'orchestrator', body: 'URGENT-SCOPE-REDIRECT-BODY' });
 
-    const injected: Array<{ agentId: string }> = [];
+    const injected: Array<{ agentId: string; text: string }> = [];
 
     _setDeliveryDepsForTesting({
       listSessions: () => [_getCommsSession(), _getOrchestratorSession()],
-      injectMessage: (agentId, _text) => {
-        injected.push({ agentId });
+      injectMessage: (agentId, text) => {
+        injected.push({ agentId, text });
         return true;
       },
-      orchState: () => 'active', // mid-run — must NOT inject
+      orchState: () => 'active', // mid-run — full content must NOT deliver, but a ping must
     });
 
     await _deliverMessagesForTesting();
 
-    // injectMessage must NOT have been called for orchestrator
-    const orchCall = injected.find(c => c.agentId === 'orchestrator');
-    assert.equal(orchCall, undefined, 'injectMessage should NOT be called when orch is active/busy');
+    // Exactly one orchestrator inject: the busy ping — NOT the message body
+    const orchCalls = injected.filter(c => c.agentId === 'orchestrator');
+    assert.equal(orchCalls.length, 1, 'exactly one busy ping should be injected');
+    assert.ok(orchCalls[0].text.includes('unread message'), 'ping should mention unread messages');
+    assert.ok(!orchCalls[0].text.includes('URGENT-SCOPE-REDIRECT-BODY'), 'ping must not contain full message body');
 
-    // Message must remain pending (processed_at = null)
+    // Message must remain pending (processed_at = null) — full delivery happens at idle
     const rows = query<MsgRow>('SELECT processed_at FROM messages WHERE id = ?', msgId);
     assert.equal(rows[0].processed_at, null, 'message should remain pending when orch is busy');
+
+    // Second tick: no re-ping for the same message (busy_pinged_at set)
+    await _deliverMessagesForTesting();
+    assert.equal(
+      injected.filter(c => c.agentId === 'orchestrator').length,
+      1,
+      'no duplicate ping for an already-pinged message',
+    );
   });
 
   it('defers message without consuming retry budget across 3+ busy ticks, then delivers when idle', async () => {
@@ -203,11 +213,12 @@ describe('message-delivery: orchestrator injection (bug fix)', () => {
       const retries = _getRetryCount(msgId);
       assert.equal(retries, 0, `tick ${tick}: retry count must not increase while orch is busy (deferred)`);
 
-      // injectMessage must NOT have been called for orchestrator
+      // Exactly ONE busy ping total (fired on tick 1, deduped afterward) — the
+      // full message content must never be injected while busy (todo 2769).
       assert.equal(
         injected.filter(c => c.agentId === 'orchestrator').length,
-        0,
-        `tick ${tick}: injectMessage must not fire while orch is active`,
+        1,
+        `tick ${tick}: exactly one busy ping across busy ticks (no re-ping, no full delivery)`,
       );
     }
 
@@ -215,9 +226,9 @@ describe('message-delivery: orchestrator injection (bug fix)', () => {
     orchStateReturn = 'waiting';
     await _deliverMessagesForTesting();
 
-    // Message must now be delivered
-    const orchCall = injected.find(c => c.agentId === 'orchestrator');
-    assert.ok(orchCall, 'injectMessage should be called once orch is idle');
+    // Message must now be delivered in full (ping + full delivery = 2 orch injects)
+    const orchCalls = injected.filter(c => c.agentId === 'orchestrator');
+    assert.equal(orchCalls.length, 2, 'full delivery should follow once orch is idle');
 
     const rows = query<MsgRow>('SELECT processed_at, read_at, notified_at FROM messages WHERE id = ?', msgId);
     assert.ok(rows[0].processed_at, 'processed_at should be set after delivery when orch becomes idle');
