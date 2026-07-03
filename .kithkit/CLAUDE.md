@@ -74,7 +74,7 @@ The daemon exposes a local HTTP API on `127.0.0.1:<port>` (default 3847). Use it
 | `GET /api/contacts` | List contacts (filter by type, role, tag) |
 | `POST /api/contacts` | Create a contact |
 | `GET /api/contacts/search` | Search contacts across fields |
-| `POST /api/a2a/send` | Send A2A message (DM or group) with auto/relay/LAN routing |
+| `POST /api/a2a/send` | Send A2A message: `to` for a DM (username), `group` for a group (group id); setting both → 400 INVALID_TARGET |
 | `GET /api/selftest` | Comprehensive system health check |
 | `GET /api/metrics` | Aggregated API request metrics |
 | `POST /api/metrics/ingest` | Receive batched metrics from remote agents |
