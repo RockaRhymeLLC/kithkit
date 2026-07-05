@@ -25,7 +25,25 @@ import {
   getOrchestratorState,
   ORCH_SESSION_PATTERN,
   spawnOrchestratorSession,
+  _findCurrentInputLineForTesting,
 } from '../agents/tmux.js';
+
+// ── Realistic pane-capture fixture (todo #2807) ────────────────
+//
+// Mirrors a REAL `tmux capture-pane -t orch1 -p -J` capture against a live
+// orchestrator session (captured 2026-07-05): Claude Code renders the current
+// input as a bordered box, with a two-line status footer directly below it —
+// the input row is never the last line of the pane.
+const PANE_BORDER = '─'.repeat(40);
+function paneWithInput(text: string): string {
+  return [
+    `${PANE_BORDER} orchestrator ──`,
+    `❯ ${text}`,
+    PANE_BORDER,
+    '  [Fable 5] Context: 74% used',
+    '  ⏵⏵ bypass permissions on · 1 shell · ← for agents',
+  ].join('\n');
+}
 
 // ── Session name helpers ──────────────────────────────────────
 
@@ -596,13 +614,14 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
       isOrchAlive: () => true,
       sendKeys: (session, args) => { sendKeysCalls.push({ session, args }); },
       // capturePane seam:
-      //   call 0 (baseline / readiness gate): show prompt → isInputPromptReady passes
-      //   call 1+ (verifySubmitLanded): return different content → verify returns true
+      //   call 0 (baseline / readiness gate): show ready prompt → isInputPromptReady passes
+      //   call 1+ (verifySubmitLanded's first+second confirm reads): input line reads
+      //     empty on the real bordered-box layout → submit confirmed
       capturePane: (_session) => {
         const n = captureCallCount++;
         return n === 0
-          ? '$ claude\n> '                         // ready prompt (baseline)
-          : '$ claude\n[12:00:01] check queue\n> '; // submit confirmed (new content)
+          ? '$ claude\n> '        // ready prompt (baseline / readiness gate)
+          : paneWithInput('');    // input line empty → submit confirmed (both reads)
       },
     });
 
@@ -634,43 +653,111 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
     );
   });
 
-  it('MUTATION-KILL (secondary): verifySubmitLanded detects pane-advanced via capturePane', async () => {
-    // Drives verifySubmitLanded() directly via the exported function.
-    // The capturePane seam returns changed content → verify returns true.
-    // Mutation: replace capturePaneContent() body with () => baselineContent
-    //   (always same) → verify returns false → assert fails → RED.
-    let calls = 0;
+  it('MUTATION-KILL (secondary): verifySubmitLanded confirms submit via input-line-empty double-read', async () => {
+    // Drives verifySubmitLanded() directly via the exported function, against a
+    // realistic bordered-box pane capture (see paneWithInput() fixture doc).
+    // Every read shows the input line empty → both the first and confirm read
+    // agree → verified true.
+    //
+    // Mutation-kill: replace findCurrentInputLine()'s result check with the old
+    // "any content change" comparison → still true here (harmless for THIS test
+    // alone), but see the next test for the discriminating mutation-killer.
+    _setTmuxDepsForTesting({
+      resolveSession: () => 'orch1',
+      sessionExists: () => true,
+      isOrchAlive: () => true,
+      capturePane: (_session) => paneWithInput(''), // input line empty on every read
+    });
+
+    const baseline = paneWithInput('check queue'); // pre-submit: text still in the box
+    const verified = await verifySubmitLanded('orch1', baseline);
+    assert.equal(verified, true,
+      'verifySubmitLanded must return true when the input line reads empty on both confirmation reads');
+  });
+
+  it('MUTATION-KILL (false-positive regression, todo #2807): returns false when the input line still holds unsubmitted text, even though the pane keeps changing elsewhere', async () => {
+    // This is the exact false-positive scenario that shipped: Claude is streaming
+    // its own output (pane content changes on every capture), but the C-m was
+    // never received — the injected text is still sitting, unsubmitted, in the
+    // live input line.
+    //
+    // The OLD implementation ("any content change since baseline = submitted")
+    // would return true here on the very first read, because the pane content
+    // literally differs every call. The FIX must return false, because the
+    // input line itself never empties.
+    let n = 0;
     _setTmuxDepsForTesting({
       resolveSession: () => 'orch1',
       sessionExists: () => true,
       isOrchAlive: () => true,
       capturePane: (_session) => {
-        // First call: baseline (same)
-        // Second call: pane advanced (different — simulates submit received)
-        return calls++ === 0 ? '> ' : '> [response]\n> ';
+        n++;
+        // Input line keeps holding 'check queue' (never submitted); everything
+        // below keeps "changing" (simulates Claude streaming elsewhere in the pane).
+        return `${paneWithInput('check queue')}\nstreaming tick ${n}`;
       },
     });
 
-    const baseline = '> ';
+    const baseline = paneWithInput(''); // baseline was empty, pre-injection
     const verified = await verifySubmitLanded('orch1', baseline);
-    assert.equal(verified, true,
-      'verifySubmitLanded must return true when capturePane shows pane advanced');
+    assert.equal(verified, false,
+      'verifySubmitLanded must return false when the input line still holds unsubmitted text, regardless of pane churn elsewhere');
   });
 
-  it('verifySubmitLanded returns false when pane content does not change (submit not received)', async () => {
-    // COMMIT 4 receipt-based return precondition: if pane never changes,
-    // verifySubmitLanded must return false so injectMessage can return false.
+  it('requires the input line to read empty on TWO consecutive reads, not just one (transient-frame guard)', async () => {
+    // R2 acceptance criterion: a single empty read can be a transient mid-render
+    // frame. This proves the double-read actually gates on it — a lone empty
+    // read followed by a non-empty read must NOT confirm; only two consecutive
+    // empty reads (possibly after a C-m retry cycle) confirm true.
+    const reads = [
+      paneWithInput(''),            // iteration 0, first read: empty
+      paneWithInput('check queue'), // iteration 0, confirm read: NOT empty — transient, do not confirm yet
+      paneWithInput(''),            // iteration 1, first read: empty again
+      paneWithInput(''),            // iteration 1, confirm read: empty — now confirmed
+    ];
+    let call = 0;
     _setTmuxDepsForTesting({
       resolveSession: () => 'orch1',
       sessionExists: () => true,
       isOrchAlive: () => true,
-      capturePane: (_session) => '> ', // constant — no change
+      capturePane: (_session) => reads[call++] ?? paneWithInput(''),
     });
 
-    const baseline = '> ';
-    const verified = await verifySubmitLanded('orch1', baseline);
-    assert.equal(verified, false,
-      'verifySubmitLanded must return false when capturePane content does not change (submit not confirmed)');
+    const verified = await verifySubmitLanded('orch1', paneWithInput('check queue'));
+    assert.equal(verified, true,
+      'should confirm true once two consecutive empty reads are observed');
+    assert.equal(call, 4,
+      'should require exactly 4 reads: first-empty, confirm-not-empty (retry), first-empty, confirm-empty');
+  });
+});
+
+// ── findCurrentInputLine: real pane-capture parsing (todo #2807) ─────────
+
+describe('findCurrentInputLine — robust input-row identification against real pane layout', () => {
+  it('identifies the empty input line in a realistic bordered-box capture', () => {
+    assert.equal(_findCurrentInputLineForTesting(paneWithInput('')), '');
+  });
+
+  it('identifies non-empty (unsubmitted) input text in a realistic bordered-box capture', () => {
+    assert.equal(_findCurrentInputLineForTesting(paneWithInput('check queue')), 'check queue');
+  });
+
+  it('does NOT mistake a historical transcript ❯ line for the live input row', () => {
+    // Transcript entries are also ❯-prefixed but are NOT followed by a
+    // border+Context footer — only the live input row is.
+    const content = [
+      '❯ [Sunday, July 5, 2026] [System] some historical message',
+      '  continuation text wrapped onto the next line',
+      '',
+      '  Ran 1 shell command',
+      '',
+      ...paneWithInput('').split('\n'),
+    ].join('\n');
+    assert.equal(_findCurrentInputLineForTesting(content), '');
+  });
+
+  it('returns null when no identifiable input box is present (unexpected layout)', () => {
+    assert.equal(_findCurrentInputLineForTesting('just some random pane text\nwith no box at all'), null);
   });
 });
 

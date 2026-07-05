@@ -154,29 +154,135 @@ function isInputPromptReady(content: string): boolean {
   return />\s*$/.test(content.trimEnd());
 }
 
+/**
+ * Border line of Claude Code's input box, e.g.:
+ *   ──────────────────────────────────────────────
+ * Rendered with the box-drawing char U+2500 ('─'). Falls back to a run of
+ * plain hyphens for terminals/fonts that can't render box-drawing glyphs.
+ */
+const BORDER_LINE_RE = /^[─━-]{3,}\s*$/;
+
+/**
+ * Live input-row marker. Claude Code prefixes the CURRENT input line with the
+ * `❯` glyph (U+276F), e.g. `❯ some text`. Note: historical transcript turns are
+ * ALSO rendered with a leading `❯ ` (a stylistic echo of past user input) — see
+ * findCurrentInputLine() for how the live row is disambiguated from those.
+ */
+const PROMPT_LINE_RE = /^\s*❯\s?(.*)$/;
+
+/**
+ * Locate Claude Code's LIVE input line inside a captured tmux pane and return
+ * its text content (marker stripped, trailing pane-padding trimmed), or null
+ * if the input box could not be reliably identified.
+ *
+ * Investigated via a real capture (`tmux capture-pane -t orch1 -p -J`) against
+ * a live orchestrator session — Claude Code renders the current input as a
+ * bordered box, with a two-line status footer directly below it:
+ *
+ *   ──────────────────────────────────────── orchestrator ──   (top border, has a label)
+ *   ❯ <current input text>
+ *   ────────────────────────────────────────────────────────   (bottom border, bare)
+ *     [Model] Context: NN% used
+ *     ⏵⏵ bypass permissions on · N shell · ← for agents
+ *
+ * The pane is NOT guaranteed to end at the input row — the two footer lines
+ * always follow it. A naive "check the last line" heuristic (the prior
+ * isInputPromptReady() approach) breaks against this real layout.
+ *
+ * Historical transcript entries are ALSO `❯`-prefixed, so "any line starting
+ * with ❯" is ambiguous on its own. The live row is disambiguated structurally:
+ * it's the LAST `❯`-prefixed line that is immediately followed by a bare
+ * border line, itself followed (within a couple of lines) by the "Context:"
+ * footer marker. That exact combination only occurs once per render, at the
+ * live input box — transcript `❯` lines are followed by response text, not a
+ * border+footer.
+ */
+function findCurrentInputLine(content: string): string | null {
+  const lines = content.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const match = PROMPT_LINE_RE.exec(lines[i]!);
+    if (!match) continue;
+    const border = lines[i + 1];
+    if (border === undefined || !BORDER_LINE_RE.test(border)) continue;
+    const footer = lines.slice(i + 2, i + 5).join('\n');
+    if (!/Context:/.test(footer)) continue;
+    return match[1]!.trimEnd();
+  }
+  return null;
+}
+
+/** @internal Exposed for direct unit tests against real pane-capture samples. */
+export function _findCurrentInputLineForTesting(content: string): string | null {
+  return findCurrentInputLine(content);
+}
+
 const MAX_CM_RETRIES = 2;
 
 /**
- * Verify that the submit keystroke (C-m) was received by checking whether
- * the pane content advanced past the baseline (i.e. Claude started responding).
+ * Settle delay before each input-line read: Claude's streaming re-renders can
+ * transiently repaint near the input row mid-frame. Waiting briefly before
+ * reading reduces the chance of sampling a half-drawn frame.
+ */
+const SUBMIT_SETTLE_DELAY_MS = 250;
+
+/**
+ * Gap between the first and second confirmation read. A single empty-input-line
+ * read can be transient (streaming can land on/near the input row mid-render) —
+ * requiring the SAME empty result on a second, later read is what makes the
+ * check robust rather than a one-shot snapshot.
+ */
+const SUBMIT_DOUBLE_READ_GAP_MS = 200;
+
+/**
+ * Verify that the submit keystroke (C-m) was received by confirming the input
+ * line is EMPTY (the submit consumed the injected text) — not merely that the
+ * pane changed somewhere.
+ *
+ * FALSE-POSITIVE FIX (todo #2807 / #496 residual): the previous implementation
+ * treated ANY pane-content change since baseline as submit-proof. That is wrong
+ * while Claude is streaming — its own output changes the pane content even
+ * though the C-m was never received and the injected text is still sitting,
+ * unsubmitted, in the input line. Observed 2x in one night, requiring a manual
+ * Enter to unstick the nudge.
+ *
+ * Fix shape: identify the live input row (findCurrentInputLine — see its doc
+ * for the real pane layout this is based on) and require it to read empty on
+ * TWO consecutive reads, separated by SUBMIT_DOUBLE_READ_GAP_MS, each preceded
+ * by a SUBMIT_SETTLE_DELAY_MS settle delay. If the input row can't be
+ * identified at all (unexpected pane layout), we do NOT fall back to the old
+ * any-change heuristic — an unidentifiable input line is treated as
+ * "not yet confirmed" so the bounded C-m retry loop in injectMessage can retry,
+ * rather than risk another false positive.
  *
  * Shared primitive — used by injectMessage (COMMIT 1 guard) and as the basis
  * for the receipt-based return value in COMMIT 4.
  *
- * Returns true if the pane grew (submit confirmed), false if it did not change
- * within MAX_CM_RETRIES + 1 capture attempts.
- *
- * Sleeps between retries are suppressed when _testingDeps.capturePane is active
- * so tests complete without real delay.
+ * Sleeps are suppressed when _testingDeps.capturePane is active so tests
+ * complete without real delay.
  */
 export async function verifySubmitLanded(session: string, baselineContent: string): Promise<boolean> {
-  const baselineLen = baselineContent.length;
+  // baselineContent is retained for API/call-site compatibility (callers already
+  // capture it as a readiness-gate side effect); the input-line-empty check below
+  // doesn't need it for identification, only the live capture at read time.
+  void baselineContent;
   for (let i = 0; i <= MAX_CM_RETRIES; i++) {
     try {
-      const current = await capturePaneContentAsync(session);
-      // Pane grew or changed substantially → Claude is processing the input
-      if (current.length > baselineLen + 5 || current !== baselineContent) {
-        return true;
+      if (!_testingDeps?.capturePane) await sleep(SUBMIT_SETTLE_DELAY_MS);
+      const first = await capturePaneContentAsync(session);
+      const firstInputLine = findCurrentInputLine(first);
+
+      if (firstInputLine === '') {
+        if (!_testingDeps?.capturePane) await sleep(SUBMIT_DOUBLE_READ_GAP_MS);
+        const second = await capturePaneContentAsync(session);
+        const secondInputLine = findCurrentInputLine(second);
+        // Double-read: require the input line to STILL read empty on a later,
+        // independent capture — guards against a transient render frame that
+        // briefly shows an empty box mid-repaint.
+        if (secondInputLine === '') {
+          return true;
+        }
+      } else if (firstInputLine === null) {
+        log.debug('verifySubmitLanded: could not identify input line in pane capture', { session });
       }
     } catch {
       return false;
