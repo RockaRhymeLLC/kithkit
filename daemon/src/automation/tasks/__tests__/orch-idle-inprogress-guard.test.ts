@@ -34,6 +34,7 @@ import {
   _resetInProgressNudgeStateForTesting,
   _getInProgressNudgeStateForTesting,
   _IN_PROGRESS_NO_PROGRESS_BUDGET,
+  _resetPendingActiveNudgeStateForTesting,
 } from '../orchestrator-idle.js';
 
 function isoMinutesAgo(minutes: number): string {
@@ -57,6 +58,7 @@ function teardown(): void {
   setIdleDeps(null);
   _resetNudgeStateForTesting();
   _resetInProgressNudgeStateForTesting();
+  _resetPendingActiveNudgeStateForTesting();
   _setJustSpawnedAtForTesting(null);
   _resetDbForTesting();
   _resetConfigForTesting();

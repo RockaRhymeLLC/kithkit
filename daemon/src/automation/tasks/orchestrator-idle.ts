@@ -142,6 +142,21 @@ function isClaudeProcessRunning(): boolean {
 let shutdownNudgedAt: number | null = null;
 let shutdownReason: string | null = null;
 
+// ── Check 0 pending-while-active nudge cooldown (todo #2798) ────────────────
+// Injecting a submit keystroke (C-m) into a BUSY orchestrator session is
+// inherently unreliable: Claude's input handler does not treat Enter as
+// "submit" mid-turn, and injectMessage's pane-content verify (verifySubmitLanded)
+// cannot detect that failure — a busy pane keeps changing on its own (Claude's
+// own streaming/tool output), so the "pane advanced" heuristic reports a false
+// positive regardless of whether the injected text was ever actually submitted.
+// Without a cooldown, this nudge re-fired on every 2-min scheduler tick for the
+// entire duration of a busy period, silently piling up unsubmitted keystrokes in
+// the input line (6 occurrences 7/2-7/4, requiring a manual Enter). Mirrors
+// message-delivery's one-shot busy-ping (busy_pinged_at) with a time-based
+// cooldown so this nudge fires at most once per busy episode.
+const PENDING_ACTIVE_NUDGE_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
+let pendingActiveNudgedAt: number | null = null;
+
 // ── Check 3b bounded-nudge state ─────────────────────────────
 // Mirrors the shutdownNudgedAt nudge→grace→give-up precedent (lines ~480–534).
 // Tracks MAX(updated_at) of in_progress/assigned tasks to distinguish a
@@ -716,24 +731,51 @@ async function run(config: Record<string, unknown>): Promise<void> {
     // Even while Claude is active, check for pending tasks that arrived since it
     // started. Claude won't pick these up on its own — inject a soft nudge so it
     // knows to check the queue when its current work is done.
+    //
+    // Cooldown-gated (see PENDING_ACTIVE_NUDGE_COOLDOWN_MS above, todo #2798):
+    // fires at most once per busy episode instead of every 2-min tick.
     const pendingWhileActive = query<{ count: number }>(
       `SELECT COUNT(*) as count FROM tasks WHERE kind = 'orchestrator' AND status = 'pending'`,
     );
     const pendingWhileActiveCount = pendingWhileActive[0]?.count ?? 0;
     if (pendingWhileActiveCount > 0) {
-      log.debug('Pending tasks queued while Claude is active — injecting soft nudge', { pendingWhileActiveCount });
-      try {
-        await injectMessage(
-          'orchestrator',
-          `[System] ${pendingWhileActiveCount} pending task(s) in queue. Check GET /api/orchestrator/tasks?status=pending when your current work is done.`,
-        );
-      } catch (e) {
-        log.warn('Failed to inject pending-tasks nudge to orchestrator', { error: String(e) });
+      const now = Date.now();
+      if (pendingActiveNudgedAt === null || now - pendingActiveNudgedAt >= PENDING_ACTIVE_NUDGE_COOLDOWN_MS) {
+        log.debug('Pending tasks queued while Claude is active — injecting soft nudge', { pendingWhileActiveCount });
+        let injected = false;
+        try {
+          injected = await injectMessage(
+            'orchestrator',
+            `[System] ${pendingWhileActiveCount} pending task(s) in queue. Check GET /api/orchestrator/tasks?status=pending when your current work is done.`,
+          );
+        } catch (e) {
+          log.warn('Failed to inject pending-tasks nudge to orchestrator', { error: String(e) });
+        }
+        if (injected) {
+          pendingActiveNudgedAt = now;
+        } else {
+          // Not verified as submitted — leave the cooldown unset so the next tick retries,
+          // rather than silently going quiet for the full cooldown window on a failed inject.
+          log.warn('Pending-tasks nudge did not verify as submitted — will retry next tick', { pendingWhileActiveCount });
+        }
+      } else {
+        log.debug('Skipping pending-active nudge — within cooldown', {
+          pendingWhileActiveCount,
+          cooldownRemainingMs: PENDING_ACTIVE_NUDGE_COOLDOWN_MS - (now - pendingActiveNudgedAt),
+        });
       }
+    } else {
+      // No pending tasks — reset so the next busy+pending episode nudges immediately.
+      pendingActiveNudgedAt = null;
     }
 
     return;
   }
+
+  // Claude is not running — reset the busy-episode cooldown so a future busy
+  // period (after this idle interval) starts with a fresh nudge budget rather
+  // than inheriting a stale cooldown from a previous episode.
+  pendingActiveNudgedAt = null;
 
   // Check if orchestrator has active workers
   const activeJobs = query<{ count: number }>(
@@ -1071,6 +1113,24 @@ export function _getInProgressNudgeStateForTesting(): { ticks: number; updatedAt
 
 /** @internal The no-progress tick budget for Check 3b (exposed for test assertions). */
 export const _IN_PROGRESS_NO_PROGRESS_BUDGET = IN_PROGRESS_NO_PROGRESS_BUDGET;
+
+/** @internal Reset Check 0 pending-while-active nudge cooldown state for testing (todo #2798). */
+export function _resetPendingActiveNudgeStateForTesting(): void {
+  pendingActiveNudgedAt = null;
+}
+
+/** @internal Set Check 0 pending-while-active nudge cooldown state for testing (todo #2798). */
+export function _setPendingActiveNudgedAtForTesting(at: number | null): void {
+  pendingActiveNudgedAt = at;
+}
+
+/** @internal Read Check 0 pending-while-active nudge cooldown state for testing (todo #2798). */
+export function _getPendingActiveNudgedAtForTesting(): number | null {
+  return pendingActiveNudgedAt;
+}
+
+/** @internal The Check 0 pending-while-active nudge cooldown window (exposed for test assertions). */
+export const _PENDING_ACTIVE_NUDGE_COOLDOWN_MS = PENDING_ACTIVE_NUDGE_COOLDOWN_MS;
 
 /** @internal The recent-activity grace window for orphan sweep (exposed for test assertions). */
 export const _ORPHAN_RECENT_ACTIVITY_MS = ORPHAN_RECENT_ACTIVITY_MS;
