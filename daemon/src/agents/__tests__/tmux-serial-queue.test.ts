@@ -69,9 +69,13 @@ describe('Fix 2743/1 — per-session serial queue (mutation-kill)', () => {
       // msg-1's -l text call and its C-m submit call.
       capturePane: () => {
         calls.push({ kind: 'capture', text: '' });
-        // Pane always looks "advanced" so verifySubmitLanded returns true fast
-        // and neither call retries — keeps the interleave window realistic.
-        return `> [${calls.length}]`;
+        // #497: verifySubmitLanded now requires a parseable EMPTY input box
+        // (a live `❯ ` row immediately followed by a bare border line, with
+        // a "Context:" footer within the next few lines) rather than any
+        // pane change. Return that shape so findCurrentInputLine() resolves
+        // to '' immediately and verifySubmitLanded returns true fast — no
+        // retries — keeping the interleave window realistic.
+        return '❯ \n────────────────────────────────────────\n  [Sonnet 4.5] Context: 50% used\n  ⏵⏵ bypass permissions on · 1 shell · ← for agents';
       },
       sendKeys: (_session, args) => {
         calls.push({ kind: 'send', text: args.join(' ') });
