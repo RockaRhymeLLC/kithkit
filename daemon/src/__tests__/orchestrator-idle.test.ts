@@ -18,6 +18,7 @@ import {
   _getNudgeStateForTesting,
   _runForTesting,
   _setDepsForTesting,
+  _resetPendingActiveNudgeStateForTesting,
 } from '../automation/tasks/orchestrator-idle.js';
 
 /** Set up a temp project dir with minimal config and a real DB. */
@@ -50,6 +51,7 @@ scheduler:
 function cleanupTestEnv(tmpDir: string): void {
   _setDepsForTesting(null);
   _resetNudgeStateForTesting();
+  _resetPendingActiveNudgeStateForTesting();
   _resetDbForTesting();
   _resetConfigForTesting();
   fs.rmSync(tmpDir, { recursive: true, force: true });

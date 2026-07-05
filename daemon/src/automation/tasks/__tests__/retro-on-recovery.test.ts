@@ -19,6 +19,7 @@ import {
   _runForTesting as runIdleMonitor,
   _setDepsForTesting as setIdleDeps,
   _resetNudgeStateForTesting,
+  _resetPendingActiveNudgeStateForTesting,
 } from '../orchestrator-idle.js';
 import {
   _runForTesting as runStaleRecovery,
@@ -89,6 +90,7 @@ function teardown(): void {
   setIdleDeps(null);
   setStaleDeps(null);
   _resetNudgeStateForTesting();
+  _resetPendingActiveNudgeStateForTesting();
   _resetDbForTesting();
   _resetConfigForTesting();
   fs.rmSync(tmpDir, { recursive: true, force: true });
