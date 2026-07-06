@@ -48,6 +48,26 @@ export const handleGranolaStatus: RouteHandler = async (_req, res) => {
   return true;
 };
 
+const DEFAULT_NOTES_LIMIT = 20;
+const MAX_NOTES_LIMIT = 200;
+
+/**
+ * Parse `limit`/`offset` query params with the same silent-fallback
+ * convention used elsewhere in the daemon (e.g. task-queue.ts, unified-tasks.ts):
+ * invalid/non-numeric input falls back to the default rather than erroring.
+ */
+function parseNotesLimit(searchParams: URLSearchParams): number {
+  const raw = parseInt(searchParams.get('limit') ?? String(DEFAULT_NOTES_LIMIT), 10);
+  const limit = isNaN(raw) ? DEFAULT_NOTES_LIMIT : raw;
+  return Math.min(Math.max(limit, 1), MAX_NOTES_LIMIT);
+}
+
+function parseNotesOffset(searchParams: URLSearchParams): number {
+  const raw = parseInt(searchParams.get('offset') ?? '0', 10);
+  const offset = isNaN(raw) ? 0 : raw;
+  return Math.max(offset, 0);
+}
+
 export const handleGranolaNotes: RouteHandler = async (req, res, _pathname, searchParams) => {
   const date = searchParams.get('date');
   const from = searchParams.get('from');
@@ -62,11 +82,12 @@ export const handleGranolaNotes: RouteHandler = async (req, res, _pathname, sear
   } else if (calEventId) {
     notes = queryNotesByCalendarEventId(calEventId);
   } else {
-    // Return recent 20
+    const limit = parseNotesLimit(searchParams);
+    const offset = parseNotesOffset(searchParams);
     const db = getDatabase();
     notes = db.prepare(
-      'SELECT * FROM granola_notes ORDER BY scheduled_start_time DESC LIMIT 20',
-    ).all();
+      'SELECT * FROM granola_notes ORDER BY scheduled_start_time DESC LIMIT ? OFFSET ?',
+    ).all(limit, offset);
   }
 
   json(res, 200, withTimestamp({ data: notes }));
