@@ -24,6 +24,7 @@ import {
   isOrchestratorAlive,
   getOrchestratorState,
   ORCH_SESSION_PATTERN,
+  SUBMIT_LANDED_INDICATORS,
   spawnOrchestratorSession,
   _findCurrentInputLineForTesting,
 } from '../agents/tmux.js';
@@ -758,6 +759,217 @@ describe('findCurrentInputLine — robust input-row identification against real 
 
   it('returns null when no identifiable input box is present (unexpected layout)', () => {
     assert.equal(_findCurrentInputLineForTesting('just some random pane text\nwith no box at all'), null);
+  });
+});
+
+// ── #497 residual: SUBMIT_LANDED_INDICATORS constant sanity ────────────────
+
+describe('SUBMIT_LANDED_INDICATORS — exported constant sanity', () => {
+  it('includes the queued-msg prefix and is non-empty', () => {
+    assert.ok(Array.isArray(SUBMIT_LANDED_INDICATORS), 'SUBMIT_LANDED_INDICATORS must be an array');
+    assert.ok(SUBMIT_LANDED_INDICATORS.length > 0, 'must contain at least one entry');
+    assert.ok(
+      SUBMIT_LANDED_INDICATORS.some(p => 'Press up to edit queued messages'.startsWith(p)),
+      'must include a prefix that matches the live-observed queued-msg indicator string',
+    );
+  });
+});
+
+// ── #497 residual A: comms busy-pane duplicate-delivery (mutation-kill) ──────
+//
+// ROOT CAUSE A (2026-07-05 duplicate-delivery storm):
+//   comms pane busy with queued messages — input line shows the Claude Code hint
+//   'Press up to edit queued messages'. findCurrentInputLine() correctly returns
+//   that non-empty string. verifySubmitLanded saw non-empty → returned false →
+//   outer retry loop in injectMessageToSession fired extra C-m keystrokes →
+//   6-10x duplicate messages fleet-wide.
+//
+// FIX (pt 1): SUBMIT_LANDED_INDICATORS list — when the input line starts with a
+//   known indicator prefix, treat the submit as LANDED. inputLineIndicatesLanded()
+//   covers both '' (empty) and indicator-matching cases. The existing double-read
+//   guard is preserved.
+//
+// HOW THE MUTATION KILL WORKS:
+//   With the fix: verifySubmitLanded sees 'Press up to edit queued messages' →
+//     inputLineIndicatesLanded() → true → double-read also lands → returns true.
+//   MUTATION (remove `isSubmitLandedIndicator(firstInputLine)` branch):
+//     verifySubmitLanded sees non-empty, non-empty string → falls through to null
+//     branch → retries → returns false → assert.equal(verified, true) FAILS → RED.
+//
+// SEAM ARCHITECTURE:
+//   capturePane: returns a real parseable bordered-box pane with the queued-msg
+//   indicator in the input line. This drives the REAL findCurrentInputLine() and
+//   verifySubmitLanded() production code — no mocked bypass.
+
+describe('#497 residual A — MUTATION-KILL: comms busy-pane duplicate-delivery prevention (indicator-list fix)', { concurrency: 1 }, () => {
+  afterEach(() => _setTmuxDepsForTesting(null));
+
+  it('MUTATION-KILL: verifySubmitLanded returns true when input line shows the queued-msg indicator, preventing duplicate C-m retry', async () => {
+    // Evidence: live comms1 pane capture 2026-07-06 ~04:26Z observed exactly
+    // 'Press up to edit queued messages' in the ❯ input line (SUBMIT_LANDED_INDICATORS[0] prefix).
+    //
+    // The capturePane seam returns a REAL parseable pane — findCurrentInputLine()
+    // runs on the real captured string, not a bypass mock. This exercises the full
+    // verifySubmitLanded production code path.
+    //
+    // MUTATION-KILL PROOF:
+    //   Remove `isSubmitLandedIndicator(firstInputLine)` from verifySubmitLanded →
+    //   firstInputLine ('Press up to edit queued messages') is non-null, non-empty →
+    //   skips the landed branch → retries exhaust → returns false →
+    //   assert.equal(verified, true) FAILS → RED.
+    //   Restore → GREEN.
+    _setTmuxDepsForTesting({
+      capturePane: (_session) => paneWithInput('Press up to edit queued messages'),
+    });
+
+    const baseline = paneWithInput('hello world'); // pre-submit: text was in the box
+    const verified = await verifySubmitLanded('comms1', baseline);
+
+    assert.equal(verified, true,
+      'MUTATION-KILL: verifySubmitLanded must return true when input line shows the ' +
+      "queued-msg indicator ('Press up to edit queued messages') — removing the indicator " +
+      'list causes false, triggering duplicate C-m retries (2026-07-05 duplicate-delivery storm) → RED');
+  });
+
+  it('indicator match is prefix-based: also returns true for a numbered variant like "Press up to edit 3 queued messages"', async () => {
+    // Guard against a count-variant of the queued-msg indicator ('Press up to edit N queued messages').
+    // The prefix entry in SUBMIT_LANDED_INDICATORS covers both forms.
+    _setTmuxDepsForTesting({
+      capturePane: (_session) => paneWithInput('Press up to edit 3 queued messages'),
+    });
+
+    const baseline = paneWithInput('hello world');
+    const verified = await verifySubmitLanded('comms1', baseline);
+
+    assert.equal(verified, true,
+      'verifySubmitLanded must return true for a count-variant queued-msg indicator — ' +
+      'prefix matching in SUBMIT_LANDED_INDICATORS must cover this form');
+  });
+
+  it('still returns false when input line holds genuine unsubmitted user text (no false-positive regression)', async () => {
+    // Regression guard: a non-indicator, non-empty input line (genuine unsubmitted text)
+    // must NOT be treated as landed — that was the original #2807 false-positive bug.
+    _setTmuxDepsForTesting({
+      capturePane: (_session) => paneWithInput('check queue'),
+    });
+
+    const baseline = paneWithInput('');
+    const verified = await verifySubmitLanded('comms1', baseline);
+
+    assert.equal(verified, false,
+      'verifySubmitLanded must return false when input line holds genuine unsubmitted text — ' +
+      'indicator fix must NOT create a new false-positive regression');
+  });
+});
+
+// ── #497 residual B: orch lost-wake-up re-delivery (mutation-kill) ────────────
+//
+// ROOT CAUSE B (2026-07-06 orch pane give-up loss, freeze #3 03:43:43Z):
+//   Orch pane was streaming/busy. findCurrentInputLine() returned null on every
+//   read (pane layout not parseable mid-stream). verifySubmitLanded looped to
+//   MAX_CM_RETRIES, each call returning false. The outer retry loop in
+//   injectMessageToSession also exhausted. The message was then SILENTLY DROPPED
+//   (log.warn only, no re-send) — verified=false, message never reached orch.
+//
+// FIX (pt 3): RE-DELIVER once on give-up. After the retry loop exhausts without
+//   confirm, send the full text+submit payload one more time (best-effort safety
+//   net, no verify on re-delivery). This prevents silent drop on both comms and
+//   orch panes. The caller still receives submitted=false (honest about
+//   unconfirmed state); the log now reads "re-delivering once (#497 pt 3)".
+//
+// HOW THE MUTATION KILL WORKS:
+//   With the fix: after all retries fail, execSendKeys(session, ['-l', stamped])
+//     is called a SECOND time → textSends.length === 2.
+//   MUTATION (remove the re-deliver block after the final log.warn):
+//     Only 1 text send → textSends.length === 1 →
+//     assert.ok(textSends.length >= 2) FAILS → RED.
+//
+// SEAM ARCHITECTURE:
+//   capturePane: returns pane content with NO parseable input box (findCurrentInputLine
+//   returns null on every call). This drives the REAL verifySubmitLanded production
+//   null-path — not a bypass mock. sendKeys: records all calls so we can count text sends.
+
+describe('#497 residual B — MUTATION-KILL: orch lost-wake-up re-delivery on give-up (re-deliver-on-give-up fix)', { concurrency: 1 }, () => {
+  let savedAllowInject: string | undefined;
+  let savedSuppress: string | undefined;
+
+  beforeEach(() => {
+    savedAllowInject = process.env.KITHKIT_ALLOW_TEST_INJECT;
+    savedSuppress = process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    process.env.KITHKIT_ALLOW_TEST_INJECT = '1';
+    delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    _resetInjectionAttempts();
+  });
+
+  afterEach(() => {
+    _setTmuxDepsForTesting(null);
+    if (savedAllowInject === undefined) {
+      delete process.env.KITHKIT_ALLOW_TEST_INJECT;
+    } else {
+      process.env.KITHKIT_ALLOW_TEST_INJECT = savedAllowInject;
+    }
+    if (savedSuppress === undefined) {
+      delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    } else {
+      process.env.KITHKIT_SUPPRESS_NOTIFICATIONS = savedSuppress;
+    }
+    _resetInjectionAttempts();
+  });
+
+  it('MUTATION-KILL: re-delivers the full text payload once when verify loop gives up (orch streaming/busy — null input line)', async () => {
+    // Scenario: orch pane is actively streaming. The pane content has no parseable
+    // input box, so findCurrentInputLine() returns null on every capturePane call.
+    // verifySubmitLanded loops MAX_CM_RETRIES times, always null → returns false.
+    // The outer retry loop also exhausts. Without the re-deliver fix, the message
+    // is silently dropped. With the fix, the text+submit payload is re-sent once.
+    //
+    // The capturePane seam returns a REAL string that findCurrentInputLine() processes
+    // (returning null because there is no border+Context footer). This exercises the
+    // full production null-path in verifySubmitLanded — not a bypass mock.
+    //
+    // MUTATION-KILL PROOF:
+    //   Remove the re-deliver block (the `await execSendKeys(session, ['-l', stamped])`
+    //   + C-m after the final log.warn) from injectMessageToSession →
+    //   textSends.length === 1 → assert fails → RED.
+    //   Restore the block → textSends.length === 2 → GREEN.
+
+    const sendKeysCalls: Array<{ session: string; args: string[] }> = [];
+
+    _setTmuxDepsForTesting({
+      resolveSession: (id) => (id === 'orchestrator' ? 'orch1' : null),
+      sessionExists: () => true,
+      isOrchAlive: () => true,
+      sendKeys: (session, args) => { sendKeysCalls.push({ session, args }); },
+      // Pane has no parseable input box — lots of streaming output but no
+      // bordered ❯ row + Context footer that findCurrentInputLine() requires.
+      // This is representative of an orch pane mid-stream with a full screen
+      // of tool output scrolling past.
+      capturePane: (_session) =>
+        'Running task...\n'.repeat(20) +
+        '  some tool output\n' +
+        '  more tool output\n' +
+        '  no input box here — no Context: footer\n',
+    });
+
+    await injectMessage('orchestrator', 'ping from daemon');
+
+    // With the re-deliver fix: 2 text sends (initial + re-deliver).
+    // MUTATION-KILL: removing the re-deliver block → 1 text send → RED.
+    const textSends = sendKeysCalls.filter(c => c.args[0] === '-l');
+    assert.ok(
+      textSends.length >= 2,
+      `MUTATION-KILL (orch re-deliver on give-up): must re-deliver text once when verify exhausts — ` +
+      `got ${textSends.length} text send(s); removing the re-deliver block leaves only 1 → RED. ` +
+      `All calls: ${JSON.stringify(sendKeysCalls)}`,
+    );
+
+    // Confirm the re-delivery also fires a C-m submit
+    const cmSends = sendKeysCalls.filter(c => c.args.includes('C-m'));
+    assert.ok(
+      cmSends.length >= 2,
+      `re-deliver must also fire a C-m submit — got ${cmSends.length} C-m send(s). ` +
+      `All calls: ${JSON.stringify(sendKeysCalls)}`,
+    );
   });
 });
 
