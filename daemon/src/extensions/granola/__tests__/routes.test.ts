@@ -181,16 +181,42 @@ describe('Granola notes pagination', { concurrency: 1 }, () => {
   });
 
   it('clamps limit above the 200 upper bound', async () => {
-    seedNotes(5);
+    seedNotes(201);
     const res = await request('/api/granola/notes?limit=99999');
     assert.equal(res.status, 200);
     const body = JSON.parse(res.body);
-    assert.equal(body.data.length, 5); // only 5 rows exist, cap doesn't matter here directly
+    assert.equal(body.data.length, 200);
   });
 
   it('falls back to default limit on non-numeric limit input', async () => {
     seedNotes(30);
     const res = await request('/api/granola/notes?limit=abc');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 20);
+  });
+
+  it('clamps limit=0 up to 1 instead of returning zero rows', async () => {
+    seedNotes(5);
+    const res = await request('/api/granola/notes?limit=0');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 1);
+    assert.equal(body.data[0].note_id, 'note-0');
+  });
+
+  it('falls back offset to 0 on non-numeric offset input', async () => {
+    seedNotes(5);
+    const res = await request('/api/granola/notes?offset=abc');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 5);
+    assert.equal(body.data[0].note_id, 'note-0');
+  });
+
+  it('falls back to default limit on empty-string limit param', async () => {
+    seedNotes(30);
+    const res = await request('/api/granola/notes?limit=');
     assert.equal(res.status, 200);
     const body = JSON.parse(res.body);
     assert.equal(body.data.length, 20);
