@@ -144,6 +144,28 @@ jobs:
           ref: ${{ steps.resolve.outputs.base_sha }}
           fetch-depth: 0
 
+      # The delta-gate scripts themselves (scripts/ci/*.mjs) are part of
+      # THIS change and may not exist yet on the base ref (e.g. the base
+      # is main, before this PR merges) — checking out base_sha above can
+      # leave scripts/ci missing or stale. Pull the current (head-ref)
+      # copies into a side directory and overlay them, so extraction
+      # always uses this run's gate logic regardless of what the base ref
+      # contains.
+      - uses: actions/checkout@v4
+        if: steps.resolve.outputs.valid == 'true'
+        with:
+          path: .ci-scripts-head
+          sparse-checkout: |
+            scripts/ci
+          sparse-checkout-cone-mode: false
+
+      - name: Overlay current delta-gate scripts
+        if: steps.resolve.outputs.valid == 'true'
+        run: |
+          mkdir -p scripts/ci
+          cp .ci-scripts-head/scripts/ci/*.mjs scripts/ci/
+          rm -rf .ci-scripts-head
+
       - uses: actions/setup-node@v4
         if: steps.resolve.outputs.valid == 'true'
         with:
