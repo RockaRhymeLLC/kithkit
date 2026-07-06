@@ -60,17 +60,179 @@ jobs:
         working-directory: cli
         run: npx tsc --noEmit
 
-      # Tests are currently informational — 49 pre-existing failures need
-      # fixing before tests can gate PRs. Track in a separate issue.
+      # Tests remain informational here (continue-on-error) — there are
+      # ~39-62 pre-existing env-dependent failures on main depending on
+      # glob/invocation scope (see .kithkit/reports/ci-gating-failure-triage-
+      # 2026-06-05.md, todo #1873/#2238) that are out of scope to fix in this
+      # change. Actual gating happens in the test-delta-gate job below, which
+      # fails the *workflow* iff a test fails on HEAD that did not already
+      # fail on the PR's BASE ref — a straight continue-on-error:false flip
+      # is not possible until the pre-existing failures are triaged (#2238).
+      #
+      # We run each test suite with TWO reporters simultaneously: `tap` to
+      # stdout (unchanged human-readable log for local debugging) and `junit`
+      # to a file (machine-parseable per-test names, consumed by
+      # scripts/ci/list-test-failures.mjs). JUnit's flattened <testcase>
+      # elements avoid the suite-parent "not ok" bubble-up that produced the
+      # 57 vs 81 vs 147 count confusion in the triage report — we compare
+      # test NAMES, never raw failure counts.
       - name: Test (daemon)
         working-directory: daemon
-        run: npm test
+        run: |
+          KITHKIT_SUPPRESS_NOTIFICATIONS=1 node --test --test-concurrency=1 \
+            --test-reporter=tap --test-reporter-destination=stdout \
+            --test-reporter=junit --test-reporter-destination=../daemon-test-results.xml \
+            $(find dist -name '*.test.js' -not -path '*/node_modules/*' -not -name 'plan-approval.test.js')
         continue-on-error: true
 
       - name: Test (cli)
         working-directory: cli
-        run: npm test
+        run: |
+          node --test \
+            --test-reporter=tap --test-reporter-destination=stdout \
+            --test-reporter=junit --test-reporter-destination=../cli-test-results.xml \
+            dist/__tests__/**/*.test.js
         continue-on-error: true
+
+      - name: Extract failing test names (head)
+        run: |
+          node scripts/ci/list-test-failures.mjs daemon daemon-test-results.xml > head-daemon-failures.txt
+          node scripts/ci/list-test-failures.mjs cli cli-test-results.xml > head-cli-failures.txt
+          cat head-daemon-failures.txt head-cli-failures.txt | sort -u > head-test-failures.txt
+          echo "HEAD failing tests ($(wc -l < head-test-failures.txt | tr -d ' ')):"
+          cat head-test-failures.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: head-test-failures
+          path: head-test-failures.txt
+
+  # Runs the identical build+test steps against the PR's/push's BASE ref, in
+  # parallel with build-and-test, so test-delta-gate can diff failing test
+  # NAMES (head vs base) instead of comparing raw counts (which vary by
+  # glob/env — see todo #1873, R2's documented 5-vs-3 and 39-vs-62
+  # discrepancies). This is a live, per-run baseline: it is always computed
+  # fresh from whatever main currently looks like, so there is nothing to
+  # manually refresh — when a pre-existing failure is fixed on main, the very
+  # next CI run automatically has a smaller tolerated set. No baseline
+  # manifest file to maintain.
+  test-baseline:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve base ref
+        id: resolve
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE_SHA="${{ github.event.before }}"
+          fi
+          echo "base_sha=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          # github.event.before is the all-zero SHA on a repo's very first
+          # push (no parent commit to diff against). Guard so the job can't
+          # hard-fail trying to check out a non-existent ref — fall back to
+          # an empty baseline (every head failure is then treated as new).
+          if [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "valid=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "valid=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.resolve.outputs.valid == 'true'
+        with:
+          ref: ${{ steps.resolve.outputs.base_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        if: steps.resolve.outputs.valid == 'true'
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Remove local-only file dependencies
+        if: steps.resolve.outputs.valid == 'true'
+        run: |
+          node -e "
+            const fs = require('fs');
+            const pkg = JSON.parse(fs.readFileSync('daemon/package.json', 'utf8'));
+            for (const [name, ver] of Object.entries(pkg.dependencies || {})) {
+              if (typeof ver === 'string' && ver.startsWith('file:')) {
+                console.log('Removing local dep:', name, ver);
+                delete pkg.dependencies[name];
+              }
+            }
+            fs.writeFileSync('daemon/package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+
+      - name: Install dependencies
+        if: steps.resolve.outputs.valid == 'true'
+        run: npm install
+
+      - name: Build
+        if: steps.resolve.outputs.valid == 'true'
+        run: npm run build
+
+      # No audit/migration-collision/type-check here — test-baseline only
+      # needs to produce the base ref's failing-test names, not re-validate
+      # things the build-and-test job already gates.
+      - name: Test (daemon)
+        if: steps.resolve.outputs.valid == 'true'
+        working-directory: daemon
+        run: |
+          KITHKIT_SUPPRESS_NOTIFICATIONS=1 node --test --test-concurrency=1 \
+            --test-reporter=tap --test-reporter-destination=stdout \
+            --test-reporter=junit --test-reporter-destination=../daemon-test-results.xml \
+            $(find dist -name '*.test.js' -not -path '*/node_modules/*' -not -name 'plan-approval.test.js')
+        continue-on-error: true
+
+      - name: Test (cli)
+        if: steps.resolve.outputs.valid == 'true'
+        working-directory: cli
+        run: |
+          node --test \
+            --test-reporter=tap --test-reporter-destination=stdout \
+            --test-reporter=junit --test-reporter-destination=../cli-test-results.xml \
+            dist/__tests__/**/*.test.js
+        continue-on-error: true
+
+      - name: Extract failing test names (base)
+        run: |
+          if [ "${{ steps.resolve.outputs.valid }}" = "true" ]; then
+            node scripts/ci/list-test-failures.mjs daemon daemon-test-results.xml > base-daemon-failures.txt
+            node scripts/ci/list-test-failures.mjs cli cli-test-results.xml > base-cli-failures.txt
+            cat base-daemon-failures.txt base-cli-failures.txt | sort -u > base-test-failures.txt
+          else
+            echo "::warning::No valid base ref (first push, no parent commit) — using an empty baseline; all head failures will be treated as new."
+            : > base-test-failures.txt
+          fi
+          echo "BASE failing tests ($(wc -l < base-test-failures.txt | tr -d ' ')):"
+          cat base-test-failures.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: base-test-failures
+          path: base-test-failures.txt
+
+  test-delta-gate:
+    # The actual gate: fails the workflow iff HEAD has a failing test that
+    # did not already fail on BASE. See scripts/ci/diff-test-failures.mjs.
+    needs: [build-and-test, test-baseline]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: head-test-failures
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: base-test-failures
+
+      - name: Compare failure sets (head vs base)
+        run: node scripts/ci/diff-test-failures.mjs head-test-failures.txt base-test-failures.txt
 
   leak-check:
     runs-on: ubuntu-latest
