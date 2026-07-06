@@ -973,6 +973,119 @@ describe('#497 residual B — MUTATION-KILL: orch lost-wake-up re-delivery on gi
   });
 });
 
+// ── #498 stale-text: re-deliver guard for genuine stale user input ──────────────
+//
+// ROOT CAUSE (#498 defect — busy-orch doubling):
+//   When the tmux input line holds GENUINE STALE TEXT (e.g. 'check recon worker
+//   38fa874a status' — user-typed but unsubmitted, persisting across messages),
+//   verifySubmitLanded correctly returns false on every read (stale text ≠ empty
+//   and not a SUBMIT_LANDED_INDICATORS prefix). The #497 residual B give-up block
+//   then fired the re-deliver unconditionally — but the delivery layer
+//   (message-delivery.ts, 10s scheduler tick) already retries on submitted=false,
+//   giving 2 sends per tick instead of 1 (observed: 55% of busy-orch samples).
+//
+// FIX (#498): _verifySubmitLandedDetail surfaces lastInputLine. At the re-deliver
+//   site, a guard checks: if lastInputLine is non-null AND not an indicator
+//   (i.e. genuine stale text), SKIP re-deliver and log a distinct warn, letting
+//   the delivery layer retry next tick without doubling. If lastInputLine is null
+//   (streaming/unparseable) or empty, the re-deliver fires as before (#497 pt 3).
+//
+// MUTATION-KILL PROOF (captured below in build/test step):
+//   Remove the hasGenuineStaleText guard (make re-deliver unconditional) →
+//   textSends.length === 2 → assert.equal(textSends.length, 1) FAILS → RED.
+//   Restore guard → textSends.length === 1 → GREEN.
+//
+// COMPANION (preservation item 2 — null-input-line re-deliver):
+//   Covered exactly by '#497 residual B' above (orch streaming pane → null
+//   findCurrentInputLine → textSends.length >= 2). No duplication here.
+//
+// SEAM ARCHITECTURE:
+//   Same _testingDeps pattern as residual B. capturePane returns a REAL parseable
+//   bordered-box pane (paneWithInput) with genuine stale text in the ❯ input line.
+//   This drives the REAL findCurrentInputLine/_verifySubmitLandedDetail/
+//   injectMessageToSession production logic — no mocked bypass.
+
+describe('#498 stale-text — MUTATION-KILL: re-deliver suppressed when input line holds genuine stale text', { concurrency: 1 }, () => {
+  let savedAllowInject: string | undefined;
+  let savedSuppress: string | undefined;
+
+  beforeEach(() => {
+    savedAllowInject = process.env.KITHKIT_ALLOW_TEST_INJECT;
+    savedSuppress = process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    process.env.KITHKIT_ALLOW_TEST_INJECT = '1';
+    delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    _resetInjectionAttempts();
+  });
+
+  afterEach(() => {
+    _setTmuxDepsForTesting(null);
+    if (savedAllowInject === undefined) {
+      delete process.env.KITHKIT_ALLOW_TEST_INJECT;
+    } else {
+      process.env.KITHKIT_ALLOW_TEST_INJECT = savedAllowInject;
+    }
+    if (savedSuppress === undefined) {
+      delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    } else {
+      process.env.KITHKIT_SUPPRESS_NOTIFICATIONS = savedSuppress;
+    }
+    _resetInjectionAttempts();
+  });
+
+  it('MUTATION-KILL: suppresses re-deliver and returns submitted=false when input line holds genuine stale text', async () => {
+    // Scenario: orch pane has stale user-typed text in the input line:
+    //   '❯ check recon worker 38fa874a status'
+    // findCurrentInputLine() returns 'check recon worker 38fa874a status' on every
+    // capturePane call. verifySubmitLanded (_verifySubmitLandedDetail) loops
+    // MAX_CM_RETRIES times — non-empty, non-indicator → returns { landed: false,
+    // lastInputLine: 'check recon worker 38fa874a status' }. The outer retry loop
+    // also exhausts. Without the #498 guard, the re-deliver fires → 2 text sends.
+    // With the guard, hasGenuineStaleText = true → skip re-deliver → 1 text send.
+    //
+    // The capturePane seam returns a REAL parseable pane (paneWithInput) —
+    // findCurrentInputLine() runs on the actual string, not a bypass mock.
+    //
+    // MUTATION-KILL PROOF:
+    //   Remove the hasGenuineStaleText guard in injectMessageToSession (make re-
+    //   deliver unconditional) → textSends.length === 2 →
+    //   assert.equal(textSends.length, 1) FAILS → RED.
+    //   Restore guard → textSends.length === 1 → GREEN.
+    //
+    // COMPANION (preservation item 2):
+    //   '#497 residual B' covers null-input-line re-deliver. Not duplicated here.
+
+    const sendKeysCalls: Array<{ session: string; args: string[] }> = [];
+
+    _setTmuxDepsForTesting({
+      resolveSession: (id) => (id === 'orchestrator' ? 'orch1' : null),
+      sessionExists: () => true,
+      isOrchAlive: () => true,
+      sendKeys: (session, args) => { sendKeysCalls.push({ session, args }); },
+      // Pane has a parseable bordered input box with genuine stale user text.
+      // findCurrentInputLine() returns 'check recon worker 38fa874a status'.
+      // This is NOT in SUBMIT_LANDED_INDICATORS and is NOT empty → landed=false,
+      // hasGenuineStaleText=true → re-deliver must be suppressed.
+      capturePane: (_session) => paneWithInput('check recon worker 38fa874a status'),
+    });
+
+    const result = await injectMessage('orchestrator', 'ping from daemon');
+
+    // Must return submitted=false (honest about unconfirmed state)
+    assert.equal(result, false,
+      'injectMessage must return false (submitted=false) when verify fails due to stale text on input line');
+
+    // Must NOT re-deliver — only 1 text send (the original injection).
+    // MUTATION-KILL: removing the hasGenuineStaleText guard causes 2 text sends → RED.
+    const textSends = sendKeysCalls.filter(c => c.args[0] === '-l');
+    assert.equal(
+      textSends.length, 1,
+      `MUTATION-KILL (#498 stale-text): must NOT re-deliver when input line holds genuine stale text — ` +
+      `got ${textSends.length} text send(s); removing the guard causes 2 sends per tick → RED. ` +
+      `All calls: ${JSON.stringify(sendKeysCalls)}`,
+    );
+  });
+});
+
 // ── spawnOrchestratorSession: args-capture (fix/870) ─────────
 //
 // WHAT THIS TEST CATCHES:
