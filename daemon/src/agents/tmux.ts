@@ -216,6 +216,42 @@ export function _findCurrentInputLineForTesting(content: string): string | null 
   return findCurrentInputLine(content);
 }
 
+/**
+ * Enumerated prefix strings that Claude Code renders in the live input line to
+ * communicate a UI state — NOT user-typed input. When verifySubmitLanded sees
+ * an input line that starts with one of these, the submit is treated as LANDED
+ * (equivalent to an empty input line).
+ *
+ * Entries are prefix-matched (startsWith) to cover minor variants such as
+ * a numeric count embedded in the string.
+ *
+ * EVIDENCE SOURCE PER ENTRY — do NOT add entries without real captured evidence:
+ *
+ *   'Press up to edit ':
+ *     Live comms1 pane capture 2026-07-06 ~04:26Z — exact observed string:
+ *     '❯ Press up to edit queued messages' in the live input line while the
+ *     comms pane had messages queued for editing. Prefix form chosen to cover
+ *     a potential count variant ('Press up to edit N queued messages') per spec.
+ *     Root cause of failure mode A (2026-07-05 duplicate-delivery storm):
+ *     this non-empty indicator caused verifySubmitLanded to return false on
+ *     every read → C-m retry loop fired → 6-10x duplicate messages fleet-wide.
+ *     Applies to both comms and orch panes (both run Claude Code).
+ */
+export const SUBMIT_LANDED_INDICATORS: readonly string[] = [
+  'Press up to edit ',  // queued-msg hint — comms + orch panes (live-verified 2026-07-06)
+];
+
+/**
+ * Returns true when the live input-line content signals that a submit landed —
+ * either because the line is empty (text consumed) or because it shows a known
+ * Claude Code UI indicator that is NOT user input (see SUBMIT_LANDED_INDICATORS).
+ */
+function inputLineIndicatesLanded(inputLine: string | null): boolean {
+  if (inputLine === null) return false;
+  if (inputLine === '') return true;
+  return SUBMIT_LANDED_INDICATORS.some(prefix => inputLine.startsWith(prefix));
+}
+
 const MAX_CM_RETRIES = 2;
 
 /**
@@ -233,10 +269,60 @@ const SUBMIT_SETTLE_DELAY_MS = 250;
  */
 const SUBMIT_DOUBLE_READ_GAP_MS = 200;
 
+/** @internal Richer result for injectMessageToSession's re-deliver guard (#498). */
+interface VerifyDetail { landed: boolean; lastInputLine: string | null; }
+
+/**
+ * Core implementation — same logic as the public verifySubmitLanded but also
+ * surfaces the last observed input line so the re-deliver site in
+ * injectMessageToSession can distinguish null/streaming from genuine stale text
+ * (#498: avoids doubled sends when busy-orch input holds unsubmitted user text).
+ */
+async function _verifySubmitLandedDetail(session: string, baselineContent: string): Promise<VerifyDetail> {
+  void baselineContent;
+  let lastInputLine: string | null = null;
+  for (let i = 0; i <= MAX_CM_RETRIES; i++) {
+    try {
+      if (!_testingDeps?.capturePane) await sleep(SUBMIT_SETTLE_DELAY_MS);
+      const first = await capturePaneContentAsync(session);
+      const firstInputLine = findCurrentInputLine(first);
+      lastInputLine = firstInputLine;
+
+      // LANDED = empty input (text consumed) OR known Claude Code UI indicator
+      // (submit landed but pane now shows a hint string, not blank). Both cases
+      // are confirmed with a second independent read to guard against transient
+      // render frames (#497 pt 1 — indicator list; existing double-read guard).
+      if (inputLineIndicatesLanded(firstInputLine)) {
+        if (!_testingDeps?.capturePane) await sleep(SUBMIT_DOUBLE_READ_GAP_MS);
+        const second = await capturePaneContentAsync(session);
+        const secondInputLine = findCurrentInputLine(second);
+        lastInputLine = secondInputLine;
+        // Double-read: require the landed state on a later, independent capture —
+        // guards against a transient render frame that briefly shows an empty box
+        // or indicator string mid-repaint.
+        if (inputLineIndicatesLanded(secondInputLine)) {
+          return { landed: true, lastInputLine };
+        }
+      } else if (firstInputLine === null) {
+        log.debug('verifySubmitLanded: could not identify input line in pane capture', { session });
+      }
+      // else: non-null, non-landed input line (unsubmitted text still present, or
+      // unrecognised indicator) — retry is bounded by MAX_CM_RETRIES (#497 pt 2).
+    } catch {
+      return { landed: false, lastInputLine };
+    }
+    // No delay between retries when seam is active (fast tests)
+    if (i < MAX_CM_RETRIES && !_testingDeps?.capturePane) {
+      await sleep(300);
+    }
+  }
+  return { landed: false, lastInputLine };
+}
+
 /**
  * Verify that the submit keystroke (C-m) was received by confirming the input
- * line is EMPTY (the submit consumed the injected text) — not merely that the
- * pane changed somewhere.
+ * line is EMPTY or shows a known Claude Code UI indicator (see
+ * SUBMIT_LANDED_INDICATORS) — not merely that the pane changed somewhere.
  *
  * FALSE-POSITIVE FIX (todo #2807 / #496 residual): the previous implementation
  * treated ANY pane-content change since baseline as submit-proof. That is wrong
@@ -245,54 +331,30 @@ const SUBMIT_DOUBLE_READ_GAP_MS = 200;
  * unsubmitted, in the input line. Observed 2x in one night, requiring a manual
  * Enter to unstick the nudge.
  *
- * Fix shape: identify the live input row (findCurrentInputLine — see its doc
- * for the real pane layout this is based on) and require it to read empty on
- * TWO consecutive reads, separated by SUBMIT_DOUBLE_READ_GAP_MS, each preceded
- * by a SUBMIT_SETTLE_DELAY_MS settle delay. If the input row can't be
- * identified at all (unexpected pane layout), we do NOT fall back to the old
- * any-change heuristic — an unidentifiable input line is treated as
- * "not yet confirmed" so the bounded C-m retry loop in injectMessage can retry,
- * rather than risk another false positive.
+ * INDICATOR FIX (#497 residual, failure mode A): Claude Code renders non-empty
+ * UI hints in the live input line — e.g. 'Press up to edit queued messages' —
+ * that are NOT user input. These caused the empty-check to return false on every
+ * read, triggering the C-m retry loop and producing duplicate deliveries
+ * (6-10x fleet-wide on 2026-07-05). The fix extends the "LANDED" condition to
+ * cover SUBMIT_LANDED_INDICATORS strings, with evidence per entry.
  *
- * Shared primitive — used by injectMessage (COMMIT 1 guard) and as the basis
- * for the receipt-based return value in COMMIT 4.
+ * Fix shape: identify the live input row (findCurrentInputLine — see its doc
+ * for the real pane layout this is based on) and require it to read LANDED on
+ * TWO consecutive reads, separated by SUBMIT_DOUBLE_READ_GAP_MS, each preceded
+ * by a SUBMIT_SETTLE_DELAY_MS settle delay. LANDED = empty OR matches an entry
+ * in SUBMIT_LANDED_INDICATORS. If the input row can't be identified at all
+ * (null), the check is "not yet confirmed" and the bounded retry cap applies —
+ * retries are NEVER infinite regardless of the input-line content (#497 pt 2).
+ *
+ * Thin wrapper around _verifySubmitLandedDetail — preserved for API compatibility
+ * with direct callers and tests. injectMessageToSession uses the detail variant
+ * to drive the #498 re-deliver guard.
  *
  * Sleeps are suppressed when _testingDeps.capturePane is active so tests
  * complete without real delay.
  */
 export async function verifySubmitLanded(session: string, baselineContent: string): Promise<boolean> {
-  // baselineContent is retained for API/call-site compatibility (callers already
-  // capture it as a readiness-gate side effect); the input-line-empty check below
-  // doesn't need it for identification, only the live capture at read time.
-  void baselineContent;
-  for (let i = 0; i <= MAX_CM_RETRIES; i++) {
-    try {
-      if (!_testingDeps?.capturePane) await sleep(SUBMIT_SETTLE_DELAY_MS);
-      const first = await capturePaneContentAsync(session);
-      const firstInputLine = findCurrentInputLine(first);
-
-      if (firstInputLine === '') {
-        if (!_testingDeps?.capturePane) await sleep(SUBMIT_DOUBLE_READ_GAP_MS);
-        const second = await capturePaneContentAsync(session);
-        const secondInputLine = findCurrentInputLine(second);
-        // Double-read: require the input line to STILL read empty on a later,
-        // independent capture — guards against a transient render frame that
-        // briefly shows an empty box mid-repaint.
-        if (secondInputLine === '') {
-          return true;
-        }
-      } else if (firstInputLine === null) {
-        log.debug('verifySubmitLanded: could not identify input line in pane capture', { session });
-      }
-    } catch {
-      return false;
-    }
-    // No delay between retries when seam is active (fast tests)
-    if (i < MAX_CM_RETRIES && !_testingDeps?.capturePane) {
-      await sleep(300);
-    }
-  }
-  return false;
+  return (await _verifySubmitLandedDetail(session, baselineContent)).landed;
 }
 
 // ── Per-session serial queue ──────────────────────────────────
@@ -448,16 +510,45 @@ async function injectMessageToSession(agentId: string, session: string, text: st
     // Verify submit landed via capture-pane; retry C-m if the pane hasn't advanced.
     // This catches the race on slower boxes where the submit keystroke arrives before
     // Claude's readline is fully ready (trace 8069cbf0, todo #853/#2297).
-    let submitted = await verifySubmitLanded(session, preSendContent);
+    let detail = await _verifySubmitLandedDetail(session, preSendContent);
+    let submitted = detail.landed;
+    let lastVerifyInputLine = detail.lastInputLine;
     if (!submitted) {
       for (let i = 0; i < MAX_CM_RETRIES; i++) {
         await execSendKeys(session, ['C-m']);
-        if (await verifySubmitLanded(session, preSendContent)) { submitted = true; break; }
+        detail = await _verifySubmitLandedDetail(session, preSendContent);
+        if (detail.landed) { submitted = true; break; }
+        lastVerifyInputLine = detail.lastInputLine;
       }
       if (!submitted) {
-        log.warn('injectMessage: submit verify failed after retries (send-keys syscall succeeded)', {
-          agentId, session,
-        });
+        // Guard (#498): only re-deliver when the last observed input line was
+        // null or empty (streaming/unparseable pane — silent-drop risk).
+        // When genuine stale user-typed text occupies the input line, the
+        // delivery layer retries on submitted=false next tick — a second send
+        // here doubles output (2 sends/tick observed on busy orch at 55% rate).
+        const hasGenuineStaleText = lastVerifyInputLine !== null &&
+          !inputLineIndicatesLanded(lastVerifyInputLine);
+        if (hasGenuineStaleText) {
+          log.warn(
+            'injectMessage: submit verify failed — genuine stale text on input line, deferring to delivery-layer retry (#498)',
+            { agentId, session, inputLine: lastVerifyInputLine },
+          );
+        } else {
+          log.warn('injectMessage: submit verify failed after retries — re-delivering once (#497 pt 3)', {
+            agentId, session,
+          });
+          // RE-DELIVER once on give-up (#497 residual, failure mode B — orch pane
+          // streaming/busy). The verify loop exhausted MAX_CM_RETRIES without
+          // confirming the submit landed (e.g. pane layout unrecognisable during
+          // rapid streaming, so findCurrentInputLine returned null on every read).
+          // Rather than silently dropping, send the full text+submit payload again.
+          // This is a best-effort safety net: no verify on the re-delivery (to avoid
+          // a new confirm loop); the caller still receives submitted=false (honest
+          // about unconfirmed state). Applies to both comms and orch panes.
+          await execSendKeys(session, ['-l', stamped]);
+          if (!_testingDeps?.capturePane) await sleep(150);
+          await execSendKeys(session, ['C-m']);
+        }
       }
     }
 
