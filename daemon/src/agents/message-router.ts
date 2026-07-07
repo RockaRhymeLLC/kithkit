@@ -288,7 +288,7 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
  */
 export function getMessages(
   agentId: string,
-  opts?: { limit?: number; type?: MessageType },
+  opts?: { limit?: number; offset?: number; type?: MessageType; order?: 'asc' | 'desc' },
 ): Message[] {
   let sql = 'SELECT * FROM messages WHERE to_agent = ? OR from_agent = ?';
   const params: unknown[] = [agentId, agentId];
@@ -298,11 +298,19 @@ export function getMessages(
     params.push(opts.type);
   }
 
-  sql += ' ORDER BY created_at ASC';
+  sql += opts?.order === 'desc' ? ' ORDER BY created_at DESC' : ' ORDER BY created_at ASC';
 
   if (opts?.limit) {
     sql += ' LIMIT ?';
     params.push(opts.limit);
+  } else if (opts?.offset) {
+    // SQLite requires a LIMIT clause for OFFSET to be legal — -1 means unbounded.
+    sql += ' LIMIT -1';
+  }
+
+  if (opts?.offset) {
+    sql += ' OFFSET ?';
+    params.push(opts.offset);
   }
 
   return query<Message>(sql, ...params);

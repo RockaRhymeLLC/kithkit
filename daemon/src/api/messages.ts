@@ -196,12 +196,32 @@ export async function handleMessagesRoute(
 
       const type = validateType(searchParams.get('type'), res);
       if (type === false) return true;
+
+      // limit: hard-capped at 500 when provided; omitted entirely stays unbounded
+      // (zero behavior change for existing callers that don't paginate).
       const limitStr = searchParams.get('limit');
-      const limit = limitStr ? parseInt(limitStr, 10) : undefined;
+      const limitRaw = limitStr ? parseInt(limitStr, 10) : undefined;
+      const limit = limitRaw !== undefined && !isNaN(limitRaw)
+        ? Math.min(Math.max(limitRaw, 1), 500)
+        : undefined;
+
+      // offset: floors at 0; out-of-range offsets naturally yield an empty
+      // array via SQL LIMIT/OFFSET semantics (still HTTP 200).
+      const offsetStr = searchParams.get('offset');
+      const offsetRaw = offsetStr ? parseInt(offsetStr, 10) : undefined;
+      const offset = offsetRaw !== undefined && !isNaN(offsetRaw)
+        ? Math.max(offsetRaw, 0)
+        : undefined;
+
+      // order: invalid values silently fall back to the default (asc).
+      const orderParam = searchParams.get('order');
+      const order = orderParam === 'desc' ? 'desc' : 'asc';
 
       const messages = getMessages(agent, {
         type: (type as MessageType) ?? undefined,
-        limit: limit && !isNaN(limit) ? limit : undefined,
+        limit,
+        offset,
+        order,
       });
 
       json(res, 200, withTimestamp({ data: withExpiredField(messages) }));

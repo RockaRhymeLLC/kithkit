@@ -772,3 +772,112 @@ describe('Regression #266 — task.result race: correct body written, no cross-c
       'ghost task result must remain null');
   });
 });
+
+describe('GET /api/messages — offset/order/limit pagination (todo 2821)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  // Insert N messages directly with strictly increasing created_at timestamps
+  // so ordering assertions are deterministic (avoids relying on SQLite's
+  // unspecified tie-break behavior when created_at collides at 1s resolution).
+  function seedMessages(count: number, type = 'text'): void {
+    const base = Date.parse('2026-01-01T00:00:00.000Z');
+    for (let i = 0; i < count; i++) {
+      const ts = new Date(base + i * 1000).toISOString();
+      exec(
+        `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        'comms', 'agent-x', type, `Message ${i}`, ts,
+      );
+    }
+  }
+
+  it('default unchanged: no limit/offset/order returns all rows, ASC', async () => {
+    seedMessages(5);
+    const res = await request('GET', '/api/messages?agent=agent-x');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 5);
+    assert.equal(body.data[0].body, 'Message 0');
+    assert.equal(body.data[4].body, 'Message 4');
+  });
+
+  it('limit honored: limit=3 on a 5-row fixture returns 3 oldest, ASC', async () => {
+    seedMessages(5);
+    const res = await request('GET', '/api/messages?agent=agent-x&limit=3');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 3);
+    assert.deepEqual(body.data.map((m: { body: string }) => m.body), ['Message 0', 'Message 1', 'Message 2']);
+  });
+
+  it('limit clamped: limit=99999 is capped at 500 even with 510 rows available', async () => {
+    seedMessages(510);
+    const res = await request('GET', '/api/messages?agent=agent-x&limit=99999');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 500, 'limit must be capped at 500');
+  });
+
+  it('offset full paging: pages through a 10-row fixture with no gaps or overlaps', async () => {
+    seedMessages(10);
+    const seen: string[] = [];
+    for (const offset of [0, 3, 6, 9]) {
+      const res = await request('GET', `/api/messages?agent=agent-x&limit=3&offset=${offset}`);
+      assert.equal(res.status, 200);
+      const body = JSON.parse(res.body);
+      seen.push(...body.data.map((m: { body: string }) => m.body));
+    }
+    assert.equal(seen.length, 10, 'all 10 rows must appear exactly once across pages');
+    assert.deepEqual(seen, Array.from({ length: 10 }, (_, i) => `Message ${i}`));
+  });
+
+  it('out-of-range offset returns an empty array with HTTP 200', async () => {
+    seedMessages(5);
+    const res = await request('GET', '/api/messages?agent=agent-x&offset=5000');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(body.data, []);
+  });
+
+  it('order=desc returns the same rows reversed, newest first', async () => {
+    seedMessages(5);
+    const res = await request('GET', '/api/messages?agent=agent-x&order=desc');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 5);
+    assert.equal(body.data[0].body, 'Message 4');
+    assert.equal(body.data[4].body, 'Message 0');
+  });
+
+  it('invalid order value silently falls back to asc, HTTP 200', async () => {
+    seedMessages(3);
+    const res = await request('GET', '/api/messages?agent=agent-x&order=sideways');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data[0].body, 'Message 0');
+    assert.equal(body.data[2].body, 'Message 2');
+  });
+
+  it('combined type+limit+offset+order — no interaction bugs', async () => {
+    seedMessages(6, 'task');
+    // Noise row of a different type, addressed from agent-x to a third party
+    // (not to agent-x) — must be excluded by the type filter.
+    exec(
+      `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      'agent-x', 'someone-else', 'status', 'Noise', '2026-01-01T00:00:03.500Z',
+    );
+
+    const res = await request(
+      'GET',
+      '/api/messages?agent=agent-x&type=task&limit=2&offset=2&order=desc',
+    );
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 2);
+    assert.ok(body.data.every((m: { type: string }) => m.type === 'task'), 'must only return task-type rows');
+    // 6 task rows (Message 0..5) DESC = [5,4,3,2,1,0] -> offset 2 -> [3,2]
+    assert.deepEqual(body.data.map((m: { body: string }) => m.body), ['Message 3', 'Message 2']);
+  });
+});
