@@ -406,6 +406,91 @@ export default {
   });
 });
 
+// ── #501: delegation-pattern route tracking + reload idempotency ──────────────
+//
+// A delegation-pattern plugin has NO static `routes` property. Instead its
+// onInit calls ctx.import(component) and the component calls registerRoute
+// directly — the routes reach the live registry but bypass the static-routes
+// loop, so they were never appended to PluginRecord.routes before this fix.
+// Consequence: _teardown couldn't unregister them → reload threw
+// "Route already registered" → plugin was not reload-idempotent.
+
+describe('PluginManager: delegation-pattern route tracking (#501)', () => {
+  it('tracks routes registered inside onInit and is reload-idempotent', async () => {
+    // The real granola delegation pattern: plugin has NO static `routes`; its
+    // onInit calls ctx.import(component) and the component calls registerRoute
+    // via its own STATIC import of route-registry.  Static imports inside a
+    // cache-busted ctx.import module resolve to the un-versioned base URL, so
+    // they share the same module instance (and the same _routes array) as the
+    // main daemon process.  Without the snapshot-diff fix in loadFile(),
+    // those routes bypass the static-routes loop → record.routes stays [] →
+    // _teardown cannot unregister them → reload throws "Route already registered".
+
+    // Write a component file into the daemon dist root so ctx.import can find
+    // it, and its static import of route-registry resolves to the shared instance.
+    const distRoot = path.resolve(import.meta.dirname, '../..');
+    const componentFile = path.join(distRoot, '__test501-deleg-component.js');
+    // Component uses a static import so it reaches the live route registry.
+    fs.writeFileSync(componentFile, [
+      `import { registerRoute } from './core/route-registry.js';`,
+      `export function setup() {`,
+      `  registerRoute('/api/ext/deleg/v1', async (_req, res) => {`,
+      `    res.writeHead(200, { 'Content-Type': 'application/json' });`,
+      `    res.end(JSON.stringify({ ok: true }));`,
+      `    return true;`,
+      `  });`,
+      `}`,
+    ].join('\n'));
+
+    try {
+      // Plugin: no routes property, routes registered inside onInit via component.
+      const file = writePlugin('deleg.js', `
+export default {
+  name: 'deleg',
+  async onInit(ctx) {
+    const comp = await ctx.import('__test501-deleg-component.js');
+    comp.setup();
+  },
+};
+`);
+
+      // Load — route must appear in record.routes (fix assertion)
+      const record = await manager.loadFile(file);
+      assert.equal(record.status, 'loaded', `load should succeed (error: ${record.error})`);
+      assert.deepEqual(
+        record.routes,
+        ['/api/ext/deleg/v1'],
+        'delegation-registered route must be tracked in record.routes',
+      );
+
+      // The route must be live
+      const { req, res, out } = fakeReqRes();
+      const handled = await matchRoute(req, res, '/api/ext/deleg/v1', new URLSearchParams());
+      assert.equal(handled, true, 'route must be served after load');
+      assert.equal(out.status, 200);
+
+      // Reload — must NOT throw "Route already registered" (idempotency assertion)
+      const bumped = new Date(Date.now() + 2000);
+      fs.utimesSync(file, bumped, bumped);
+      const reloaded = await manager.reload('deleg');
+      assert.ok(reloaded, 'reload must return a record');
+      assert.equal(reloaded!.status, 'loaded', `reload should succeed (error: ${reloaded?.error})`);
+      assert.deepEqual(
+        reloaded!.routes,
+        ['/api/ext/deleg/v1'],
+        'route still tracked after reload',
+      );
+      assert.equal(reloaded!.reloads, 1);
+
+      // Exactly one registration in the live registry after reload (no leak)
+      const count = getRegisteredRoutes().filter(p => p === '/api/ext/deleg/v1').length;
+      assert.equal(count, 1, 'no duplicate route after reload');
+    } finally {
+      fs.rmSync(componentFile, { force: true });
+    }
+  });
+});
+
 // ── The real Granola plugin (decomposition proof) ────────────
 
 describe('Granola plugin: the peeled monolith component loads via ctx.import', () => {
