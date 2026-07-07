@@ -71,7 +71,7 @@ import { pathToFileURL } from 'node:url';
 import { createLogger } from './logger.js';
 
 type Logger = ReturnType<typeof createLogger>;
-import { registerRoute, unregisterRoute, type RouteHandler } from './route-registry.js';
+import { registerRoute, unregisterRoute, getRegisteredRoutes, type RouteHandler } from './route-registry.js';
 import { registerCheck, unregisterCheck, type HealthCheckFn } from './extended-status.js';
 import { registerAdapter, unregisterAdapter } from '../comms/channel-router.js';
 import type { ChannelAdapter } from '../comms/adapter.js';
@@ -323,6 +323,12 @@ export class PluginManager {
     const ctxAdapters: string[] = [];
     const ctxChecks: string[] = [];
     if (plugin.onInit) {
+      // Snapshot the live route registry before onInit so that routes registered
+      // via delegation (onInit → ctx.import(component) → component calls
+      // registerRoute directly) are captured and appended to registeredRoutes.
+      // Without this, delegation-pattern plugins show routes:[] in the record
+      // and _teardown cannot unregister them, breaking reload idempotency.
+      const routesBefore = new Set(getRegisteredRoutes());
       try {
         await plugin.onInit({
           config: this._config,
@@ -348,6 +354,13 @@ export class PluginManager {
         const msg = `onInit failed: ${err instanceof Error ? err.message : String(err)}`;
         log.error(msg, { plugin: plugin.name });
         return this._errorRecord(plugin.name, absFile, msg);
+      }
+      // Diff: append any routes that onInit registered directly into the live
+      // registry (delegation pattern) but that are not already tracked.
+      for (const p of getRegisteredRoutes()) {
+        if (!routesBefore.has(p) && !registeredRoutes.includes(p)) {
+          registeredRoutes.push(p);
+        }
       }
     }
 
