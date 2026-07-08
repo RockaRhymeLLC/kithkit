@@ -197,17 +197,19 @@ export async function handleMessagesRoute(
       const type = validateType(searchParams.get('type'), res);
       if (type === false) return true;
 
-      // limit: hard-capped at 500 when provided; omitted entirely stays unbounded
-      // (zero behavior change for existing callers that don't paginate).
-      // limit=0 is explicitly clamped to 1 (Math.max(limitRaw, 1)) rather than
-      // treated as "no limit" or an error — this matches the pre-existing
-      // implicit behavior of this clamp and is intentional, not an oversight
-      // (todo 2835 / R2 #500 review note: "limit=0 now returns 1 row").
+      // limit: defaults to 200 when omitted (todo 2833 — an unbounded query
+      // on a live instance returned 5083 rows), hard-capped at 500 when an
+      // explicit value is provided. limit=0 is explicitly clamped to 1
+      // (Math.max(limitRaw, 1)) rather than treated as "no limit" or an
+      // error — this matches the pre-existing implicit behavior of this
+      // clamp and is intentional, not an oversight (todo 2835 / R2 #500
+      // review note: "limit=0 now returns 1 row"). This default/clamp is
+      // applied only at the HTTP boundary (here), not inside getMessages(),
+      // so internal callers that build their own options object are
+      // unaffected.
       const limitStr = searchParams.get('limit');
-      const limitRaw = limitStr ? parseInt(limitStr, 10) : undefined;
-      const limit = limitRaw !== undefined && !isNaN(limitRaw)
-        ? Math.min(Math.max(limitRaw, 1), 500)
-        : undefined;
+      const limitRaw = limitStr ? parseInt(limitStr, 10) : NaN;
+      const limit = Math.min(Math.max(isNaN(limitRaw) ? 200 : limitRaw, 1), 500);
 
       // offset: floors at 0; out-of-range offsets naturally yield an empty
       // array via SQL LIMIT/OFFSET semantics (still HTTP 200).

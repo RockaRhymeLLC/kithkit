@@ -901,6 +901,59 @@ describe('GET /api/messages — offset/order/limit pagination (todo 2821)', () =
   });
 });
 
+describe('GET /api/messages — default limit 200 / hard cap 500 (todo 2833)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  function seedMessages(count: number, type = 'text'): void {
+    const base = Date.parse('2026-01-01T00:00:00.000Z');
+    for (let i = 0; i < count; i++) {
+      const ts = new Date(base + i * 1000).toISOString();
+      exec(
+        `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+         VALUES (?, ?, ?, ?, ?)`,
+        'comms', 'agent-x', type, `Message ${i}`, ts,
+      );
+    }
+  }
+
+  it('omitted limit defaults to 200 rows out of 300 available', async () => {
+    seedMessages(300);
+    const res = await request('GET', '/api/messages?agent=agent-x');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 200, 'omitted limit must default to 200');
+    assert.equal(body.data[0].body, 'Message 0');
+    assert.equal(body.data[199].body, 'Message 199');
+  });
+
+  it('explicit limit=500 is honored in full on a 510-row fixture', async () => {
+    seedMessages(510);
+    const res = await request('GET', '/api/messages?agent=agent-x&limit=500');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 500, 'explicit limit=500 must return exactly 500 rows');
+  });
+
+  it('explicit limit=9999 is clamped to the 500 hard cap', async () => {
+    seedMessages(510);
+    const res = await request('GET', '/api/messages?agent=agent-x&limit=9999');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 500, 'limit=9999 must be clamped to 500');
+  });
+
+  it('explicit limit continues to compose with order/offset after the default-limit change', async () => {
+    seedMessages(10);
+    const res = await request('GET', '/api/messages?agent=agent-x&limit=3&offset=2&order=desc');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 3);
+    // 10 rows DESC = [9,8,...,0] -> offset 2 -> [7,6,5]
+    assert.deepEqual(body.data.map((m: { body: string }) => m.body), ['Message 7', 'Message 6', 'Message 5']);
+  });
+});
+
 describe('GET /api/messages — WHERE clause OR/AND precedence (todo 2835)', () => {
   beforeEach(setup);
   afterEach(teardown);
