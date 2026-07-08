@@ -290,7 +290,11 @@ export function getMessages(
   agentId: string,
   opts?: { limit?: number; offset?: number; type?: MessageType; order?: 'asc' | 'desc' },
 ): Message[] {
-  let sql = 'SELECT * FROM messages WHERE to_agent = ? OR from_agent = ?';
+  // Parenthesize the to/from OR — SQL AND binds tighter than OR, so an
+  // unparenthesized `to_agent = ? OR from_agent = ? AND type = ?` lets
+  // wrong-type rows addressed TO the agent slip past the type filter
+  // (todo 2835 / R2 #500 review note).
+  let sql = 'SELECT * FROM messages WHERE (to_agent = ? OR from_agent = ?)';
   const params: unknown[] = [agentId, agentId];
 
   if (opts?.type) {
