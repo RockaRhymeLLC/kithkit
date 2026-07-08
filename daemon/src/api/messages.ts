@@ -199,6 +199,10 @@ export async function handleMessagesRoute(
 
       // limit: hard-capped at 500 when provided; omitted entirely stays unbounded
       // (zero behavior change for existing callers that don't paginate).
+      // limit=0 is explicitly clamped to 1 (Math.max(limitRaw, 1)) rather than
+      // treated as "no limit" or an error — this matches the pre-existing
+      // implicit behavior of this clamp and is intentional, not an oversight
+      // (todo 2835 / R2 #500 review note: "limit=0 now returns 1 row").
       const limitStr = searchParams.get('limit');
       const limitRaw = limitStr ? parseInt(limitStr, 10) : undefined;
       const limit = limitRaw !== undefined && !isNaN(limitRaw)
@@ -213,9 +217,11 @@ export async function handleMessagesRoute(
         ? Math.max(offsetRaw, 0)
         : undefined;
 
-      // order: invalid values silently fall back to the default (asc).
+      // order: case-insensitive ("DESC"/"Desc"/"desc" all accepted); any
+      // other value (including omitted) silently falls back to the default
+      // (asc) — no 400 (todo 2835 / R2 #500 review note).
       const orderParam = searchParams.get('order');
-      const order = orderParam === 'desc' ? 'desc' : 'asc';
+      const order = orderParam?.toLowerCase() === 'desc' ? 'desc' : 'asc';
 
       const messages = getMessages(agent, {
         type: (type as MessageType) ?? undefined,

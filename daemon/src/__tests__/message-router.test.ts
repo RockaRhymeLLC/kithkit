@@ -880,4 +880,56 @@ describe('GET /api/messages — offset/order/limit pagination (todo 2821)', () =
     // 6 task rows (Message 0..5) DESC = [5,4,3,2,1,0] -> offset 2 -> [3,2]
     assert.deepEqual(body.data.map((m: { body: string }) => m.body), ['Message 3', 'Message 2']);
   });
+
+  it('order value is case-insensitive: order=DESC (uppercase) behaves like desc', async () => {
+    seedMessages(5);
+    const res = await request('GET', '/api/messages?agent=agent-x&order=DESC');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 5);
+    assert.equal(body.data[0].body, 'Message 4');
+    assert.equal(body.data[4].body, 'Message 0');
+  });
+
+  it('limit=0 is explicitly clamped to 1 row (documented, not "no limit")', async () => {
+    seedMessages(5);
+    const res = await request('GET', '/api/messages?agent=agent-x&limit=0');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 1, 'limit=0 must clamp to exactly 1 row, matching Math.max(limitRaw, 1)');
+    assert.equal(body.data[0].body, 'Message 0');
+  });
+});
+
+describe('GET /api/messages — WHERE clause OR/AND precedence (todo 2835)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('type filter excludes wrong-type rows addressed TO the agent (regression)', async () => {
+    // Row 1: addressed TO agent-x, correct type ('task') — must be included.
+    exec(
+      `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      'comms', 'agent-x', 'task', 'Wanted task', '2026-01-01T00:00:00.000Z',
+    );
+    // Row 2 (noise): addressed TO agent-x, WRONG type ('status'). Without the
+    // parenthesized (to_agent = ? OR from_agent = ?) AND type = ?, SQL's
+    // AND-binds-tighter-than-OR precedence lets this leak through the type
+    // filter because it matches the bare `to_agent = ?` OR-branch.
+    exec(
+      `INSERT INTO messages (from_agent, to_agent, type, body, created_at)
+       VALUES (?, ?, ?, ?, ?)`,
+      'comms', 'agent-x', 'status', 'Noise: wrong type addressed to agent-x', '2026-01-01T00:00:01.000Z',
+    );
+
+    const res = await request('GET', '/api/messages?agent=agent-x&type=task');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.equal(body.data.length, 1, 'wrong-type row addressed TO agent-x must be excluded');
+    assert.equal(body.data[0].body, 'Wanted task');
+    assert.ok(
+      body.data.every((m: { type: string }) => m.type === 'task'),
+      'every returned row must match the requested type',
+    );
+  });
 });
