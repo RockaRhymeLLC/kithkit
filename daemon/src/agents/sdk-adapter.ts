@@ -433,7 +433,9 @@ async function runWorker(
 
         if (resultMsg.subtype === 'success') {
           worker.state.status = 'completed';
-          worker.state.result = resultMsg.result ?? '';
+          // Persist null when result is absent — empty string is indistinguishable
+          // from a genuine empty result, masking #2822 (silent empty-result origin).
+          worker.state.result = resultMsg.result ?? null;
         } else {
           worker.state.status = 'failed';
           worker.state.error = resultMsg.result ?? `SDK error: ${resultMsg.subtype}`;

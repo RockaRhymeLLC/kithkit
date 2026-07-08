@@ -43,6 +43,7 @@ import { initPluginManager, getPluginManager } from './core/plugin-extensions.js
 import { getScheduler } from './api/tasks.js';
 import { registerFactVerifier } from './agents/fact-verifier.js';
 import { registerRetroIngest } from './self-improvement/retro-ingest.js';
+import { registerOrchWake } from './agents/orch-wake.js';
 import {
   getExtension,
   isDegraded,
@@ -210,6 +211,13 @@ log.info('Retro evaluator dispatch hook registered');
 // the learnings as memories so pre-task injection can surface them.
 // Must run after setOnJobComplete() above (that shim clears the listener list).
 registerRetroIngest();
+
+// Register the orchestrator-wake listener. Fires an injectMessage to the orch
+// when any orch-parented worker completes, eliminating the idle-monitor poll-tick
+// lag that caused #877 (orchestrator report-freeze). Must run after
+// setOnJobComplete() (that shim clears the listener list).
+registerOrchWake();
+log.info('Orchestrator wake listener registered');
 
 // ── Boot-time URL check ───────────────────────────────────────
 
