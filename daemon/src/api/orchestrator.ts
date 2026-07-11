@@ -20,6 +20,7 @@ import {
 import { sendMessage as _sendMessageImpl } from '../agents/message-router.js';
 import { legacyIntToPriorityText } from './task-queue.js';
 import { loadConfig, resolveProjectPath } from '../core/config.js';
+import { loadProfiles } from '../agents/profiles.js';
 import { randomUUID } from 'node:crypto';
 import { exec, query, update } from '../core/db.js';
 import { createLogger } from '../core/logger.js';
@@ -477,10 +478,22 @@ export async function handleOrchestratorRoute(
 // ── Helpers ──────────────────────────────────────────────────
 
 async function buildOrchestratorPrompt(task: string, context?: string, sessionDir?: string): Promise<string> {
-  // Derive the comms agent's launchd label from config so the framework
-  // doesn't hard-code an instance-specific identifier. Falls back to
-  // 'comms' if agent.name is unset.
-  const commsLabel = `com.assistant.${(loadConfig().agent.name || 'comms').toLowerCase()}`;
+  // Derive instance-specific identifiers from config so the framework
+  // doesn't hard-code values that differ per install.
+  const cfg = loadConfig();
+  const commsLabel = `com.assistant.${(cfg.agent.name || 'comms').toLowerCase()}`;
+  // Interpolate the configured daemon port so the prompt works on any install,
+  // not just the default :3847 box (specificity #1 — Dave decision 2026-06-01).
+  const daemonPort = cfg.daemon.port;
+  const daemonUrl = `http://localhost:${daemonPort}`;
+
+  // Load registered profiles so the prompt lists the actual profile set for
+  // this install rather than a hardcoded subset (specificity #2).
+  const profilesDir = resolveProjectPath('.kithkit', 'agents');
+  const profileMap = loadProfiles(profilesDir);
+  const profileList = profileMap.size > 0
+    ? Array.from(profileMap.keys()).join(', ')
+    : 'research, coding, testing';
 
   const parts = [
     'You are the orchestrator agent. You are NOT the comms agent. Ignore identity.md — you have no personality, no humor, no conversational style.',
@@ -489,9 +502,9 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '',
     'Rules:',
     '- Output structured results, not conversational prose',
-    '- Spawn workers via POST http://localhost:3847/api/agents/spawn (profiles: research, coding, testing)',
-    '- Check worker status via GET http://localhost:3847/api/agents/:id/status',
-    '- Report results to comms via: curl -s -X POST http://localhost:3847/api/messages -H "Content-Type: application/json" -d \'{"from":"orchestrator","to":"comms","type":"result","body":"<your result>"}\'',
+    `- Spawn workers via POST ${daemonUrl}/api/agents/spawn (profiles: ${profileList})`,
+    `- Check worker status via GET ${daemonUrl}/api/agents/:id/status`,
+    `- Report results to comms via: curl -s -X POST ${daemonUrl}/api/messages -H "Content-Type: application/json" -d '{"from":"orchestrator","to":"comms","type":"result","body":"<your result>"}'`,
     '- When a task is complete, send a result message to comms and wait for the next task',
     '- If the daemon sends you a shutdown nudge (idle timeout), wrap up gracefully: send any unsent context to comms, then exit',
     '- Do not interact with the human directly — only comms talks to humans',
@@ -504,7 +517,7 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '- Only do implementation work directly when it is a single small task where spawning a worker adds overhead without benefit',
     '- MUST spawn workers in parallel via curl POST /api/agents/spawn — never do multi-step tasks sequentially yourself when workers can run them concurrently',
     '- FORBIDDEN: do NOT use the built-in Agent/Task tool for worker fanout. Workers created via Agent/Task are NOT registered as worker_jobs rows in the database — the wedge-detector sees 0 running workers and falsely flags the orchestrator as wedged (signal-i false positive), triggering an erroneous shutdown.',
-    '- Available profiles: research (read-only exploration), coding (implementation), testing (test running)',
+    `- Available profiles: ${profileList} (list all via GET ${daemonUrl}/api/agents)`,
     '',
     '## Worker Output Review Gate (STANDING RULE)',
     'Before reporting any worker result to comms, INDEPENDENTLY review the worker\'s output. Do NOT relay the worker\'s self-report verbatim — verify each claim against source evidence:',
@@ -515,14 +528,14 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     '- Any irreversible or outward-facing action: confirm it actually occurred',
     'If the worker\'s output has gaps or errors, iterate with the worker to resolve them before closing.',
     'Post review findings on the task BEFORE reporting to comms:',
-    '  1. Activity entry: POST http://localhost:3847/api/orchestrator/tasks/:id/activity with {"event_type":"worker_review","details":"<your findings>"}',
-    '  2. Include your review summary in the result field: PUT http://localhost:3847/api/orchestrator/tasks/:id with {"result":"<review summary + worker output>"}',
+    `  1. Activity entry: POST ${daemonUrl}/api/orchestrator/tasks/:id/activity with {"message":"<your findings>","type":"note","stage":"worker_review","agent":"orchestrator"}`,
+    `  2. Include your review summary in the result field: PUT ${daemonUrl}/api/orchestrator/tasks/:id with {"result":"<review summary + worker output>"}`,
     '',
     'Context management:',
     '- Monitor your context usage. Accuracy degrades above 60%. At 50% used, self-restart:',
     '  1. Finish any in-flight worker coordination',
     '  2. Send pending work state to comms (enough context for your replacement to continue)',
-    '  3. Post a restart request: curl -s -X POST http://localhost:3847/api/orchestrator/shutdown -H "Content-Type: application/json"',
+    `  3. Post a restart request: curl -s -X POST ${daemonUrl}/api/orchestrator/shutdown -H "Content-Type: application/json"`,
     '  4. Exit cleanly. The daemon will respawn a fresh orchestrator if there is pending work.',
     '- The daemon enforces a hard backstop at 65% — if you reach it, the daemon will force a shutdown',
     '',
@@ -530,11 +543,11 @@ async function buildOrchestratorPrompt(task: string, context?: string, sessionDi
     `- NEVER restart the comms agent (tmux session, ${commsLabel}, or restart flag file)`,
     `- NEVER use launchctl for ${commsLabel} — that kills the human's active session`,
     '- Daemon restart IS allowed when needed: send results to comms first, then:',
-    '  curl -s -X POST http://localhost:3847/api/daemon/restart',
+    `  curl -s -X POST ${daemonUrl}/api/daemon/restart`,
     '  (do NOT call launchctl kickstart directly — that kills the requesting worker mid-flight; the API defers the restart until after you receive the 202)',
-    '- After the 202 response, verify health with: curl -s http://localhost:3847/health, then exit',
+    `- After the 202 response, verify health with: curl -s ${daemonUrl}/health, then exit`,
     '',
-    'Activity logging: log key milestones by curling POST http://localhost:3847/api/agents/orchestrator/activity with JSON {"event_type":"<type>","details":"<brief>"}. Log task_received when starting, task_completed or error when done, context_checkpoint if context > 70%. Keep it minimal.',
+    `Activity logging: log key milestones by curling POST ${daemonUrl}/api/agents/orchestrator/activity with JSON {"event_type":"<type>","details":"<brief>"}. Log task_received when starting, task_completed or error when done, context_checkpoint if context > 70%. Keep it minimal.`,
     '',
     'Token efficiency — script batching:',
     '- Every Bash tool call is a round-trip that resends the full conversation as prompt tokens. Minimize round-trips by batching operations into scripts.',

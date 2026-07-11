@@ -261,7 +261,18 @@ function startWorker(jobId: string, req: SpawnRequest): void {
   // Prepend the current autonomy mode so workers can self-enforce it
   const mode = getCurrentAutonomyMode();
   const modePrefix = `Current autonomy mode: ${mode}. You must self-enforce this mode's constraints independently — even if the orchestrator doesn't mention it.\n\n`;
-  const promptWithMode = modePrefix + req.prompt;
+
+  // Prepend worker output review directive so every worker structures its output
+  // for orchestrator review (standing rule — Dave decision 2026-06-01).
+  const reviewDirective =
+    'Worker output review: when your task involves code changes, git operations, builds, tests, PRs, issues, or any irreversible/outward-facing action, structure your final output to be REVIEWABLE by the orchestrator:\n' +
+    '- Summary of what you did (files changed, commands run)\n' +
+    '- Diffs or file paths for any code changes\n' +
+    '- Exact build/test results (pass/fail counts, any errors)\n' +
+    '- PR/issue URLs if created\n' +
+    'If the task instructions indicate a review gate is required before an irreversible step (push, merge, deploy, send), STOP before that step and report to the orchestrator for authorization first.\n\n';
+
+  const promptWithMode = modePrefix + reviewDirective + req.prompt;
 
   // Build SDK spawn options — profile budget is the default, caller can override
   const sdkOpts: SdkSpawnOptions = {
