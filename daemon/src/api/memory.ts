@@ -12,6 +12,7 @@ import type http from 'node:http';
 import { insert, get, remove, query, getDatabase } from '../core/db.js';
 import { generateEmbedding, embeddingToBuffer } from '../memory/embeddings.js';
 import { initVectorSearch, indexEmbedding, vectorSearch, hybridSearch, backfillEmbeddings } from '../memory/vector-search.js';
+import type { VectorSearchResult, HybridSearchResult } from '../memory/vector-search.js';
 import { createLogger } from '../core/logger.js';
 
 const log = createLogger('memory-api');
@@ -111,6 +112,8 @@ export function isVectorSearchEnabled(): boolean {
 /** Reset for testing. */
 export function _resetVectorForTesting(): void {
   _vectorEnabled = false;
+  _vectorSearchFnForTesting = null;
+  _hybridSearchFnForTesting = null;
 }
 
 /**
@@ -119,6 +122,30 @@ export function _resetVectorForTesting(): void {
  */
 export function _setVectorEnabledForTesting(val: boolean): void {
   _vectorEnabled = val;
+}
+
+// ── Testing seams (embed queue-full fallback) ─────────────────
+
+/** Override vectorSearch for testing — set to null to restore default. */
+let _vectorSearchFnForTesting: ((q: string, limit?: number) => Promise<VectorSearchResult[]>) | null = null;
+/** Override hybridSearch for testing — set to null to restore default. */
+let _hybridSearchFnForTesting: ((q: string, limit?: number) => Promise<HybridSearchResult[]>) | null = null;
+
+export function _setVectorSearchFnForTesting(fn: typeof _vectorSearchFnForTesting): void {
+  _vectorSearchFnForTesting = fn;
+}
+export function _setHybridSearchFnForTesting(fn: typeof _hybridSearchFnForTesting): void {
+  _hybridSearchFnForTesting = fn;
+}
+
+/**
+ * Detect embed-worker queue-full errors.
+ * Matches the exact message thrown in embed-client.ts when QUEUE_MAX is reached.
+ * We detect specifically rather than blanket-catching all embedding errors so
+ * that other embed failures (model unavailable, ONNX crash, etc.) still surface.
+ */
+function isEmbedQueueFull(err: unknown): boolean {
+  return err instanceof Error && err.message.includes('embed-worker: request queue full');
 }
 
 // ── Helpers ──────────────────────────────────────────────────
@@ -551,16 +578,34 @@ export async function handleMemoryRoute(
       }
 
       if (mode === 'vector') {
-        const results = await vectorSearch(body.query as string, (body.limit as number) ?? 10);
-        touchMemories(results.map(r => r.id));
-        json(res, 200, withTimestamp({ data: results, mode: 'vector' }));
+        const doVectorSearch = _vectorSearchFnForTesting ?? vectorSearch;
+        try {
+          const results = await doVectorSearch(body.query as string, (body.limit as number) ?? 10);
+          touchMemories(results.map(r => r.id));
+          json(res, 200, withTimestamp({ data: results, mode: 'vector' }));
+        } catch (err) {
+          if (!isEmbedQueueFull(err)) throw err;
+          log.warn('memory-search: embed worker queue full, degrading vector→keyword', { query: body.query });
+          const results = searchMemories({ query: body.query as string });
+          touchMemories(results.map(r => r.id as number));
+          json(res, 200, withTimestamp({ data: results, mode: 'keyword', degraded: 'keyword-fallback' }));
+        }
         return true;
       }
 
       if (mode === 'hybrid') {
-        const results = await hybridSearch(body.query as string, (body.limit as number) ?? 10);
-        touchMemories(results.map(r => r.id));
-        json(res, 200, withTimestamp({ data: results, mode: 'hybrid' }));
+        const doHybridSearch = _hybridSearchFnForTesting ?? hybridSearch;
+        try {
+          const results = await doHybridSearch(body.query as string, (body.limit as number) ?? 10);
+          touchMemories(results.map(r => r.id));
+          json(res, 200, withTimestamp({ data: results, mode: 'hybrid' }));
+        } catch (err) {
+          if (!isEmbedQueueFull(err)) throw err;
+          log.warn('memory-search: embed worker queue full, degrading hybrid→keyword', { query: body.query });
+          const results = searchMemories({ query: body.query as string });
+          touchMemories(results.map(r => r.id as number));
+          json(res, 200, withTimestamp({ data: results, mode: 'keyword', degraded: 'keyword-fallback' }));
+        }
         return true;
       }
 
