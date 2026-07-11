@@ -244,6 +244,18 @@ Tasks move through four semantic stages:
 
 **Cross-machine ID**: `canonical_task_external_id` (hex UUID, no dashes) for coordinating the same logical task across multiple machines. No UNIQUE constraint — brief duplicates are allowed during sync.
 
+### Worker-Output Review Gate (Standing Rule — Dave decision 2026-06-01)
+
+**Three-tier review chain for ALL worker tasks:**
+
+1. **Worker** does the work and structures its output to be reviewable: summary of changes, diffs/files touched, exact build/test results, PR/issue URLs. Stop before irreversible steps (push, merge, deploy, send) when the task specifies a review gate — report to the orchestrator for authorization first.
+2. **Orchestrator** independently reviews everything the worker did — does NOT relay the worker's self-report verbatim. Verifies each claim against source evidence (actual diffs, build output, test results, PR existence). If the worker's output has gaps or errors, iterate with the worker before closing. Posts findings on the task:
+   - Activity entry: `POST /api/orchestrator/tasks/:id/activity` with `{"message":"<findings>","type":"note","stage":"worker_review","agent":"orchestrator"}`
+   - Task result: include the review summary in `PUT /api/orchestrator/tasks/:id` `result` field
+3. **Comms** reviews the orchestrator's review findings before final closure (and, for code tasks, before PR approval). Comms sets `acknowledged_at` to close human-sourced tasks (see task lifecycle above).
+
+**Explicitly out of scope:** No independent third-party reviewer is added on completed tasks — code landing via PR is already gated by the existing PR review process. Do not add a redundant reviewer role.
+
 ### Memory-First Context (Comms + Orchestrator)
 
 Before asking the human for additional context, **search memory first**. Use `POST /api/memory/search` (hybrid mode if available, keyword as fallback) with terms relevant to what you need. Review the results, then re-evaluate whether you still need to ask. Often the answer is already stored — asking the human for something they've already told you wastes their time and erodes trust.

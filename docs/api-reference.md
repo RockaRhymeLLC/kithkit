@@ -2599,6 +2599,17 @@ curl -X POST "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/activity" \
 | 400 | `{ "error": "type must be one of: progress, note" }` |
 | 404 | `{ "error": "Task not found" }` |
 
+#### Convention: `worker_review` stage
+
+The orchestrator uses `stage: "worker_review"` when logging the result of its independent verification of a worker's output (Worker-Output Review Gate standing rule — see CLAUDE.md). Fleet analytics and log queries can filter on this value to find all review entries across tasks:
+
+```bash
+# Find all worker_review entries for a task
+curl "http://localhost:3847/api/orchestrator/tasks/$TASK_ID/activity" |   jq '.data[] | select(.stage == "worker_review")'
+```
+
+This is a data convention only — no schema change required. The `stage` field accepts any string.
+
 ---
 
 ### GET /api/orchestrator/tasks/:id/activity
