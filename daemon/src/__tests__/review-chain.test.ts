@@ -1,5 +1,5 @@
 /**
- * Tests for the Worker-Output Review Chain (Skippy #680 / KKit-BMO#117).
+ * Tests for the Worker-Output Review Chain (issue #680; see PR description for provenance).
  *
  * Three-tier review chain:
  *   Worker tier  — reviewDirective prepended in lifecycle.ts startWorker
