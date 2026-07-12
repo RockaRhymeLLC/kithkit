@@ -30,6 +30,7 @@ const log = createLogger('embed-client');
 const STARTUP_TIMEOUT_MS = 120_000;   // model download on first run can be slow
 const REQUEST_TIMEOUT_MS = 30_000;    // per-embed timeout
 const QUEUE_MAX = 100;                // max buffered requests while not-ready
+const QUEUE_WAIT_TIMEOUT_MS = 10_000; // reject queued requests if worker not ready within this time (#513)
 const BACKOFF_INITIAL_MS = 250;
 const BACKOFF_CAP_MS = 30_000;
 const MAX_RAPID_CRASHES = 5;
@@ -58,6 +59,7 @@ type QueuedRequest = {
   msg: object;
   resolve: (data: unknown) => void;
   reject: (err: Error) => void;
+  waitTimer: ReturnType<typeof setTimeout>; // bounded queue-wait timeout (#513)
 };
 const _queue: QueuedRequest[] = [];
 
@@ -99,6 +101,7 @@ function rejectAllPending(reason: string): void {
 function flushQueue(): void {
   while (_queue.length > 0 && _ready && _child) {
     const req = _queue.shift()!;
+    clearTimeout(req.waitTimer); // cancel the queue-wait timeout
     dispatchToWorker(req.msg, req.resolve, req.reject);
   }
 }
@@ -267,6 +270,7 @@ function forkWorker(): Promise<void> {
       // Reject queued requests during crash-storm cooldown
       if (isCrashStorm()) {
         for (const req of _queue) {
+          clearTimeout(req.waitTimer);
           req.reject(new Error('embed-worker: crash storm cooldown'));
         }
         _queue.length = 0;
@@ -326,6 +330,7 @@ export function stopEmbedWorker(): void {
   }
   rejectAllPending('embed-worker stopped');
   for (const req of _queue) {
+    clearTimeout(req.waitTimer);
     req.reject(new Error('embed-worker stopped'));
   }
   _queue.length = 0;
@@ -367,11 +372,24 @@ export function embed(text: string): Promise<Float32Array> {
     } else if (_queue.length >= QUEUE_MAX) {
       reject(new Error('embed-worker: request queue full'));
     } else {
-      _queue.push({
+      // Queue the request with a bounded wait timeout (#513).
+      // If the worker is not ready within QUEUE_WAIT_TIMEOUT_MS, reject with
+      // 'embed-worker: request queue full' so the existing #510 keyword fallback fires.
+      let queueEntry: QueuedRequest;
+      const waitTimer = setTimeout(() => {
+        const idx = _queue.indexOf(queueEntry);
+        if (idx !== -1) {
+          _queue.splice(idx, 1);
+          reject(new Error('embed-worker: request queue full'));
+        }
+      }, QUEUE_WAIT_TIMEOUT_MS);
+      queueEntry = {
         msg: { type: 'embed', text },
         resolve: (data) => resolve(new Float32Array(data as number[])),
         reject,
-      });
+        waitTimer,
+      };
+      _queue.push(queueEntry);
     }
   });
 }
@@ -395,14 +413,24 @@ export function embedBatch(texts: string[]): Promise<Float32Array[]> {
     } else if (_queue.length >= QUEUE_MAX) {
       reject(new Error('embed-worker: request queue full'));
     } else {
-      _queue.push({
+      let queueEntry: QueuedRequest;
+      const waitTimer = setTimeout(() => {
+        const idx = _queue.indexOf(queueEntry);
+        if (idx !== -1) {
+          _queue.splice(idx, 1);
+          reject(new Error('embed-worker: request queue full'));
+        }
+      }, QUEUE_WAIT_TIMEOUT_MS);
+      queueEntry = {
         msg: { type: 'embed-batch', texts },
         resolve: (data) => {
           const arrays = (data as number[][]).map((arr) => new Float32Array(arr));
           resolve(arrays);
         },
         reject,
-      });
+        waitTimer,
+      };
+      _queue.push(queueEntry);
     }
   });
 }
