@@ -264,8 +264,9 @@ export function getGitStatus(cwd: string): GitStatus | null {
 
 /**
  * Get aggregated operational status.
+ * @param cwd - working directory for git status; defaults to process.cwd(). Accepts a value for testing.
  */
-export async function getExtendedStatus(version: string): Promise<ExtendedStatus> {
+export async function getExtendedStatus(version: string, cwd?: string): Promise<ExtendedStatus> {
   const health = await getExtendedHealth(version);
 
   // DB stats
@@ -320,7 +321,7 @@ export async function getExtendedStatus(version: string): Promise<ExtendedStatus
       taskCount: recentResults.length,
       recentResults,
     },
-    git: getGitStatus(process.cwd()),
+    git: getGitStatus(cwd ?? process.cwd()),
     checks: health.checks,
     timestamp: new Date().toISOString(),
   };

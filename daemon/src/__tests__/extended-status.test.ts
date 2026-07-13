@@ -288,15 +288,22 @@ describe('Extended status git field (t-213)', () => {
     }
   });
 
-  it('getExtendedStatus includes git field wired from process.cwd()', async () => {
-    // Verifies the git field is returned by getExtendedStatus (structural mutation-kill)
-    const status = await getExtendedStatus(VERSION);
+  it('getExtendedStatus includes git field wired from a fixture repo on a named branch', async () => {
+    // NOTE: production code change required — added optional `cwd` param to getExtendedStatus
+    // so this subtest can inject the fixture repo instead of reading live process.cwd() git state
+    // (which is detached HEAD in CI, causing git.branch to be null and the assertion to fail).
+    const status = await getExtendedStatus(VERSION, gitDir);
+    // Structural mutation-kill: fails if git field is removed from getExtendedStatus return value
     assert.ok(Object.prototype.hasOwnProperty.call(status, 'git'),
       'getExtendedStatus result must have a git property');
-    // process.cwd() during test execution is inside the kithkit git repo, so git must not be null
+    // Wiring mutation-kill: fails if getGitStatus is not called or returns null for a valid repo
     assert.ok(status.git !== null && status.git !== undefined,
-      'git field must not be null when running inside a git repo');
-    assert.equal(typeof status.git.branch, 'string',
-      'git.branch must be a string when on a named branch');
+      'git field must not be null when pointing at a valid git repo');
+    // Branch mutation-kill: fails if getGitStatus returns null/wrong branch
+    assert.equal(status.git.branch, 'test-branch',
+      'git.branch must equal the fixture repo\'s named branch');
+    // Remotes structure must be present (no remotes configured in fixture)
+    assert.deepEqual(status.git.remotes, {},
+      'git.remotes must be an empty object when no remotes are configured');
   });
 });
