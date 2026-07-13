@@ -450,6 +450,15 @@ describe('orch-wedge-detector: started_at refreshed on respawn (fix(2)/fix(3) co
       sendMessage: () => ({ messageId: 1, delivered: false }),
     });
 
+    // Signal (i)/(ii)-driven restarts are gated behind WEDGE_DEBOUNCE_THRESHOLD (2)
+    // consecutive ticks (see monitorOrchestratorWedge's debounce gate) — a single tick
+    // only increments the debounce counter and returns without restarting. Drive two
+    // ticks so the restart (and its started_at refresh) actually fires, instead of
+    // asserting on a restart that never happened. Without this, `newStartedAt` is just
+    // the original insertOrchAgent() value re-read from the DB, and the assertion below
+    // passes or fails purely on whether that value happens to collide (same millisecond)
+    // with the independently-computed `oldStartedAt` — a flaky, meaningless comparison.
+    await runWatchdog({ wedge_timeout_minutes: 15 });
     await runWatchdog({ wedge_timeout_minutes: 15 });
 
     // After wedge restart, the agents table should have a new (fresher) started_at
