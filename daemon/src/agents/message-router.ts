@@ -298,7 +298,11 @@ export function getMessages(
   const params: unknown[] = [agentId, agentId];
 
   if (opts?.since) {
-    sql += ' AND created_at >= ?';
+    // Use datetime() on both sides so SQLite normalizes mixed formats:
+    // ISO "2026-07-13T13:16:17.000Z" and space-separated "2026-07-13 13:16:17"
+    // both parse to a canonical form, avoiding the raw-string compare bug where
+    // space (0x20) < 'T' (0x54) causes space-format rows to wrongly fail >=.
+    sql += ' AND datetime(created_at) >= datetime(?)';
     params.push(opts.since);
   }
 
