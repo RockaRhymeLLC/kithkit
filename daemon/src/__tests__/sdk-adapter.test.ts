@@ -498,6 +498,32 @@ describe('SDK Adapter', { concurrency: 1 }, () => {
       assert.ok(capState, 'capState should exist');
       assert.equal(capState!.turn_warning_fired, false, 'No warning when no cap set');
     });
+
+    it('skips the warning check (no divide-by-zero) when effectiveMaxTurns is 0', async () => {
+      // maxTurns: 0 with a profile name not in caps.profiles means effectiveMaxTurns
+      // resolves to 0 (truly unlimited — see sdk-adapter.ts ~line 329). Before the
+      // fix, turns_used / 0 === Infinity, which always satisfies the >= threshold
+      // check and fires a spurious warning on the very first turn.
+      const unlimitedProfile: WorkerProfile = { name: 'test-truly-unlimited', maxTurns: 0 };
+      _setQueryFnForTesting(createMockQuery([
+        { type: 'assistant', content: 'turn 1' },
+        { type: 'assistant', content: 'turn 2' },
+        { type: 'assistant', content: 'turn 3' },
+        { type: 'result', subtype: 'success', result: 'Done', usage: {} },
+      ]));
+
+      const id = spawnWorker({ prompt: 'test', profile: unlimitedProfile });
+      await sleep(50);
+
+      const capState = _getCapWarningStateForTesting(id);
+      assert.ok(capState, 'capState should exist');
+      assert.equal(capState!.turns_used, 3, 'Should still count turns normally');
+      assert.equal(
+        capState!.turn_warning_fired,
+        false,
+        'Warning must never fire when effectiveMaxTurns is 0 (unlimited)',
+      );
+    });
   });
 
   // ── t-137: caps.default_max_turns fallback (P0 fix) ───────────
