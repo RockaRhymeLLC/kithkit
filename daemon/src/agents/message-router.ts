@@ -288,7 +288,7 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
  */
 export function getMessages(
   agentId: string,
-  opts?: { limit?: number; offset?: number; type?: MessageType; order?: 'asc' | 'desc' },
+  opts?: { limit?: number; offset?: number; type?: MessageType; order?: 'asc' | 'desc'; since?: string },
 ): Message[] {
   // Parenthesize the to/from OR — SQL AND binds tighter than OR, so an
   // unparenthesized `to_agent = ? OR from_agent = ? AND type = ?` lets
@@ -296,6 +296,11 @@ export function getMessages(
   // (todo 2835 / R2 #500 review note).
   let sql = 'SELECT * FROM messages WHERE (to_agent = ? OR from_agent = ?)';
   const params: unknown[] = [agentId, agentId];
+
+  if (opts?.since) {
+    sql += ' AND created_at >= ?';
+    params.push(opts.since);
+  }
 
   if (opts?.type) {
     sql += ' AND type = ?';

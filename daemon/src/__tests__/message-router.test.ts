@@ -986,3 +986,111 @@ describe('GET /api/messages — WHERE clause OR/AND precedence (todo 2835)', () 
     );
   });
 });
+
+// ── since= filter mutation-kill tests ─────────────────────────────────────────
+//
+// Seed layout (used across tests):
+//   old1: 2026-03-01  body='Old March'
+//   old2: 2026-06-01  body='Old June'
+//   new1: 2026-07-10  body='New July-10'
+//   new2: 2026-07-12  body='New July-12'
+//
+// Cutoff: since=2026-07-01 → should return ONLY new1 + new2
+// Mutation-kill: removing the `AND created_at >= ?` clause from getMessages()
+// causes since= to be ignored — all 4 rows return → assertions on count=2
+// and the absence of the 'Old' rows both go RED.
+
+describe("GET /api/messages — since= date filter (FIX 2)", () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  function seedSinceFixture(): void {
+    const rows: [string, string][] = [
+      ['2026-03-01T00:00:00.000Z', 'Old March'],
+      ['2026-06-01T00:00:00.000Z', 'Old June'],
+      ['2026-07-10T00:00:00.000Z', 'New July-10'],
+      ['2026-07-12T00:00:00.000Z', 'New July-12'],
+    ];
+    for (const [ts, body] of rows) {
+      exec(
+        `INSERT INTO messages (from_agent, to_agent, type, body, created_at) VALUES (?, ?, ?, ?, ?)`,
+        'comms', 'agent-q', 'text', body, ts,
+      );
+    }
+  }
+
+  it('since= returns only rows at or after the cutoff (count + identity, not vacuous)', async () => {
+    seedSinceFixture();
+    // Cutoff lands between June and July rows.
+    const res = await request('GET', '/api/messages?agent=agent-q&since=2026-07-01');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+
+    // Count check — fails (returns 4) if since= is ignored.
+    assert.equal(body.data.length, 2, 'since= must exclude rows before 2026-07-01');
+
+    // Identity check — fails if any pre-cutoff row leaks through.
+    const bodies: string[] = body.data.map((m: { body: string }) => m.body);
+    assert.ok(!bodies.includes('Old March'),  'Old March must be filtered out by since=');
+    assert.ok(!bodies.includes('Old June'),   'Old June must be filtered out by since=');
+    assert.ok(bodies.includes('New July-10'), 'New July-10 must be in results');
+    assert.ok(bodies.includes('New July-12'), 'New July-12 must be in results');
+  });
+
+  it('since= with full ISO timestamp filters inclusively at the exact boundary', async () => {
+    seedSinceFixture();
+    // since= exactly equals old2's timestamp — old2 must be included (>=, not >).
+    const res = await request('GET', '/api/messages?agent=agent-q&since=2026-06-01T00:00:00.000Z');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+
+    // Expect: old2 (June 01), new1, new2 — NOT old1 (March).
+    assert.equal(body.data.length, 3, 'boundary row must be included (>= not >)');
+    const bodies: string[] = body.data.map((m: { body: string }) => m.body);
+    assert.ok(!bodies.includes('Old March'), 'Old March must be excluded');
+    assert.ok(bodies.includes('Old June'),   'Old June must be included (exact boundary)');
+  });
+
+  it('since= composes correctly with order=desc (newest-first ordering of filtered rows)', async () => {
+    seedSinceFixture();
+    const res = await request('GET', '/api/messages?agent=agent-q&since=2026-07-01&order=desc');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+
+    assert.equal(body.data.length, 2, 'since= must still filter with order=desc');
+    // DESC order: July-12 first, July-10 second.
+    assert.equal(body.data[0].body, 'New July-12', 'first row must be newest (July-12)');
+    assert.equal(body.data[1].body, 'New July-10', 'second row must be next (July-10)');
+  });
+
+  it('invalid since= (non-date string) returns 400', async () => {
+    const res = await request('GET', '/api/messages?agent=agent-q&since=not-a-date');
+    assert.equal(res.status, 400);
+    const body = JSON.parse(res.body);
+    assert.ok(
+      typeof body.error === 'string' && body.error.toLowerCase().includes('since'),
+      'error message must reference the since param',
+    );
+  });
+
+  it('since= with no matching rows returns empty array (not an error)', async () => {
+    seedSinceFixture();
+    // Far-future cutoff — no messages exist after this date.
+    const res = await request('GET', '/api/messages?agent=agent-q&since=2030-01-01');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(body.data, [], 'no-match since= must return empty array with HTTP 200');
+  });
+
+  it('back-compat: default (no since= param) still returns all rows oldest-first', async () => {
+    seedSinceFixture();
+    const res = await request('GET', '/api/messages?agent=agent-q');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+
+    // All 4 rows, ASC order — unchanged from before this fix.
+    assert.equal(body.data.length, 4, 'omitting since= must return all rows (back-compat)');
+    assert.equal(body.data[0].body, 'Old March',   'first row must be oldest (back-compat ASC order)');
+    assert.equal(body.data[3].body, 'New July-12', 'last row must be newest (back-compat ASC order)');
+  });
+});

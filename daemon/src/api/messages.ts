@@ -225,11 +225,26 @@ export async function handleMessagesRoute(
       const orderParam = searchParams.get('order');
       const order = orderParam?.toLowerCase() === 'desc' ? 'desc' : 'asc';
 
+      // since: ISO 8601 date string (e.g. "2026-07-06" or "2026-07-06T00:00:00Z").
+      // Filters to messages with created_at >= since. Invalid → 400, matching the
+      // since_id=<non-numeric> convention (structured param, clear valid/invalid boundary).
+      const sinceParam = searchParams.get('since');
+      let since: string | undefined;
+      if (sinceParam !== null) {
+        const ms = Date.parse(sinceParam);
+        if (isNaN(ms)) {
+          json(res, 400, withTimestamp({ error: 'since must be a valid ISO 8601 date string' }));
+          return true;
+        }
+        since = new Date(ms).toISOString();
+      }
+
       const messages = getMessages(agent, {
         type: (type as MessageType) ?? undefined,
         limit,
         offset,
         order,
+        since,
       });
 
       json(res, 200, withTimestamp({ data: withExpiredField(messages) }));
