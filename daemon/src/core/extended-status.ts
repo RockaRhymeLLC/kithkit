@@ -5,6 +5,7 @@
  * a service check registry for extensions to add custom checks.
  */
 
+import { execFileSync } from 'node:child_process';
 import { createLogger } from './logger.js';
 import { getHealth } from './health.js';
 import { getDatabase } from './db.js';
@@ -29,6 +30,16 @@ export interface ExtendedHealth {
   checks: Record<string, CheckResult>;
 }
 
+export interface GitRemoteStatus {
+  ahead: number | null;
+  behind: number | null;
+}
+
+export interface GitStatus {
+  branch: string | null;
+  remotes: Record<string, GitRemoteStatus>;
+}
+
 export interface ExtendedStatus {
   daemon: {
     uptime: number;
@@ -51,6 +62,7 @@ export interface ExtendedStatus {
       ranAt: string;
     }>;
   };
+  git: GitStatus | null;
   checks: Record<string, CheckResult>;
   timestamp: string;
 }
@@ -190,6 +202,64 @@ export function formatHealthText(health: ExtendedHealth): string {
   return lines.join('\n');
 }
 
+// ── Git Status ───────────────────────────────────────────────
+
+/**
+ * Collect git branch and per-remote ahead/behind counts for a working directory.
+ * Returns null if cwd is not a git repo or git is unavailable. Never throws.
+ */
+export function getGitStatus(cwd: string): GitStatus | null {
+  try {
+    const branchRaw = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim();
+    const branch = branchRaw === 'HEAD' ? null : branchRaw;
+
+    let remoteList: string[] = [];
+    try {
+      const remotesRaw = execFileSync('git', ['remote'], {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'pipe'],
+      }).trim();
+      remoteList = remotesRaw ? remotesRaw.split('\n').map(r => r.trim()).filter(Boolean) : [];
+    } catch {
+      // no remotes configured or git remote failed — treat as empty list
+    }
+
+    const remotes: Record<string, GitRemoteStatus> = {};
+    for (const remote of remoteList) {
+      if (!branch) {
+        remotes[remote] = { ahead: null, behind: null };
+        continue;
+      }
+      try {
+        const countRaw = execFileSync(
+          'git',
+          ['rev-list', '--left-right', '--count', `${remote}/${branch}...HEAD`],
+          { cwd, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] },
+        ).trim();
+        const [behindStr, aheadStr] = countRaw.split(/\s+/);
+        const behind = parseInt(behindStr, 10);
+        const ahead = parseInt(aheadStr, 10);
+        remotes[remote] = {
+          behind: isNaN(behind) ? null : behind,
+          ahead: isNaN(ahead) ? null : ahead,
+        };
+      } catch {
+        // remote tracking branch doesn't exist or other git error
+        remotes[remote] = { ahead: null, behind: null };
+      }
+    }
+
+    return { branch, remotes };
+  } catch {
+    return null;
+  }
+}
+
 // ── Extended Status ─────────────────────────────────────────
 
 /**
@@ -250,6 +320,7 @@ export async function getExtendedStatus(version: string): Promise<ExtendedStatus
       taskCount: recentResults.length,
       recentResults,
     },
+    git: getGitStatus(process.cwd()),
     checks: health.checks,
     timestamp: new Date().toISOString(),
   };
