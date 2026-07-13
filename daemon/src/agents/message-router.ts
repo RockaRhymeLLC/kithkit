@@ -288,7 +288,7 @@ export function sendMessage(req: SendMessageRequest): { messageId: number; deliv
  */
 export function getMessages(
   agentId: string,
-  opts?: { limit?: number; offset?: number; type?: MessageType; order?: 'asc' | 'desc' },
+  opts?: { limit?: number; offset?: number; type?: MessageType; order?: 'asc' | 'desc'; since?: string },
 ): Message[] {
   // Parenthesize the to/from OR — SQL AND binds tighter than OR, so an
   // unparenthesized `to_agent = ? OR from_agent = ? AND type = ?` lets
@@ -296,6 +296,15 @@ export function getMessages(
   // (todo 2835 / R2 #500 review note).
   let sql = 'SELECT * FROM messages WHERE (to_agent = ? OR from_agent = ?)';
   const params: unknown[] = [agentId, agentId];
+
+  if (opts?.since) {
+    // Use datetime() on both sides so SQLite normalizes mixed formats:
+    // ISO "2026-07-13T13:16:17.000Z" and space-separated "2026-07-13 13:16:17"
+    // both parse to a canonical form, avoiding the raw-string compare bug where
+    // space (0x20) < 'T' (0x54) causes space-format rows to wrongly fail >=.
+    sql += ' AND datetime(created_at) >= datetime(?)';
+    params.push(opts.since);
+  }
 
   if (opts?.type) {
     sql += ' AND type = ?';

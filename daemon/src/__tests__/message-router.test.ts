@@ -986,3 +986,139 @@ describe('GET /api/messages — WHERE clause OR/AND precedence (todo 2835)', () 
     );
   });
 });
+
+// ── since= filter mutation-kill tests ─────────────────────────────────────────
+//
+// Seed layout (used across tests — MIXED created_at formats mirroring production):
+//   old1: 2026-03-01T00:00:00.000Z  body='Old March'           (ISO format)
+//   old2: 2026-06-01T00:00:00.000Z  body='Old June'            (ISO format)
+//   new1: 2026-07-10T00:00:00.000Z  body='New July-10'         (ISO format)
+//   new2: 2026-07-12T00:00:00.000Z  body='New July-12'         (ISO format)
+//   new3: 2026-07-01 09:30:00       body='New July-01 space-format' (space-separated, ON the since-date)
+//
+// Cutoff: since=2026-07-01 → should return new1 + new2 + new3 (3 rows)
+// Mutation-kill A: removing `AND created_at >= ?` ignores since= → 5 rows → count=3 fails.
+// Mutation-kill B: using raw-string compare (no datetime()) → new3 wrongly excluded
+//   because '2026-07-01 09:30:00' >= '2026-07-01T00:00:00.000Z' is lexicographically
+//   FALSE (' ' < 'T') → count=2 or missing-body assertions fail.
+
+describe("GET /api/messages — since= date filter (FIX 2)", () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  function seedSinceFixture(): void {
+    // Mix of ISO (T-separated, Z) and space-separated formats, mirroring
+    // production: ISO rows come from toISOString() inserts; space-separated
+    // rows come from CURRENT_TIMESTAMP-style inserts (e.g. task-queue.ts).
+    // space (0x20) < 'T' (0x54), so a raw-string >= compare wrongly excludes
+    // space-format rows dated ON the since-date — datetime() normalizes both.
+    const rows: [string, string][] = [
+      ['2026-03-01T00:00:00.000Z', 'Old March'],
+      ['2026-06-01T00:00:00.000Z', 'Old June'],
+      ['2026-07-10T00:00:00.000Z', 'New July-10'],
+      ['2026-07-12T00:00:00.000Z', 'New July-12'],
+      // space-separated row ON the since-date (2026-07-01): wrongly excluded
+      // by raw-string compare, correctly included by datetime() compare.
+      ['2026-07-01 09:30:00', 'New July-01 space-format'],
+    ];
+    for (const [ts, body] of rows) {
+      exec(
+        `INSERT INTO messages (from_agent, to_agent, type, body, created_at) VALUES (?, ?, ?, ?, ?)`,
+        'comms', 'agent-q', 'text', body, ts,
+      );
+    }
+  }
+
+  it('since= returns only rows at or after the cutoff (count + identity, not vacuous)', async () => {
+    seedSinceFixture();
+    // Cutoff lands between June and July rows.
+    const res = await request('GET', '/api/messages?agent=agent-q&since=2026-07-01');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+
+    // Count check — fails (returns 2 without the space-format row) if
+    // datetime() normalization is absent.
+    assert.equal(body.data.length, 3, 'since= must include all 3 rows at or after 2026-07-01 (2 ISO + 1 space-format)');
+
+    // Identity check — fails if any pre-cutoff row leaks through.
+    const bodies: string[] = body.data.map((m: { body: string }) => m.body);
+    assert.ok(!bodies.includes('Old March'),  'Old March must be filtered out by since=');
+    assert.ok(!bodies.includes('Old June'),   'Old June must be filtered out by since=');
+    assert.ok(bodies.includes('New July-10'), 'New July-10 must be in results');
+    assert.ok(bodies.includes('New July-12'), 'New July-12 must be in results');
+    assert.ok(bodies.includes('New July-01 space-format'), 'space-format row on the since-date must be included');
+  });
+
+  it('since= includes space-separated created_at rows on the since-date (mixed-format mutation-kill)', async () => {
+    // This test FAILS on the raw-string impl (created_at >= ?) because
+    // '2026-07-01 09:30:00' >= '2026-07-01T00:00:00.000Z' is FALSE in lexicographic
+    // order (' ' < 'T'). It passes only with datetime() normalization on both sides.
+    seedSinceFixture();
+    const res = await request('GET', '/api/messages?agent=agent-q&since=2026-07-01');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    const bodies: string[] = body.data.map((m: { body: string }) => m.body);
+    assert.ok(
+      bodies.includes('New July-01 space-format'),
+      'space-separated created_at row on the since-date must be INCLUDED — raw-string compare wrongly excludes it',
+    );
+  });
+
+  it('since= with full ISO timestamp filters inclusively at the exact boundary', async () => {
+    seedSinceFixture();
+    // since= exactly equals old2's timestamp — old2 must be included (>=, not >).
+    const res = await request('GET', '/api/messages?agent=agent-q&since=2026-06-01T00:00:00.000Z');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+
+    // Expect: old2 (June 01), new3 (space-format Jul-01), new1 (Jul-10), new2 (Jul-12) — NOT old1 (March).
+    assert.equal(body.data.length, 4, 'boundary row must be included (>= not >)');
+    const bodies: string[] = body.data.map((m: { body: string }) => m.body);
+    assert.ok(!bodies.includes('Old March'), 'Old March must be excluded');
+    assert.ok(bodies.includes('Old June'),   'Old June must be included (exact boundary)');
+  });
+
+  it('since= composes correctly with order=desc (newest-first ordering of filtered rows)', async () => {
+    seedSinceFixture();
+    const res = await request('GET', '/api/messages?agent=agent-q&since=2026-07-01&order=desc');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+
+    assert.equal(body.data.length, 3, 'since= must still filter with order=desc');
+    // DESC order (raw-string): July-12 first, July-10 second, July-01 space-format third.
+    assert.equal(body.data[0].body, 'New July-12', 'first row must be newest (July-12)');
+    assert.equal(body.data[1].body, 'New July-10', 'second row must be next (July-10)');
+    assert.equal(body.data[2].body, 'New July-01 space-format', 'third row must be space-format July-01');
+  });
+
+  it('invalid since= (non-date string) returns 400', async () => {
+    const res = await request('GET', '/api/messages?agent=agent-q&since=not-a-date');
+    assert.equal(res.status, 400);
+    const body = JSON.parse(res.body);
+    assert.ok(
+      typeof body.error === 'string' && body.error.toLowerCase().includes('since'),
+      'error message must reference the since param',
+    );
+  });
+
+  it('since= with no matching rows returns empty array (not an error)', async () => {
+    seedSinceFixture();
+    // Far-future cutoff — no messages exist after this date.
+    const res = await request('GET', '/api/messages?agent=agent-q&since=2030-01-01');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+    assert.deepEqual(body.data, [], 'no-match since= must return empty array with HTTP 200');
+  });
+
+  it('back-compat: default (no since= param) still returns all rows oldest-first', async () => {
+    seedSinceFixture();
+    const res = await request('GET', '/api/messages?agent=agent-q');
+    assert.equal(res.status, 200);
+    const body = JSON.parse(res.body);
+
+    // All 5 rows (4 ISO + 1 space-format), ASC order — unchanged from before this fix.
+    assert.equal(body.data.length, 5, 'omitting since= must return all rows (back-compat)');
+    assert.equal(body.data[0].body, 'Old March',   'first row must be oldest (back-compat ASC order)');
+    assert.equal(body.data[4].body, 'New July-12', 'last row must be newest (back-compat ASC order)');
+  });
+});
