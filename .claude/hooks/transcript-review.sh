@@ -143,7 +143,7 @@ import sys, json
 try:
     d = json.load(sys.stdin)
     agents = d.get('data', d) if isinstance(d, dict) else d
-    running = [a for a in agents if a.get('profile') == 'transcript-review' and a.get('status') in ('running', 'active', 'busy', 'starting')]
+    running = [a for a in agents if a.get('profile') == 'transcript-review' and a.get('status') in ('running', 'busy', 'idle', 'queued')]
     print('true' if running else 'false')
 except Exception:
     print('false')
