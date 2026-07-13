@@ -397,7 +397,7 @@ async function runWorker(
         worker.state.turnsUsed = worker.capState.turns_used;
 
         if (
-          effectiveMaxTurns !== undefined &&
+          effectiveMaxTurns &&
           !worker.capState.turn_warning_fired &&
           worker.capState.turns_used / effectiveMaxTurns >= warningThreshold
         ) {
