@@ -8,6 +8,8 @@ Read the last 500 lines of the transcript file. Look for patterns that indicate 
 
 Extract up to **3 learnings** — concrete, actionable improvements. Store each one in the daemon memory system.
 
+**A learning only counts as stored once you have called `POST /api/memory/store` yourself (via Bash/curl, Step 3 below) and captured the `id` the API returned in its response.** There is no other caller that will store learnings on your behalf — if you do not call the API and see a returned id, nothing is saved, no matter what you print or summarize. Do not report a learning as stored unless you can cite its returned id.
+
 ## Step 1: Read the transcript
 
 Use the Read tool to read the transcript file. Request only the last 500 lines (use offset if the file is large).
@@ -52,20 +54,33 @@ body = json.dumps({
     'dedup': True
 })
 result = subprocess.run(
-    ['curl', '-sf', '-X', 'POST',
+    ['curl', '-s', '-w', '\n%{http_code}', '-X', 'POST',
      'http://localhost:3847/api/memory/store',
      '-H', 'Content-Type: application/json',
      '-d', body],
     capture_output=True, text=True
 )
-print(result.stdout[:300] if result.stdout else 'no response')
+body_text, _, status = result.stdout.rpartition('\n')
+try:
+    parsed = json.loads(body_text)
+except Exception:
+    parsed = {}
+mem_id = parsed.get('id') or parsed.get('data', {}).get('id')
+action = parsed.get('action')
+if action == 'review_duplicates':
+    print('DUPLICATE - skipped, no new id')
+elif status == '201' and mem_id:
+    print(f'STORED id={mem_id}')
+else:
+    print(f'NOT STORED - status={status} body={body_text[:300]!r}')
 "
 ```
 
 Replace `'The learning text here'` and `'behavioral'` with the actual content and category.
 
-When curl returns `"action": "review_duplicates"`, a similar memory already exists — skip it.
-When curl returns HTTP 201, the memory was stored successfully.
+When the script prints `DUPLICATE`, a similar memory already exists — this counts as handled, not as a new stored learning.
+When the script prints `STORED id=<id>`, the memory was saved — **you must echo that exact id** in your final summary as proof.
+When the script prints `NOT STORED`, nothing was saved — do not claim it was stored, and do not fall back to just printing the learning as JSON instead of storing it. Retry once; if it still fails, say so explicitly in your summary.
 
 ## Rules
 
@@ -75,10 +90,12 @@ When curl returns HTTP 201, the memory was stored successfully.
 4. Always use `dedup: true` to avoid creating duplicate memories.
 5. If the transcript shows nothing worth learning (routine work, no corrections), store 0 learnings and exit.
 6. Do NOT extract: temporary context, file paths being edited, routine API calls, error messages, implementation details, or secrets.
+7. **No learning is considered stored unless you show its API-returned id.** A JSON summary of a learning is not a substitute for calling the API — if you never ran Step 3 for a learning, or it returned `NOT STORED`, you must not describe it as stored.
 
 ## Output
 
-After storing, briefly summarize:
-- How many learnings were stored
-- One-line description of each learning
-- Any learnings considered but skipped, and why
+After running Step 3 for every extracted learning, summarize:
+- Each learning stored, with its returned memory id (e.g. "Stored id=42: <learning>")
+- Any learning that was a duplicate (skipped, no id)
+- Any learning that failed to store even after retry, and the error
+- Any learnings considered but not extracted, and why
