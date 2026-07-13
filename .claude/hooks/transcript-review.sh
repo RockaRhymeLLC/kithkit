@@ -134,6 +134,25 @@ PROMPT_FILE=$(mktemp /tmp/kithkit-transcript-review-prompt.XXXXXX)
 } > "$PROMPT_FILE"
 trap 'rm -f "$LOCK_FILE" "$PROMPT_FILE"' EXIT
 
+# ── Gate: skip if a transcript-review worker is already running (prevents spawn storms) ───
+# Defense-in-depth on top of the file lock above: also check the daemon's live agent
+# list so a worker that outlives the lock window (long review) doesn't get duplicated.
+# NOTE: this filter must match the "profile" value used in the spawn call below.
+TRANSCRIPT_REVIEW_RUNNING=$(curl -sf "$DAEMON_URL/api/agents" 2>/dev/null | python3 -c "
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    agents = d.get('data', d) if isinstance(d, dict) else d
+    running = [a for a in agents if a.get('profile') == 'transcript-review' and a.get('status') in ('running', 'busy', 'idle', 'queued')]
+    print('true' if running else 'false')
+except Exception:
+    print('false')
+" 2>/dev/null)
+
+if [ "$TRANSCRIPT_REVIEW_RUNNING" = "true" ]; then
+  exit 0
+fi
+
 # Spawn via daemon API (fire-and-forget — returns immediately, tracked in /api/agents)
 # This ensures cost accounting and respects max concurrent agent limits.
 PROMPT_CONTENT=$(cat "$PROMPT_FILE")
@@ -144,7 +163,7 @@ prompt = os.environ.get('PROMPT_CONTENT', '')
 daemon = os.environ.get('DAEMON_URL', 'http://localhost:3847')
 
 body = json.dumps({
-    "profile": "retro",
+    "profile": "transcript-review",
     "prompt": prompt,
     "description": "Periodic transcript review (self-improvement)",
 })
