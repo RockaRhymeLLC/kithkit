@@ -3122,9 +3122,9 @@ The agent extension registers these routes:
 Receive an incoming P2P message from a peer agent on the LAN.
 
 **Security:**
-- **HMAC-SHA256 authentication** via `X-Signature` header. The sender computes `HMAC-SHA256(body, shared_secret)` and sends the hex digest. The receiver verifies against its own copy of the secret (stored in Keychain as `credential-agent-comms-secret`). If the secret is available but the signature is invalid, returns `401`.
-- During the transition period, messages without a signature are accepted with a warning (if the Keychain secret is available but no signature is sent).
-- If the Keychain is unavailable, messages are accepted without verification (fail-open for availability on trusted LAN).
+- HMAC `X-Signature` enforcement does **not** apply to this relay path (that's reserved for the LAN `/agent/message` endpoint below). Instead, the SDK verifies each envelope's Ed25519 signature during `processEnvelope`, producing a `msg.verified` flag.
+- A posture-based gate (`a2a.security.p2p`, default `permissive`) then decides what happens to unverified messages: under `permissive`, they're injected with a warning and an `[UNVERIFIED]` tag; under `enforce`, they're silently dropped as defence-in-depth.
+- Malformed/invalid envelopes are rejected by the SDK with `422` regardless of posture. If the SDK itself is unavailable, the request fails with `5xx` and the sender should retry.
 - **Rate limiting** at 30 requests per minute per source IP. Returns `429` with `Retry-After: 60` header on excess.
 
 ```json
@@ -3132,8 +3132,8 @@ Receive an incoming P2P message from a peer agent on the LAN.
 // Response 200
 { "ok": true }
 
-// Response 401 (invalid signature)
-{ "ok": false, "error": "Invalid signature" }
+// Response 422 (invalid envelope)
+{ "ok": false, "error": "Message rejected: invalid envelope" }
 
 // Response 429 (rate limited)
 { "ok": false, "error": "Rate limit exceeded" }
