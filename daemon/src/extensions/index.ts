@@ -193,26 +193,11 @@ async function handleAgentP2P(
     const bodyStr = await parseBodyRaw(req);
     const envelope = JSON.parse(bodyStr) as WireEnvelope;
 
-    // Enforce HMAC signature per configured posture (#584).
-    // Default: enforce — /agent/p2p is internet-reachable via the configured relay endpoint.
-    const p2pPosture: A2ASigningPosture = _config?.a2a?.security?.p2p ?? 'enforce';
-    const signature = req.headers['x-signature'] as string | undefined;
-    const sigResult = await _checkA2ASignatureEnforcement(bodyStr, signature, p2pPosture);
-    if (sigResult.action === 'reject') {
-      log.warn('P2P message rejected: signing enforcement', {
-        reason: sigResult.reason,
-        sender: (envelope as unknown as Record<string, unknown>).sender,
-      });
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ ok: false, error: sigResult.reason ?? 'Unauthorized' }));
-      return true;
-    }
-    if (sigResult.action === 'warn') {
-      log.warn('P2P message accepted with signing warning', {
-        reason: sigResult.reason,
-        sender: (envelope as unknown as Record<string, unknown>).sender,
-      });
-    }
+    // Relay /agent/p2p: HMAC-X-Signature enforcement intentionally NOT applied here (todo #3058).
+    // The relay path is authenticated by the SDK's Ed25519 signature verification (processEnvelope
+    // in messaging.ts). The emit/consume gate in sdk-bridge.ts wireMessageEvent enforces
+    // posture-based injection control on msg.verified. HMAC enforcement lives on the LAN
+    // /agent/message path only (handleAgentMessageRoute below).
 
     const p2pResult: P2PHandleResult = await handleIncomingP2P(envelope);
     if (!p2pResult.ok) {

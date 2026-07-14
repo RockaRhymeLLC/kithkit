@@ -313,7 +313,7 @@ features:
 #       message: enforce  # flip this to harden the trusted-LAN inbound path
 a2a:
   security:
-    p2p: enforce        # enforce | permissive — internet-relay-reachable, fail-closed default
+    p2p: permissive     # enforce | permissive — internet-relay-reachable; staged permissive-verify window before coordinated flip to enforce
     message: permissive # enforce | permissive — trusted home LAN, accept unsigned by default
 
 wiki:
