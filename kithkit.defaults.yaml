@@ -293,6 +293,29 @@ features:
 # Agent-Wiki Bridge (Phase 2) — memory <-> article auto-linking.
 # DEFAULT OFF — set enabled: true only after Phase 1 is validated in production.
 # See docs/specs/20260626-agent-wiki-bridge.spec.md §5 Phase 2, item 1.
+# A2A (agent-to-agent) security — per-endpoint HMAC signing enforcement (#584).
+#
+# Controls whether each LAN endpoint accepts unsigned messages when an HMAC key
+# (credential-agent-comms-secret) is present in the Keychain.
+#
+# posture values:
+#   enforce    — reject unsigned requests and fail-closed on keychain errors
+#   permissive — warn but accept unsigned (transition / trusted-LAN default)
+#
+# The posture only applies when the HMAC key IS configured. When no key is
+# present (null return from Keychain), both endpoints accept unsigned messages
+# regardless of this setting — preserving current behaviour on unkeyed installs.
+#
+# To override in kithkit.config.yaml (example):
+#   a2a:
+#     security:
+#       p2p: enforce      # default — internet-reachable via relay.bmobot.ai
+#       message: enforce  # flip this to harden the trusted-LAN inbound path
+a2a:
+  security:
+    p2p: enforce        # enforce | permissive — internet-relay-reachable, fail-closed default
+    message: permissive # enforce | permissive — trusted home LAN, accept unsigned by default
+
 wiki:
   autolink:
     enabled: false              # MUST remain false — opt-in only

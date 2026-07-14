@@ -24,7 +24,7 @@ import { registerCheck } from '../core/extended-status.js';
 import { setScheduler, _getSchedulerForTesting } from '../api/tasks.js';
 import { Scheduler } from '../automation/scheduler.js';
 import type { Extension } from '../core/extensions.js';
-import { asAgentConfig, type AgentConfig } from './config.js';
+import { asAgentConfig, type AgentConfig, type A2ASigningPosture } from './config.js';
 import { initAgentAccessControl } from './access-control.js';
 import { getAgentExtendedStatus } from './extended-status.js';
 import {
@@ -77,6 +77,74 @@ let _instanceShutdown: (() => Promise<void> | void) | null = null;
 let _retryAbortController: AbortController | null = null;
 let _telegramAdapter: CommsTelegramAdapter | null = null;
 
+// Injectable seam for the Keychain reader — production uses readKeychain;
+// tests inject a stub so the real HMAC computation runs against known values
+// without touching the macOS Keychain.
+let _keychainReader: (service: string) => Promise<string | null> = readKeychain;
+
+// ── A2A Signing Enforcement ─────────────────────────────────
+
+/**
+ * Evaluate whether an incoming A2A request passes HMAC signing requirements.
+ *
+ * Three-state Keychain outcome:
+ *   null return  → key not configured → accept (current permissive behaviour)
+ *   throw        → Keychain inaccessible → enforce: reject  / permissive: warn+accept
+ *   string       → key configured → enforce: require valid sig / permissive: warn+accept
+ *
+ * The HMAC verification itself (crypto.createHmac) is NOT injectable — it runs
+ * unconditionally on both production and test paths. Only the Keychain reader is
+ * injectable so tests can supply a known secret without touching macOS Keychain.
+ *
+ * Exported for direct unit testing (non-vacuous mutation-kill coverage).
+ */
+export async function _checkA2ASignatureEnforcement(
+  bodyStr: string,
+  signature: string | undefined,
+  posture: A2ASigningPosture,
+): Promise<{ action: 'accept' | 'reject' | 'warn'; reason?: string }> {
+  let secret: string | null = null;
+  let keychainFailed = false;
+
+  try {
+    secret = await _keychainReader('credential-agent-comms-secret');
+  } catch {
+    keychainFailed = true;
+  }
+
+  if (keychainFailed) {
+    if (posture === 'enforce') {
+      return { action: 'reject', reason: 'Signature verification unavailable (Keychain error)' };
+    }
+    return { action: 'warn', reason: 'Keychain unavailable — accepting without verification' };
+  }
+
+  // No key configured — preserve current permissive behaviour regardless of posture
+  if (secret === null) {
+    return { action: 'accept' };
+  }
+
+  // Key is configured — verify or enforce based on posture
+  if (!signature) {
+    if (posture === 'enforce') {
+      return { action: 'reject', reason: 'Signature required' };
+    }
+    return { action: 'warn', reason: 'No signature (transition period)' };
+  }
+
+  // Real HMAC verification — crypto.createHmac is never mocked
+  const hmac = crypto.createHmac('sha256', secret);
+  hmac.update(bodyStr);
+  const expected = hmac.digest('hex');
+  const sigBuf = Buffer.from(signature, 'hex');
+  const expBuf = Buffer.from(expected, 'hex');
+  if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
+    return { action: 'reject', reason: 'Invalid signature' };
+  }
+
+  return { action: 'accept' };
+}
+
 // ── Route Handlers ──────────────────────────────────────────
 
 /**
@@ -125,37 +193,26 @@ async function handleAgentP2P(
     const bodyStr = await parseBodyRaw(req);
     const envelope = JSON.parse(bodyStr) as WireEnvelope;
 
-    // Verify HMAC signature if secret is available
+    // Enforce HMAC signature per configured posture (#584).
+    // Default: enforce — /agent/p2p is internet-reachable via relay.bmobot.ai.
+    const p2pPosture: A2ASigningPosture = _config?.a2a?.security?.p2p ?? 'enforce';
     const signature = req.headers['x-signature'] as string | undefined;
-    let secret: string | null = null;
-    try {
-      secret = await readKeychain('credential-agent-comms-secret');
-    } catch {
-      // Keychain unavailable — fail open (availability > security on trusted LAN)
-      log.warn('P2P HMAC: keychain read failed, accepting message without verification');
+    const sigResult = await _checkA2ASignatureEnforcement(bodyStr, signature, p2pPosture);
+    if (sigResult.action === 'reject') {
+      log.warn('P2P message rejected: signing enforcement', {
+        reason: sigResult.reason,
+        sender: (envelope as unknown as Record<string, unknown>).sender,
+      });
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: sigResult.reason ?? 'Unauthorized' }));
+      return true;
     }
-
-    if (secret && signature) {
-      const hmac = crypto.createHmac('sha256', secret);
-      hmac.update(bodyStr);
-      const expected = hmac.digest('hex');
-      const sigBuf = Buffer.from(signature, 'hex');
-      const expBuf = Buffer.from(expected, 'hex');
-      if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
-        log.warn('P2P message rejected: invalid HMAC signature', {
-          sender: (envelope as unknown as Record<string, unknown>).sender,
-        });
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: false, error: 'Invalid signature' }));
-        return true;
-      }
-    } else if (secret && !signature) {
-      // Secret available but no signature sent — warn but accept (transition period)
-      log.warn('P2P message accepted without signature (transition period)', {
+    if (sigResult.action === 'warn') {
+      log.warn('P2P message accepted with signing warning', {
+        reason: sigResult.reason,
         sender: (envelope as unknown as Record<string, unknown>).sender,
       });
     }
-    // If !secret (keychain locked/unavailable), accept without verification (fail-open)
 
     const p2pResult: P2PHandleResult = await handleIncomingP2P(envelope);
     if (!p2pResult.ok) {
@@ -197,7 +254,26 @@ async function handleAgentMessageRoute(
   if (req.method !== 'POST') return false;
 
   try {
-    const parsed = await parseBody(req);
+    // Read raw body first so we can verify HMAC before parsing (#584).
+    // parseBodyRaw respects the pre-buffered _rawBody from metrics middleware.
+    const bodyStr = await parseBodyRaw(req);
+    const parsed = JSON.parse(bodyStr) as unknown;
+
+    // Check signature enforcement for /agent/message.
+    // Default: permissive — trusted home LAN; flip to enforce in kithkit.config.yaml.
+    const msgPosture: A2ASigningPosture = _config?.a2a?.security?.message ?? 'permissive';
+    const msgSig = req.headers['x-signature'] as string | undefined;
+    const msgSigResult = await _checkA2ASignatureEnforcement(bodyStr, msgSig, msgPosture);
+    if (msgSigResult.action === 'reject') {
+      log.warn('Agent message rejected: signing enforcement', { reason: msgSigResult.reason });
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: msgSigResult.reason ?? 'Unauthorized' }));
+      return true;
+    }
+    if (msgSigResult.action === 'warn') {
+      log.warn('Agent message accepted with signing warning', { reason: msgSigResult.reason });
+    }
+
     const result = await handleAgentMessage(parsed);
     res.writeHead(result.status, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(result.body));
@@ -688,4 +764,26 @@ export function _resetForTesting(): void {
   _initialized = false;
   _instanceShutdown = null;
   _telegramAdapter = null;
+  _keychainReader = readKeychain;
 }
+
+// ── A2A Signing Test Seams ───────────────────────────────────
+
+/** Override the Keychain reader in tests (supply a known secret without touching macOS Keychain). */
+export function _setKeychainReaderForTesting(reader: (service: string) => Promise<string | null>): void {
+  _keychainReader = reader;
+}
+
+/** Restore the real Keychain reader after tests. Also called by _resetForTesting(). */
+export function _resetKeychainReaderForTesting(): void {
+  _keychainReader = readKeychain;
+}
+
+/** Set _config directly for tests that need a specific a2a.security posture. */
+export function _setConfigForTesting(config: AgentConfig | null): void {
+  _config = config;
+}
+
+/** Expose the handler for HTTP-level integration tests. */
+export { handleAgentP2P as _handleAgentP2PForTesting };
+export { handleAgentMessageRoute as _handleAgentMessageRouteForTesting };

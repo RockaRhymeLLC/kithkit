@@ -93,6 +93,30 @@ export interface AgentCommsConfig {
   peers?: PeerConfig[];
 }
 
+// ── A2A Security Config ─────────────────────────────────────
+
+/**
+ * Per-endpoint signing enforcement posture.
+ *   enforce    — reject unsigned requests when an HMAC key is configured
+ *   permissive — warn but accept unsigned (transition / trusted-LAN default)
+ *
+ * The posture only applies when the HMAC key (credential-agent-comms-secret)
+ * is present in the Keychain. When no key is configured, both endpoints
+ * preserve current permissive behaviour regardless of this setting.
+ */
+export type A2ASigningPosture = 'enforce' | 'permissive';
+
+export interface A2ASecurityConfig {
+  /** /agent/p2p signing posture. Default: enforce (internet-reachable via relay). */
+  p2p?: A2ASigningPosture;
+  /** /agent/message signing posture. Default: permissive (trusted home LAN). */
+  message?: A2ASigningPosture;
+}
+
+export interface A2AConfig {
+  security?: A2ASecurityConfig;
+}
+
 // ── Integrations Config ─────────────────────────────────────
 
 export interface BrowserbaseConfig {
@@ -125,6 +149,7 @@ export interface AgentConfig extends KithkitConfig {
   network?: NetworkConfig;
   'agent-comms'?: AgentCommsConfig;
   integrations?: IntegrationsConfig;
+  a2a?: A2AConfig;
 }
 
 /**
