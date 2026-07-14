@@ -194,7 +194,7 @@ async function handleAgentP2P(
     const envelope = JSON.parse(bodyStr) as WireEnvelope;
 
     // Enforce HMAC signature per configured posture (#584).
-    // Default: enforce — /agent/p2p is internet-reachable via relay.bmobot.ai.
+    // Default: enforce — /agent/p2p is internet-reachable via the configured relay endpoint.
     const p2pPosture: A2ASigningPosture = _config?.a2a?.security?.p2p ?? 'enforce';
     const signature = req.headers['x-signature'] as string | undefined;
     const sigResult = await _checkA2ASignatureEnforcement(bodyStr, signature, p2pPosture);

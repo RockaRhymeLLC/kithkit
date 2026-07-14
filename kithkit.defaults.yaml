@@ -309,7 +309,7 @@ features:
 # To override in kithkit.config.yaml (example):
 #   a2a:
 #     security:
-#       p2p: enforce      # default — internet-reachable via relay.bmobot.ai
+#       p2p: enforce      # default — internet-reachable via the configured relay endpoint
 #       message: enforce  # flip this to harden the trusted-LAN inbound path
 a2a:
   security:
