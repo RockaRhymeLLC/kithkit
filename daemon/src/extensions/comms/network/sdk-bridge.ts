@@ -13,10 +13,13 @@ import type {
   Message, ContactRequest, Broadcast, WireEnvelope,
   GroupMessage, GroupInvitationEvent,
 } from './sdk-types.js';
-import type { AgentConfig, NetworkCommunity } from '../../config.js';
+import type { AgentConfig, NetworkCommunity, A2ASigningPosture } from '../../config.js';
 import { createLogger } from '../../../core/logger.js';
 import { commsSessionExists } from '../../../core/session-bridge.js';
 import { sendMessage } from '../../../agents/message-router.js';
+
+/** Injectable inject function — production: sendMessage; tests: capture calls. Not a 'verified' seam. */
+let _injectFn: typeof sendMessage = sendMessage;
 import { readKeychain } from '../../../core/keychain.js';
 import { loadKeyFromKeychain } from './crypto.js';
 import { logCommsEntry, getDisplayName } from '../agent-comms.js';
@@ -248,11 +251,33 @@ export function _resetForTesting(): void {
   _network = null;
   _config = null;
   _initInFlight = null;
+  _injectFn = sendMessage;
 }
 
 /** Inject a mock network client — for testing only. */
 export function _setNetworkForTesting(mock: A2ANetworkClient): void {
   _network = mock;
+}
+
+/** Set config for testing — allows wireMessageEvent to read a2a.security.p2p posture. */
+export function _setConfigForTesting(config: AgentConfig | null): void {
+  _config = config;
+}
+
+/** Replace sendMessage for testing — observe injection without touching the DB. NOT a verified seam. */
+export function _setSendMessageForTesting(fn: typeof sendMessage): void {
+  _injectFn = fn;
+}
+
+/**
+ * Wire DM + group message event handlers with a stub network and config.
+ * For testing the inject gate only — do NOT use to test full SDK init.
+ */
+export function _wireEventsForTesting(mock: A2ANetworkClient, config: AgentConfig): void {
+  _network = mock;
+  _config = config;
+  wireMessageEvent();
+  wireGroupMessageEvent();
 }
 
 // ── Event Wiring ─────────────────────────────────────────────
@@ -279,13 +304,35 @@ function wireMessageEvent(): void {
       return;
     }
 
+    // P2P verified gate (todo #3058 — emit/consume layer enforcement).
+    // The SDK computes msg.verified via Ed25519 verify in processEnvelope
+    // (messaging.ts) before emitting 'message'. Under enforce posture,
+    // reject unverified messages here as defence-in-depth; under permissive,
+    // warn but still inject (current behaviour, no change from today).
+    const p2pPosture: A2ASigningPosture = _config?.a2a?.security?.p2p ?? 'permissive';
+    if (!msg.verified) {
+      if (p2pPosture === 'enforce') {
+        log.warn('Rejected unverified relay P2P DM — enforce posture', {
+          module: 'network:sdk',
+          sender: msg.sender,
+          messageId: msg.messageId,
+          reason: 'rejected-unverified-p2p',
+        });
+        return;
+      }
+      log.warn('Injecting unverified relay P2P DM under permissive posture', {
+        sender: msg.sender,
+        messageId: msg.messageId,
+      });
+    }
+
     const displayName = getDisplayName(msg.sender);
     const text = msg.payload?.text ?? JSON.stringify(msg.payload);
-    const verified = msg.verified ? '' : ' [UNVERIFIED]';
-    const formatted = `[Network] ${displayName}${verified}: ${text}`;
+    const unverifiedTag = msg.verified ? '' : ' [UNVERIFIED]';
+    const formatted = `[Network] ${displayName}${unverifiedTag}: ${text}`;
 
     // Persist inbound message to DB so content is never lost
-    sendMessage({
+    _injectFn({
       from: msg.sender,
       to: 'comms',
       type: 'text',
@@ -317,13 +364,33 @@ function wireGroupMessageEvent(): void {
   if (!_network) return;
 
   _network.on('group-message', (msg: GroupMessage) => {
+    // P2P verified gate (todo #3058 — same policy as DM path above).
+    const p2pPosture: A2ASigningPosture = _config?.a2a?.security?.p2p ?? 'permissive';
+    if (!msg.verified) {
+      if (p2pPosture === 'enforce') {
+        log.warn('Rejected unverified relay P2P group message — enforce posture', {
+          module: 'network:sdk',
+          sender: msg.sender,
+          groupId: msg.groupId,
+          messageId: msg.messageId,
+          reason: 'rejected-unverified-p2p',
+        });
+        return;
+      }
+      log.warn('Injecting unverified relay P2P group message under permissive posture', {
+        sender: msg.sender,
+        groupId: msg.groupId,
+        messageId: msg.messageId,
+      });
+    }
+
     const displayName = getDisplayName(msg.sender);
     const text = msg.payload?.text ?? JSON.stringify(msg.payload);
-    const verified = msg.verified ? '' : ' [UNVERIFIED]';
+    const unverifiedTag = msg.verified ? '' : ' [UNVERIFIED]';
     const groupTag = msg.groupId.slice(0, 8);
-    const formatted = `[Group:${groupTag}] ${displayName}${verified}: ${text}`;
+    const formatted = `[Group:${groupTag}] ${displayName}${unverifiedTag}: ${text}`;
 
-    sendMessage({
+    _injectFn({
       from: msg.sender,
       to: 'comms',
       type: 'text',

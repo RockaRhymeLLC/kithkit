@@ -155,15 +155,28 @@ describe('_checkA2ASignatureEnforcement', () => {
 });
 
 // ── Tests: /agent/p2p HTTP handler ────────────────────────────
+//
+// todo #3058 (Change 2): HMAC-X-Signature enforcement has been REMOVED from the relay
+// /agent/p2p path. Security on the relay path is provided by the SDK's Ed25519 signature
+// verification (processEnvelope in messaging.ts) and the msg.verified gate in
+// wireMessageEvent (sdk-bridge.ts). The HMAC gate lives on the LAN /agent/message path only.
+//
+// Mutation-kill property: if HMAC enforcement is RE-ADDED to handleAgentP2P, the test
+// "relay path: unsigned request reaches SDK layer (no 401 auth gate)" goes RED — the
+// response would be 401 instead of 503 (SDK unavailable), violating the assertion.
 
-describe('/agent/p2p signing enforcement (HTTP layer)', () => {
-  // Use a unique IP range per describe to avoid rate-limiter interference
+describe('/agent/p2p — relay path (HMAC gate removed per #3058)', () => {
   let testIpCounter = 100;
   const nextIp = () => `198.51.${++testIpCounter}.1`;
 
+  const validEnvelope = JSON.stringify({
+    version: '1', type: 'direct', messageId: 'm-relay-1', sender: 'bmo',
+    recipient: 'skippy', timestamp: new Date().toISOString(),
+    payload: { ciphertext: 'abc', nonce: 'xyz' }, signature: 'any',
+  });
+
   beforeEach(() => {
     _setKeychainReaderForTesting(keychainWithSecret);
-    // Set enforce posture (the default)
     _setConfigForTesting(makeConfig('enforce', 'permissive'));
   });
   afterEach(() => {
@@ -171,52 +184,46 @@ describe('/agent/p2p signing enforcement (HTTP layer)', () => {
     _setConfigForTesting(null);
   });
 
-  it('rejects unsigned request (HTTP 401) when key configured + enforce', async () => {
+  it('relay path: unsigned request reaches SDK layer — no HMAC 401 gate', async () => {
+    // HMAC is not checked on /agent/p2p (relay path). Unsigned request falls through
+    // to handleIncomingP2P which returns {ok:false} (SDK not initialised in tests) → 503.
+    // MUTATION-KILL: if HMAC enforcement is re-added, this returns 401, not 503 — test goes RED.
     const { res, captured } = makeRes();
-    const req = makeReq(TEST_BODY, {}, nextIp());
+    const req = makeReq(validEnvelope, {}, nextIp()); // no x-signature header
     await _handleAgentP2PForTesting(req, res, '/agent/p2p', new URLSearchParams());
-    assert.strictEqual(captured.status, 401, 'Must return 401 for unsigned request under enforce');
-    assert.strictEqual(captured.body.ok, false);
+    assert.notStrictEqual(captured.status, 401,
+      'Relay /agent/p2p must NOT return 401 — HMAC auth is not applied to this path. ' +
+      'If RED: HMAC gate was re-added to handleAgentP2P — remove it (security lives on msg.verified).');
+    // SDK not initialised → 503 (transient)
+    assert.strictEqual(captured.status, 503,
+      'Relay /agent/p2p must return 503 (SDK unavailable) not 401 (HMAC rejection)');
   });
 
-  it('rejects on keychain failure (HTTP 401) — fails closed under enforce', async () => {
+  it('relay path: keychain availability does NOT block relay requests', async () => {
+    // Keychain failure on the relay path does not block (HMAC not checked here).
     _setKeychainReaderForTesting(keychainLocked);
     const { res, captured } = makeRes();
-    const req = makeReq(TEST_BODY, {}, nextIp());
+    const req = makeReq(validEnvelope, {}, nextIp());
     await _handleAgentP2PForTesting(req, res, '/agent/p2p', new URLSearchParams());
-    assert.strictEqual(captured.status, 401, 'Keychain failure + enforce must fail-closed (HTTP 401)');
-    assert.strictEqual(captured.body.ok, false);
+    assert.notStrictEqual(captured.status, 401,
+      'Keychain unavailability must NOT block relay path — HMAC not applied here.');
+    assert.strictEqual(captured.status, 503, 'Expected 503 (SDK unavailable) regardless of keychain state');
   });
 
-  it('accepts a correctly signed request under enforce', async () => {
-    const sig = computeHmac(TEST_BODY, TEST_SECRET);
-    const { res, captured } = makeRes();
-    // Provide a valid P2P envelope — handler passes to handleIncomingP2P after auth.
-    // SDK is not initialised in tests so we expect a 503 (transient SDK unavailable),
-    // NOT a 401 (auth rejected). HTTP 503 proves auth passed.
-    const envelopeBody = JSON.stringify({
-      version: '1', type: 'direct', messageId: 'm1', sender: 'bmo',
-      recipient: 'skippy', timestamp: new Date().toISOString(),
-      payload: { ciphertext: 'abc', nonce: 'xyz' }, signature: sig,
-    });
-    const envReq = makeReq(envelopeBody, { 'x-signature': computeHmac(envelopeBody, TEST_SECRET) }, nextIp());
-    await _handleAgentP2PForTesting(envReq, res, '/agent/p2p', new URLSearchParams());
-    // Auth passed → response is NOT 401 (auth failure); SDK-layer may return 503 or 422
-    assert.notStrictEqual(captured.status, 401, 'Valid signature must pass auth — response must not be 401');
-  });
-
-  it('posture toggle: permissive config warns but accepts unsigned (not 401)', async () => {
+  it('relay path: posture config does not change HTTP outcome (HMAC not applied)', async () => {
+    // Both enforce and permissive config produce the same HTTP result on /agent/p2p
+    // because HMAC is not checked on the relay path.
     _setConfigForTesting(makeConfig('permissive', 'permissive'));
-    const { res, captured } = makeRes();
-    const envelopeBody = JSON.stringify({
-      version: '1', type: 'direct', messageId: 'm2', sender: 'bmo',
-      recipient: 'skippy', timestamp: new Date().toISOString(),
-      payload: { ciphertext: 'abc', nonce: 'xyz' }, signature: 'ignored',
-    });
-    const req = makeReq(envelopeBody, {}, nextIp()); // no x-signature header
-    await _handleAgentP2PForTesting(req, res, '/agent/p2p', new URLSearchParams());
-    // With permissive posture, an unsigned request must NOT be rejected with 401
-    assert.notStrictEqual(captured.status, 401, 'Permissive posture must not return 401 for unsigned request');
+    const { res: resP, captured: capP } = makeRes();
+    await _handleAgentP2PForTesting(makeReq(validEnvelope, {}, nextIp()), resP, '/agent/p2p', new URLSearchParams());
+
+    _setConfigForTesting(makeConfig('enforce', 'permissive'));
+    const { res: resE, captured: capE } = makeRes();
+    await _handleAgentP2PForTesting(makeReq(validEnvelope, {}, nextIp()), resE, '/agent/p2p', new URLSearchParams());
+
+    assert.strictEqual(capP.status, 503, 'permissive config: relay path → 503');
+    assert.strictEqual(capE.status, 503, 'enforce config: relay path → 503 (not 401)');
+    assert.strictEqual(capP.status, capE.status, 'Relay path outcome must be posture-independent');
   });
 });
 
