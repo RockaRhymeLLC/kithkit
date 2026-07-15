@@ -58,6 +58,11 @@ describe('Fix 2743/1 — per-session serial queue (mutation-kill)', () => {
 
     type Call = { kind: 'capture' | 'send'; text: string };
     const calls: Call[] = [];
+    // Separate delivery-channel logs so we can bind the FIFO ordering to the
+    // ACTUAL seam the payload arrived through, not just "some 'send' entry
+    // containing the text" — see the delivery-channel assertions below.
+    const pasteBufferCalls: { session: string; text: string }[] = [];
+    const sendKeysCalls: { session: string; args: string[] }[] = [];
 
     _setTmuxDepsForTesting({
       resolveSession: () => 'shared-session',
@@ -77,8 +82,19 @@ describe('Fix 2743/1 — per-session serial queue (mutation-kill)', () => {
         // retries — keeping the interleave window realistic.
         return '❯ \n────────────────────────────────────────\n  [Sonnet 4.5] Context: 50% used\n  ⏵⏵ bypass permissions on · 1 shell · ← for agents';
       },
-      sendKeys: (_session, args) => {
+      // Text payload now goes through the paste-buffer seam (bracketed
+      // paste), not '-l' send-keys. Record it as a 'send' entry (labeled
+      // with a '-l'-style marker) so the FIFO / no-interleaving assertions
+      // below, which key off calls containing 'MSG-ONE'/'MSG-TWO', still see
+      // the payload delivery event in the shared call-order timeline.
+      // Without this seam, the paste-buffer call falls through to real tmux I/O.
+      pasteBuffer: (session, text) => {
+        calls.push({ kind: 'send', text: `-l ${text}` });
+        pasteBufferCalls.push({ session, text });
+      },
+      sendKeys: (session, args) => {
         calls.push({ kind: 'send', text: args.join(' ') });
+        sendKeysCalls.push({ session, args });
       },
     });
 
@@ -115,6 +131,27 @@ describe('Fix 2743/1 — per-session serial queue (mutation-kill)', () => {
       `MUTATION-KILL: msg-2's send-keys call must not start until msg-1's full sequence ` +
         `(text + C-m) has completed — got msg1Start=${msg1Start}, msg1CmIdx=${msg1CmIdx}, msg2Start=${msg2Start}, calls: ${JSON.stringify(calls)}`,
     );
+
+    // Delivery-channel binding: the above assertions only look at the shared
+    // `calls` timeline, which both the pasteBuffer and sendKeys seam stubs
+    // feed into — so they'd stay green even if payload delivery reverted from
+    // bracketed paste back to literal '-l' send-keys. Pin the payload to the
+    // ACTUAL seam it must travel through.
+    assert.ok(
+      pasteBufferCalls.some(c => c.text.includes('MSG-ONE')),
+      `MUTATION-KILL: MSG-ONE payload must be delivered via the pasteBuffer (bracketed paste) seam, ` +
+        `got pasteBufferCalls: ${JSON.stringify(pasteBufferCalls)}`,
+    );
+    assert.ok(
+      pasteBufferCalls.some(c => c.text.includes('MSG-TWO')),
+      `MUTATION-KILL: MSG-TWO payload must be delivered via the pasteBuffer (bracketed paste) seam, ` +
+        `got pasteBufferCalls: ${JSON.stringify(pasteBufferCalls)}`,
+    );
+    assert.ok(
+      !sendKeysCalls.some(c => c.args.some(a => a.includes('MSG-ONE') || a.includes('MSG-TWO'))),
+      `MUTATION-KILL: payload text must never be carried by a send-keys call (only the separate ` +
+        `C-m submit may be), got sendKeysCalls: ${JSON.stringify(sendKeysCalls)}`,
+    );
   });
 
   it('injectMessage() does not block the Node event loop (async I/O, no sync sleep)', async () => {
@@ -129,11 +166,20 @@ describe('Fix 2743/1 — per-session serial queue (mutation-kill)', () => {
     // delays), so the injection takes a non-trivial amount of wall-clock time
     // — enough to observe whether the event loop kept servicing other timers.
     let sessionExistsCalls = 0;
+    // Record pasteBuffer invocations (still stubbed, no real tmux I/O) so we
+    // can assert the probe payload actually reached the bracketed-paste seam
+    // — not just that *something* returned without blocking the event loop.
+    const pasteBufferCalls: { session: string; text: string }[] = [];
     _setTmuxDepsForTesting({
       resolveSession: () => 'orch1',
       sessionExists: () => { sessionExistsCalls++; return true; },
       isOrchAlive: () => true,
       sendKeys: () => { /* no-op, avoid real tmux I/O */ },
+      // Without this seam, the paste-buffer call falls through to real tmux
+      // I/O against the resolved session — avoid pasting the probe text into
+      // a live pane during test runs. Record calls (still no real I/O) to
+      // verify delivery below.
+      pasteBuffer: (session, text) => { pasteBufferCalls.push({ session, text }); },
     });
 
     let ticks = 0;
@@ -157,6 +203,16 @@ describe('Fix 2743/1 — per-session serial queue (mutation-kill)', () => {
           'A synchronous sleep/exec in the injection path would starve the timer.',
       );
       assert.ok(sessionExistsCalls >= 1, 'sanity: session lookup seam should have been invoked');
+
+      // MUTATION-KILL: the async/no-block assertion above stays green even if
+      // payload delivery reverted to '-l' send-keys, since that path is also
+      // async. Pin delivery to the bracketed-paste seam: the probe text must
+      // have reached pasteBuffer.
+      assert.ok(
+        pasteBufferCalls.some(c => c.text.includes('event-loop-responsiveness-probe')),
+        `MUTATION-KILL: probe payload must be delivered via the pasteBuffer (bracketed paste) seam, ` +
+          `got pasteBufferCalls: ${JSON.stringify(pasteBufferCalls)}`,
+      );
     } finally {
       clearInterval(ticker);
     }
