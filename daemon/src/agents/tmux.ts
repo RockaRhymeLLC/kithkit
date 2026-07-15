@@ -36,6 +36,7 @@ const ORCH_SESSION = 'orch1';
 export const ORCH_SESSION_PATTERN = /^orch\d*$/;
 
 /** Maximum characters allowed in a single tmux send-keys injection. */
+// A2A sender-side guard against this cap: a2a/router.ts MAX_A2A_TEXT_LENGTH.
 const MAX_INJECT_LENGTH = 4000;
 
 let projectDir = process.cwd();

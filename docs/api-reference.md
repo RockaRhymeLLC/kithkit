@@ -2896,6 +2896,7 @@ Send a message to another agent (DM) or to a group.
 - Exactly one of `to` or `group` is required (not both).
 - `route: "lan"` cannot be used with group targets.
 - Peer names are resolved case-insensitively from `agent-comms.peers` config; bare names are auto-qualified for relay.
+- `payload.text` (or its `payload.message` alias) must not exceed **3500 characters**. This limit exists because the receiving agent's session injector hard-truncates anything longer than its own inject cap — rejecting oversized payloads up front means a sender always finds out immediately, instead of the message silently arriving cut short. Requests over the limit are rejected with `PAYLOAD_TOO_LARGE` before any delivery is attempted.
 
 **Routing behavior:**
 
@@ -2968,6 +2969,7 @@ Groups always route via relay regardless of `route` value.
 | `DELIVERY_FAILED` | 502 | All delivery attempts failed |
 | `RELAY_UNAVAILABLE` | 503 | Network SDK not initialized |
 | `LAN_UNAVAILABLE` | 503 | Keychain secret not found |
+| `PAYLOAD_TOO_LARGE` | 413 | `payload.text`/`payload.message` exceeds the 3500-character limit; response includes `actualLength` and `maxLength` |
 
 **`attempts` array:** Each delivery attempt includes:
 

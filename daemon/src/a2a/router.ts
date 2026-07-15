@@ -18,6 +18,20 @@ import { A2A_ERROR_CODES } from './types.js';
 
 const log = createLogger('a2a:router');
 
+/**
+ * Maximum allowed length (in characters) for outgoing A2A payload text.
+ *
+ * The receive side (agents/tmux.ts MAX_INJECT_LENGTH, currently 4000) hard-truncates
+ * anything injected into a session — silently, with only a local log.warn the sender
+ * never sees. This constant guards the sender path so oversized payloads fail loudly
+ * instead of being delivered "successfully" and then quietly cut short on arrival.
+ * It is set below the receive-side cap to leave headroom for the
+ * "[Group:<8-char-id>] <displayName>: " formatting prefix applied on the receiver
+ * (group id is sliced to 8 chars, see sdk-bridge.ts), plus variance from
+ * newline-batching with other pending messages.
+ */
+export const MAX_A2A_TEXT_LENGTH = 3500;
+
 // ── Dependency Types ─────────────────────────────────────────
 
 export interface PeerConfig {
@@ -289,6 +303,27 @@ export class UnifiedA2ARouter {
 
     // Normalize payload before routing (fix double-wrapping, alias message→text)
     request.payload = this.normalizePayload(request.payload);
+
+    // Reject payload text that exceeds the deliverable inject size (applies to DM and group alike).
+    // Measured AFTER normalization so every input shape collapses to one check: this must
+    // match exactly what the receiver renders (sdk-bridge.ts: `payload.text ?? JSON.stringify(payload)`),
+    // so typeless payloads, {text: {content}} and {message: {content}} wrappers are all caught here
+    // instead of slipping past validate() and silently truncating on delivery.
+    // See MAX_A2A_TEXT_LENGTH doc comment for why this fails loudly instead of truncating silently.
+    const normalized = request.payload;
+    const injectedValue = normalized.text ?? JSON.stringify(normalized);
+    const candidateLength = typeof injectedValue === 'string' ? injectedValue.length : String(injectedValue).length;
+    if (candidateLength > MAX_A2A_TEXT_LENGTH) {
+      return {
+        ok: false,
+        error: `Payload text exceeds maximum deliverable length of ${MAX_A2A_TEXT_LENGTH} characters (got ${candidateLength})`,
+        code: A2A_ERROR_CODES.PAYLOAD_TOO_LARGE,
+        actualLength: candidateLength,
+        maxLength: MAX_A2A_TEXT_LENGTH,
+        timestamp: new Date().toISOString(),
+      };
+    }
+
     const messageId = crypto.randomUUID();
     const attempts: DeliveryAttempt[] = [];
 

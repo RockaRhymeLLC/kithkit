@@ -17,6 +17,7 @@ const ERROR_CODE_TO_HTTP: Record<string, number> = {
   DELIVERY_FAILED: 502,
   RELAY_UNAVAILABLE: 503,
   LAN_UNAVAILABLE: 503,
+  PAYLOAD_TOO_LARGE: 413,
 };
 
 let _router: UnifiedA2ARouter | null = null;
