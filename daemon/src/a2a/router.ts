@@ -18,6 +18,19 @@ import { A2A_ERROR_CODES } from './types.js';
 
 const log = createLogger('a2a:router');
 
+/**
+ * Maximum allowed length (in characters) for outgoing A2A payload text.
+ *
+ * The receive side (agents/tmux.ts MAX_INJECT_LENGTH, currently 4000) hard-truncates
+ * anything injected into a session — silently, with only a local log.warn the sender
+ * never sees. This constant guards the sender path so oversized payloads fail loudly
+ * instead of being delivered "successfully" and then quietly cut short on arrival.
+ * It is set below the receive-side cap to leave headroom for the
+ * "[Group:<id>] <displayName>: " formatting prefix applied on the receiver, plus
+ * variance from newline-batching with other pending messages.
+ */
+export const MAX_A2A_TEXT_LENGTH = 3500;
+
 // ── Dependency Types ─────────────────────────────────────────
 
 export interface PeerConfig {
@@ -90,7 +103,7 @@ export class UnifiedA2ARouter {
 
   // ── Validate ────────────────────────────────────────────────
 
-  validate(body: unknown): { valid: true; request: A2ASendRequest } | { valid: false; error: string; code: string } {
+  validate(body: unknown): { valid: true; request: A2ASendRequest } | { valid: false; error: string; code: string; actualLength?: number; maxLength?: number } {
     if (!body || typeof body !== 'object') {
       return { valid: false, error: 'Request body must be a JSON object', code: A2A_ERROR_CODES.INVALID_REQUEST };
     }
@@ -123,6 +136,23 @@ export class UnifiedA2ARouter {
     const payload = req.payload as Record<string, unknown>;
     if (!payload.type || typeof payload.type !== 'string') {
       return { valid: false, error: "'payload.type' is required and must be a string", code: A2A_ERROR_CODES.INVALID_REQUEST };
+    }
+
+    // Reject payload text that exceeds the deliverable inject size (applies to DM and group alike).
+    // See MAX_A2A_TEXT_LENGTH doc comment for why this fails loudly instead of truncating silently.
+    const candidateText = typeof payload.text === 'string'
+      ? payload.text
+      : typeof payload.message === 'string'
+        ? payload.message
+        : undefined;
+    if (candidateText !== undefined && candidateText.length > MAX_A2A_TEXT_LENGTH) {
+      return {
+        valid: false,
+        error: `Payload text exceeds maximum deliverable length of ${MAX_A2A_TEXT_LENGTH} characters (got ${candidateText.length})`,
+        code: A2A_ERROR_CODES.PAYLOAD_TOO_LARGE,
+        actualLength: candidateText.length,
+        maxLength: MAX_A2A_TEXT_LENGTH,
+      };
     }
 
     // Route validation
@@ -281,6 +311,8 @@ export class UnifiedA2ARouter {
         ok: false,
         error: validation.error,
         code: validation.code,
+        ...(validation.actualLength !== undefined && { actualLength: validation.actualLength }),
+        ...(validation.maxLength !== undefined && { maxLength: validation.maxLength }),
         timestamp: new Date().toISOString(),
       };
     }

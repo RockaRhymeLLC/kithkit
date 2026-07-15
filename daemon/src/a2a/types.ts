@@ -45,6 +45,10 @@ export interface A2ASendError {
   error: string;
   code: string;
   attempts?: DeliveryAttempt[];
+  /** Present when code === PAYLOAD_TOO_LARGE — length of the rejected text, in characters. */
+  actualLength?: number;
+  /** Present when code === PAYLOAD_TOO_LARGE — the maximum allowed length, in characters. */
+  maxLength?: number;
   timestamp: string;
 }
 
@@ -58,4 +62,5 @@ export const A2A_ERROR_CODES = {
   DELIVERY_FAILED: 'DELIVERY_FAILED',
   RELAY_UNAVAILABLE: 'RELAY_UNAVAILABLE',
   LAN_UNAVAILABLE: 'LAN_UNAVAILABLE',
+  PAYLOAD_TOO_LARGE: 'PAYLOAD_TOO_LARGE',
 } as const;
