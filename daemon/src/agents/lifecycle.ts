@@ -290,6 +290,12 @@ function startWorker(jobId: string, req: SpawnRequest): void {
     },
     cwd: req.cwd,
     timeoutMs: req.timeoutMs,
+    // Exposes the worker's profile name to hooks running inside the spawned
+    // session (e.g. transcript-review.sh) so they can exclude review/retro-class
+    // workers from re-triggering further reviews — see a respawn-loop incident
+    // where transcript-review workers were spawned from daemon-spawned agents'
+    // tool calls.
+    env: { KITHKIT_AGENT_PROFILE: req.profile.name },
   };
 
   // SDK adapter assigns its own internal ID

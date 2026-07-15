@@ -1134,6 +1134,61 @@ describe('spawnOrchestratorSession — tmux new-session args-capture (fix/870)',
     _setTmuxDepsForTesting(null);
   });
 
+  it('new-session args include -e KITHKIT_AGENT_PROFILE=orchestrator before claudeBin so the pane env reaches hook subprocesses', () => {
+    // Workers get KITHKIT_AGENT_PROFILE from the worker spawn env — see
+    // lifecycle.ts worker spawn env (child-process env, which is reliable
+    // there). The orchestrator is tmux-spawned instead, and a
+    // pre-existing tmux SERVER ignores execFileSync's env object — so this var
+    // must ALSO be passed as an explicit -e pane flag here, exactly like
+    // CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY and CLAUDECODE above. Without it,
+    // transcript-review.sh's self-exclusion check (which keys off
+    // KITHKIT_AGENT_PROFILE for ALL daemon-spawned sessions) never sees the
+    // var for the orchestrator, and the hook keeps firing on every orch tool call.
+    let capturedArgs: string[] | null = null;
+
+    _setTmuxDepsForTesting({
+      sessionExists: () => false,
+      newSessionArgs: (args) => { capturedArgs = args; },
+    });
+
+    spawnOrchestratorSession();
+
+    assert.ok(capturedArgs !== null, 'newSessionArgs seam must have been called — spawnOrchestratorSession did not reach the spawn step');
+
+    const args = capturedArgs as string[];
+
+    const profileIdx = args.indexOf('KITHKIT_AGENT_PROFILE=orchestrator');
+    assert.ok(
+      profileIdx !== -1,
+      `args must contain 'KITHKIT_AGENT_PROFILE=orchestrator' — got: ${JSON.stringify(args)}`,
+    );
+    assert.equal(
+      args[profileIdx - 1],
+      '-e',
+      `'KITHKIT_AGENT_PROFILE=orchestrator' must be immediately preceded by '-e' — got args[${profileIdx - 1}]='${args[profileIdx - 1]}'`,
+    );
+
+    const yIdx = args.indexOf('-y');
+    assert.ok(yIdx !== -1, 'args must contain -y (height)');
+    const postY = args.slice(yIdx + 2);
+    let claudeBinIdx = -1;
+    for (let i = 0; i < postY.length; i++) {
+      const a = postY[i];
+      if (!a.startsWith('-') && !a.includes('=')) {
+        claudeBinIdx = (yIdx + 2) + i;
+        break;
+      }
+    }
+    assert.ok(
+      claudeBinIdx !== -1,
+      `could not find claudeBin in args — got postY: ${JSON.stringify(postY)}`,
+    );
+    assert.ok(
+      profileIdx < claudeBinIdx,
+      `MUTATION-KILL: '-e KITHKIT_AGENT_PROFILE=orchestrator' (idx ${profileIdx}) must appear BEFORE claudeBin (idx ${claudeBinIdx}) — tmux requires -e before the shell command`,
+    );
+  });
+
   it('MUTATION-KILL: new-session args contain -e CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 and -e CLAUDECODE= before claudeBin', () => {
     let capturedArgs: string[] | null = null;
 

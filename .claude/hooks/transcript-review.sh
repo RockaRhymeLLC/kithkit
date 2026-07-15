@@ -22,6 +22,20 @@ TIME_THRESHOLD_SECS=1800  # 30 minutes
 # Read hook input early (contains transcript_path and other context)
 INPUT=$(cat)
 
+# ── Self-exclusion: never let a daemon-spawned session's own tool calls
+# re-trigger a transcript review (fix for a respawn-loop incident where
+# transcript-review workers were spawned from daemon-spawned agents' tool
+# calls). KITHKIT_AGENT_PROFILE is injected by the daemon spawn path
+# (daemon/src/agents/lifecycle.ts) for EVERY
+# daemon-spawned session — the orchestrator and all worker profiles, not
+# just transcript-review/retro/retro-light. Only the comms tmux session
+# is exempt from this env var (it isn't daemon-spawned), and comms is the
+# only session this hook is meant to review — so any session with the var
+# set is out of scope by definition.
+if [ -n "${KITHKIT_AGENT_PROFILE:-}" ]; then
+  exit 0
+fi
+
 # ── Increment counter ─────────────────────────────────────────────────────────
 COUNTER=0
 if [ -f "$COUNTER_FILE" ]; then
