@@ -77,6 +77,15 @@ describe('Fix 2743/1 — per-session serial queue (mutation-kill)', () => {
         // retries — keeping the interleave window realistic.
         return '❯ \n────────────────────────────────────────\n  [Sonnet 4.5] Context: 50% used\n  ⏵⏵ bypass permissions on · 1 shell · ← for agents';
       },
+      // Text payload now goes through the paste-buffer seam (bracketed
+      // paste), not '-l' send-keys. Record it as a 'send' entry (labeled
+      // with a '-l'-style marker) so the FIFO / no-interleaving assertions
+      // below, which key off calls containing 'MSG-ONE'/'MSG-TWO', still see
+      // the payload delivery event in the shared call-order timeline.
+      // Without this seam, the paste-buffer call falls through to real tmux I/O.
+      pasteBuffer: (_session, text) => {
+        calls.push({ kind: 'send', text: `-l ${text}` });
+      },
       sendKeys: (_session, args) => {
         calls.push({ kind: 'send', text: args.join(' ') });
       },
@@ -134,6 +143,10 @@ describe('Fix 2743/1 — per-session serial queue (mutation-kill)', () => {
       sessionExists: () => { sessionExistsCalls++; return true; },
       isOrchAlive: () => true,
       sendKeys: () => { /* no-op, avoid real tmux I/O */ },
+      // Without this seam, the paste-buffer call falls through to real tmux
+      // I/O against the resolved session — avoid pasting the probe text into
+      // a live pane during test runs.
+      pasteBuffer: () => { /* no-op, avoid real tmux I/O */ },
     });
 
     let ticks = 0;

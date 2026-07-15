@@ -219,12 +219,23 @@ describe('injectText — separate Enter submit seam (mutation-kill #367)', { con
     // that sidesteps the code deciding to send Enter (cf. PR #439 trap).
 
     const sendKeysCalls: Array<{ session: string; args: string[] }> = [];
+    const pasteBufferCalls: Array<{ session: string; text: string }> = [];
+    const callOrder: string[] = [];
 
     _setSbDepsForTesting({
       // sessionExists seam: return true so injectText doesn't abort early.
       sessionExists: () => true,
       // sendKeys seam: record all send-keys calls, suppress real tmux I/O.
-      sendKeys: (session, args) => { sendKeysCalls.push({ session, args }); },
+      sendKeys: (session, args) => {
+        sendKeysCalls.push({ session, args });
+        callOrder.push(`sendKeys:${args.join(',')}`);
+      },
+      // pasteBuffer seam: the text payload is now delivered via bracketed
+      // paste, not a literal '-l' send-keys call — record it separately.
+      pasteBuffer: (session, text) => {
+        pasteBufferCalls.push({ session, text });
+        callOrder.push('pasteBuffer');
+      },
       // capturePane seam: return empty string so retry loop breaks immediately.
       capturePane: () => '',
     });
@@ -234,26 +245,40 @@ describe('injectText — separate Enter submit seam (mutation-kill #367)', { con
     // injectText must return true (send succeeded)
     assert.equal(result, true, 'injectText must return true when send-keys seam succeeds');
 
-    // The standalone Enter call MUST be present in the recorded calls.
-    // Mutation-kill: if Enter is folded into the text payload, this list is empty → RED.
+    // The text payload must be delivered via the pasteBuffer seam.
+    assert.equal(
+      pasteBufferCalls.length, 1,
+      `expected exactly one pasteBuffer call — got: ${JSON.stringify(pasteBufferCalls)}`,
+    );
+    assert.equal(pasteBufferCalls[0]!.text, 'check queue');
+    assert.equal(pasteBufferCalls[0]!.session, 'comms1');
+
+    // The standalone Enter call MUST be present in the recorded send-keys calls.
+    // Mutation-kill: if Enter is folded into the pasted payload, this list is empty → RED.
     const enterCalls = sendKeysCalls.filter(c => c.args.includes('Enter'));
     assert.ok(
       enterCalls.length >= 1,
       `MUTATION-KILL: standalone Enter send-keys call must fire — got calls: ${JSON.stringify(sendKeysCalls)}`,
     );
 
-    // The text payload call (-l) must NOT contain 'Enter' (it must stay separate)
-    const textCalls = sendKeysCalls.filter(c => c.args[0] === '-l');
-    assert.ok(textCalls.length >= 1, 'text must be sent via -l literal send-keys');
+    // No send-keys call may carry the text payload (it must stay in pasteBuffer).
     assert.ok(
-      !textCalls.some(c => c.args.join('\0').includes('Enter')),
-      `text payload must not fold Enter into the -l argument — mutation evidence: ${JSON.stringify(textCalls)}`,
+      !sendKeysCalls.some(c => c.args.some(a => a.includes('check queue'))),
+      `text payload must not appear in a send-keys call — got: ${JSON.stringify(sendKeysCalls)}`,
+    );
+
+    // The Enter send-keys call must fire AFTER the paste, not before.
+    const pasteOrderIndex = callOrder.indexOf('pasteBuffer');
+    const enterOrderIndex = callOrder.findIndex(c => c.startsWith('sendKeys:') && c.includes('Enter'));
+    assert.ok(
+      pasteOrderIndex !== -1 && enterOrderIndex !== -1 && enterOrderIndex > pasteOrderIndex,
+      `Enter send-keys call must fire AFTER the paste — got order: ${JSON.stringify(callOrder)}`,
     );
 
     // Every call must target the correct session
     assert.ok(
-      sendKeysCalls.every(c => c.session === 'comms1'),
-      'all send-keys calls must target the correct session name',
+      sendKeysCalls.every(c => c.session === 'comms1') && pasteBufferCalls.every(c => c.session === 'comms1'),
+      'all calls must target the correct session name',
     );
   });
 });
