@@ -89,6 +89,15 @@ interface SbTestDeps {
    * (fast path: break immediately) and suppresses sleep delays.
    */
   capturePane?: (session: string) => string;
+  /**
+   * Intercept the load-buffer + paste-buffer pair used to deliver the text
+   * payload via bracketed paste (replaces literal '-l' send-keys so
+   * '@'-prefixed inbound text from external channels can't trigger the
+   * receiving TUI's file-autocomplete popup). Called with the exact
+   * (session, text) that would otherwise be piped through `tmux load-buffer -`
+   * and inserted with `paste-buffer -d -p`.
+   */
+  pasteBuffer?: (session: string, text: string) => void;
 }
 
 let _sbDeps: SbTestDeps | null = null;
@@ -115,6 +124,32 @@ function execSbSendKeys(tmux: string, session: string, args: string[]): void {
     return;
   }
   execFileSync(tmux, ['send-keys', '-t', `${session}:`, ...args], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+}
+
+/**
+ * Deliver a text payload into a tmux pane via bracketed paste rather than
+ * literal keystrokes (sync variant for this module's synchronous
+ * injectText()). Writes the payload to a paste buffer via `load-buffer -`
+ * (stdin) and inserts it with `paste-buffer -d -p`; the `-p` flag wraps the
+ * insert in bracketed-paste escapes so the receiving TUI does not
+ * live-interpret '@' or '/' triggers inside the payload. See agents/tmux.ts's
+ * execPasteBuffer() for the full root-cause writeup.
+ *
+ * Routed through the pasteBuffer test seam so unit tests can assert the exact
+ * payload bytes handed to load-buffer without any real tmux I/O.
+ */
+function execPasteBuffer(tmux: string, session: string, text: string): void {
+  if (_sbDeps?.pasteBuffer) {
+    _sbDeps.pasteBuffer(session, text);
+    return;
+  }
+  execFileSync(tmux, ['load-buffer', '-'], {
+    input: text,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  execFileSync(tmux, ['paste-buffer', '-d', '-p', '-t', `${session}:`], {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 }
@@ -302,11 +337,48 @@ export function injectText(
     return false;
   }
 
-  const stamped = addTimestamp ? `${estTimestamp()} ${text}` : text;
+  // Sanitize input before it can reach execPasteBuffer: bracketed paste is
+  // only safe if the payload cannot embed the paste terminator ESC[201~ — an
+  // embedded ESC[201~ ends paste mode early and subsequent bytes go LIVE to
+  // the TUI (including '/'-commands), re-opening the keystroke-injection
+  // exploit class this fix was meant to close. Stripping ESC bytes makes the
+  // terminator unrepresentable. Mirrors the sanitizer in agents/tmux.ts's
+  // injectMessageToSession().
+  let safeText = text.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, ''); // ANSI CSI
+  safeText = safeText.replace(/\x1b[^[]/g, '');               // other ESC seqs
+  safeText = safeText.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, ''); // C0 + DEL, keep \n \t
+
+  // @-mention residual: bracketed paste defeats typing-time fuzzy-autocomplete
+  // popups, but the receiving TUI separately resolves @-mentions in the
+  // SUBMITTED buffer text — a peer-controlled '@'-prefixed path to a real
+  // file (relative, absolute, ../traversal, or config-style) still
+  // auto-reads that file at submit time. A filesystem-existence-check gate
+  // was rejected: TOCTOU (the file may not exist at sanitize-time but
+  // resolve at submit-time), cwd divergence between the sanitizer and the
+  // harness's resolution, and absolute/traversal/symlink/tilde forms can
+  // dodge the probe. Empirically verified fix instead: insert U+200B (ZERO
+  // WIDTH SPACE) immediately after any '@' that's immediately followed by a
+  // non-whitespace, non-'@' character — this defeats @-mention resolution
+  // while rendering identically (invisible), so broad/over-neutralizing
+  // matches (e.g. '@8pm', 'user@example.com') are harmless. Mirrors the
+  // identical change in agents/tmux.ts injectMessageToSession().
+  safeText = safeText.replace(/@(?=[^\s@])/g, '@​');
+
+  if (safeText.length === 0) {
+    log.warn('injectText: text empty after sanitization', { session, originalLength: text.length });
+    return false;
+  }
+
+  const stamped = addTimestamp ? `${estTimestamp()} ${safeText}` : safeText;
 
   try {
-    // Send the message text as literal keystrokes (-l prevents key-name expansion).
-    execSbSendKeys(tmux, session, ['-l', stamped]);
+    // Deliver via bracketed paste, NOT literal keystrokes — see
+    // agents/tmux.ts execPasteBuffer() doc for the full root-cause writeup:
+    // '-l' send-keys types the payload as live keystrokes, so a
+    // peer-controlled '@' character can pop the receiving TUI's
+    // file-autocomplete and the immediately following submit keystroke then
+    // accepts that popup instead of submitting.
+    execPasteBuffer(tmux, session, stamped);
 
     if (pressEnter) {
       // Small delay before submitting. Suppressed in seam test mode (sendKeys set).
@@ -336,7 +408,7 @@ export function injectText(
           const pane = _sbDeps?.capturePane ? _sbDeps.capturePane(session) : capturePane(session);
           const lines = pane.split('\n').filter(l => l.trim().length > 0);
           const lastLines = lines.slice(-5);
-          const textStillPending = lastLines.some(l => l.includes(text.slice(0, 40)));
+          const textStillPending = lastLines.some(l => l.includes(safeText.slice(0, 40)));
           if (!textStillPending) break;
           log.debug(`Enter attempt ${attempt} pending — retrying (backoff ${delay}ms)`);
         }

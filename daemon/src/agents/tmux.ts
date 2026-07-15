@@ -110,6 +110,42 @@ async function execSendKeys(session: string, args: string[]): Promise<void> {
 }
 
 /**
+ * Deliver a text payload into a tmux pane via bracketed paste rather than
+ * literal keystrokes.
+ *
+ * Literal '-l' send-keys types the payload as live keystrokes: nothing stops
+ * the receiving TUI's own live keystroke interpretation, so a peer-controlled
+ * '@' character can pop a file-autocomplete popup and the following submit
+ * keystroke then accepts that popup instead of submitting.
+ *
+ * Fix: write the payload to a tmux paste buffer (`load-buffer -`, via stdin)
+ * and insert it with `paste-buffer -d -p` — the `-p` flag wraps the insert in
+ * bracketed-paste escape sequences, so the receiving TUI gets it as a single
+ * pasted blob and does not live-interpret '@' or '/' triggers inside it. `-d`
+ * deletes the buffer after paste (no leftover tmux buffer state). The submit
+ * keystroke (C-m) stays a separate send-keys call — see execSendKeys() —
+ * since no popup can be open after a paste, Enter submits normally.
+ *
+ * Routed through the pasteBuffer test seam so unit tests can assert the exact
+ * payload handed to load-buffer without any real tmux I/O.
+ */
+async function execPasteBuffer(session: string, text: string): Promise<void> {
+  if (_testingDeps?.pasteBuffer) {
+    _testingDeps.pasteBuffer(session, text);
+    return;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const child = execFile(TMUX_BIN, ['-S', TMUX_SOCKET, 'load-buffer', '-'], { timeout: 5000 }, (err) => {
+      if (err) reject(err); else resolve();
+    });
+    child.stdin!.end(text, 'utf8');
+  });
+  await execFileAsync(TMUX_BIN, [
+    '-S', TMUX_SOCKET, 'paste-buffer', '-d', '-p', '-t', `${session}:`,
+  ], { timeout: 5000 });
+}
+
+/**
  * Capture the current visible content of a tmux pane.
  *
  * This is the shared "capture-pane verify" primitive used by:
@@ -468,6 +504,22 @@ async function injectMessageToSession(agentId: string, session: string, text: st
   // Strip raw escape bytes and other C0 control chars except newline and tab
   safeText = safeText.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
 
+  // @-mention residual: bracketed paste defeats typing-time fuzzy-autocomplete
+  // popups, but the receiving TUI separately resolves @-mentions in the
+  // SUBMITTED buffer text — a peer-controlled '@'-prefixed path to a real
+  // file (relative, absolute, ../traversal, or config-style) still
+  // auto-reads that file at submit time. A filesystem-existence-check gate
+  // was rejected: TOCTOU (the file may not exist at sanitize-time but
+  // resolve at submit-time), cwd divergence between the sanitizer and the
+  // harness's resolution, and absolute/traversal/symlink/tilde forms can
+  // dodge the probe. Empirically verified fix instead: insert U+200B (ZERO
+  // WIDTH SPACE) immediately after any '@' that's immediately followed by a
+  // non-whitespace, non-'@' character — this defeats @-mention resolution
+  // while rendering identically (invisible), so broad/over-neutralizing
+  // matches (e.g. '@8pm', 'user@example.com') are harmless. Mirrors the
+  // identical change in core/session-bridge.ts injectText().
+  safeText = safeText.replace(/@(?=[^\s@])/g, '@​');
+
   if (safeText.length === 0) {
     log.warn('injectMessage: text empty after sanitization', {
       agentId, originalLength: text.length,
@@ -491,9 +543,11 @@ async function injectMessageToSession(agentId: string, session: string, text: st
   } catch { /* non-fatal — proceed with send even if capture-pane fails */ }
 
   try {
-    // Send the message text as literal keystrokes (-l prevents key-name expansion)
+    // Deliver the message text via bracketed paste, NOT literal keystrokes —
+    // see execPasteBuffer() doc for why '-l' send-keys was unsafe for
+    // peer-controlled text containing '@'.
     const stamped = `${estTimestamp()} ${safeText}`;
-    await execSendKeys(session, ['-l', stamped]);
+    await execPasteBuffer(session, stamped);
 
     // Small delay to let tmux buffer the text before the submit keystroke.
     // Suppressed in seam test mode (capturePane set) to keep tests fast.
@@ -545,7 +599,7 @@ async function injectMessageToSession(agentId: string, session: string, text: st
           // This is a best-effort safety net: no verify on the re-delivery (to avoid
           // a new confirm loop); the caller still receives submitted=false (honest
           // about unconfirmed state). Applies to both comms and orch panes.
-          await execSendKeys(session, ['-l', stamped]);
+          await execPasteBuffer(session, stamped);
           if (!_testingDeps?.capturePane) await sleep(150);
           await execSendKeys(session, ['C-m']);
         }
@@ -946,6 +1000,20 @@ interface TmuxTestDeps {
    * was recorded. Folding C-m into the text payload removes this call → test RED.
    */
   sendKeys?: (session: string, args: string[]) => void;
+  /**
+   * Intercept the load-buffer + paste-buffer pair used to deliver the text
+   * payload via bracketed paste (replaces literal '-l' send-keys for the
+   * payload; the C-m submit keeps going through the sendKeys seam above).
+   * Called with the exact (session, text) that would otherwise be piped
+   * through `tmux load-buffer -` and inserted with `paste-buffer -d -p`.
+   *
+   * Mutation-kill usage: record all calls; assert the exact payload bytes
+   * (including '@'-prefixed strings) are handed here VERBATIM, and that no
+   * sendKeys call with args[0] === '-l' carries the same payload. Reverting
+   * to `execSendKeys(session, ['-l', stamped])` for the payload removes this
+   * call entirely → test RED.
+   */
+  pasteBuffer?: (session: string, text: string) => void;
   /**
    * Intercept the tmux new-session args inside spawnOrchestratorSession for
    * args-capture unit tests. When set, replaces the real execFileSync call so

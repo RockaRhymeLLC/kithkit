@@ -607,6 +607,7 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
     // that sidesteps the code deciding to send C-m (cf. PR #439's first submission).
 
     const sendKeysCalls: Array<{ session: string; args: string[] }> = [];
+    const pasteBufferCalls: Array<{ session: string; text: string }> = [];
     let captureCallCount = 0;
 
     _setTmuxDepsForTesting({
@@ -614,6 +615,7 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
       sessionExists: () => true,
       isOrchAlive: () => true,
       sendKeys: (session, args) => { sendKeysCalls.push({ session, args }); },
+      pasteBuffer: (session, text) => { pasteBufferCalls.push({ session, text }); },
       // capturePane seam:
       //   call 0 (baseline / readiness gate): show ready prompt → isInputPromptReady passes
       //   call 1+ (verifySubmitLanded's first+second confirm reads): input line reads
@@ -639,18 +641,26 @@ describe('injectMessage — separate C-m submit with capture-pane verify (mutati
       `MUTATION-KILL: standalone C-m send-keys call must fire — got calls: ${JSON.stringify(sendKeysCalls)}`,
     );
 
-    // The text payload call (-l) must NOT contain C-m (it must stay separate)
-    const textCalls = sendKeysCalls.filter(c => c.args[0] === '-l');
-    assert.ok(textCalls.length >= 1, 'text must be sent via -l literal send-keys');
+    // The text payload must go through the paste-buffer seam, NOT '-l'
+    // literal send-keys, and must not contain C-m (it must stay separate).
+    assert.ok(pasteBufferCalls.length >= 1, 'text must be delivered via the paste-buffer path');
     assert.ok(
-      !textCalls.some(c => c.args.join('\0').includes('C-m')),
-      `text payload must not fold C-m into the -l argument — mutation evidence: ${JSON.stringify(textCalls)}`,
+      !pasteBufferCalls.some(c => c.text.includes('C-m')),
+      `text payload must not fold C-m into the paste payload — mutation evidence: ${JSON.stringify(pasteBufferCalls)}`,
+    );
+    assert.equal(
+      sendKeysCalls.filter(c => c.args[0] === '-l').length, 0,
+      `text payload must NOT be sent via '-l' literal send-keys — got: ${JSON.stringify(sendKeysCalls)}`,
     );
 
     // Every call must target the correct session
     assert.ok(
       sendKeysCalls.every(c => c.session === 'orch1'),
       'all send-keys calls must target the resolved orchestrator session',
+    );
+    assert.ok(
+      pasteBufferCalls.every(c => c.session === 'orch1'),
+      'the paste-buffer call must target the resolved orchestrator session',
     );
   });
 
@@ -934,12 +944,14 @@ describe('#497 residual B — MUTATION-KILL: orch lost-wake-up re-delivery on gi
     //   Restore the block → textSends.length === 2 → GREEN.
 
     const sendKeysCalls: Array<{ session: string; args: string[] }> = [];
+    const pasteBufferCalls: Array<{ session: string; text: string }> = [];
 
     _setTmuxDepsForTesting({
       resolveSession: (id) => (id === 'orchestrator' ? 'orch1' : null),
       sessionExists: () => true,
       isOrchAlive: () => true,
       sendKeys: (session, args) => { sendKeysCalls.push({ session, args }); },
+      pasteBuffer: (session, text) => { pasteBufferCalls.push({ session, text }); },
       // Pane has no parseable input box — lots of streaming output but no
       // bordered ❯ row + Context footer that findCurrentInputLine() requires.
       // This is representative of an orch pane mid-stream with a full screen
@@ -953,14 +965,18 @@ describe('#497 residual B — MUTATION-KILL: orch lost-wake-up re-delivery on gi
 
     await injectMessage('orchestrator', 'ping from daemon');
 
-    // With the re-deliver fix: 2 text sends (initial + re-deliver).
-    // MUTATION-KILL: removing the re-deliver block → 1 text send → RED.
-    const textSends = sendKeysCalls.filter(c => c.args[0] === '-l');
+    // With the re-deliver fix: 2 text deliveries (initial + re-deliver), both
+    // via the paste-buffer path — never '-l' literal send-keys.
+    // MUTATION-KILL: removing the re-deliver block → 1 delivery → RED.
+    assert.equal(
+      sendKeysCalls.filter(c => c.args[0] === '-l').length, 0,
+      `text payload must NOT be sent via '-l' literal send-keys — got: ${JSON.stringify(sendKeysCalls)}`,
+    );
     assert.ok(
-      textSends.length >= 2,
+      pasteBufferCalls.length >= 2,
       `MUTATION-KILL (orch re-deliver on give-up): must re-deliver text once when verify exhausts — ` +
-      `got ${textSends.length} text send(s); removing the re-deliver block leaves only 1 → RED. ` +
-      `All calls: ${JSON.stringify(sendKeysCalls)}`,
+      `got ${pasteBufferCalls.length} text delivery(ies); removing the re-deliver block leaves only 1 → RED. ` +
+      `All pasteBuffer calls: ${JSON.stringify(pasteBufferCalls)}`,
     );
 
     // Confirm the re-delivery also fires a C-m submit
@@ -1055,12 +1071,14 @@ describe('#498 stale-text — MUTATION-KILL: re-deliver suppressed when input li
     //   '#497 residual B' covers null-input-line re-deliver. Not duplicated here.
 
     const sendKeysCalls: Array<{ session: string; args: string[] }> = [];
+    const pasteBufferCalls: Array<{ session: string; text: string }> = [];
 
     _setTmuxDepsForTesting({
       resolveSession: (id) => (id === 'orchestrator' ? 'orch1' : null),
       sessionExists: () => true,
       isOrchAlive: () => true,
       sendKeys: (session, args) => { sendKeysCalls.push({ session, args }); },
+      pasteBuffer: (session, text) => { pasteBufferCalls.push({ session, text }); },
       // Pane has a parseable bordered input box with genuine stale user text.
       // findCurrentInputLine() returns 'check recon worker 38fa874a status'.
       // This is NOT in SUBMIT_LANDED_INDICATORS and is NOT empty → landed=false,
@@ -1074,14 +1092,18 @@ describe('#498 stale-text — MUTATION-KILL: re-deliver suppressed when input li
     assert.equal(result, false,
       'injectMessage must return false (submitted=false) when verify fails due to stale text on input line');
 
-    // Must NOT re-deliver — only 1 text send (the original injection).
-    // MUTATION-KILL: removing the hasGenuineStaleText guard causes 2 text sends → RED.
-    const textSends = sendKeysCalls.filter(c => c.args[0] === '-l');
+    // Must NOT re-deliver — only 1 text delivery (the original injection), via
+    // the paste-buffer path, never '-l' literal send-keys.
+    // MUTATION-KILL: removing the hasGenuineStaleText guard causes 2 deliveries → RED.
     assert.equal(
-      textSends.length, 1,
+      sendKeysCalls.filter(c => c.args[0] === '-l').length, 0,
+      `text payload must NOT be sent via '-l' literal send-keys — got: ${JSON.stringify(sendKeysCalls)}`,
+    );
+    assert.equal(
+      pasteBufferCalls.length, 1,
       `MUTATION-KILL (#498 stale-text): must NOT re-deliver when input line holds genuine stale text — ` +
-      `got ${textSends.length} text send(s); removing the guard causes 2 sends per tick → RED. ` +
-      `All calls: ${JSON.stringify(sendKeysCalls)}`,
+      `got ${pasteBufferCalls.length} text delivery(ies); removing the guard causes 2 deliveries per tick → RED. ` +
+      `All pasteBuffer calls: ${JSON.stringify(pasteBufferCalls)}`,
     );
   });
 });
@@ -1195,4 +1217,158 @@ describe('spawnOrchestratorSession — tmux new-session args-capture (fix/870)',
       `MUTATION-KILL: '-e CLAUDECODE=' (idx ${claudecodeIdx}) must appear BEFORE claudeBin (idx ${claudeBinIdx}) — tmux requires -e before the shell command`,
     );
   });
+});
+
+// ── Bracketed-paste delivery + sanitizer (mutation-kill) ────────────────
+//
+// INCIDENT: injectMessageToSession() previously delivered the text payload as
+// literal keystrokes (`send-keys -l <payload>`), then a *separate* `send-keys
+// C-m` call after a short delay. Literal delivery has two problems for
+// peer-controlled text:
+//   1. An embedded bracketed-paste terminator or raw ESC byte can desync the
+//      receiving pane's rendering / mode state.
+//   2. A literal '@' character can pop the receiving TUI's file-autocomplete,
+//      and the following submit keystroke then accepts that popup instead of
+//      submitting — the harness auto-reads whatever file the popup selected.
+//
+// FIX: deliver the payload via tmux bracketed paste (`load-buffer -` +
+// `paste-buffer -d -p`) instead of literal send-keys, after stripping ANSI/C0
+// control bytes and inserting an invisible ZWSP after risky '@' characters.
+// The submit keystroke remains a separate, unchanged send-keys call.
+
+describe('injectMessage — bracketed paste delivery (mutation-kill)', { concurrency: 1 }, () => {
+  let savedAllowInject: string | undefined;
+  let savedSuppress: string | undefined;
+
+  beforeEach(() => {
+    savedAllowInject = process.env.KITHKIT_ALLOW_TEST_INJECT;
+    savedSuppress = process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    process.env.KITHKIT_ALLOW_TEST_INJECT = '1';
+    delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    _resetInjectionAttempts();
+  });
+
+  afterEach(() => {
+    _setTmuxDepsForTesting(null);
+    if (savedAllowInject === undefined) {
+      delete process.env.KITHKIT_ALLOW_TEST_INJECT;
+    } else {
+      process.env.KITHKIT_ALLOW_TEST_INJECT = savedAllowInject;
+    }
+    if (savedSuppress === undefined) {
+      delete process.env.KITHKIT_SUPPRESS_NOTIFICATIONS;
+    } else {
+      process.env.KITHKIT_SUPPRESS_NOTIFICATIONS = savedSuppress;
+    }
+    _resetInjectionAttempts();
+  });
+
+  function deliver(text: string): Promise<{
+    result: boolean;
+    sendKeysCalls: Array<{ session: string; args: string[] }>;
+    pasteBufferCalls: Array<{ session: string; text: string }>;
+  }> {
+    const sendKeysCalls: Array<{ session: string; args: string[] }> = [];
+    const pasteBufferCalls: Array<{ session: string; text: string }> = [];
+    let captureCallCount = 0;
+
+    _setTmuxDepsForTesting({
+      resolveSession: (id) => (id === 'orchestrator' ? 'orch1' : null),
+      sessionExists: () => true,
+      isOrchAlive: () => true,
+      sendKeys: (session, args) => { sendKeysCalls.push({ session, args }); },
+      pasteBuffer: (session, t) => { pasteBufferCalls.push({ session, text: t }); },
+      capturePane: (_session) => {
+        const n = captureCallCount++;
+        return n === 0 ? '$ claude\n> ' : paneWithInput('');
+      },
+    });
+
+    return injectMessage('orchestrator', text).then((result) => ({ result, sendKeysCalls, pasteBufferCalls }));
+  }
+
+  it('(a) delivers the payload via pasteBuffer, never via \'-l\' send-keys, with C-m still a separate call', async () => {
+    const { result, sendKeysCalls, pasteBufferCalls } = await deliver('check queue');
+
+    assert.equal(result, true, 'injectMessage must return true on a confirmed submit');
+    assert.equal(pasteBufferCalls.length, 1, `expected exactly one pasteBuffer call — got: ${JSON.stringify(pasteBufferCalls)}`);
+    assert.ok(pasteBufferCalls[0]!.text.endsWith('check queue'));
+    assert.equal(pasteBufferCalls[0]!.session, 'orch1');
+
+    const literalTextCalls = sendKeysCalls.filter(c => c.args[0] === '-l');
+    assert.equal(
+      literalTextCalls.length, 0,
+      `MUTATION-KILL: '-l' send-keys must NOT be used for the text payload — got: ${JSON.stringify(literalTextCalls)}`,
+    );
+    const cmCalls = sendKeysCalls.filter(c => c.args.includes('C-m'));
+    assert.ok(
+      cmCalls.length >= 1,
+      `standalone C-m send-keys call must still fire after the paste — got: ${JSON.stringify(sendKeysCalls)}`,
+    );
+  });
+
+  it('(b) MUTATION-KILL: embedded bracketed-paste terminator ESC[201~ never reaches pasteBuffer intact', async () => {
+    const malicious = 'hello \x1b[201~/quit rest';
+    const { result, pasteBufferCalls } = await deliver(malicious);
+
+    assert.equal(result, true);
+    assert.equal(pasteBufferCalls.length, 1);
+    const delivered = pasteBufferCalls[0]!.text;
+
+    // No ESC byte anywhere — makes the terminator unrepresentable.
+    assert.ok(
+      !delivered.includes('\x1b'),
+      `MUTATION-KILL: delivered payload must contain no ESC byte — got: ${JSON.stringify(delivered)}`,
+    );
+    assert.ok(
+      !delivered.includes('\x1b[201~'),
+      `MUTATION-KILL: bracketed-paste terminator must not survive intact — got: ${JSON.stringify(delivered)}`,
+    );
+    // Rest of the payload content is preserved (only the ESC byte is stripped).
+    assert.ok(delivered.includes('hello'));
+    assert.ok(delivered.includes('/quit rest'));
+  });
+
+  it('MUTATION-KILL: text that sanitizes to empty (control chars only) is never handed to pasteBuffer', async () => {
+    const { result, pasteBufferCalls } = await deliver('\x01\x02\x1b[31m\x1b[0m\x7f');
+    assert.equal(result, false, 'text that sanitizes to empty must short-circuit before delivery');
+    assert.equal(pasteBufferCalls.length, 0);
+  });
+
+  // (c) @-mention ZWSP neutralization — bar-5 matrix.
+  for (const pathForm of ['@README.md', '@/etc/passwd', '@../secrets.txt', '@config/settings.yaml']) {
+    it(`(c) neutralizes path-form mention '${pathForm}' — ZWSP inserted, bare form absent from the delivered payload`, async () => {
+      const { result, pasteBufferCalls } = await deliver(pathForm);
+      assert.equal(result, true);
+      assert.equal(pasteBufferCalls.length, 1);
+      const delivered = pasteBufferCalls[0]!.text;
+
+      assert.ok(
+        !delivered.includes(pathForm),
+        `MUTATION-KILL: delivered text must NOT contain the bare '@'-path substring — got: ${JSON.stringify(delivered)}`,
+      );
+      assert.ok(
+        delivered.includes(`@​${pathForm.slice(1)}`),
+        `delivered text must contain '@' + ZWSP + the path — got: ${JSON.stringify(delivered)}`,
+      );
+      assert.ok(
+        delivered.replace(/​/g, '').endsWith(pathForm),
+        `stripping ZWSP must restore the original visible token — got: ${JSON.stringify(delivered)}`,
+      );
+    });
+  }
+
+  for (const displayForm of ['@8pm', 'ping @somebody please', 'email me at user@example.com']) {
+    it(`(c) preserves visible display for '${displayForm}' once ZWSP is stripped`, async () => {
+      const { result, pasteBufferCalls } = await deliver(displayForm);
+      assert.equal(result, true);
+      assert.equal(pasteBufferCalls.length, 1);
+      const delivered = pasteBufferCalls[0]!.text;
+      const withoutZwsp = delivered.replace(/​/g, '');
+      assert.ok(
+        withoutZwsp.endsWith(displayForm),
+        `ZWSP-stripped delivered text must end with the original input (no visible change) — got: ${JSON.stringify(delivered)}`,
+      );
+    });
+  }
 });
