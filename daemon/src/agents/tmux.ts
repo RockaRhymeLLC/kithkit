@@ -703,6 +703,13 @@ export function spawnOrchestratorSession(): string | null {
       '-y', '50',       // height
       '-e', 'CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1', // set pane env explicitly (server-env bypass)
       '-e', 'CLAUDECODE=',                            // clear nesting guard (server-env bypass)
+      // Pane flag (not just env-object key) — a pre-existing tmux SERVER ignores
+      // the env passed to execFileSync, so this must be an explicit -e like the
+      // other vars above. Lets transcript-review.sh's KITHKIT_AGENT_PROFILE
+      // self-exclusion (widened in todo 3037) recognize the orchestrator session,
+      // which is tmux-spawned here rather than child-process-spawned like workers
+      // (workers get the var from lifecycle.ts:304 instead).
+      '-e', 'KITHKIT_AGENT_PROFILE=orchestrator',
       claudeBin, '--agent', 'orchestrator', '--dangerously-skip-permissions',
     ];
     if (_testingDeps?.newSessionArgs) {
