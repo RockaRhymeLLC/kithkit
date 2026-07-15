@@ -892,6 +892,73 @@ describe('A2A Router — Spec Bug Fixes', () => {
     assert.equal(result.ok, true, 'text at exactly the limit should be accepted');
   });
 
+  it('Typeless-shaped payload (no text/message field) is measured via JSON.stringify(normalized) and rejected', async () => {
+    let lanCalled = false;
+    const deps = createMockDeps({
+      sendViaLAN: async () => { lanCalled = true; return { ok: true }; },
+      getAgentCommsSecret: async () => 'test-secret',
+    });
+    const router = new UnifiedA2ARouter(deps);
+    const payload = { type: 'data', data: 'x'.repeat(5000) };
+    const expectedLength = JSON.stringify(payload).length;
+
+    const result = await router.send({ to: 'agent-a', payload });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, A2A_ERROR_CODES.PAYLOAD_TOO_LARGE);
+      assert.equal(result.actualLength, expectedLength, 'must measure JSON.stringify(normalized), matching the receiver fallback exactly');
+      assert.equal(result.maxLength, MAX_A2A_TEXT_LENGTH);
+    }
+    assert.equal(lanCalled, false, 'oversized typeless payload must not bypass the guard and reach delivery');
+  });
+
+  it('Object-form {text: {content}} wrapper is unwrapped by normalizePayload then measured and rejected', async () => {
+    let lanCalled = false;
+    const deps = createMockDeps({
+      sendViaLAN: async () => { lanCalled = true; return { ok: true }; },
+      getAgentCommsSecret: async () => 'test-secret',
+    });
+    const router = new UnifiedA2ARouter(deps);
+    const content = 'x'.repeat(5000);
+
+    const result = await router.send({
+      to: 'agent-a',
+      payload: { type: 'text', text: { content } },
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, A2A_ERROR_CODES.PAYLOAD_TOO_LARGE);
+      assert.equal(result.actualLength, content.length, 'must measure the unwrapped string, not the pre-normalization object');
+      assert.equal(result.maxLength, MAX_A2A_TEXT_LENGTH);
+    }
+    assert.equal(lanCalled, false, 'oversized {text: {content}} wrapper must not bypass the guard and reach delivery');
+  });
+
+  it('Object-form {message: {content}} wrapper is unwrapped by normalizePayload then measured and rejected', async () => {
+    let lanCalled = false;
+    const deps = createMockDeps({
+      sendViaLAN: async () => { lanCalled = true; return { ok: true }; },
+      getAgentCommsSecret: async () => 'test-secret',
+    });
+    const router = new UnifiedA2ARouter(deps);
+    const content = 'x'.repeat(5000);
+
+    const result = await router.send({
+      to: 'agent-a',
+      payload: { type: 'text', message: { content } },
+    });
+
+    assert.equal(result.ok, false);
+    if (!result.ok) {
+      assert.equal(result.code, A2A_ERROR_CODES.PAYLOAD_TOO_LARGE);
+      assert.equal(result.actualLength, content.length, 'must measure the unwrapped string, not the pre-normalization object');
+      assert.equal(result.maxLength, MAX_A2A_TEXT_LENGTH);
+    }
+    assert.equal(lanCalled, false, 'oversized {message: {content}} wrapper must not bypass the guard and reach delivery');
+  });
+
   it('Relay queued status propagated in auto-fallback path (SPEC BUG 7)', async () => {
     const deps = createMockDeps({
       sendViaLAN: async () => ({ ok: false, error: 'LAN failed' }),
