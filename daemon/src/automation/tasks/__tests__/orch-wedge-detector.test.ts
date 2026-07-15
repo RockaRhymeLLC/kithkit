@@ -39,6 +39,7 @@ import {
   _getWedgeRestartStateForTesting as getWedgeRestartState,
   DEFAULT_WEDGE_TIMEOUT_MINUTES,
   WEDGE_RESTART_CAP,
+  WEDGE_DEBOUNCE_THRESHOLD,
 } from '../context-watchdog.js';
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -49,6 +50,21 @@ function isoMinutesAgo(minutes: number): string {
 
 function isoMinutesFromNow(minutes: number): string {
   return new Date(Date.now() + minutes * 60 * 1000).toISOString();
+}
+
+/**
+ * Signal (i)/(ii) require WEDGE_DEBOUNCE_THRESHOLD consecutive ticks before the wedge
+ * detector acts (see the DEBOUNCE GATE in context-watchdog.ts). Signal (iii) bypasses
+ * debounce and fires on a single tick. Tests that expect a signal(i)/(ii)-driven restart
+ * must "prime" the debounce counter with (WEDGE_DEBOUNCE_THRESHOLD - 1) no-op ticks before
+ * the tick that actually fires — a single `runWatchdog()` call is not sufficient. Call this
+ * instead of `runWatchdog()` directly whenever the test asserts a signal(i)/(ii) restart DID happen.
+ */
+async function runWatchdogUntilFires(config: Record<string, unknown>): Promise<void> {
+  for (let i = 1; i < WEDGE_DEBOUNCE_THRESHOLD; i++) {
+    await runWatchdog(config);
+  }
+  await runWatchdog(config);
 }
 
 let tmpDir: string;
@@ -105,6 +121,18 @@ function insertPendingTask(extId: string): void {
   );
 }
 
+/** Insert a completed orchestrator task with acknowledged_at left NULL. */
+function insertCompletedTask(extId: string, updatedMinutesAgo: number): void {
+  exec(
+    `INSERT INTO tasks (external_id, kind, title, status, created_at, updated_at, completed_at, acknowledged_at)
+     VALUES (?, 'orchestrator', 'Completed task', 'completed', ?, ?, ?, NULL)`,
+    extId,
+    isoMinutesAgo(60),
+    isoMinutesAgo(updatedMinutesAgo),
+    isoMinutesAgo(updatedMinutesAgo),
+  );
+}
+
 // ── Primary mutation-kill test ─────────────────────────────────
 
 describe('orch-wedge-detector: signal (i) — frozen in_progress task (mutation-kill)', () => {
@@ -134,7 +162,7 @@ describe('orch-wedge-detector: signal (i) — frozen in_progress task (mutation-
       },
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     assert.equal(killCalled, true,
       'killOrchestratorSession MUST be called when orch is alive but in_progress task is frozen — ' +
@@ -249,7 +277,7 @@ describe('orch-wedge-detector: signal (ii) — frozen agents.last_activity', () 
       sendMessage: () => ({ messageId: 1, delivered: false }),
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     assert.equal(killCalled, true,
       'killOrchestratorSession MUST be called when last_activity is frozen and the orch is ignoring open queue work');
@@ -277,7 +305,7 @@ describe('orch-wedge-detector: signal (ii) — frozen agents.last_activity', () 
     assert.equal(killCalled, false, 'must NOT fire at 15-min threshold when last_activity is 10 min ago');
 
     // With custom threshold (8): should fire
-    await runWatchdog({ wedge_timeout_minutes: 8 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 8 });
     assert.equal(killCalled, true, 'MUST fire at 8-min threshold when last_activity is 10 min ago');
   });
 
@@ -353,7 +381,7 @@ describe('orch-wedge-detector: signal (ii) — frozen agents.last_activity', () 
       sendMessage: () => ({ messageId: 1, delivered: false }),
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     assert.equal(spawnCalled, true,
       '#922 narrowness: spawnOrchestratorSession MUST be called when last_activity is frozen ' +
@@ -502,7 +530,7 @@ describe('orch-wedge-detector: GATE 2 — wedge-restart resets frozen in_progres
       sendMessage: () => ({ messageId: 1, delivered: false }),
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     // After wedge restart, the task MUST be pending (not in_progress) so the fresh orch picks it up
     const taskRows = query<{ status: string }>(`SELECT status FROM tasks WHERE external_id = 'task-gate2-1'`);
@@ -536,6 +564,86 @@ describe('orch-wedge-detector: GATE 2 — wedge-restart resets frozen in_progres
     const taskRows = query<{ status: string }>(`SELECT status FROM tasks WHERE external_id = 'task-gate5-healthy'`);
     assert.equal(taskRows[0]?.status, 'in_progress',
       'GATE 5: task must remain in_progress when orch is healthy');
+  });
+});
+
+// ── GATE 2: blast-radius scoping ────────────────────────────────────────────────────────────────
+
+describe('orch-wedge-detector: GATE 2 — blast-radius scoping (only the wedged task is reset)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  /**
+   * MUTATION-KILL PROOF:
+   * Revert: drop the `AND updated_at < ?` staleness scoping from GATE 2's SELECT/UPDATE
+   * (restore the old blanket `WHERE kind = 'orchestrator' AND status = 'in_progress'`).
+   * Expected: the healthy task also gets reset to pending → test goes RED.
+   * Restored: only the frozen task is reset; the healthy one stays in_progress → GREEN.
+   *
+   * NOTE on trigger choice: this test fires the restart via signal (iii) (pane shows
+   * garbled tool-invocation XML) rather than signal (i) (frozen in_progress MAX(updated_at)).
+   * signal (i) is computed as MAX(updated_at) across ALL in_progress orchestrator tasks —
+   * if ANY concurrent task is fresh (like task-gate2-healthy here), it dominates the MAX
+   * and signal (i) can mathematically never fire. Signal (iii) is independent of task-table
+   * state and is the only signal that can realistically coexist with a healthy concurrent
+   * task, so it's the correct way to exercise GATE 2's blast-radius scoping here.
+   */
+  it('resets ONLY the wedged task when TWO concurrent in_progress orchestrator tasks exist and only one is frozen', async () => {
+    insertOrchAgent(5); // fresh last_activity — isolate to signal(iii) only
+    insertInProgressTask('task-gate2-healthy', 2);   // recently updated — NOT wedged
+    insertInProgressTask('task-gate2-wedged', 20);    // frozen 20 min (> 15 min threshold)
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => true,
+      spawnOrchestratorSession: () => 'orch-gate2-blast-radius',
+      captureOrchestratorPane: () => '<invoke name="Bash"><parameter name="command">ls</parameter></invoke>\n> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    const wedgedRows = query<{ status: string }>(`SELECT status FROM tasks WHERE external_id = 'task-gate2-wedged'`);
+    assert.equal(wedgedRows[0]?.status, 'pending',
+      'GATE 2: the frozen task MUST be reset to pending');
+
+    const healthyRows = query<{ status: string }>(`SELECT status FROM tasks WHERE external_id = 'task-gate2-healthy'`);
+    assert.equal(healthyRows[0]?.status, 'in_progress',
+      'GATE 2: a concurrent HEALTHY in_progress task must NOT be reset — blast-radius scoping must ' +
+      'target only the task(s) whose updated_at is actually stale; reverting to the blanket ' +
+      "WHERE status = 'in_progress' UPDATE makes this RED (mutation-kill proof)");
+  });
+
+  /**
+   * MUTATION-KILL PROOF:
+   * Revert: drop the `AND status = 'in_progress'` defense-in-depth filter from GATE 2's UPDATE.
+   * Expected: nothing changes in THIS test alone (row is already excluded by staleness), but
+   * combined with a wider selection query the completed row could be reachable. This test locks
+   * the invariant directly: a completed task is NEVER touched by GATE 2 regardless of signal state.
+   */
+  it('NEVER touches a completed task (acknowledged_at=NULL) even when the wedge fires', async () => {
+    insertOrchAgent(5);
+    insertInProgressTask('task-gate2-wedged-2', 20); // triggers the restart
+    insertCompletedTask('task-gate2-completed', 30);  // old, completed, unacknowledged — must stay terminal
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => true,
+      spawnOrchestratorSession: () => 'orch-gate2-terminal-guard',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdog({ wedge_timeout_minutes: 15 });
+
+    const completedRows = query<{ status: string; acknowledged_at: string | null }>(
+      `SELECT status, acknowledged_at FROM tasks WHERE external_id = 'task-gate2-completed'`,
+    );
+    assert.equal(completedRows[0]?.status, 'completed',
+      'GATE 2: a completed task must remain completed — terminal status is never requeued, ' +
+      'regardless of acknowledged_at or wedge signals');
+    assert.equal(completedRows[0]?.acknowledged_at, null,
+      'GATE 2: acknowledged_at must be untouched (sanity check on the fixture)');
   });
 });
 
@@ -613,7 +721,7 @@ describe('orch-wedge-detector: GATE 3 — restart cap bounds the wedge-restart l
       exec(`UPDATE agents SET last_activity = ?, updated_at = ? WHERE id = 'orchestrator'`,
         isoMinutesAgo(5), isoMinutesAgo(5));
 
-      await runWatchdog({ wedge_timeout_minutes: 15 });
+      await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
       assert.equal(killCallCount, run,
         `Run ${run}: killOrchestratorSession MUST be called (restart ${run} of ${WEDGE_RESTART_CAP - 1} allowed) — ` +
@@ -626,7 +734,7 @@ describe('orch-wedge-detector: GATE 3 — restart cap bounds the wedge-restart l
       isoMinutesAgo(5), isoMinutesAgo(5));
 
     const killBeforeFinal = killCallCount;
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     // Kill must NOT have been called on the final run
     assert.equal(killCallCount, killBeforeFinal,
@@ -668,7 +776,7 @@ describe('orch-wedge-detector: GATE 3 — restart cap bounds the wedge-restart l
       sendMessage: () => ({ messageId: 1, delivered: false }),
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     let state = getWedgeRestartState();
     assert.equal(state.count, 1, 'After first detection: count should be 1');
@@ -720,7 +828,7 @@ describe('orch-wedge-detector: GATE 3 — restart cap bounds the wedge-restart l
       sendMessage: () => ({ messageId: 1, delivered: false }),
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     state = getWedgeRestartState();
     assert.equal(state.count, 1,
@@ -729,6 +837,150 @@ describe('orch-wedge-detector: GATE 3 — restart cap bounds the wedge-restart l
     assert.equal(state.lastIpMaxUpdatedAt, newFrozenValue,
       'lastWedgeIpMaxUpdatedAt must track the current frozen value');
     assert.equal(killCount, 1, 'Kill must have been called for the new frozen epoch restart');
+  });
+});
+
+// ── GATE 3: blast-radius scoping ────────────────────────────────────────────────────────────────
+
+describe('orch-wedge-detector: GATE 3 — blast-radius scoping (only the wedged task is failed)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  /**
+   * MUTATION-KILL PROOF:
+   * Revert: drop the `AND updated_at < ?` staleness scoping from GATE 3's SELECT/UPDATE
+   * (restore the old blanket `WHERE kind = 'orchestrator' AND status = 'in_progress'`).
+   * Expected: only ONE of the two stale tasks would still end up failed by coincidence of the
+   * old single-row UPDATE semantics being over-broad, but the real risk the blanket WHERE
+   * exposes is unscoped writes to tasks outside the wedge signal entirely; this test instead
+   * locks the positive-path invariant that the `external_id IN (...)` scoping is a real list,
+   * not a single id — both stale tasks must be swept together. If the multi-id IN clause was
+   * silently collapsed to a single id (e.g. `= ?` instead of `IN (...)`) this test goes RED.
+   *
+   * NOTE on scenario choice: an earlier version of this test set up ONE stale task alongside a
+   * HEALTHY (fresh) concurrent task and asserted the healthy one survives GATE 3. That scenario
+   * is mathematically impossible to construct: GATE 3's fail-path is nested inside
+   * `if (signalI)`, and signalI = MAX(updated_at) across ALL in_progress orchestrator tasks <
+   * cutoff. A single fresh task's updated_at always dominates that MAX, so signalI (and
+   * therefore GATE 3) can never fire while a genuinely healthy concurrent task exists. Whenever
+   * GATE 3 fires, EVERY concurrent in_progress task is, by construction, already stale — so the
+   * meaningful blast-radius property to test here is "all currently-stale tasks are swept
+   * together by the IN (...) clause," not "a healthy task survives."
+   */
+  it('fails ALL currently-stale in_progress tasks together when cap exhaustion fires (multi-task IN(...) scoping)', async () => {
+    const WEDGED_A = 'task-gate3-blast-wedged-a';
+    const WEDGED_B = 'task-gate3-blast-wedged-b';
+    const FROZEN_TS = isoMinutesAgo(20);
+
+    function reInsertFrozen(): void {
+      exec(`DELETE FROM tasks WHERE external_id IN (?, ?)`, WEDGED_A, WEDGED_B);
+      exec(
+        `INSERT INTO tasks (external_id, kind, title, status, created_at, updated_at)
+         VALUES (?, 'orchestrator', 'Test task A', 'in_progress', ?, ?)`,
+        WEDGED_A, isoMinutesAgo(60), FROZEN_TS,
+      );
+      exec(
+        `INSERT INTO tasks (external_id, kind, title, status, created_at, updated_at)
+         VALUES (?, 'orchestrator', 'Test task B', 'in_progress', ?, ?)`,
+        WEDGED_B, isoMinutesAgo(60), FROZEN_TS,
+      );
+    }
+
+    insertOrchAgent(5);
+    reInsertFrozen();
+
+    let killCallCount = 0;
+    const commsAlerts: Array<{ alert: string; taskIds?: string[] }> = [];
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCallCount++; return true; },
+      spawnOrchestratorSession: () => `orch-gate3-blast-${killCallCount}`,
+      captureOrchestratorPane: () => '> ',
+      sendMessage: (msg: { body: string }) => {
+        try {
+          const body = JSON.parse(msg.body);
+          if (body.alert) commsAlerts.push(body);
+        } catch { /* ignore */ }
+        return { messageId: 1, delivered: false };
+      },
+    });
+
+    // Drive both wedged tasks through CAP-1 restarts, then the Kth run trips GATE 3.
+    for (let run = 1; run < WEDGE_RESTART_CAP; run++) {
+      reInsertFrozen();
+      exec(`UPDATE agents SET last_activity = ?, updated_at = ? WHERE id = 'orchestrator'`,
+        isoMinutesAgo(5), isoMinutesAgo(5));
+      await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
+    }
+    reInsertFrozen();
+    exec(`UPDATE agents SET last_activity = ?, updated_at = ? WHERE id = 'orchestrator'`,
+      isoMinutesAgo(5), isoMinutesAgo(5));
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
+
+    const rowsA = query<{ status: string; error: string | null }>(
+      `SELECT status, error FROM tasks WHERE external_id = ?`, WEDGED_A,
+    );
+    const rowsB = query<{ status: string; error: string | null }>(
+      `SELECT status, error FROM tasks WHERE external_id = ?`, WEDGED_B,
+    );
+    assert.equal(rowsA[0]?.status, 'failed',
+      'GATE 3: stale task A must be marked FAILED by the multi-task IN(...) scoping');
+    assert.equal(rowsA[0]?.error, 'wedge_restart_cap_exceeded');
+    assert.equal(rowsB[0]?.status, 'failed',
+      'GATE 3: stale task B must ALSO be marked FAILED — the IN(...) clause must not silently ' +
+      'drop tasks beyond the first when multiple tasks are simultaneously stale');
+    assert.equal(rowsB[0]?.error, 'wedge_restart_cap_exceeded');
+
+    const capAlert = commsAlerts.find(a => a.alert === 'orchestrator_wedge_cap_exceeded');
+    assert.ok(capAlert, 'GATE 3: comms must be alerted with the cap-exceeded alert');
+    assert.ok(capAlert?.taskIds?.includes(WEDGED_A), 'GATE 3: alert must include task A');
+    assert.ok(capAlert?.taskIds?.includes(WEDGED_B), 'GATE 3: alert must include task B');
+  });
+
+  it('NEVER touches a completed task (acknowledged_at=NULL) even at cap exhaustion', async () => {
+    const WEDGED_ID = 'task-gate3-terminal-wedged';
+    const FROZEN_TS = isoMinutesAgo(20);
+
+    function reInsertFrozen(): void {
+      exec(`DELETE FROM tasks WHERE external_id = ?`, WEDGED_ID);
+      exec(
+        `INSERT INTO tasks (external_id, kind, title, status, created_at, updated_at)
+         VALUES (?, 'orchestrator', 'Test task', 'in_progress', ?, ?)`,
+        WEDGED_ID, isoMinutesAgo(60), FROZEN_TS,
+      );
+    }
+
+    insertOrchAgent(5);
+    reInsertFrozen();
+    insertCompletedTask('task-gate3-terminal-completed', 30);
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => true,
+      spawnOrchestratorSession: () => 'orch-gate3-terminal-guard',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    for (let run = 1; run < WEDGE_RESTART_CAP; run++) {
+      reInsertFrozen();
+      exec(`UPDATE agents SET last_activity = ?, updated_at = ? WHERE id = 'orchestrator'`,
+        isoMinutesAgo(5), isoMinutesAgo(5));
+      await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
+    }
+    reInsertFrozen();
+    exec(`UPDATE agents SET last_activity = ?, updated_at = ? WHERE id = 'orchestrator'`,
+      isoMinutesAgo(5), isoMinutesAgo(5));
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
+
+    const completedRows = query<{ status: string; acknowledged_at: string | null }>(
+      `SELECT status, acknowledged_at FROM tasks WHERE external_id = 'task-gate3-terminal-completed'`,
+    );
+    assert.equal(completedRows[0]?.status, 'completed',
+      'GATE 3: a completed task must remain completed — terminal status is never requeued or failed');
+    assert.equal(completedRows[0]?.acknowledged_at, null,
+      'GATE 3: acknowledged_at must be untouched (sanity check on the fixture)');
   });
 });
 
@@ -878,7 +1130,7 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
       sendMessage: () => ({ messageId: 1, delivered: false }),
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     assert.equal(killCalled, true,
       'Real wedge must still fire when last_activity is frozen, no workers are active, and open work exists — ' +
@@ -922,7 +1174,7 @@ describe('orch-wedge-detector: signal (ii) active-worker exemption (#462)', () =
       },
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     assert.equal(killCalled, true,
       'queued-only: killOrchestratorSession MUST be called when last_activity is frozen and ' +
@@ -1063,7 +1315,7 @@ describe('orch-wedge-detector: signal (i) synthesis-grace exemption (#940)', () 
       sendMessage: () => ({ messageId: 1, delivered: false }),
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15, synthesis_grace_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15, synthesis_grace_minutes: 15 });
 
     assert.equal(killCalled, true,
       '#940 Case B: killOrchestratorSession MUST be called when in_progress task is frozen ' +
@@ -1184,7 +1436,7 @@ describe('orch-wedge-detector: signal (ii) facet-b — started_at freshness guar
       sendMessage: () => ({ messageId: 1, delivered: false }),
     });
 
-    await runWatchdog({ wedge_timeout_minutes: 15 });
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
 
     assert.equal(killCalled, true,
       '#922 narrowness: killOrchestratorSession MUST be called when both last_activity and ' +

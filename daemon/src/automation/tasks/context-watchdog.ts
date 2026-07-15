@@ -353,7 +353,7 @@ let wedgeRestartCount = 0;
 /** Consecutive ticks where at least one signal(i/ii) fired without being cleared. Resets on a clear tick or after a restart. */
 let consecutiveWedgeSignals = 0;
 /** Number of consecutive signal(i/ii) ticks required before acting (debounce). Signal(iii) bypasses this. */
-const WEDGE_DEBOUNCE_THRESHOLD = 2;
+export const WEDGE_DEBOUNCE_THRESHOLD = 2;
 
 /**
  * Auto-restart the orchestrator after detecting a wedge condition.
@@ -363,8 +363,16 @@ const WEDGE_DEBOUNCE_THRESHOLD = 2;
  * at timer-arm time. By updating started_at on respawn here, any stale timer
  * that fires after this restart will see a DIFFERENT started_at and correctly
  * skip the kill — sparing the fresh session.
+ *
+ * @param cutoffIso - The wedge-timeout cutoff (now - wedge_timeout_minutes) used by
+ *   monitorOrchestratorWedge to compute the wedge signals. GATE 2 reuses this exact
+ *   criteria (updated_at < cutoffIso) to identify which specific in_progress task(s)
+ *   are actually frozen — NOT every in_progress orchestrator task. A signal (ii)/(iii)
+ *   restart (session-level: frozen last_activity or garbled pane) says nothing about
+ *   any individual task's freshness, so scoping by staleness is the correct fallback
+ *   identity even when the triggering signal wasn't task-specific (blast-radius fix).
  */
-function restartWedgedOrchestrator(reason: string): void {
+function restartWedgedOrchestrator(reason: string, cutoffIso: string): void {
   log.warn('Wedge detector: auto-restarting orchestrator', { reason });
 
   killOrchestratorSession();
@@ -377,14 +385,32 @@ function restartWedgedOrchestrator(reason: string): void {
   // updated_at when it transitions pending→in_progress, which clears signal(i) on the
   // next tick. After WEDGE_RESTART_CAP no-progress cycles, GATE 3 marks the task FAILED
   // instead of re-queuing (see monitorOrchestratorWedge).
+  //
+  // BLAST-RADIUS FIX: scope the reset to ONLY the task(s) whose updated_at is actually
+  // stale (< cutoffIso) — never blanket-hit every in_progress orchestrator row. Concurrent
+  // healthy in_progress tasks must be left untouched. The status filter is kept in the
+  // UPDATE WHERE as defense-in-depth: even if a task transitions to completed/cancelled
+  // between the SELECT and UPDATE, it can never match.
   try {
     const gateTs = new Date().toISOString();
-    exec(
-      `UPDATE tasks SET status = 'pending', error = NULL, updated_at = ?
-       WHERE kind = 'orchestrator' AND status = 'in_progress'`,
-      gateTs,
+    const frozenTasks = query<{ ext_id: string }>(
+      `SELECT external_id AS ext_id FROM tasks
+       WHERE kind = 'orchestrator' AND status = 'in_progress' AND updated_at < ?`,
+      cutoffIso,
     );
-    log.info('Wedge detector GATE 2: reset in_progress task(s) to pending for fresh orch pick-up');
+    if (frozenTasks.length > 0) {
+      const placeholders = frozenTasks.map(() => '?').join(', ');
+      exec(
+        `UPDATE tasks SET status = 'pending', error = NULL, updated_at = ?
+         WHERE external_id IN (${placeholders}) AND status = 'in_progress'`,
+        gateTs, ...frozenTasks.map(t => t.ext_id),
+      );
+      log.info('Wedge detector GATE 2: reset frozen in_progress task(s) to pending for fresh orch pick-up', {
+        taskIds: frozenTasks.map(t => t.ext_id),
+      });
+    } else {
+      log.info('Wedge detector GATE 2: no in_progress task(s) matched staleness criteria — nothing reset', { cutoffIso });
+    }
   } catch (err) {
     log.warn('Wedge detector GATE 2: failed to reset in_progress task(s) to pending', { error: String(err) });
   }
@@ -701,6 +727,11 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
 
       if (wedgeRestartCount >= WEDGE_RESTART_CAP) {
         // Cap exhausted — mark frozen task(s) FAILED and alert comms; do NOT restart.
+        //
+        // BLAST-RADIUS FIX: scope the SELECT/UPDATE to only the task(s) whose updated_at
+        // is actually stale (< cutoffIso), same criteria as signal(i) itself — never
+        // blanket-hit every in_progress orchestrator row. The status filter is kept in
+        // the UPDATE WHERE as defense-in-depth.
         log.warn('Wedge detector GATE 3: restart cap reached — marking frozen task(s) FAILED', {
           wedgeRestartCount,
           WEDGE_RESTART_CAP,
@@ -710,32 +741,39 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
         const capTs = new Date().toISOString();
         try {
           const frozenTasks = query<{ ext_id: string }>(
-            `SELECT external_id AS ext_id FROM tasks WHERE kind = 'orchestrator' AND status = 'in_progress'`,
+            `SELECT external_id AS ext_id FROM tasks
+             WHERE kind = 'orchestrator' AND status = 'in_progress' AND updated_at < ?`,
+            cutoffIso,
           );
-          exec(
-            `UPDATE tasks SET status = 'failed', error = 'wedge_restart_cap_exceeded', completed_at = ?, updated_at = ?
-             WHERE kind = 'orchestrator' AND status = 'in_progress'`,
-            capTs, capTs,
-          );
-          for (const task of frozenTasks) {
+          if (frozenTasks.length > 0) {
+            const placeholders = frozenTasks.map(() => '?').join(', ');
             exec(
-              `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
-               SELECT id, 'daemon', 'note', 'cleanup', ?, ?
-               FROM tasks WHERE kind = 'orchestrator' AND external_id = ?`,
-              `Task failed: wedge restart cap (${WEDGE_RESTART_CAP}) exceeded — orchestrator repeatedly re-wedged without progress`,
-              capTs, task.ext_id,
+              `UPDATE tasks SET status = 'failed', error = 'wedge_restart_cap_exceeded', completed_at = ?, updated_at = ?
+               WHERE external_id IN (${placeholders}) AND status = 'in_progress'`,
+              capTs, capTs, ...frozenTasks.map(t => t.ext_id),
             );
+            for (const task of frozenTasks) {
+              exec(
+                `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
+                 SELECT id, 'daemon', 'note', 'cleanup', ?, ?
+                 FROM tasks WHERE kind = 'orchestrator' AND external_id = ?`,
+                `Task failed: wedge restart cap (${WEDGE_RESTART_CAP}) exceeded — orchestrator repeatedly re-wedged without progress`,
+                capTs, task.ext_id,
+              );
+            }
+            sendMessage({
+              from: 'daemon',
+              to: 'comms',
+              type: 'status',
+              body: JSON.stringify({
+                alert: 'orchestrator_wedge_cap_exceeded',
+                message: `Orchestrator wedge restart cap (${WEDGE_RESTART_CAP}) exceeded — frozen task(s) marked FAILED: ${frozenTasks.map(t => t.ext_id).join(', ')}`,
+                taskIds: frozenTasks.map(t => t.ext_id),
+              }),
+            });
+          } else {
+            log.info('Wedge detector GATE 3: cap reached but no in_progress task(s) matched staleness criteria — nothing failed', { cutoffIso });
           }
-          sendMessage({
-            from: 'daemon',
-            to: 'comms',
-            type: 'status',
-            body: JSON.stringify({
-              alert: 'orchestrator_wedge_cap_exceeded',
-              message: `Orchestrator wedge restart cap (${WEDGE_RESTART_CAP}) exceeded — frozen task(s) marked FAILED: ${frozenTasks.map(t => t.ext_id).join(', ')}`,
-              taskIds: frozenTasks.map(t => t.ext_id),
-            }),
-          });
         } catch (err) {
           log.warn('Wedge detector GATE 3: failed to fail task(s) or alert comms', { error: String(err) });
         }
@@ -754,7 +792,7 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
       wedgeRestartCount: signalI ? wedgeRestartCount : undefined,
     });
 
-    restartWedgedOrchestrator(reasons.join('; '));
+    restartWedgedOrchestrator(reasons.join('; '), cutoffIso);
     consecutiveWedgeSignals = 0;
     return;
   }
