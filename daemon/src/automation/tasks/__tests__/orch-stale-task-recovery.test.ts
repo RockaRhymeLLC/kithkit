@@ -112,6 +112,32 @@ function getTaskError(extId: string): string | null {
   return rows[0]?.error ?? null;
 }
 
+/**
+ * Insert a 'result' message with metadata.task_id set, matching the shape
+ * message-router.ts sendMessage() writes for orchestrator→comms result messages.
+ * Returns the inserted message id.
+ */
+function seedResultMessage(taskExtId: string, completion = true): number {
+  const result = exec(
+    `INSERT INTO messages (from_agent, to_agent, type, body, metadata, created_at)
+     VALUES ('orchestrator', 'comms', 'result', 'Task complete.', ?, ?)`,
+    JSON.stringify({ task_id: taskExtId, completion }),
+    new Date().toISOString(),
+  );
+  return Number(result.lastInsertRowid);
+}
+
+/**
+ * Get task_activity notes for a task (by rowid), most recent first.
+ */
+function getTaskActivityMessages(rowid: number): string[] {
+  const rows = query<{ message: string }>(
+    `SELECT message FROM task_activity WHERE task_id = ? ORDER BY id DESC`,
+    rowid,
+  );
+  return rows.map(r => r.message);
+}
+
 // ── Config used in all tests (very short thresholds) ─────────
 const STALE_CONFIG: Record<string, unknown> = {
   // 5 seconds — so tasks aged > 5s are "stale" in tests
@@ -299,6 +325,139 @@ describe('orch-stale-task-recovery: dead orchestrator recovery', { concurrency: 
 
     // With a live legacy worker, task should NOT be failed
     assert.strictEqual(getTaskStatus(extId), 'in_progress', 'task with live legacy worker should be spared');
+  });
+});
+
+describe('orch-stale-task-recovery: orphaned result message recovery', { concurrency: 1 }, () => {
+  beforeEach(setupTestEnv);
+  afterEach(cleanupTestEnv);
+
+  /**
+   * MUTATION-KILL PROOF:
+   * Revert: remove the findExistingResultMessage() check (restore the old
+   * unconditional fail-on-stale path).
+   * Expected: task ends up 'failed' despite the pre-existing result message → RED.
+   * Restored: task ends up 'completed' with the recovery note → GREEN.
+   */
+  it('finalizes a stale in_progress task as COMPLETED (not failed) when a result message already exists', async () => {
+    const { extId, rowid } = seedTask({ status: 'in_progress', ageMs: 10_000 });
+    const resultMessageId = seedResultMessage(extId);
+
+    const injectCalls: string[] = [];
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      injectMessage: (_target, text) => { injectCalls.push(text); return true; },
+      getJobStatus: () => null,
+    });
+
+    await _runForTesting(STALE_CONFIG);
+
+    assert.strictEqual(getTaskStatus(extId), 'completed',
+      'task with a pre-existing result message must be finalized completed, not failed — ' +
+      'the reported work must be preserved instead of discarded');
+    assert.strictEqual(getTaskError(extId), null, 'a recovered-completed task must not carry an error');
+
+    const notes = getTaskActivityMessages(rowid);
+    assert.ok(
+      notes.some(m => m.includes('recovered orphaned result') && m.includes(String(resultMessageId))),
+      `task_activity must record the orphaned-result recovery note referencing message ${resultMessageId}; got: ${JSON.stringify(notes)}`,
+    );
+
+    assert.ok(injectCalls.some(m => m.includes('recovered as completed')), 'comms should be notified of the orphan recovery');
+  });
+
+  /**
+   * findExistingResultMessage() must require metadata.completion === true before
+   * treating a result message as proof of finished work. A message with
+   * completion:false is exactly what a message-router fail-safe writes when an
+   * ack/status message narrowly missed matching the completion guard — it must
+   * NOT be read back here as "work is done", or that fail-safe is bypassed via
+   * this recovery path.
+   *
+   * MUTATION-KILL PROOF:
+   * Revert: drop the `AND json_extract(metadata, '$.completion') = 1` clause
+   * from findExistingResultMessage()'s query.
+   * Expected: task ends up 'completed' despite completion:false → RED.
+   * Restored: task ends up 'failed' (no valid completion message found) → GREEN.
+   */
+  it('does not finalize a stale task as completed when the only candidate result message has completion:false', async () => {
+    const { extId } = seedTask({ status: 'in_progress', ageMs: 10_000 });
+    seedResultMessage(extId, false); // completion:false — must NOT count as proof of completion
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      injectMessage: () => true,
+      getJobStatus: () => null,
+    });
+
+    await _runForTesting(STALE_CONFIG);
+
+    assert.strictEqual(getTaskStatus(extId), 'failed',
+      'a result message with completion:false must not be treated as proof of completed work — ' +
+      'task must still be failed via the normal stale-recovery path');
+    assert.strictEqual(getTaskError(extId), 'stale_task_recovery');
+  });
+
+  /**
+   * Narrowness guard: without a pre-existing result message, the stale task
+   * must still be failed exactly as before (unchanged behavior).
+   */
+  it('still marks task FAILED when no result message exists (unchanged behavior)', async () => {
+    const { extId } = seedTask({ status: 'in_progress', ageMs: 10_000 });
+    // No seedResultMessage() call — no result message exists for this task.
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      injectMessage: () => true,
+      getJobStatus: () => null,
+    });
+
+    await _runForTesting(STALE_CONFIG);
+
+    assert.strictEqual(getTaskStatus(extId), 'failed', 'task with no result message must still be failed');
+    assert.strictEqual(getTaskError(extId), 'stale_task_recovery');
+  });
+
+  it('does not match a result message belonging to a DIFFERENT task', async () => {
+    const { extId } = seedTask({ status: 'in_progress', ageMs: 10_000 });
+    const { extId: otherExtId } = seedTask({ status: 'in_progress', ageMs: 10_000 });
+    // Result message references the OTHER task, not this one.
+    seedResultMessage(otherExtId);
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      injectMessage: () => true,
+      getJobStatus: () => null,
+    });
+
+    await _runForTesting(STALE_CONFIG);
+
+    assert.strictEqual(getTaskStatus(extId), 'failed',
+      'a result message for a different task must not spare this task from failure');
+  });
+
+  it('does not touch completed or cancelled tasks even when a result message exists (terminal invariant)', async () => {
+    const { extId: completedId } = seedTask({ status: 'completed', ageMs: 10_000 });
+    seedResultMessage(completedId);
+
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, description, status, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Cancelled test task', 'test description', 'cancelled', 'low', ?, ?)`,
+      'test-task-cancelled-1', new Date(Date.now() - 10_000).toISOString(), new Date(Date.now() - 10_000).toISOString(),
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      injectMessage: () => true,
+      getJobStatus: () => null,
+    });
+
+    await _runForTesting(STALE_CONFIG);
+
+    assert.strictEqual(getTaskStatus(completedId), 'completed',
+      'a completed task must remain completed — terminal status is never re-finalized');
+    assert.strictEqual(getTaskStatus('test-task-cancelled-1'), 'cancelled',
+      'a cancelled task must remain cancelled — it is not in the assigned/in_progress candidate scope');
   });
 });
 

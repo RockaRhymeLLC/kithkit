@@ -167,6 +167,69 @@ function recordRecoveryNote(rowid: number, extId: string, previousStatus: string
   }
 }
 
+/**
+ * Record an orphaned-result recovery note on a task.
+ * Tries task_activity (unified), falls back to orchestrator_task_activity (legacy).
+ */
+function recordOrphanRecoveryNote(rowid: number, extId: string, resultMessageId: number, ts: string): void {
+  const message = `recovered orphaned result — result message ${resultMessageId} existed at stale-recovery time`;
+
+  try {
+    exec(
+      `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
+       VALUES (?, 'daemon', 'note', 'stale_recovery', ?, ?)`,
+      rowid, message, ts,
+    );
+    return;
+  } catch {
+    // task_activity not yet present — try legacy
+  }
+
+  try {
+    exec(
+      `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+       VALUES (?, 'daemon', 'note', 'stale_recovery', ?, ?)`,
+      extId, message, ts,
+    );
+  } catch {
+    // Neither table available — activity note is best-effort, silently skip
+  }
+}
+
+/**
+ * Check whether a 'result' message already exists for this task's external_id.
+ * Returns the most recent matching message id, or null if none found.
+ *
+ * The dead-orch stale-recovery path used to mark a stale task FAILED
+ * unconditionally, discarding real work if the orchestrator had already
+ * reported a result (e.g. the result message raced the orch process dying,
+ * or the auto-complete guard in message-router.ts rejected the write for an
+ * unrelated reason). Checking for a pre-existing result message before
+ * failing preserves that reported work instead of silently dropping it.
+ *
+ * Requires metadata.completion === true — a message with completion:false
+ * (e.g. a message-router fail-safe write) must NOT be read back here as
+ * "work is done".
+ *
+ * Matches the metadata shape written by message-router.ts sendMessage() —
+ * `metadata: { task_id: <external_id>, ... }` (see message-router.ts ~148-170).
+ */
+function findExistingResultMessage(extId: string): number | null {
+  try {
+    const rows = query<{ id: number }>(
+      `SELECT id FROM messages
+       WHERE type = 'result' AND json_extract(metadata, '$.task_id') = ?
+         AND json_extract(metadata, '$.completion') = 1
+       ORDER BY id DESC LIMIT 1`,
+      extId,
+    );
+    return rows[0]?.id ?? null;
+  } catch (err) {
+    log.warn('Failed to check for existing result message', { taskId: extId, error: String(err) });
+    return null;
+  }
+}
+
 // ── Core run logic ────────────────────────────────────────────
 
 export async function _runForTesting(config: Record<string, unknown>): Promise<void> {
@@ -217,6 +280,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
   if (!orchAlive) {
     // Orchestrator is dead — recover stale tasks that have no live workers
     let recovered = 0;
+    let orphanRecovered = 0;
 
     for (const task of stale) {
       try {
@@ -228,13 +292,41 @@ async function run(config: Record<string, unknown>): Promise<void> {
           continue;
         }
 
+        // Before discarding this task as failed, check whether the orchestrator
+        // already reported a result for it. If so, the work was actually done
+        // and reported — finalize as completed instead of failing it.
+        const existingResultMessageId = findExistingResultMessage(task.ext_id);
+
+        if (existingResultMessageId !== null) {
+          exec(
+            `UPDATE tasks
+             SET status = 'completed',
+                 completed_at = ?,
+                 updated_at = ?
+             WHERE kind = 'orchestrator' AND external_id = ? AND status IN ('assigned', 'in_progress')`,
+            ts, ts, task.ext_id,
+          );
+
+          recordOrphanRecoveryNote(task.rowid, task.ext_id, existingResultMessageId, ts);
+
+          orphanRecovered++;
+          log.warn('Stale task recovered as completed — orphaned result message found', {
+            taskId: task.ext_id,
+            title: task.title.slice(0, 80),
+            previousStatus: task.status,
+            resultMessageId: existingResultMessageId,
+            ageMs: now - new Date(task.updated_at).getTime(),
+          });
+          continue;
+        }
+
         exec(
           `UPDATE tasks
            SET status = 'failed',
                error = 'stale_task_recovery',
                completed_at = ?,
                updated_at = ?
-           WHERE kind = 'orchestrator' AND external_id = ?`,
+           WHERE kind = 'orchestrator' AND external_id = ? AND status IN ('assigned', 'in_progress')`,
           ts, ts, task.ext_id,
         );
 
@@ -260,16 +352,19 @@ async function run(config: Record<string, unknown>): Promise<void> {
       }
     }
 
-    if (recovered > 0) {
+    if (recovered > 0 || orphanRecovered > 0) {
+      const parts: string[] = [];
+      if (recovered > 0) parts.push(`${recovered} task(s) marked failed`);
+      if (orphanRecovered > 0) parts.push(`${orphanRecovered} task(s) recovered as completed (orphaned result found)`);
       try {
         await injectMessage(
           'comms',
-          `[stale-recovery] ${recovered} task(s) marked failed — orchestrator session was dead and tasks were stale`,
+          `[stale-recovery] ${parts.join('; ')} — orchestrator session was dead and tasks were stale`,
         );
       } catch {
         // Comms inject is best-effort
       }
-      log.info('Stale task recovery complete', { recovered, total: stale.length });
+      log.info('Stale task recovery complete', { recovered, orphanRecovered, total: stale.length });
     }
   } else {
     // Orchestrator is alive — warn only; do not fail tasks the orch may still complete.
