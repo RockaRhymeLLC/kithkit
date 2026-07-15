@@ -1134,14 +1134,15 @@ describe('spawnOrchestratorSession — tmux new-session args-capture (fix/870)',
     _setTmuxDepsForTesting(null);
   });
 
-  it('MUTATION-KILL: new-session args contain -e KITHKIT_AGENT_PROFILE=orchestrator before claudeBin (PR #156 rework, R2 item 1)', () => {
-    // Workers get KITHKIT_AGENT_PROFILE from lifecycle.ts:304 (child-process env,
-    // which is reliable there). The orchestrator is tmux-spawned instead, and a
+  it('new-session args include -e KITHKIT_AGENT_PROFILE=orchestrator before claudeBin so the pane env reaches hook subprocesses', () => {
+    // Workers get KITHKIT_AGENT_PROFILE from the worker spawn env — see
+    // lifecycle.ts worker spawn env (child-process env, which is reliable
+    // there). The orchestrator is tmux-spawned instead, and a
     // pre-existing tmux SERVER ignores execFileSync's env object — so this var
     // must ALSO be passed as an explicit -e pane flag here, exactly like
     // CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY and CLAUDECODE above. Without it,
-    // transcript-review.sh's self-exclusion check (widened in todo 3037 to key
-    // off KITHKIT_AGENT_PROFILE for ALL daemon-spawned sessions) never sees the
+    // transcript-review.sh's self-exclusion check (which keys off
+    // KITHKIT_AGENT_PROFILE for ALL daemon-spawned sessions) never sees the
     // var for the orchestrator, and the hook keeps firing on every orch tool call.
     let capturedArgs: string[] | null = null;
 

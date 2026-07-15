@@ -23,9 +23,10 @@ TIME_THRESHOLD_SECS=1800  # 30 minutes
 INPUT=$(cat)
 
 # ── Self-exclusion: never let a daemon-spawned session's own tool calls
-# re-trigger a transcript review (fix for the 2026-07-13 respawn-loop
-# incident; widened for todo 3037). KITHKIT_AGENT_PROFILE is injected by
-# the daemon spawn path (daemon/src/agents/lifecycle.ts) for EVERY
+# re-trigger a transcript review (fix for a respawn-loop incident where
+# transcript-review workers were spawned from daemon-spawned agents' tool
+# calls). KITHKIT_AGENT_PROFILE is injected by the daemon spawn path
+# (daemon/src/agents/lifecycle.ts) for EVERY
 # daemon-spawned session — the orchestrator and all worker profiles, not
 # just transcript-review/retro/retro-light. Only the comms tmux session
 # is exempt from this env var (it isn't daemon-spawned), and comms is the
