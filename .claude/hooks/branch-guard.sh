@@ -10,8 +10,14 @@
 
 set -euo pipefail
 
-# Workers run inside .claude/worktrees/ — exempt from the guard
-if [[ "$PWD" == */.claude/worktrees/* ]]; then
+# Workers run inside .kithkit/worktrees/ (current convention) or .claude/worktrees/
+# (legacy) — exempt from the guard. Belt-and-suspenders: any linked worktree (where
+# .git is a file pointing at the real gitdir, not a directory) is exempt too, in case
+# a worker worktree ever lives outside those two paths.
+if [[ "$PWD" == */.kithkit/worktrees/* || "$PWD" == */.claude/worktrees/* ]]; then
+  exit 0
+fi
+if [[ -f .git ]]; then
   exit 0
 fi
 
@@ -21,11 +27,24 @@ if [[ -p /dev/stdin ]]; then
   INPUT=$(cat)
 fi
 
-# ── Detect mode from stdin content ────────────────────────────
-# If stdin has tool_name JSON, we're in PreToolUse mode.
-# Otherwise, SessionStart mode.
+# ── Detect mode from hook_event_name in stdin JSON ────────────
+# Claude Code always sends hook_event_name in the hook payload. Any input that
+# doesn't parse, or doesn't declare a recognized event, is treated as a no-op —
+# the forced `git checkout main` is only reachable from an explicit SessionStart
+# event, never as a fallthrough default.
+MODE=""
+if [[ -n "$INPUT" ]]; then
+  MODE=$(echo "$INPUT" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+    print(d.get("hook_event_name", ""))
+except (json.JSONDecodeError, ValueError):
+    print("")
+' 2>/dev/null || true)
+fi
 
-if [[ -n "$INPUT" ]] && echo "$INPUT" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'tool_name' in d" 2>/dev/null; then
+if [[ "$MODE" == "PreToolUse" ]]; then
   # ── PreToolUse mode ──────────────────────────────────────────
   echo "$INPUT" | python3 -c '
 import json, sys, re
@@ -75,11 +94,14 @@ for sub in subcmds:
 
 sys.exit(0)
 '
-else
+elif [[ "$MODE" == "SessionStart" ]]; then
   # ── SessionStart mode ────────────────────────────────────────
   BRANCH=$(git symbolic-ref --short HEAD 2>/dev/null || true)
   if [[ -n "$BRANCH" && "$BRANCH" != "main" ]]; then
     echo "[branch-guard] WARNING: session on '$BRANCH' instead of main — switching back." >&2
     git checkout main 2>&1
   fi
+else
+  # Empty stdin, unparseable JSON, or an event we don't act on — no-op.
+  exit 0
 fi
