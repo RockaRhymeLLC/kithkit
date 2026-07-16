@@ -11,7 +11,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
+import path from 'node:path';
 import {
   spawnWorker as sdkSpawn,
   killWorker as sdkKill,
@@ -252,6 +254,25 @@ export async function spawnWorkerJob(req: SpawnRequest): Promise<{ jobId: string
   return { jobId, status: 'queued' };
 }
 
+// ── Worktree Management ──────────────────────────────────────
+
+/**
+ * Auto-create a per-job git worktree for branch-touching workers.
+ *
+ * Path: <projectRoot>/.kithkit/worktrees/<jobId> — must match the #531
+ * branch-guard exemption glob `*\/.kithkit\/worktrees\/*` so branch-touching
+ * workers are not blocked when they checkout a feature branch. Throws if
+ * git worktree add fails — the caller marks the job failed in that case.
+ */
+function createWorktreeForJob(jobId: string): string {
+  const projectRoot = resolveProjectPath();
+  const worktreePath = path.resolve(projectRoot, '.kithkit', 'worktrees', jobId);
+  execFileSync('git', ['-C', projectRoot, 'worktree', 'add', worktreePath, 'HEAD'], {
+    stdio: 'pipe',
+  });
+  return worktreePath;
+}
+
 /**
  * Actually start a worker via the SDK adapter.
  */
@@ -274,6 +295,16 @@ function startWorker(jobId: string, req: SpawnRequest): void {
 
   const promptWithMode = modePrefix + reviewDirective + req.prompt;
 
+  // Resolve the effective cwd: explicit caller-supplied cwd takes precedence.
+  // For branch-touching profiles with no explicit cwd, auto-create a per-job
+  // git worktree so the worker gets an isolated HEAD that it can checkout
+  // without mutating the main working tree. Throws on worktree creation failure
+  // so the caller's try/catch marks the job failed rather than starting a worker
+  // with the wrong (shared) cwd.
+  const effectiveCwd = (req.profile.branch_touching && !req.cwd)
+    ? createWorktreeForJob(jobId)
+    : req.cwd;
+
   // Build SDK spawn options — profile budget is the default, caller can override
   const sdkOpts: SdkSpawnOptions = {
     prompt: promptWithMode,
@@ -288,7 +319,7 @@ function startWorker(jobId: string, req: SpawnRequest): void {
       effort: req.profile.effort || undefined,
       body: req.profile.body || undefined,
     },
-    cwd: req.cwd,
+    cwd: effectiveCwd,
     timeoutMs: req.timeoutMs,
     // Exposes the worker's profile name to hooks running inside the spawned
     // session (e.g. transcript-review.sh) so they can exclude review/retro-class

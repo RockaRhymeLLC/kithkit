@@ -29,6 +29,12 @@ export interface AgentProfile {
   body: string;
   /** Override global pre_task_injection.max_memories_injected for this profile. */
   max_memories_injected?: number;
+  /**
+   * When true, the daemon auto-creates a per-job git worktree at spawn time and
+   * uses it as the worker's cwd. Prevents workers from mutating the main worktree
+   * via git checkout/switch. An explicit cwd on the spawn request skips auto-create.
+   */
+  branch_touching?: boolean;
 }
 
 export class ProfileValidationError extends Error {
@@ -147,6 +153,7 @@ export function validateProfile(
       ? frontmatter.effort as EffortLevel
       : DEFAULTS.effort,
     body,
+    ...(typeof frontmatter.branch_touching === 'boolean' ? { branch_touching: frontmatter.branch_touching } : {}),
   };
 }
 
