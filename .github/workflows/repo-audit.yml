@@ -1,0 +1,97 @@
+# Scheduled full-repo secret/PII audit — NOT a PR gate.
+#
+# Complements the leak-check job in ci.yml, which only scans lines a PR
+# ADDS to changed files. This workflow runs scripts/repo-audit.sh (gitleaks
+# + hard-PII rules) against the entire working tree and full git history on
+# a schedule, to catch anything that slipped in outside a PR's added lines
+# (pre-existing content, history, force-pushes, etc.). It never blocks a
+# PR — only a red scheduled run signals a problem, surfaced via HIGH-
+# severity findings failing the job and a summary in $GITHUB_STEP_SUMMARY.
+name: Repo Audit (scheduled)
+
+on:
+  schedule:
+    - cron: '0 6 * * 1' # Weekly, Monday 06:00 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history — repo-audit.sh scans git history too
+
+      - name: Install gitleaks
+        env:
+          GITLEAKS_VERSION: '8.30.1'
+          GITLEAKS_SHA256: '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb'
+        run: |
+          curl -sSL -o gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+          sudo mv gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run repo audit
+        run: |
+          # repo-audit.sh exits 1 on ANY finding (including LOW/MEDIUM) —
+          # that exit code is not our gate here (see "Fail on HIGH-severity
+          # findings" below, which reads the JSON severity tags instead).
+          # Capture output regardless of the script's own exit status.
+          set +e
+          ./scripts/repo-audit.sh --json > audit-report.json
+          set -e
+          echo "Findings: $(jq 'length' audit-report.json 2>/dev/null || echo '(unparseable output)')"
+
+      - name: Summarize findings
+        if: always()
+        run: |
+          TOTAL=$(jq 'length' audit-report.json 2>/dev/null || echo 0)
+          HIGH=$(jq '[.[] | select(.Tags // [] | index("HIGH"))] | length' audit-report.json 2>/dev/null || echo 0)
+          MEDIUM=$(jq '[.[] | select(.Tags // [] | index("MEDIUM"))] | length' audit-report.json 2>/dev/null || echo 0)
+          LOW=$(jq '[.[] | select(.Tags // [] | index("LOW"))] | length' audit-report.json 2>/dev/null || echo 0)
+
+          {
+            echo "## Repo Audit Report"
+            echo ""
+            echo "- Total findings: $TOTAL"
+            echo "- HIGH: $HIGH"
+            echo "- MEDIUM: $MEDIUM"
+            echo "- LOW: $LOW"
+            echo ""
+            if [ "$TOTAL" -gt 0 ]; then
+              echo "### Findings"
+              echo '```json'
+              jq '[.[] | {rule: .RuleID, description: .Description, file: .File, line: .StartLine, source: .Source, tags: .Tags}]' audit-report.json
+              echo '```'
+            else
+              echo "No findings — clean."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          echo "HIGH_COUNT=$HIGH" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repo-audit-report
+          path: audit-report.json
+          retention-days: 90
+
+      - name: Fail on HIGH-severity findings
+        if: always()
+        run: |
+          # This is the alert: a HIGH finding turns the scheduled run red.
+          # MEDIUM/LOW findings are visible in the summary/artifact but do
+          # not fail the run — they're lower-confidence and reviewed
+          # manually rather than paged on.
+          if [ "${HIGH_COUNT:-0}" -gt 0 ]; then
+            echo "::error::${HIGH_COUNT} HIGH-severity finding(s) detected — see job summary and repo-audit-report artifact."
+            exit 1
+          fi
+          echo "No HIGH-severity findings."

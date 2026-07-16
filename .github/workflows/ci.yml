@@ -290,7 +290,16 @@ jobs:
             HEAD="${{ github.sha }}"
           fi
 
-          CHANGED=$(git diff --name-only --diff-filter=ACMR "$BASE" "$HEAD" 2>/dev/null || echo "")
+          # pull_request.base.sha reflects the base branch's tip at event
+          # time, which may have advanced past the PR's actual fork point
+          # (e.g. other PRs merged to main after this branch was cut). A
+          # plain two-dot diff against that moving target would pull in
+          # unrelated upstream commits as "changes" owned by this PR.
+          # Resolve the true merge-base so we diff only the PR's own
+          # commits — requires full history, hence fetch-depth: 0 above.
+          DIFF_BASE=$(git merge-base "$BASE" "$HEAD" 2>/dev/null || echo "$BASE")
+
+          CHANGED=$(git diff --name-only --diff-filter=ACMR "$DIFF_BASE" "$HEAD" 2>/dev/null || echo "")
 
           if [ -z "$CHANGED" ]; then
             echo "No changed files to check."
@@ -305,27 +314,53 @@ jobs:
             exit 0
           fi
 
-          echo "Checking $(echo "$FILES" | wc -l | tr -d ' ') changed files for instance-specific patterns..."
+          echo "Checking $(echo "$FILES" | wc -l | tr -d ' ') changed files for instance-specific patterns in ADDED lines..."
 
+          # Scan only lines this change ADDS, not the whole file. A PR is
+          # accountable for what it introduces — a pre-existing occurrence
+          # of a blocked pattern elsewhere in a file it happens to touch
+          # must not block it. Line numbers below are the file's actual
+          # line numbers (parsed from unified-diff hunk headers), not
+          # positions within the added-lines stream.
           FOUND=""
           while IFS= read -r file; do
             [ -f "$file" ] || continue
-            MATCHES=$(grep -nE "$PATTERNS" "$file" 2>/dev/null || true)
+            ADDED=$(git diff -U0 "$DIFF_BASE" "$HEAD" -- "$file" | awk '
+              /^@@/ {
+                split($0, parts, " ");
+                newpart = parts[3];
+                sub(/^\+/, "", newpart);
+                split(newpart, nums, ",");
+                line = nums[1] + 0;
+                next
+              }
+              /^\+\+\+/ { next }
+              /^\+/ {
+                print line ":" substr($0, 2);
+                line++;
+                next
+              }
+            ')
+            if [ -z "$ADDED" ]; then
+              continue
+            fi
+            MATCHES=$(echo "$ADDED" | grep -E "$PATTERNS" || true)
             if [ -n "$MATCHES" ]; then
               FOUND="${FOUND}${file}:\n${MATCHES}\n\n"
             fi
           done <<< "$FILES"
 
           if [ -n "$FOUND" ]; then
-            echo "::error::Instance-specific content detected in changed files:"
+            echo "::error::Instance-specific content detected in lines ADDED by this change:"
             echo -e "$FOUND"
             echo ""
-            echo "These patterns must not appear in the public framework repo."
+            echo "These patterns must not be introduced into the public framework repo."
+            echo "Pre-existing occurrences elsewhere in these files do not block — only newly added lines are checked."
             echo "If this is a false positive, add the file to the EXCLUDE list in ci.yml."
             exit 1
           fi
 
-          echo "Leak check passed — no instance-specific content in changed files."
+          echo "Leak check passed — no instance-specific content in added lines."
 
   commit-identity:
     # Guard: fail if any commit in this PR has a .local or empty author/committer
