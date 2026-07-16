@@ -259,13 +259,14 @@ export async function spawnWorkerJob(req: SpawnRequest): Promise<{ jobId: string
 /**
  * Auto-create a per-job git worktree for branch-touching workers.
  *
- * The worktree is placed at <projectRoot>/../.kkit-worker-worktrees/<jobId>
- * so it lives outside the main working tree (required by git). Throws if
+ * Path: <projectRoot>/.kithkit/worktrees/<jobId> — must match the #531
+ * branch-guard exemption glob `*\/.kithkit\/worktrees\/*` so branch-touching
+ * workers are not blocked when they checkout a feature branch. Throws if
  * git worktree add fails — the caller marks the job failed in that case.
  */
 function createWorktreeForJob(jobId: string): string {
   const projectRoot = resolveProjectPath();
-  const worktreePath = path.resolve(projectRoot, '..', '.kkit-worker-worktrees', jobId);
+  const worktreePath = path.resolve(projectRoot, '.kithkit', 'worktrees', jobId);
   execFileSync('git', ['-C', projectRoot, 'worktree', 'add', worktreePath, 'HEAD'], {
     stdio: 'pipe',
   });

@@ -167,6 +167,7 @@ models/
 # .kithkit/ — transient state (do not commit)
 # Committed: .kithkit/hooks/, .kithkit/settings.json, .kithkit/CLAUDE.md,
 #            .kithkit/state/identity.json, .kithkit/state/autonomy.json
+.kithkit/worktrees/
 .kithkit/state/channel.txt
 .kithkit/state/telegram-media/
 .kithkit/state/reply-chat-id.txt

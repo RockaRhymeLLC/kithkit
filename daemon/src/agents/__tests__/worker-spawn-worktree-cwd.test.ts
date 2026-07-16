@@ -132,7 +132,7 @@ describe('Branch-touching worker spawn — worktree isolation (t-3199a)', () => 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-wt-'));
     initGitRepo(tmpDir);
-    worktreeBase = path.resolve(tmpDir, '..', '.kkit-worker-worktrees');
+    worktreeBase = path.resolve(tmpDir, '.kithkit', 'worktrees');
 
     _resetConfigForTesting();
     _resetDbForTesting();
