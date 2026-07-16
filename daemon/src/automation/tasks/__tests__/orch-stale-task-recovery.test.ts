@@ -461,6 +461,100 @@ describe('orch-stale-task-recovery: orphaned result message recovery', { concurr
   });
 });
 
+describe('orch-stale-task-recovery: residual completed-but-unreported-worker gap', { concurrency: 1 }, () => {
+  beforeEach(setupTestEnv);
+  afterEach(cleanupTestEnv);
+
+  /**
+   * MUTATION-KILL PROOF:
+   * Revert: remove the hasRecoverableWorker() check ahead of the
+   * findExistingResultMessage() check in the dead-orch loop.
+   * Expected: task ends up 'failed' despite the durable completed worker_job
+   * record → RED (real work silently discarded).
+   * Restored: task ends up 'assigned' (recoverable) → GREEN.
+   */
+  it('resets a stale task to assigned when its worker_job is completed but no result message was ever written', async () => {
+    const { extId, rowid } = seedTask({ status: 'in_progress', ageMs: 10_000 });
+
+    exec(
+      `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, started_at, finished_at, created_at)
+       VALUES ('residual-worker-job-1', 'orchestrator', 'coding', 'do the thing', 'completed', ?, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(), new Date().toISOString(),
+    );
+    exec(
+      `INSERT INTO task_workers (task_id, worker_id, role, assigned_at)
+       VALUES (?, 'residual-worker-job-1', 'implementer', ?)`,
+      rowid, new Date().toISOString(),
+    );
+    // No seedResultMessage() call — the completion was never reported as a message.
+
+    const injectCalls: string[] = [];
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      injectMessage: (_target, text) => { injectCalls.push(text); return true; },
+      // getJobStatus (the live job-status API) has no record of this worker —
+      // simulates the worker having been reaped from the in-memory registry
+      // while its completion is still durable in the worker_jobs DB table.
+      getJobStatus: () => null,
+    });
+
+    await _runForTesting(STALE_CONFIG);
+
+    assert.strictEqual(getTaskStatus(extId), 'assigned',
+      'a task with a completed worker_job must be reset to assigned, not failed — ' +
+      'the completed work must be preserved for a fresh orchestrator to resume/synthesize');
+    assert.strictEqual(getTaskError(extId), null, 'error should be cleared on recovery');
+
+    const notes = getTaskActivityMessages(rowid);
+    assert.ok(
+      notes.some(m => m.includes('live/completed worker found')),
+      `task_activity must record the residual-gap recovery note; got: ${JSON.stringify(notes)}`,
+    );
+    assert.ok(injectCalls.some(m => m.includes('reset to assigned')), 'comms should be notified of the reset');
+  });
+
+  it('resets a stale task to assigned when its worker_job is still running per the DB even though the job-status API has no record', async () => {
+    const { extId, rowid } = seedTask({ status: 'in_progress', ageMs: 10_000 });
+
+    exec(
+      `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, started_at, created_at)
+       VALUES ('residual-worker-job-2', 'orchestrator', 'coding', 'do the thing', 'running', ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+    exec(
+      `INSERT INTO task_workers (task_id, worker_id, role, assigned_at)
+       VALUES (?, 'residual-worker-job-2', 'implementer', ?)`,
+      rowid, new Date().toISOString(),
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      injectMessage: () => true,
+      getJobStatus: () => null, // job-status API has no record — hasLiveWorkers() alone would miss this
+    });
+
+    await _runForTesting(STALE_CONFIG);
+
+    assert.strictEqual(getTaskStatus(extId), 'assigned',
+      'a task with a still-running worker_job (per the DB) must be reset to assigned, not failed');
+  });
+
+  it('control: still fails a stale task with no worker_jobs record at all', async () => {
+    const { extId } = seedTask({ status: 'in_progress', ageMs: 10_000 });
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      injectMessage: () => true,
+      getJobStatus: () => null,
+    });
+
+    await _runForTesting(STALE_CONFIG);
+
+    assert.strictEqual(getTaskStatus(extId), 'failed', 'task with no worker record at all should still be failed');
+    assert.strictEqual(getTaskError(extId), 'stale_task_recovery');
+  });
+});
+
 describe('orch-stale-task-recovery: alive orchestrator — warn only', { concurrency: 1 }, () => {
   beforeEach(setupTestEnv);
   afterEach(cleanupTestEnv);
