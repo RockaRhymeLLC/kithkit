@@ -160,6 +160,8 @@ vite.config.ts.timestamp-*
 kithkit.config.yaml
 identity.md
 .claude/state/
+# local Claude Code settings — machine-specific, may contain secrets
+.claude/settings.local.json
 models/
 
 # .kithkit/ — transient state (do not commit)
