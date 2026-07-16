@@ -36,6 +36,7 @@ import { getJobStatus as _getJobStatus } from '../../agents/lifecycle.js';
 import { createLogger } from '../../core/logger.js';
 import type { Scheduler } from '../scheduler.js';
 import { evaluateTask as _evaluateTask } from '../../self-improvement/retro-evaluator.js';
+import { hasRecoverableWorker } from './helpers/task-worker-guard.js';
 
 const log = createLogger('orch-stale-task-recovery');
 
@@ -197,6 +198,36 @@ function recordOrphanRecoveryNote(rowid: number, extId: string, resultMessageId:
 }
 
 /**
+ * Record a residual-gap recovery note (worker completed/running per worker_jobs,
+ * but no result message was found — reset to assigned rather than failed).
+ * Tries task_activity (unified), falls back to orchestrator_task_activity (legacy).
+ */
+function recordGuardRecoveryNote(rowid: number, extId: string, ts: string): void {
+  const message = 'Task reset to assigned: live/completed worker found (worker_jobs) with no reported result — avoided discarding real work';
+
+  try {
+    exec(
+      `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
+       VALUES (?, 'daemon', 'note', 'stale_recovery', ?, ?)`,
+      rowid, message, ts,
+    );
+    return;
+  } catch {
+    // task_activity not yet present — try legacy
+  }
+
+  try {
+    exec(
+      `INSERT INTO orchestrator_task_activity (task_id, agent, type, stage, message, created_at)
+       VALUES (?, 'daemon', 'note', 'stale_recovery', ?, ?)`,
+      extId, message, ts,
+    );
+  } catch {
+    // Neither table available — activity note is best-effort, silently skip
+  }
+}
+
+/**
  * Check whether a 'result' message already exists for this task's external_id.
  * Returns the most recent matching message id, or null if none found.
  *
@@ -281,6 +312,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
     // Orchestrator is dead — recover stale tasks that have no live workers
     let recovered = 0;
     let orphanRecovered = 0;
+    let guardRecovered = 0;
 
     for (const task of stale) {
       try {
@@ -288,6 +320,34 @@ async function run(config: Record<string, unknown>): Promise<void> {
           log.debug('Stale task has live workers — skipping recovery', {
             taskId: task.ext_id,
             status: task.status,
+          });
+          continue;
+        }
+
+        // Residual gap: a worker_jobs row for this task is not provably dead
+        // (queued, running, completed, or unrecognized status — durable DB
+        // record) even though hasLiveWorkers() above found nothing live via
+        // the job-status API — reset to 'assigned' instead of failing so a
+        // fresh orchestrator can resume/re-synthesize rather than silently
+        // discarding real work.
+        if (hasRecoverableWorker(task.rowid)) {
+          exec(
+            `UPDATE tasks
+             SET status = 'assigned',
+                 error = NULL,
+                 updated_at = ?
+             WHERE kind = 'orchestrator' AND external_id = ? AND status IN ('assigned', 'in_progress')`,
+            ts, task.ext_id,
+          );
+
+          recordGuardRecoveryNote(task.rowid, task.ext_id, ts);
+
+          guardRecovered++;
+          log.warn('Stale task reset to assigned — recoverable worker found', {
+            taskId: task.ext_id,
+            title: task.title.slice(0, 80),
+            previousStatus: task.status,
+            ageMs: now - new Date(task.updated_at).getTime(),
           });
           continue;
         }
@@ -352,10 +412,11 @@ async function run(config: Record<string, unknown>): Promise<void> {
       }
     }
 
-    if (recovered > 0 || orphanRecovered > 0) {
+    if (recovered > 0 || orphanRecovered > 0 || guardRecovered > 0) {
       const parts: string[] = [];
       if (recovered > 0) parts.push(`${recovered} task(s) marked failed`);
       if (orphanRecovered > 0) parts.push(`${orphanRecovered} task(s) recovered as completed (orphaned result found)`);
+      if (guardRecovered > 0) parts.push(`${guardRecovered} task(s) reset to assigned (live/completed worker found)`);
       try {
         await injectMessage(
           'comms',
@@ -364,7 +425,7 @@ async function run(config: Record<string, unknown>): Promise<void> {
       } catch {
         // Comms inject is best-effort
       }
-      log.info('Stale task recovery complete', { recovered, orphanRecovered, total: stale.length });
+      log.info('Stale task recovery complete', { recovered, orphanRecovered, guardRecovered, total: stale.length });
     }
   } else {
     // Orchestrator is alive — warn only; do not fail tasks the orch may still complete.

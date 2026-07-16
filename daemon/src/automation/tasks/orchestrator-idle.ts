@@ -30,6 +30,7 @@ import { createLogger } from '../../core/logger.js';
 import { logActivity, getActivity } from '../../api/activity.js';
 import type { Scheduler } from '../scheduler.js';
 import { evaluateTask as _evaluateTask } from '../../self-improvement/retro-evaluator.js';
+import { hasRecoverableWorker } from './helpers/task-worker-guard.js';
 
 const log = createLogger('orchestrator-idle');
 
@@ -178,15 +179,38 @@ function buildShutdownPrompt(reason: string): string {
 }
 
 /**
- * Mark all in_progress and assigned tasks as failed when the orchestrator dies.
- * Returns count of zombie tasks cleaned up.
+ * Mark all in_progress and assigned tasks as failed when the orchestrator dies —
+ * UNLESS a worker assigned to the task is not provably dead (queued, running,
+ * completed, or any unrecognized status — see hasRecoverableWorker). Those
+ * are recoverable: they're reset to 'assigned' instead, so a fresh
+ * orchestrator can resume or re-synthesize the result rather than the
+ * task's work being silently discarded.
+ * Returns count of tasks actually marked failed.
  */
 function cleanupZombieTasks(): number {
   const ts = new Date().toISOString();
-  const zombies = query<{ id: string; status: string }>(
-    `SELECT external_id AS id, status FROM tasks WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned')`,
+  const zombies = query<{ id: string; int_id: number; status: string }>(
+    `SELECT external_id AS id, id AS int_id, status FROM tasks WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned')`,
   );
+  let failedCount = 0;
+  let recoveredCount = 0;
   for (const task of zombies) {
+    if (hasRecoverableWorker(task.int_id)) {
+      exec(
+        `UPDATE tasks SET status = 'assigned', assigned_at = ?, updated_at = ? WHERE kind = 'orchestrator' AND external_id = ?`,
+        ts, ts, task.id,
+      );
+      exec(
+        `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
+         SELECT id, 'daemon', 'note', 'recovery', ?, ?
+         FROM tasks WHERE kind = 'orchestrator' AND external_id = ?`,
+        `Task reset to assigned: orchestrator died but a live/completed worker was found (previous status: ${task.status})`, ts, task.id,
+      );
+      recoveredCount++;
+      log.info('Zombie sweep: reset task to assigned (live/completed worker found)', { taskId: task.id, previousStatus: task.status });
+      continue;
+    }
+
     exec(
       `UPDATE tasks SET status = 'failed', error = 'orchestrator_died', completed_at = ?, updated_at = ? WHERE kind = 'orchestrator' AND external_id = ?`,
       ts, ts, task.id,
@@ -204,11 +228,16 @@ function cleanupZombieTasks(): number {
     try {
       void evaluateTask(task.id);
     } catch { /* best-effort — cleanup must not be interrupted */ }
+    failedCount++;
   }
   if (zombies.length > 0) {
-    log.warn('Cleaned up zombie tasks after orchestrator death', { count: zombies.length, taskIds: zombies.map(t => t.id) });
+    log.warn('Cleaned up zombie tasks after orchestrator death', {
+      failed: failedCount,
+      recovered: recoveredCount,
+      taskIds: zombies.map(t => t.id),
+    });
   }
-  return zombies.length;
+  return failedCount;
 }
 
 // Grace window for "recently active" — tasks updated within this many ms of NOW
@@ -224,10 +253,12 @@ const ORPHAN_RECENT_ACTIVITY_MS = 5 * 60 * 1000; // 5 minutes
  * NOT swept (preferred recovery):
  *   (a) recently active — updated_at is within ORPHAN_RECENT_ACTIVITY_MS of NOW
  *       (worker may still be running or orch is mid-synthesis)
- *   (b) has a completed worker_job (worker finished, orch died before synthesis)
- *       → reset to 'assigned' so fresh orch can synthesize
+ *   (b) has a worker_job that is not provably dead (queued, running, completed,
+ *       or an unrecognized status — worker still running, or finished and
+ *       orch died before synthesis)
+ *       → reset to 'assigned' so fresh orch can resume/synthesize
  *
- * Truly orphaned (no live/completed worker, no recent activity) → mark failed.
+ * Truly orphaned (no recoverable worker, no recent activity) → mark failed.
  *
  * Returns count of tasks marked failed.
  */
@@ -265,15 +296,10 @@ function cleanupOrphanedTasks(): number {
       continue;
     }
 
-    // (b) Has a completed worker_job — worker is done, orch died before synthesis.
-    // Reset to 'assigned' so a fresh orch can re-synthesize.
-    const completedWorkers = query<{ count: number }>(
-      `SELECT COUNT(*) AS count FROM task_workers tw
-       JOIN worker_jobs wj ON tw.worker_id = wj.id
-       WHERE tw.task_id = ? AND wj.status = 'completed'`,
-      task.int_id,
-    );
-    if ((completedWorkers[0]?.count ?? 0) > 0) {
+    // (b) Has a worker_job that isn't provably dead — worker may still be
+    // running, or is done and orch died before synthesis. Reset to 'assigned'
+    // so a fresh orch can resume/re-synthesize.
+    if (hasRecoverableWorker(task.int_id)) {
       exec(
         `UPDATE tasks SET status = 'assigned', error = NULL, updated_at = ? WHERE kind = 'orchestrator' AND external_id = ?`,
         ts, task.id,

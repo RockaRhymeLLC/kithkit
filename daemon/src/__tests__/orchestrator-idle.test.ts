@@ -332,6 +332,228 @@ describe('Orchestrator idle: zombie task cleanup', () => {
   });
 });
 
+describe('Orchestrator idle: zombie cleanup skips tasks with a recoverable worker', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = setupTestEnv();
+  });
+
+  afterEach(() => {
+    cleanupTestEnv(tmpDir);
+  });
+
+  // M1: a task whose worker already COMPLETED (durable in worker_jobs) must not be
+  // blanket-failed by the zombie sweep — the work is real and should be recovered
+  // (reset to 'assigned') for a fresh orchestrator to resume/re-synthesize.
+  it('M1: does not fail a zombie task whose worker already completed — resets to assigned', async () => {
+    const taskExtId = 'zombie-guard-m1-completed';
+    const insertResult = exec(
+      `INSERT INTO tasks (external_id, kind, title, status, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Zombie with completed worker', 'in_progress', 'low', ?, ?)`,
+      taskExtId, new Date().toISOString(), new Date().toISOString(),
+    );
+    const taskIntId = insertResult.lastInsertRowid as number;
+
+    exec(
+      `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, started_at, finished_at, created_at)
+       VALUES ('m1-worker-job', 'orchestrator', 'coding', 'do the thing', 'completed', ?, ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(), new Date().toISOString(),
+    );
+    exec(
+      `INSERT INTO task_workers (task_id, worker_id, role, assigned_at)
+       VALUES (?, 'm1-worker-job', 'implementer', ?)`,
+      taskIntId, new Date().toISOString(),
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const tasks = query<{ status: string; error: string | null }>(
+      `SELECT status, error FROM tasks WHERE external_id = ? AND kind = 'orchestrator'`,
+      taskExtId,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]!.status, 'assigned', 'task with a completed worker should be recovered, not failed');
+    assert.equal(tasks[0]!.error, null, 'error should be cleared on recovery');
+  });
+
+  // M2 (control): a zombie task with NO worker record at all must still be failed —
+  // proves the sweep still works and that M1 isn't passing on a no-op guard.
+  it('M2 (control): still fails a zombie task with no live/completed worker', async () => {
+    const taskExtId = 'zombie-guard-m2-noworker';
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, status, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Zombie with no worker', 'in_progress', 'low', ?, ?)`,
+      taskExtId, new Date().toISOString(), new Date().toISOString(),
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const tasks = query<{ status: string; error: string | null }>(
+      `SELECT status, error FROM tasks WHERE external_id = ? AND kind = 'orchestrator'`,
+      taskExtId,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]!.status, 'failed', 'zombie task with no worker should still be failed');
+    assert.equal(tasks[0]!.error, 'orchestrator_died');
+  });
+
+  // M3: a task whose worker is still RUNNING must not be failed either — the worker
+  // may finish its work independently of the dead orchestrator.
+  it('M3: does not fail a zombie task whose worker is still running', async () => {
+    const taskExtId = 'zombie-guard-m3-running';
+    const insertResult = exec(
+      `INSERT INTO tasks (external_id, kind, title, status, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Zombie with running worker', 'in_progress', 'low', ?, ?)`,
+      taskExtId, new Date().toISOString(), new Date().toISOString(),
+    );
+    const taskIntId = insertResult.lastInsertRowid as number;
+
+    exec(
+      `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, started_at, created_at)
+       VALUES ('m3-worker-job', 'orchestrator', 'coding', 'do the thing', 'running', ?, ?)`,
+      new Date().toISOString(), new Date().toISOString(),
+    );
+    exec(
+      `INSERT INTO task_workers (task_id, worker_id, role, assigned_at)
+       VALUES (?, 'm3-worker-job', 'implementer', ?)`,
+      taskIntId, new Date().toISOString(),
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const tasks = query<{ status: string; error: string | null }>(
+      `SELECT status, error FROM tasks WHERE external_id = ? AND kind = 'orchestrator'`,
+      taskExtId,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]!.status, 'assigned', 'task with a running worker should be recovered, not failed');
+    assert.equal(tasks[0]!.error, null, 'error should be cleared on recovery');
+  });
+
+  // M4: a task whose worker is still QUEUED — the first status every worker has
+  // immediately after spawn, before it flips to 'running' (lifecycle.ts INSERTs
+  // workers as 'queued') — must not be failed either. A blanket running||completed
+  // enumeration MISSES this status entirely, so a task swept between spawn and the
+  // running flip would be wrongly destroyed on every single spawn.
+  // MUTATION-KILL: revert the guard to `status === 'running' || status === 'completed'`
+  // → this test goes RED (task wrongly failed).
+  it('M4: does not fail a zombie task whose worker is still queued', async () => {
+    const taskExtId = 'zombie-guard-m4-queued';
+    const insertResult = exec(
+      `INSERT INTO tasks (external_id, kind, title, status, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Zombie with queued worker', 'in_progress', 'low', ?, ?)`,
+      taskExtId, new Date().toISOString(), new Date().toISOString(),
+    );
+    const taskIntId = insertResult.lastInsertRowid as number;
+
+    exec(
+      `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, created_at)
+       VALUES ('m4-worker-job', 'orchestrator', 'coding', 'do the thing', 'queued', ?)`,
+      new Date().toISOString(),
+    );
+    exec(
+      `INSERT INTO task_workers (task_id, worker_id, role, assigned_at)
+       VALUES (?, 'm4-worker-job', 'implementer', ?)`,
+      taskIntId, new Date().toISOString(),
+    );
+
+    _setDepsForTesting({
+      isOrchestratorAlive: () => false,
+      killOrchestratorSession: () => false,
+      injectMessage: () => false,
+      cleanupSessionDirs: () => 0,
+    });
+
+    await _runForTesting({});
+
+    const tasks = query<{ status: string; error: string | null }>(
+      `SELECT status, error FROM tasks WHERE external_id = ? AND kind = 'orchestrator'`,
+      taskExtId,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(tasks[0]!.status, 'assigned', 'task with a queued worker should be recovered, not failed');
+    assert.equal(tasks[0]!.error, null, 'error should be cleared on recovery');
+  });
+
+  // M5: if the guard's own query throws (e.g. task_workers/worker_jobs unavailable —
+  // simulated here by dropping task_workers), the guard must fail CLOSED: preserve
+  // the task rather than authorizing destruction based on a check that never ran,
+  // and log the failure loudly (a genuinely broken/missing table this late in the
+  // schema's life is a real problem, not routine).
+  // MUTATION-KILL: flip the catch branch to `return false` → this test goes RED
+  // (task wrongly failed, and/or the log assertion fails).
+  it('M5: preserves a zombie task when the worker guard query throws, and logs the failure', async () => {
+    const taskExtId = 'zombie-guard-m5-throws';
+    exec(
+      `INSERT INTO tasks (external_id, kind, title, status, priority, created_at, updated_at)
+       VALUES (?, 'orchestrator', 'Zombie with guard query failure', 'in_progress', 'low', ?, ?)`,
+      taskExtId, new Date().toISOString(), new Date().toISOString(),
+    );
+
+    // Simulate task_workers/worker_jobs being unavailable (e.g. pre-migration
+    // schema) by dropping the table the guard's JOIN depends on.
+    exec('DROP TABLE task_workers');
+
+    const logLines: string[] = [];
+    const origConsoleLog = console.log;
+    const origConsoleError = console.error;
+    console.log = (...args: unknown[]) => { logLines.push(args.join(' ')); };
+    console.error = (...args: unknown[]) => { logLines.push(args.join(' ')); };
+
+    try {
+      _setDepsForTesting({
+        isOrchestratorAlive: () => false,
+        killOrchestratorSession: () => false,
+        injectMessage: () => false,
+        cleanupSessionDirs: () => 0,
+      });
+
+      await _runForTesting({});
+    } finally {
+      console.log = origConsoleLog;
+      console.error = origConsoleError;
+    }
+
+    const tasks = query<{ status: string; error: string | null }>(
+      `SELECT status, error FROM tasks WHERE external_id = ? AND kind = 'orchestrator'`,
+      taskExtId,
+    );
+    assert.equal(tasks.length, 1);
+    assert.equal(
+      tasks[0]!.status, 'assigned',
+      'task must be preserved (not failed) when the guard query throws — fail-closed, not fail-open',
+    );
+    assert.equal(tasks[0]!.error, null, 'error should be cleared on recovery');
+
+    assert.ok(
+      logLines.some(line => line.includes('hasRecoverableWorker') && /error/i.test(line)),
+      `guard query failure must be logged loudly at error level; captured output: ${JSON.stringify(logLines)}`,
+    );
+  });
+});
+
 describe('Orchestrator idle: liveness check', () => {
   let tmpDir: string;
 
