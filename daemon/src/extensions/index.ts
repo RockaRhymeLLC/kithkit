@@ -87,10 +87,14 @@ let _keychainReader: (service: string) => Promise<string | null> = readKeychain;
 /**
  * Evaluate whether an incoming A2A request passes HMAC signing requirements.
  *
- * Three-state Keychain outcome:
- *   null return  → key not configured → accept (current permissive behaviour)
- *   throw        → Keychain inaccessible → enforce: reject  / permissive: warn+accept
- *   string       → key configured → enforce: require valid sig / permissive: warn+accept
+ * Keychain outcomes (default-deny under enforce — NOT a denylist of failure modes):
+ *   null return  → absent key or any read failure → enforce: reject (fail-closed) / permissive: accept
+ *   throw        → Keychain inaccessible          → enforce: reject (fail-closed) / permissive: warn+accept
+ *   string       → key configured                 → enforce: require valid sig    / permissive: warn+accept
+ *
+ * The real readKeychain() always resolves (never throws) — locked/timeout/absent/binary-gone
+ * all return null. The throw path is reachable only via test mocks. Both null paths use the
+ * SAME default-deny branch under enforce; the cause is distinguished in the reason for operators.
  *
  * The HMAC verification itself (crypto.createHmac) is NOT injectable — it runs
  * unconditionally on both production and test paths. Only the Keychain reader is
@@ -104,23 +108,33 @@ export async function _checkA2ASignatureEnforcement(
   posture: A2ASigningPosture,
 ): Promise<{ action: 'accept' | 'reject' | 'warn'; reason?: string }> {
   let secret: string | null = null;
-  let keychainFailed = false;
+  let keychainDiag: 'absent' | 'error' | null = null;
 
   try {
     secret = await _keychainReader('credential-agent-comms-secret');
-  } catch {
-    keychainFailed = true;
-  }
-
-  if (keychainFailed) {
-    if (posture === 'enforce') {
-      return { action: 'reject', reason: 'Signature verification unavailable (Keychain error)' };
+    if (secret === null) {
+      keychainDiag = 'absent';
     }
-    return { action: 'warn', reason: 'Keychain unavailable — accepting without verification' };
+  } catch {
+    keychainDiag = 'error';
   }
 
-  // No key configured — preserve current permissive behaviour regardless of posture
+  // Secret unavailable (absent, locked, timed-out, binary-gone) — fail-closed under enforce.
+  // All null/failed reads go through this SAME branch regardless of cause (default-deny, not a
+  // denylist). Locked-vs-absent is surfaced in the reason for operators; it never affects accept/reject.
   if (secret === null) {
+    if (posture === 'enforce') {
+      return {
+        action: 'reject',
+        reason: keychainDiag === 'error'
+          ? 'Signature verification unavailable (Keychain error)'
+          : 'Keychain secret unavailable',
+      };
+    }
+    // Permissive: inaccessible keychain = warn; absent key = accept (unconfigured LAN is trusted)
+    if (keychainDiag === 'error') {
+      return { action: 'warn', reason: 'Keychain unavailable — accepting without verification' };
+    }
     return { action: 'accept' };
   }
 

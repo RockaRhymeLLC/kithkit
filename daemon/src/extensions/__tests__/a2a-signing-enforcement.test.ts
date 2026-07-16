@@ -144,13 +144,24 @@ describe('_checkA2ASignatureEnforcement', () => {
 
   // ── no key configured ─────────────────────────────────────
 
-  it('accepts unsigned when no key is configured, regardless of posture', async () => {
-    _setKeychainReaderForTesting(keychainEmpty);
-    const enforceResult = await _checkA2ASignatureEnforcement(TEST_BODY, undefined, 'enforce');
-    assert.strictEqual(enforceResult.action, 'accept', 'No-key-configured enforce: must accept (preserve current behaviour)');
+  // ── fix #3148 — null-secret fail-closed ──────────────────
+  // MUTATION-KILL: revert the 'if (secret === null) { if (posture === 'enforce') { return reject... } }'
+  // branch to return { action: 'accept' } unconditionally and this test goes RED.
+  // RED output is captured in the PR description.
+  it('null secret fails-closed under enforce (fix #3148): null return → reject, permissive → accept', async () => {
+    _setKeychainReaderForTesting(keychainEmpty); // returns null — same as real readKeychain on ANY error
 
+    // enforce: null secret must reject (fail-closed)
+    const enforceResult = await _checkA2ASignatureEnforcement(TEST_BODY, undefined, 'enforce');
+    assert.strictEqual(enforceResult.action, 'reject',
+      'enforce + null secret (absent key or read failure) must reject (fail-closed) — fix #3148');
+    assert.ok(enforceResult.reason?.includes('Keychain'),
+      'Reason must mention Keychain so operators know what to check');
+
+    // permissive: null secret (no key configured) → accept (unconfigured LAN is trusted)
     const permissiveResult = await _checkA2ASignatureEnforcement(TEST_BODY, undefined, 'permissive');
-    assert.strictEqual(permissiveResult.action, 'accept', 'No-key-configured permissive: must accept');
+    assert.strictEqual(permissiveResult.action, 'accept',
+      'permissive + null secret (no key configured) must still accept');
   });
 });
 
@@ -296,5 +307,20 @@ describe('/agent/message signing enforcement (HTTP layer)', () => {
     assert.notStrictEqual(capPerm.status, 401, 'permissive must not produce 401');
     // Outcomes are DISTINCT — not vacuously green
     assert.notStrictEqual(capEnforce.status, capPerm.status, 'enforce and permissive must yield distinct HTTP statuses');
+  });
+
+  // ── fix #3148 — HTTP-level null-secret fail-closed ────────
+  // MUTATION-KILL: revert the null-secret → reject branch in _checkA2ASignatureEnforcement
+  // and this test goes RED (returns non-401 instead of 401).
+  it('HTTP 401 when keychain returns null (not throws) under enforce posture (fix #3148)', async () => {
+    _setKeychainReaderForTesting(keychainEmpty); // null return — models real readKeychain behavior on any error
+    _setConfigForTesting(makeConfig('permissive', 'enforce'));
+    const { res, captured } = makeRes();
+    const req = makeReq(validMessage, {}, nextIp()); // unsigned
+    await _handleAgentMessageRouteForTesting(req, res, '/agent/message', new URLSearchParams());
+    assert.strictEqual(captured.status, 401,
+      'null secret (null return, not throw) + enforce must yield HTTP 401 (fail-closed, fix #3148)');
+    assert.strictEqual(captured.body.ok, false,
+      'Response body must indicate failure');
   });
 });
