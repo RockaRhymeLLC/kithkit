@@ -127,7 +127,7 @@ agent-comms:
   enabled: true
   peers:
     - name: bmo
-      host: davids-mac-mini.lan
+      host: agent-a.lan
       port: 3847
       ip: 192.168.x.x
     - name: r2d2
