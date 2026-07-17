@@ -23,6 +23,20 @@ import { commsSessionExists } from '../../core/session-bridge.js';
 const log = createLogger('agent-comms');
 const VALID_TYPES = ['text', 'status', 'coordination', 'pr-review'];
 
+// Injectable seam: tests swap this to avoid macOS Keychain access.
+// Production always uses the real readKeychain (never throws; returns null on
+// locked/absent/timeout — the threat model is documented in #3148).
+let _hmacKeychainReader: (service: string) => Promise<string | null> = readKeychain;
+
+export function _setHmacKeychainReaderForTesting(
+  reader: (service: string) => Promise<string | null>,
+): void {
+  _hmacKeychainReader = reader;
+}
+export function _resetHmacKeychainReaderForTesting(): void {
+  _hmacKeychainReader = readKeychain;
+}
+
 // ── Types ────────────────────────────────────────────────────
 
 export interface PeerConfig {
@@ -377,6 +391,46 @@ export function buildPeerHosts(peer: PeerConfig, overrideIP: string | null): str
   return hosts;
 }
 
+/**
+ * Compute X-Signature HMAC curl headers for an outbound LAN message.
+ *
+ * Returns [] and logs at ERROR when the shared secret is unavailable.
+ * readKeychain never throws — null means absent entry, locked Keychain, or
+ * timeout. Post-#3148: enforcing peers REJECT unsigned messages (fail-closed,
+ * not fail-open). A null secret is a visible partition failure, not a safe
+ * fallback. todo #3225(b): refuse-to-send when peer posture=enforce (requires
+ * posture discovery, deferred to follow-on).
+ *
+ * Exported for mutation-kill testing (#3225).
+ */
+export async function _resolveHmacSignatureHeaders(payload: string): Promise<string[]> {
+  try {
+    const secret = await _hmacKeychainReader('credential-agent-comms-secret');
+    if (!secret) {
+      // credential-agent-comms-secret is absent, Keychain locked, or timed out.
+      // Post-#3148 enforcing peers REJECT unsigned messages — this is a visible
+      // partition failure, not a safe fallback. Operator must fix Keychain access.
+      // todo #3225(b): block send when peer posture=enforce.
+      log.error(
+        'HMAC: credential-agent-comms-secret unavailable — message will be sent unsigned and REJECTED by enforcing peers',
+        { cause: 'null-secret: key absent, Keychain locked, or readKeychain timed out' },
+      );
+      return [];
+    }
+    const hmac = crypto.createHmac('sha256', secret);
+    hmac.update(payload);
+    return ['-H', `X-Signature: ${hmac.digest('hex')}`];
+  } catch (err) {
+    // Defensive: readKeychain is documented not to throw, but guard clearly if
+    // that contract is ever violated. Post-#3148: send-unsigned = peer REJECT.
+    log.error(
+      'HMAC: unexpected keychain error — message will be sent unsigned and REJECTED by enforcing peers',
+      { error: err instanceof Error ? err.message : String(err) },
+    );
+    return [];
+  }
+}
+
 // ── LAN Send (curl) ──────────────────────────────────────────
 export async function sendViaLAN(
   peer: PeerConfig,
@@ -387,19 +441,7 @@ export async function sendViaLAN(
   const overrideIP = getPeerIpOverride(peer.name);
   const hosts = buildPeerHosts(peer, overrideIP);
 
-  // Compute HMAC signature if shared secret is available
-  let signatureHeaders: string[] = [];
-  try {
-    const secret = await readKeychain('credential-agent-comms-secret');
-    if (secret) {
-      const hmac = crypto.createHmac('sha256', secret);
-      hmac.update(payload);
-      signatureHeaders = ['-H', `X-Signature: ${hmac.digest('hex')}`];
-    }
-  } catch {
-    // Keychain unavailable — send without signature (peer will fail-open)
-    log.warn('HMAC: keychain read failed, sending without signature');
-  }
+  const signatureHeaders = await _resolveHmacSignatureHeaders(payload);
 
   const startTime = Date.now();
 
