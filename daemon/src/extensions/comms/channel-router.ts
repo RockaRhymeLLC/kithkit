@@ -20,6 +20,7 @@ import { createLogger } from '../../core/logger.js';
 import { getDatabase } from '../../core/db.js';
 import {
   registerAdapter,
+  listAdapters,
   routeMessage as kithkitRouteMessage,
 } from '../../comms/channel-router.js';
 import type { ChannelAdapter, OutboundMessage } from '../../comms/adapter.js';
@@ -234,6 +235,22 @@ export function routeOutgoingMessage(text: string, thinking?: string): void {
         log.warn('Telegram message dropped: no adapter registered');
       }
       break;
+
+    case 'teams':
+      if (listAdapters().includes('teams')) {
+        kithkitRouteMessage({ text }, ['teams']).catch(err => {
+          log.error('Teams route error', { error: err instanceof Error ? err.message : String(err) });
+        });
+      } else {
+        log.warn('Teams message dropped: no adapter registered');
+      }
+      break;
+
+    default: {
+      const _exhaustive: never = channel;
+      log.warn('Unknown channel, message dropped', { channel: _exhaustive });
+      break;
+    }
   }
 
   // Fire one-shot response hook
