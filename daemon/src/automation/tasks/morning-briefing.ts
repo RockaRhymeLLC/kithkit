@@ -33,6 +33,22 @@ function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Escape data values before interpolating into Telegram HTML messages.
+ * Order matters: & must be replaced first to avoid double-escaping.
+ * Returns '' for null/undefined input.
+ *
+ * ONLY apply to DATA values — never to the briefing's own intentional
+ * markup tags (e.g., `<b>...</b>`, `<i>...</i>` section headers).
+ */
+export function escapeHtml(s: string | null | undefined): string {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 function execCommand(cmd: string, args: string[], timeoutMs = 10_000): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(cmd, args, { timeout: timeoutMs, maxBuffer: 512 * 1024 }, (err, stdout) => {
@@ -113,9 +129,9 @@ function formatEventKitEvents(events: EventKitEvent[]): string {
 
   return events
     .map(ev => {
-      const suffix = multiCal ? ` (${ev.calendar})` : '';
-      if (ev.allDay) return `• ${ev.title}${suffix}`;
-      return `• ${ev.startTime} ${ev.title}${suffix}`;
+      const calSuffix = multiCal ? ` (${escapeHtml(ev.calendar)})` : '';
+      if (ev.allDay) return `• ${escapeHtml(ev.title)}${calSuffix}`;
+      return `• ${ev.startTime} ${escapeHtml(ev.title)}${calSuffix}`;
     })
     .join('\n');
 }
@@ -150,8 +166,8 @@ async function gatherCalendar(): Promise<string> {
 
     return events
       .map(ev => {
-        if (ev.allDay) return `• ${ev.title}`;
-        return `• ${ev.startTime} ${ev.title}`;
+        if (ev.allDay) return `• ${escapeHtml(ev.title)}`;
+        return `• ${ev.startTime} ${escapeHtml(ev.title)}`;
       })
       .join('\n');
   } catch (err) {
@@ -172,7 +188,7 @@ function gatherInternalCalendar(): string {
     return events
       .map(ev => {
         const time = ev.all_day ? '' : ` ${ev.start_time.slice(11, 16)}`;
-        return `• ${ev.title}${time}`;
+        return `• ${escapeHtml(ev.title)}${time}`;
       })
       .join('\n');
   } catch {
@@ -210,8 +226,9 @@ async function gatherWeather(location: string): Promise<string> {
 
     const raw = await execCommand('/usr/bin/curl', ['-s', '--max-time', '8', url]);
     const data = JSON.parse(raw.trim());
-    const c = data.current;
-    const desc = WMO_CODES[c.weather_code as number] ?? `Code ${c.weather_code}`;
+    const c = data?.current;
+    if (!c || c.weather_code == null) throw new Error('Missing or malformed current in Open-Meteo response');
+    const desc = escapeHtml(WMO_CODES[c.weather_code as number] ?? `Code ${c.weather_code}`);
     const feelsLike = c.apparent_temperature != null
       ? ` (feels ${Math.round(c.apparent_temperature)}°)`
       : '';
@@ -219,7 +236,8 @@ async function gatherWeather(location: string): Promise<string> {
     const currentLine = `${desc} ${Math.round(c.temperature_2m)}°F${feelsLike} · ` +
       `Humidity ${c.relative_humidity_2m}% · Wind ${Math.round(c.wind_speed_10m)} mph`;
 
-    const days = data.daily;
+    const days = data?.daily;
+    if (!days?.time) throw new Error('Missing daily in Open-Meteo response');
     const dayNames = ['Today', 'Tomorrow'];
     const forecastLines: string[] = [];
     for (let i = 0; i < Math.min(days.time.length, 3); i++) {
@@ -228,7 +246,7 @@ async function gatherWeather(location: string): Promise<string> {
       const hi = Math.round(days.temperature_2m_max[i]);
       const lo = Math.round(days.temperature_2m_min[i]);
       const precip = days.precipitation_probability_max[i];
-      const dayDesc = WMO_CODES[days.weather_code[i] as number] ?? '';
+      const dayDesc = escapeHtml(WMO_CODES[days.weather_code[i] as number] ?? '');
       const precipStr = precip > 10 ? ` · ${precip}% precip` : '';
       forecastLines.push(`  ${label}: ${dayDesc}, ${hi}°/${lo}°F${precipStr}`);
     }
@@ -248,7 +266,7 @@ async function gatherWeather(location: string): Promise<string> {
     const cc = wj.current_condition?.[0];
     if (!cc) throw new Error('No current_condition in wttr.in response');
 
-    const desc = cc.weatherDesc?.[0]?.value ?? 'Unknown';
+    const desc = escapeHtml(cc.weatherDesc?.[0]?.value ?? 'Unknown');
     const current = cc.temp_F != null ? `${cc.temp_F}°F` : '?°F';
     const feelsLike = cc.FeelsLikeF != null ? ` (feels ${cc.FeelsLikeF}°)` : '';
     const humidity = cc.humidity ?? '?';
@@ -358,11 +376,11 @@ async function gatherReminders(): Promise<string> {
 
   const lines: string[] = [];
   for (const [listName, items] of byList) {
-    if (byList.size > 1) lines.push(`<i>${listName}</i>`);
+    if (byList.size > 1) lines.push(`<i>${escapeHtml(listName)}</i>`);
     for (const r of items.slice(0, 8)) {
       const pri = r.priority === 1 ? ' !!' : r.priority === 5 ? ' !' : '';
-      const due = r.dueDate ? ` (${r.dueDate})` : '';
-      lines.push(`• ${r.title}${pri}${due}`);
+      const due = r.dueDate ? ` (${escapeHtml(r.dueDate)})` : '';
+      lines.push(`• ${escapeHtml(r.title)}${pri}${due}`);
     }
     if (items.length > 8) lines.push(`  … +${items.length - 8} more`);
   }
@@ -434,8 +452,8 @@ export function gatherTodos(audienceSource?: string): string {
 
     const lines = shown.map(row => {
       const priority = (row.priority ?? 'medium').toUpperCase();
-      const due = row.due_date ? ` (due: ${row.due_date})` : '';
-      return `• [${priority}] ${row.title}${due}`;
+      const due = row.due_date ? ` (due: ${escapeHtml(row.due_date)})` : '';
+      return `• [${priority}] ${escapeHtml(row.title)}${due}`;
     });
 
     if (remainder > 0) {
@@ -450,7 +468,7 @@ export function gatherTodos(audienceSource?: string): string {
 
 // ── Email (from task_results) ────────────────────────────────
 
-function gatherEmailSummary(): string {
+export function gatherEmailSummary(): string {
   try {
     const rows = query<{ output: string | null }>(
       `SELECT output FROM task_results
@@ -458,7 +476,7 @@ function gatherEmailSummary(): string {
        ORDER BY id DESC LIMIT 1`,
     );
     if (rows.length > 0 && rows[0]!.output) {
-      return rows[0]!.output;
+      return escapeHtml(rows[0]!.output);
     }
     return 'No recent email data.';
   } catch {
@@ -484,10 +502,10 @@ function gatherOvernightMessages(): string {
         if (new Date(entry.ts).getTime() < eightHoursAgo) continue;
 
         if (entry.module === 'telegram' && entry.msg?.includes('Injected message from')) {
-          messages.push(`Telegram: ${entry.msg}`);
+          messages.push(`Telegram: ${escapeHtml(entry.msg)}`);
         }
         if (entry.module === 'agent-comms' && entry.msg?.includes('Received message from')) {
-          messages.push(`Agent: ${entry.msg}`);
+          messages.push(`Agent: ${escapeHtml(entry.msg)}`);
         }
       } catch { /* skip non-JSON lines */ }
     }
