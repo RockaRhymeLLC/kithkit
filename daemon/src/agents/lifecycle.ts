@@ -263,11 +263,20 @@ export async function spawnWorkerJob(req: SpawnRequest): Promise<{ jobId: string
  * branch-guard exemption glob `*\/.kithkit\/worktrees\/*` so branch-touching
  * workers are not blocked when they checkout a feature branch. Throws if
  * git worktree add fails — the caller marks the job failed in that case.
+ *
+ * Based at `origin/main`, not `HEAD` — local main can carry unpushed
+ * commits or drift, and a worktree rooted at `HEAD` silently inherits that
+ * drift into every worker branch (see #43, where a 1-file fix ballooned
+ * into a 100+ file PR because the worktree picked up unpushed local
+ * history). `origin/main` is the clean, pushed baseline all workers should
+ * branch from. Fetched first so a stale local `origin/main` ref can't
+ * reintroduce the same problem.
  */
 function createWorktreeForJob(jobId: string): string {
   const projectRoot = resolveProjectPath();
   const worktreePath = path.resolve(projectRoot, '.kithkit', 'worktrees', jobId);
-  execFileSync('git', ['-C', projectRoot, 'worktree', 'add', worktreePath, 'HEAD'], {
+  execFileSync('git', ['-C', projectRoot, 'fetch', 'origin', 'main'], { stdio: 'pipe' });
+  execFileSync('git', ['-C', projectRoot, 'worktree', 'add', worktreePath, 'origin/main'], {
     stdio: 'pipe',
   });
   return worktreePath;

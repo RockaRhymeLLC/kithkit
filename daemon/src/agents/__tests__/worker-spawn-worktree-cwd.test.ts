@@ -56,12 +56,27 @@ function createSuccessQuery() {
   };
 }
 
-/** Initialize a minimal git repo in `dir` with one empty commit. */
+/**
+ * Initialize a minimal git repo in `dir` with one empty commit on `main`,
+ * plus a bare `origin` remote pushed to the same commit. createWorktreeForJob
+ * now bases the worktree on `origin/main` (fetched fresh), so tests need a
+ * real, fetchable origin remote — not just a bare local repo.
+ */
 function initGitRepo(dir: string): void {
-  execFileSync('git', ['init', dir], { stdio: 'pipe' });
+  execFileSync('git', ['init', '-b', 'main', dir], { stdio: 'pipe' });
   execFileSync('git', ['-C', dir, 'config', 'user.email', 'test@example.com'], { stdio: 'pipe' });
   execFileSync('git', ['-C', dir, 'config', 'user.name', 'Test'], { stdio: 'pipe' });
   execFileSync('git', ['-C', dir, 'commit', '--allow-empty', '-m', 'init'], { stdio: 'pipe' });
+
+  const originDir = `${dir}-origin.git`;
+  execFileSync('git', ['init', '--bare', '-b', 'main', originDir], { stdio: 'pipe' });
+  execFileSync('git', ['-C', dir, 'remote', 'add', 'origin', originDir], { stdio: 'pipe' });
+  execFileSync('git', ['-C', dir, 'push', 'origin', 'main'], { stdio: 'pipe' });
+}
+
+/** Remove the bare origin remote created alongside `dir` by initGitRepo. */
+function removeOriginRemote(dir: string): void {
+  fs.rmSync(`${dir}-origin.git`, { recursive: true, force: true });
 }
 
 /** Return all worktree paths registered in the git repo at `repoDir`, with symlinks resolved. */
@@ -157,6 +172,7 @@ describe('Branch-touching worker spawn — worktree isolation (t-3199a)', () => 
       fs.rmSync(worktreeBase, { recursive: true, force: true });
     }
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    removeOriginRemote(tmpDir);
   });
 
   it('(a) branch-touching profile gets auto-created worktree cwd distinct from main repo', async () => {
@@ -226,6 +242,51 @@ describe('Branch-touching worker spawn — worktree isolation (t-3199a)', () => 
     const worktreesAfter = listWorktreePaths(tmpDir);
     const newWorktrees = worktreesAfter.filter(wt => !worktreesBefore.includes(wt));
     assert.equal(newWorktrees.length, 0, `no new worktrees should be created; new: ${newWorktrees.join(', ')}`);
+
+    await sleep(1000);
+  });
+
+  it('(d) worktree is rooted at origin/main, not local HEAD — unpushed commits are excluded (#43 regression)', async () => {
+    _setQueryFnForTesting(createSuccessQuery());
+
+    // Diverge local HEAD from origin/main with an unpushed commit, simulating
+    // the exact #43 scenario: local main carries commits not yet on origin.
+    const originMainSha = execFileSync('git', ['-C', tmpDir, 'rev-parse', 'origin/main'], {
+      encoding: 'utf8',
+    }).trim();
+    execFileSync('git', ['-C', tmpDir, 'commit', '--allow-empty', '-m', 'unpushed local-only commit'], {
+      stdio: 'pipe',
+    });
+    const localHeadSha = execFileSync('git', ['-C', tmpDir, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+    assert.notEqual(localHeadSha, originMainSha, 'test setup: local HEAD must diverge from origin/main');
+
+    const worktreesBefore = listWorktreePaths(tmpDir);
+
+    const { status } = await spawnWorkerJob({
+      profile: BRANCH_TOUCHING_PROFILE,
+      prompt: 'Do branch work after local main diverged from origin/main',
+    });
+
+    assert.notEqual(status, 'failed', `spawn must not fail; got status=${status}`);
+
+    await sleep(100);
+
+    const sdkArgs = _getLastSdkCallArgs();
+    const sdkCwd = (sdkArgs?.options as Record<string, unknown>).cwd as string | undefined;
+    assert.ok(sdkCwd, 'SDK cwd must be set');
+
+    const worktreesAfter = listWorktreePaths(tmpDir);
+    const newWorktrees = worktreesAfter.filter(wt => !worktreesBefore.includes(wt));
+    assert.equal(newWorktrees.length, 1, `exactly one new worktree should be registered; new: ${newWorktrees.join(', ')}`);
+    createdWorktrees.push(sdkCwd);
+
+    const worktreeHeadSha = execFileSync('git', ['-C', sdkCwd, 'rev-parse', 'HEAD'], {
+      encoding: 'utf8',
+    }).trim();
+    assert.equal(worktreeHeadSha, originMainSha, 'worktree HEAD must match origin/main, not the unpushed local commit');
+    assert.notEqual(worktreeHeadSha, localHeadSha, 'worktree HEAD must NOT include the unpushed local commit');
 
     await sleep(1000);
   });
