@@ -20,6 +20,7 @@ import { createLogger } from '../../core/logger.js';
 import { getDatabase } from '../../core/db.js';
 import {
   registerAdapter,
+  listAdapters,
   routeMessage as kithkitRouteMessage,
 } from '../../comms/channel-router.js';
 import type { ChannelAdapter, OutboundMessage } from '../../comms/adapter.js';
@@ -36,6 +37,7 @@ type MessageHandler = (text: string) => void;
 let _telegramAdapter: (ChannelAdapter & { startTyping?(): Promise<void>; stopTyping?(): void }) | null = null;
 let _voicePendingCallback: MessageHandler | null = null;
 let _responseHook: MessageHandler | null = null;
+let _channelOverrideForTesting: string | null = null;
 
 const CHANNEL_FILE_REL = '.kithkit/state/channel.txt';
 
@@ -43,6 +45,7 @@ const CHANNEL_FILE_REL = '.kithkit/state/channel.txt';
 
 /** Get agent's current active channel from state file. */
 export function getChannel(): AgentChannel {
+  if (_channelOverrideForTesting !== null) return _channelOverrideForTesting as AgentChannel;
   try {
     const content = fs.readFileSync(resolveProjectPath(CHANNEL_FILE_REL), 'utf8').trim();
     if (['terminal', 'telegram', 'telegram-verbose', 'silent', 'voice', 'teams'].includes(content)) {
@@ -234,6 +237,22 @@ export function routeOutgoingMessage(text: string, thinking?: string): void {
         log.warn('Telegram message dropped: no adapter registered');
       }
       break;
+
+    case 'teams':
+      if (listAdapters().includes('teams')) {
+        kithkitRouteMessage({ text }, ['teams']).catch(err => {
+          log.error('Teams route error', { error: err instanceof Error ? err.message : String(err) });
+        });
+      } else {
+        log.warn('Teams message dropped: no adapter registered');
+      }
+      break;
+
+    default: {
+      const _exhaustive: never = channel;
+      log.warn('Unknown channel, message dropped', { channel: _exhaustive });
+      break;
+    }
   }
 
   // Fire one-shot response hook
@@ -259,4 +278,10 @@ export function _resetForTesting(): void {
   _telegramAdapter = null;
   _voicePendingCallback = null;
   _responseHook = null;
+  _channelOverrideForTesting = null;
+}
+
+/** Test hook — bypasses getChannel()'s whitelist to exercise the default arm. */
+export function _setChannelOverrideForTesting(ch: string | null): void {
+  _channelOverrideForTesting = ch;
 }
