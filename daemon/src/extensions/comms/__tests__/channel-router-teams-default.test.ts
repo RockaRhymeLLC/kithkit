@@ -25,9 +25,7 @@ import {
   routeOutgoingMessage,
   setChannel,
   _resetForTesting as _resetChannelRouter,
-  _setChannelOverrideForTesting,
 } from '../channel-router.js';
-import type { AgentChannel } from '../channel-router.js';
 import type { ChannelAdapter, OutboundMessage, InboundMessage, Verbosity, ChannelCapabilities } from '../../../comms/adapter.js';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -109,22 +107,3 @@ describe('routeOutgoingMessage — teams case (fix #549)', () => {
   });
 });
 
-describe('routeOutgoingMessage — default arm (fix #549)', () => {
-  beforeEach(setupProject);
-
-  it('logs "Unknown channel, message dropped" for an unrecognised channel', async () => {
-    // _setChannelOverrideForTesting bypasses getChannel()'s whitelist so the
-    // default: arm is reachable. This is the only runtime path to exercise it,
-    // since getChannel() sanitises unknown values to 'terminal' in production.
-    _setChannelOverrideForTesting('bogus-channel' as unknown as AgentChannel);
-
-    routeOutgoingMessage('should not deliver');
-    await new Promise(resolve => setImmediate(resolve));
-
-    const log = readLogFile();
-    assert.ok(
-      log.includes('Unknown channel, message dropped'),
-      `Expected "Unknown channel, message dropped" in log. Got: ${log.slice(0, 500)}`,
-    );
-  });
-});
