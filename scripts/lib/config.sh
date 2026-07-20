@@ -138,10 +138,18 @@ session_exists() {
     [ -n "$TMUX_BIN" ] && $TMUX_CMD has-session -t "=$SESSION_NAME" 2>/dev/null
 }
 
+# Check if a PID's executable is exactly "claude" (basename match, not substring)
+_pid_is_claude() {
+    local pid="$1"
+    local cmd
+    cmd=$(ps -o comm= -p "$pid" 2>/dev/null)
+    [ -n "$cmd" ] && [ "$(basename "$cmd")" = "claude" ]
+}
+
 # Check if claude is actually running inside the tmux session pane
 # Returns 0 if alive, 1 if session exists but claude is dead
 # Handles both direct exec (claude IS the pane process) and watchdog
-# (claude is a descendant of the pane process)
+# (claude is a descendant of the pane process, at any depth)
 claude_alive() {
     if ! session_exists; then
         return 1
@@ -152,16 +160,29 @@ claude_alive() {
         return 1
     fi
     # Check if the pane process itself is claude
-    local pane_cmd
-    pane_cmd=$(ps -o comm= -p "$pane_pid" 2>/dev/null)
-    if [[ "$pane_cmd" == *claude* ]]; then
-        return 0
-    fi
-    # Check descendants (watchdog mode: claude is a child/grandchild)
-    pgrep -a -P "$pane_pid" 2>/dev/null | grep -q 'claude' && return 0
-    # Also check grandchildren (watchdog -> start.sh -> claude)
-    for child in $(pgrep -P "$pane_pid" 2>/dev/null); do
-        pgrep -a -P "$child" 2>/dev/null | grep -q 'claude' && return 0
+    _pid_is_claude "$pane_pid" && return 0
+    # Check descendants (watchdog mode: claude is a child/grandchild/etc).
+    # NOTE: on macOS, pgrep's -a flag means "include ancestors in the match
+    # list" — NOT "show full command line with args" like GNU/procps pgrep.
+    # `pgrep -a -P "$pid" | grep -q claude` therefore silently prints bare
+    # PIDs on macOS and never matches, so claude_alive always reported
+    # "dead" for watchdog-mode sessions and triggered a kill of an
+    # otherwise-healthy session. Walk descendants with ps + exact basename
+    # matching instead — portable, and immune to substring false-matches
+    # (e.g. a path that merely contains "claude", like a worktree name).
+    local queue=("$pane_pid")
+    local depth=0
+    while [ "${#queue[@]}" -gt 0 ] && [ "$depth" -lt 6 ]; do
+        local next_queue=()
+        local pid child
+        for pid in "${queue[@]}"; do
+            for child in $(pgrep -P "$pid" 2>/dev/null); do
+                _pid_is_claude "$child" && return 0
+                next_queue+=("$child")
+            done
+        done
+        queue=("${next_queue[@]}")
+        depth=$((depth + 1))
     done
     return 1
 }
