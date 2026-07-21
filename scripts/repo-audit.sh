@@ -175,6 +175,23 @@ description = "Cloudflare zone/tunnel ID"
 regex = '''(?i)(?:zone|tunnel)[\s_-]*(?:id|ID)\s*[:=]\s*["']?[0-9a-f]{32}["']?'''
 tags = ["MEDIUM", "infra", "cloudflare"]
 
+# ── HIGH: A2A network group UUID ──
+# A real fleet group id has no legitimate reason to appear anywhere in
+# this repo (docs/skills must use an obvious placeholder). Unlike the
+# instance-specific leak-check in ci.yml, this rule is NOT path-excluded
+# for docs/.claude/skills/ — those are exactly where a prior leak lived
+# (kithkit#<scrub-pr>, group id 00000000-0000-4000-8000-000000000000
+# replaced a real leaked value).
+[[rules]]
+id = "a2a-group-uuid"
+description = "A2A network group UUID in a group/target context"
+regex = '''(?i)(?:(?:a2a[-_]?)?group(?:id)?|target)["'\s]{0,3}[:=,]\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}["']?'''
+tags = ["HIGH", "infra", "a2a"]
+
+  [[rules.allowlists]]
+  description = "Ignore the documented placeholder and pre-existing opaque test fixtures"
+  regexes = ['''(?:example|placeholder|00000000-0000-4000-8000-000000000000|00d0e9ff-8b2c-4009-a0a4-cc96af4b7827)''']
+
 # ── HIGH: Phone numbers ──
 [[rules]]
 id = "us-phone-number"

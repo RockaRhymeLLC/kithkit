@@ -362,6 +362,70 @@ jobs:
 
           echo "Leak check passed — no instance-specific content in added lines."
 
+      - name: Check changed files for real A2A group UUIDs
+        run: |
+          # Catches a REAL A2A network group UUID committed in ADDED lines —
+          # even in docs/ and .claude/skills/, which the instance-specific
+          # check above deliberately excludes (those dirs legitimately
+          # mention framework names like "BMO"/"Skippy", so that check is
+          # diff-scoped and directory-excluded to avoid false positives on
+          # prose). A UUID has no such legitimate reason to appear in a doc
+          # or skill file — it's either a placeholder or a real leaked
+          # secret, never prose. So this check applies to ALL changed files,
+          # no directory exclusions. See incident: real group UUID
+          # c006dfce-37b6-434a-8407-1d227f485a81 sat in SKILL.md,
+          # docs/api-reference.md, and a2a-router.test.ts for months because
+          # the check above skips those exact paths.
+          #
+          # Context words that indicate "this UUID is a network group id",
+          # not just any UUID (messageId/agentId examples in docs are fine).
+          UUID_RE='[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'
+          GROUP_CTX_RE="(?i)(a2a[-_]?)?group(id)?[\"' ]{0,3}[:=,][^\n]{0,20}${UUID_RE}|target[\"' ]{0,3}[:=,][^\n]{0,20}${UUID_RE}"
+
+          # Known-fake placeholders that must NOT trip this check — the
+          # obvious all-zero placeholder used in docs/tests, and the
+          # pre-existing opaque test-fixture UUID used for unrelated
+          # error-path tests (payload-too-large, etc.) where the value is
+          # arbitrary and never resolves to a real fleet group.
+          ALLOWLIST_RE='00000000-0000-4000-8000-000000000000|00d0e9ff-8b2c-4009-a0a4-cc96af4b7827'
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            HEAD="${{ github.event.pull_request.head.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+            HEAD="${{ github.sha }}"
+          fi
+          DIFF_BASE=$(git merge-base "$BASE" "$HEAD" 2>/dev/null || echo "$BASE")
+
+          CHANGED=$(git diff --name-only --diff-filter=ACMR "$DIFF_BASE" "$HEAD" 2>/dev/null || echo "")
+          if [ -z "$CHANGED" ]; then
+            echo "No changed files to check."
+            exit 0
+          fi
+
+          FOUND=""
+          while IFS= read -r file; do
+            [ -f "$file" ] || continue
+            ADDED=$(git diff -U0 "$DIFF_BASE" "$HEAD" -- "$file" | grep -E '^\+' | grep -v '^\+\+\+' | sed 's/^\+//')
+            [ -z "$ADDED" ] && continue
+            MATCHES=$(echo "$ADDED" | grep -P "$GROUP_CTX_RE" | grep -viE "$ALLOWLIST_RE" || true)
+            if [ -n "$MATCHES" ]; then
+              FOUND="${FOUND}${file}:\n${MATCHES}\n\n"
+            fi
+          done <<< "$CHANGED"
+
+          if [ -n "$FOUND" ]; then
+            echo "::error::Real-looking A2A group UUID detected in lines ADDED by this change:"
+            echo -e "$FOUND"
+            echo ""
+            echo "A2A network group UUIDs must never be committed to this public repo."
+            echo "Use an obvious placeholder instead, e.g. 00000000-0000-4000-8000-000000000000."
+            exit 1
+          fi
+
+          echo "A2A group UUID check passed — no real-looking group UUIDs in added lines."
+
   commit-identity:
     # Guard: fail if any commit in this PR has a .local or empty author/committer
     # email. Only meaningful on pull_request — push events have no useful range.

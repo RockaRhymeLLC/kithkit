@@ -99,7 +99,7 @@ curl -X POST http://localhost:3847/api/a2a/send \
 # Send to group
 curl -X POST http://localhost:3847/api/a2a/send \
   -H 'Content-Type: application/json' \
-  -d '{"group": "c006dfce-37b6-434a-8407-1d227f485a81", "payload": {"type": "text", "text": "Team update"}}'
+  -d '{"group": "00000000-0000-4000-8000-000000000000", "payload": {"type": "text", "text": "Team update"}}'
 
 # Force LAN route
 curl -X POST http://localhost:3847/api/a2a/send \
