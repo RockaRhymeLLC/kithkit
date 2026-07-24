@@ -115,6 +115,13 @@ tags = ["HIGH", "pii", "email"]
   regexes = ['''(?:example|test|noreply|no-reply|placeholder|your?[-_]?(?:email)?|user|someone|anyone|name)@''']
 
   [[rules.allowlists]]
+  description = "Ignore me@ placeholder and redacted-* placeholder addresses"
+  regexes = [
+    '''\bme@''',
+    '''\bredacted[-_\w]*@'''
+  ]
+
+  [[rules.allowlists]]
   description = "Ignore common patterns in deps/config"
   paths = [
     '''node_modules/''',
@@ -224,6 +231,13 @@ id = "telegram-chat-id"
 description = "Telegram chat/user ID (long numeric)"
 regex = '''(?i)(?:chat|user|telegram)[\s_-]*(?:id|ID)\s*[:=]\s*["']?\d{8,12}["']?'''
 tags = ["MEDIUM", "pii", "telegram"]
+
+  [[rules.allowlists]]
+  description = "Ignore all-zeros and sequential-digit placeholder IDs"
+  regexes = [
+    '''0{9,}''',
+    '''123456789'''
+  ]
 
 # ── LOW: Hostname/machine references ──
 [[rules]]
