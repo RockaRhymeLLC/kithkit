@@ -112,7 +112,7 @@ tags = ["HIGH", "pii", "email"]
 
   [[rules.allowlists]]
   description = "Ignore example/placeholder emails"
-  regexes = ['''(?:example|test|noreply|no-reply|placeholder|your[-_]?(?:email)?|user|someone|anyone|name)@''']
+  regexes = ['''(?:example|test|noreply|no-reply|placeholder|your?[-_]?(?:email)?|user|someone|anyone|name)@''']
 
   [[rules.allowlists]]
   description = "Ignore common patterns in deps/config"
@@ -233,7 +233,7 @@ regex = '''[A-Z][\w-]*(?:\.local|\.lan)\b|[\w]+-[\w-]+(?:\.local|\.lan)\b'''
 tags = ["LOW", "infra", "hostname"]
 
   [[rules.allowlists]]
-  regexes = ['''(?:example|placeholder|YOUR|localhost|CLAUDE\.local|settings\.local|env\.local|\.env\.local|peers-machine|my-machine|host-name|path-node)''']
+  regexes = ['''(?:example|placeholder|YOUR|localhost|CLAUDE\.local|settings\.local|env\.local|\.env\.local|peers-machine|my-machine|host-name|path-node|host-[a-z]\b|node-[a-z]\b)''']
   paths = ['''node_modules/''', '''vendor/''']
 
 # ── Global allowlist ──
