@@ -60,7 +60,7 @@ const { Conversations } = (await import('botframework-connector/lib/connectorApi
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
-const BOT_APP_ID = '70db3bc8-52fd-4270-9247-61d53b2ea019';
+const BOT_APP_ID = '33333333-4444-4555-8666-777777777777';
 
 /**
  * Generate a minimal RSA key pair and build a signed JWT for testing.
@@ -400,7 +400,7 @@ describe('Teams outbound — SDK sendToConversation', () => {
       },
     );
 
-    const expectedTenantId = '12f2ee23-457a-4f1f-a102-db910fc3f866';
+    const expectedTenantId = '22222222-3333-4444-8555-666666666666';
     await sendTeamsActivity(mockRef, 'tenant test', 'client-id', 'client-secret', expectedTenantId);
 
     assert.ok(capturedCtx, 'sendToConversation context should be captured');

@@ -2,7 +2,7 @@
   "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.17/MicrosoftTeams.schema.json",
   "manifestVersion": "1.17",
   "version": "1.0.0",
-  "id": "70db3bc8-52fd-4270-9247-61d53b2ea019",
+  "id": "33333333-4444-4555-8666-777777777777",
   "packageName": "bot.servos.bridget",
   "developer": {
     "name": "Servos",
@@ -25,7 +25,7 @@
   "accentColor": "#1a1a2e",
   "bots": [
     {
-      "botId": "70db3bc8-52fd-4270-9247-61d53b2ea019",
+      "botId": "33333333-4444-4555-8666-777777777777",
       "scopes": ["personal", "team", "groupChat"],
       "supportsFiles": false,
       "isNotificationOnly": false,

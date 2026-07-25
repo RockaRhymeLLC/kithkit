@@ -10,7 +10,7 @@
 
 | Field | Value |
 |---|---|
-| Bot App ID (`botId`) | `70db3bc8-52fd-4270-9247-61d53b2ea019` |
+| Bot App ID (`botId`) | `33333333-4444-4555-8666-777777777777` |
 | Messaging endpoint | `https://bridget.servos.bot/api/teams/messages` |
 | Scopes | personal, team, groupChat |
 
@@ -28,6 +28,6 @@ Teams app sideloading requires tenant admin permission (or
 
 - The messaging endpoint (`https://bridget.servos.bot/api/teams/messages`) must be reachable from
   the Microsoft Teams service. Ensure the Cloudflare tunnel is active.
-- The bot app registration in Azure (app id `70db3bc8-52fd-4270-9247-61d53b2ea019`) must have the
+- The bot app registration in Azure (app id `33333333-4444-4555-8666-777777777777`) must have the
   Teams channel configured in Azure Bot Service.
 - Do NOT attempt to sideload without tenant admin or custom app upload permission.
