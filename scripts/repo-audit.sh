@@ -180,7 +180,7 @@ tags = ["MEDIUM", "infra", "cloudflare"]
 # this repo (docs/skills must use an obvious placeholder). Unlike the
 # instance-specific leak-check in ci.yml, this rule is NOT path-excluded
 # for docs/.claude/skills/ — those are exactly where a prior leak lived
-# (kithkit#<scrub-pr>, group id 00000000-0000-4000-8000-000000000000
+# (kithkit#<scrub-pr>, group id 11111111-2222-4333-8444-555555555555
 # replaced a real leaked value).
 [[rules]]
 id = "a2a-group-uuid"
@@ -190,7 +190,7 @@ tags = ["HIGH", "infra", "a2a"]
 
   [[rules.allowlists]]
   description = "Ignore the documented placeholder and pre-existing opaque test fixtures"
-  regexes = ['''(?:example|placeholder|00000000-0000-4000-8000-000000000000|00d0e9ff-8b2c-4009-a0a4-cc96af4b7827)''']
+  regexes = ['''(?:example|placeholder|11111111-2222-4333-8444-555555555555|00d0e9ff-8b2c-4009-a0a4-cc96af4b7827)''']
 
 # ── HIGH: Phone numbers ──
 [[rules]]

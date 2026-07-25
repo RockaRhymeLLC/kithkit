@@ -2931,7 +2931,7 @@ Groups always route via relay regardless of `route` value.
 {
   "ok": true,
   "messageId": "550e8400-e29b-41d4-a716-446655440000",
-  "target": "00000000-0000-4000-8000-000000000000",
+  "target": "11111111-2222-4333-8444-555555555555",
   "targetType": "group",
   "route": "relay",
   "status": "delivered",
@@ -2992,7 +2992,7 @@ curl -X POST http://localhost:3847/api/a2a/send \
 # Group message
 curl -X POST http://localhost:3847/api/a2a/send \
   -H 'Content-Type: application/json' \
-  -d '{"group": "00000000-0000-4000-8000-000000000000", "payload": {"type": "text", "text": "Hello team!"}}'
+  -d '{"group": "11111111-2222-4333-8444-555555555555", "payload": {"type": "text", "text": "Hello team!"}}'
 
 # Force LAN route
 curl -X POST http://localhost:3847/api/a2a/send \

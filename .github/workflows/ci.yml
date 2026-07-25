@@ -372,10 +372,11 @@ jobs:
           # prose). A UUID has no such legitimate reason to appear in a doc
           # or skill file — it's either a placeholder or a real leaked
           # secret, never prose. So this check applies to ALL changed files,
-          # no directory exclusions. See incident: real group UUID
-          # c006dfce-37b6-434a-8407-1d227f485a81 sat in SKILL.md,
-          # docs/api-reference.md, and a2a-router.test.ts for months because
-          # the check above skips those exact paths.
+          # no directory exclusions. See incident: a real A2A group UUID
+          # was committed in 7 locations across SKILL.md,
+          # docs/api-reference.md and a2a-router.test.ts, and went
+          # undetected because those first two paths are directory-excluded
+          # from the check above.
           #
           # Context words that indicate "this UUID is a network group id",
           # not just any UUID (messageId/agentId examples in docs are fine).
@@ -387,7 +388,7 @@ jobs:
           # pre-existing opaque test-fixture UUID used for unrelated
           # error-path tests (payload-too-large, etc.) where the value is
           # arbitrary and never resolves to a real fleet group.
-          ALLOWLIST_RE='00000000-0000-4000-8000-000000000000|00d0e9ff-8b2c-4009-a0a4-cc96af4b7827'
+          ALLOWLIST_RE='11111111-2222-4333-8444-555555555555|00d0e9ff-8b2c-4009-a0a4-cc96af4b7827'
 
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             BASE="${{ github.event.pull_request.base.sha }}"
@@ -420,7 +421,7 @@ jobs:
             echo -e "$FOUND"
             echo ""
             echo "A2A network group UUIDs must never be committed to this public repo."
-            echo "Use an obvious placeholder instead, e.g. 00000000-0000-4000-8000-000000000000."
+            echo "Use an obvious placeholder instead, e.g. 11111111-2222-4333-8444-555555555555."
             exit 1
           fi
 
