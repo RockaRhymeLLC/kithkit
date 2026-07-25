@@ -84,7 +84,7 @@ describe('buildTaskFields', { concurrency: 1 }, () => {
 
       const task =
         'Send the weekly digest to all subscribers\n\n' +
-        'Delivery instructions: use Telegram channel -1928374655. ' +
+        'Delivery instructions: use Telegram channel -1111111111. ' +
         SENTINEL_TASK.repeat(5) + '\n\n' +
         'Additional body paragraph that is definitely longer than two hundred characters so we can confirm the full task body survives the insert without truncation. End of task body.';
 
