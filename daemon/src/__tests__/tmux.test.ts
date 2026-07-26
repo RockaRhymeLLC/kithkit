@@ -27,6 +27,7 @@ import {
   SUBMIT_LANDED_INDICATORS,
   spawnOrchestratorSession,
   _findCurrentInputLineForTesting,
+  sanitizeInjectText,
 } from '../agents/tmux.js';
 
 // ── Realistic pane-capture fixture (todo #2807) ────────────────
@@ -1426,4 +1427,57 @@ describe('injectMessage — bracketed paste delivery (mutation-kill)', { concurr
       );
     });
   }
+});
+
+// ── sanitizeInjectText — truncation marker (fail-loud observability fix) ──
+//
+// injectMessage previously truncated overflowing text with NO marker: the
+// receiver (comms pane) could not tell a truncated inject from a complete
+// one, even though the full body is durably stored (tasks.result / messages
+// row). sanitizeInjectText is the pure extraction of the truncate+sanitize
+// step (no tmux I/O), so this marker/cap behavior is testable directly
+// without mocking a live pane.
+describe('sanitizeInjectText — truncation marker (observability fix)', () => {
+  const MAX_INJECT_LENGTH = 4000;
+
+  it('appends a loud marker with the correct originalLength when text overflows the cap', () => {
+    const oversized = 'x'.repeat(5000);
+    const result = sanitizeInjectText(oversized);
+
+    assert.ok(
+      result.endsWith(
+        `[!] injected copy truncated: showing first ~${MAX_INJECT_LENGTH} of ${oversized.length} chars. Full message is in the durable record (query the orchestrator task result / messages row).`,
+      ),
+      `expected result to end with the truncation marker carrying originalLength=${oversized.length} — got: ${JSON.stringify(result.slice(-200))}`,
+    );
+    assert.ok(
+      result.length <= MAX_INJECT_LENGTH,
+      `body + marker must respect MAX_INJECT_LENGTH (${MAX_INJECT_LENGTH}) — got ${result.length}`,
+    );
+  });
+
+  it('MUTATION-KILL: passes text at or under the cap through unchanged (no marker)', () => {
+    const atCap = 'y'.repeat(MAX_INJECT_LENGTH);
+    const result = sanitizeInjectText(atCap);
+    assert.equal(result, atCap, 'text at exactly MAX_INJECT_LENGTH must pass through byte-for-byte unchanged');
+    assert.ok(!result.includes('injected copy truncated'), 'no marker should be appended when text does not overflow the cap');
+
+    const underCap = 'short text, well under the cap';
+    assert.equal(sanitizeInjectText(underCap), underCap, 'text under the cap must pass through unchanged');
+  });
+
+  it('RED-proof: a bare slice (no marker) fails the overflow assertion — proves the test is non-vacuous', () => {
+    // Simulates reverting the fix to the pre-fix behavior (bare text.slice(0, MAX_INJECT_LENGTH),
+    // no marker) and confirms THAT output would fail the same assertion the fixed
+    // behavior passes above — i.e. the marker assertion actually discriminates
+    // fixed vs. unfixed behavior rather than passing vacuously either way.
+    const oversized = 'x'.repeat(5000);
+    const preFixBehavior = oversized.slice(0, MAX_INJECT_LENGTH); // old behavior: bare slice, no marker
+    assert.ok(
+      !preFixBehavior.endsWith(
+        `[!] injected copy truncated: showing first ~${MAX_INJECT_LENGTH} of ${oversized.length} chars. Full message is in the durable record (query the orchestrator task result / messages row).`,
+      ),
+      'pre-fix bare-slice output must NOT satisfy the marker assertion (confirms the fixed test is non-vacuous)',
+    );
+  });
 });

@@ -461,6 +461,53 @@ export async function injectMessage(agentId: string, text: string): Promise<bool
 }
 
 /**
+ * Truncate + sanitize raw text for tmux injection. Pure and side-effect free
+ * (no tmux I/O, no logging) so the truncation-marker and sanitization
+ * behavior can be unit tested directly, without mocking a live pane.
+ *
+ * On overflow, the receiver previously got a silently truncated copy — no
+ * marker, no byte count, no pointer — indistinguishable from a complete
+ * message even though the full body is durably stored (tasks.result /
+ * messages row). This appends a loud marker instead, reserving space for it
+ * up front so `body + marker` still respects MAX_INJECT_LENGTH rather than
+ * growing past the original cap.
+ */
+export function sanitizeInjectText(text: string): string {
+  const truncated = text.length > MAX_INJECT_LENGTH;
+  let marker = '';
+  if (truncated) {
+    marker = `\n\n[!] injected copy truncated: showing first ~${MAX_INJECT_LENGTH} of ${text.length} chars. Full message is in the durable record (query the orchestrator task result / messages row).`;
+  }
+  let safeText = text.slice(0, MAX_INJECT_LENGTH - marker.length);
+  // Strip ANSI escape sequences (ESC [ ... and ESC O ...)
+  safeText = safeText.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+  safeText = safeText.replace(/\x1b[^[]/g, '');
+  // Strip raw escape bytes and other C0 control chars except newline and tab
+  safeText = safeText.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
+
+  // @-mention residual: bracketed paste defeats typing-time fuzzy-autocomplete
+  // popups, but the receiving TUI separately resolves @-mentions in the
+  // SUBMITTED buffer text — a peer-controlled '@'-prefixed path to a real
+  // file (relative, absolute, ../traversal, or config-style) still
+  // auto-reads that file at submit time. A filesystem-existence-check gate
+  // was rejected: TOCTOU (the file may not exist at sanitize-time but
+  // resolve at submit-time), cwd divergence between the sanitizer and the
+  // harness's resolution, and absolute/traversal/symlink/tilde forms can
+  // dodge the probe. Empirically verified fix instead: insert U+200B (ZERO
+  // WIDTH SPACE) immediately after any '@' that's immediately followed by a
+  // non-whitespace, non-'@' character — this defeats @-mention resolution
+  // while rendering identically (invisible), so broad/over-neutralizing
+  // matches (e.g. '@8pm', 'user@example.com') are harmless. Mirrors the
+  // identical change in core/session-bridge.ts injectText().
+  safeText = safeText.replace(/@(?=[^\s@])/g, '@​');
+
+  if (truncated) {
+    safeText += marker;
+  }
+  return safeText;
+}
+
+/**
  * Core injection logic for a single, already-resolved session. Split out from
  * injectMessage() so the per-session serial queue can wrap just this part —
  * the validation/guard checks above run immediately (unqueued).
@@ -498,28 +545,7 @@ async function injectMessageToSession(agentId: string, session: string, text: st
       agentId, originalLength: text.length, maxLength: MAX_INJECT_LENGTH,
     });
   }
-  let safeText = text.slice(0, MAX_INJECT_LENGTH);
-  // Strip ANSI escape sequences (ESC [ ... and ESC O ...)
-  safeText = safeText.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
-  safeText = safeText.replace(/\x1b[^[]/g, '');
-  // Strip raw escape bytes and other C0 control chars except newline and tab
-  safeText = safeText.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');
-
-  // @-mention residual: bracketed paste defeats typing-time fuzzy-autocomplete
-  // popups, but the receiving TUI separately resolves @-mentions in the
-  // SUBMITTED buffer text — a peer-controlled '@'-prefixed path to a real
-  // file (relative, absolute, ../traversal, or config-style) still
-  // auto-reads that file at submit time. A filesystem-existence-check gate
-  // was rejected: TOCTOU (the file may not exist at sanitize-time but
-  // resolve at submit-time), cwd divergence between the sanitizer and the
-  // harness's resolution, and absolute/traversal/symlink/tilde forms can
-  // dodge the probe. Empirically verified fix instead: insert U+200B (ZERO
-  // WIDTH SPACE) immediately after any '@' that's immediately followed by a
-  // non-whitespace, non-'@' character — this defeats @-mention resolution
-  // while rendering identically (invisible), so broad/over-neutralizing
-  // matches (e.g. '@8pm', 'user@example.com') are harmless. Mirrors the
-  // identical change in core/session-bridge.ts injectText().
-  safeText = safeText.replace(/@(?=[^\s@])/g, '@​');
+  const safeText = sanitizeInjectText(text);
 
   if (safeText.length === 0) {
     log.warn('injectMessage: text empty after sanitization', {
