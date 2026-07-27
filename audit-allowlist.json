@@ -39,9 +39,9 @@
       "reason": "Deep transitive advisory via botframework -> axios FormData polyfill; the polyfill is never invoked — the daemon uses JSON-only REST. Not reachable. Accepted as unreachable until the upstream SDK transitive updates. Re-evaluate by 2026-12-15."
     },
     {
-      "id": "GHSA-F38Q-MGVJ-VPH7",
-      "expires": "2026-12-15",
-      "reason": "Deep transitive advisory via onnxruntime-web bundled static schemas; kithkit's only protobufjs use is all-MiniLM embeddings with no user-controlled .proto input. Not reachable. Accepted as unreachable until the upstream transitive updates. Re-evaluate by 2026-12-15."
+      "id": "GHSA-F88M-G3JW-G9CJ",
+      "expires": "2027-01-24",
+      "reason": "Transitive sharp/libvips advisory (CVE-2026-33327, CVE-2026-33328, CVE-2026-35590, CVE-2026-35591 - heap overflow / OOB read family in libvips image decoders), pulled via @huggingface/transformers -> sharp@0.34.5. sharp is a direct dependency of @huggingface/transformers's own package.json ('sharp': '^0.34.1'), which excludes the fixed >=0.35.0 line under semver - this is why npm audit reports fixAvailable:false; the fix exists upstream on npm (sharp 0.35.1+) but is blocked by @huggingface/transformers's own caret pin, not by kithkit. Unreachable in kithkit: daemon/src/memory/embed-worker.ts (the only importer of @huggingface/transformers) exclusively creates a 'feature-extraction' text pipeline (Xenova/all-MiniLM-L6-v2) and calls it only with plain strings; no image-classification/vision pipeline is ever instantiated. sharp's image-loading path (node_modules/@huggingface/transformers/src/utils/image.js: sharp(await blob.arrayBuffer()) / RawImage.read, lines ~182, 410, 534, 599, 820) is therefore never invoked - the native libvips decoder never parses any image bytes, attacker-controlled or otherwise. Accepted as unreachable until @huggingface/transformers widens its sharp dependency range past 0.35.0. Re-evaluate by 2027-01-24."
     }
   ]
 }

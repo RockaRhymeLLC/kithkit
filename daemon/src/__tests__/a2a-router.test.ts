@@ -44,7 +44,7 @@ function validDMRequest() {
 
 function validGroupRequest() {
   return {
-    group: 'c006dfce-37b6-434a-8407-1d227f485a81',
+    group: '11111111-2222-4333-8444-555555555555',
     payload: { type: 'text', text: 'hello group' },
   };
 }
@@ -71,7 +71,7 @@ describe('A2A Router — Validation', () => {
     const result = router.validate(validGroupRequest());
     assert.equal(result.valid, true);
     if (result.valid) {
-      assert.equal(result.request.group, 'c006dfce-37b6-434a-8407-1d227f485a81');
+      assert.equal(result.request.group, '11111111-2222-4333-8444-555555555555');
     }
   });
 
@@ -692,7 +692,7 @@ describe('A2A Router — Spec Bug Fixes', () => {
           return { messageId: 'g1', delivered: ['agent1'], queued: [] as string[], failed: [] as string[] };
         },
         getGroups: async () => [
-          { id: 'c006dfce-37b6-434a-8407-1d227f485a81', name: 'home-agents' },
+          { id: '11111111-2222-4333-8444-555555555555', name: 'home-agents' },
         ],
       }),
     });
@@ -705,7 +705,7 @@ describe('A2A Router — Spec Bug Fixes', () => {
     assert.equal(result.ok, true);
     // The name should have been resolved to the UUID
     assert.equal(sendToGroupCalls.length, 1);
-    assert.equal(sendToGroupCalls[0].groupId, 'c006dfce-37b6-434a-8407-1d227f485a81');
+    assert.equal(sendToGroupCalls[0].groupId, '11111111-2222-4333-8444-555555555555');
   });
 
   it('Group name resolution fails -> GROUP_NOT_FOUND (SPEC BUG 6)', async () => {

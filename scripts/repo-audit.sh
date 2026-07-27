@@ -112,7 +112,14 @@ tags = ["HIGH", "pii", "email"]
 
   [[rules.allowlists]]
   description = "Ignore example/placeholder emails"
-  regexes = ['''(?:example|test|noreply|no-reply|placeholder|your[-_]?(?:email)?|user|someone|anyone|name)@''']
+  regexes = ['''(?:example|test|noreply|no-reply|placeholder|your?[-_]?(?:email)?|user|someone|anyone|name)@''']
+
+  [[rules.allowlists]]
+  description = "Ignore me@ placeholder and redacted-* placeholder addresses"
+  regexes = [
+    '''\bme@''',
+    '''\bredacted[-_\w]*@'''
+  ]
 
   [[rules.allowlists]]
   description = "Ignore common patterns in deps/config"
@@ -175,6 +182,23 @@ description = "Cloudflare zone/tunnel ID"
 regex = '''(?i)(?:zone|tunnel)[\s_-]*(?:id|ID)\s*[:=]\s*["']?[0-9a-f]{32}["']?'''
 tags = ["MEDIUM", "infra", "cloudflare"]
 
+# ── HIGH: A2A network group UUID ──
+# A real fleet group id has no legitimate reason to appear anywhere in
+# this repo (docs/skills must use an obvious placeholder). Unlike the
+# instance-specific leak-check in ci.yml, this rule is NOT path-excluded
+# for docs/.claude/skills/ — those are exactly where a prior leak lived
+# (kithkit#<scrub-pr>, group id 11111111-2222-4333-8444-555555555555
+# replaced a real leaked value).
+[[rules]]
+id = "a2a-group-uuid"
+description = "A2A network group UUID in a group/target context"
+regex = '''(?i)(?:(?:a2a[-_]?)?group(?:id)?|target)["'\s]{0,3}[:=,]\s*["']?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}["']?'''
+tags = ["HIGH", "infra", "a2a"]
+
+  [[rules.allowlists]]
+  description = "Ignore the documented placeholder and pre-existing opaque test fixtures"
+  regexes = ['''(?:example|placeholder|11111111-2222-4333-8444-555555555555|00d0e9ff-8b2c-4009-a0a4-cc96af4b7827)''']
+
 # ── HIGH: Phone numbers ──
 [[rules]]
 id = "us-phone-number"
@@ -225,6 +249,13 @@ description = "Telegram chat/user ID (long numeric)"
 regex = '''(?i)(?:chat|user|telegram)[\s_-]*(?:id|ID)\s*[:=]\s*["']?\d{8,12}["']?'''
 tags = ["MEDIUM", "pii", "telegram"]
 
+  [[rules.allowlists]]
+  description = "Ignore all-zeros and sequential-digit placeholder IDs"
+  regexes = [
+    '''0{9,}''',
+    '''123456789'''
+  ]
+
 # ── LOW: Hostname/machine references ──
 [[rules]]
 id = "local-hostname"
@@ -233,7 +264,7 @@ regex = '''[A-Z][\w-]*(?:\.local|\.lan)\b|[\w]+-[\w-]+(?:\.local|\.lan)\b'''
 tags = ["LOW", "infra", "hostname"]
 
   [[rules.allowlists]]
-  regexes = ['''(?:example|placeholder|YOUR|localhost|CLAUDE\.local|settings\.local|env\.local|\.env\.local|peers-machine|my-machine|host-name|path-node)''']
+  regexes = ['''(?:example|placeholder|YOUR|localhost|CLAUDE\.local|settings\.local|env\.local|\.env\.local|peers-machine|my-machine|host-name|path-node|host-[a-z]\b|node-[a-z]\b)''']
   paths = ['''node_modules/''', '''vendor/''']
 
 # ── Global allowlist ──
