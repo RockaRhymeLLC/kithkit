@@ -29,6 +29,7 @@ import { createRateLimiter } from './rate-limit.js';
 import { cancelSessionTimers } from './timer.js';
 import { isVectorSearchEnabled } from './memory.js';
 import { hybridSearch } from '../memory/vector-search.js';
+import { assertRecordSafe, CredentialLeakError } from '../security/credential-guard.js';
 
 const log = createLogger('orchestrator-api');
 
@@ -180,6 +181,24 @@ export async function handleOrchestratorRoute(
     const workNotes = typeof body.work_notes === 'string' ? body.work_notes : null;
     const { titleText, descriptionText } = buildTaskFields(task, context);
     const source = requestingPeer ? 'peer' : 'human';
+
+    // Refuse to persist a work_notes value that contains a live credential,
+    // before the row is written. This handler has no enclosing try/catch that
+    // maps thrown errors to a 4xx response (unlike task-queue.ts/
+    // unified-tasks.ts) — uncaught, this would fall through to main.ts's
+    // generic 500 handler and lose the actionable message. Catch locally
+    // instead of adding a route-wide handler in main.ts, which is out of
+    // scope for this change.
+    try {
+      assertRecordSafe('tasks', { work_notes: workNotes });
+    } catch (err) {
+      if (err instanceof CredentialLeakError) {
+        json(res, 400, withTimestamp({ error: err.message }));
+        return true;
+      }
+      throw err;
+    }
+
     exec(
       `INSERT INTO tasks (external_id, kind, title, description, status, priority, source, work_notes, requesting_peer, created_at, updated_at)
        VALUES (?, 'orchestrator', ?, ?, 'pending', ?, ?, ?, ?, ?, ?)`,

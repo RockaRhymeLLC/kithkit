@@ -27,6 +27,7 @@ import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { query, exec, getDatabase } from '../core/db.js';
+import { assertRecordSafe, CredentialLeakError } from '../security/credential-guard.js';
 import { injectMessage as defaultInjectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 
@@ -384,6 +385,11 @@ export async function handleTaskQueueRoute(
       const complexityInt = typeof body.complexity === 'string' && VALID_COMPLEXITY.includes(body.complexity as Complexity)
         ? complexityToInt(body.complexity as Complexity)
         : null;
+
+      // Reject before the row is written if work_notes carries a live
+      // credential — the caller (creating this task) gets a 400 it can act
+      // on. See security/credential-guard.ts.
+      assertRecordSafe('tasks', { work_notes: body.work_notes });
 
       exec(
         `INSERT INTO tasks (external_id, kind, title, description, status, priority, source, work_notes, timeout_seconds, complexity, canonical_task_external_id, requesting_peer, created_at, updated_at)
@@ -1046,6 +1052,11 @@ export async function handleTaskQueueRoute(
         return true;
       }
 
+      // Reject before the row is written if result/error/work_notes carries
+      // a live credential — the caller gets a 400 it can act on. See
+      // security/credential-guard.ts.
+      assertRecordSafe('tasks', updates);
+
       // Build UPDATE statement
       const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
       const values = Object.values(updates);
@@ -1162,6 +1173,10 @@ export async function handleTaskQueueRoute(
 
     return false;
   } catch (err) {
+    if (err instanceof CredentialLeakError) {
+      json(res, 400, withTimestamp({ error: err.message }));
+      return true;
+    }
     if (err instanceof Error) {
       if (err.message === 'Request body too large') {
         json(res, 413, withTimestamp({ error: 'Request body too large' }));

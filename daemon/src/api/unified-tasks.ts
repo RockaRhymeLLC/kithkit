@@ -13,6 +13,7 @@ import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { query, exec, get, getDatabase } from '../core/db.js';
+import { assertRecordSafe, CredentialLeakError } from '../security/credential-guard.js';
 import { injectMessage as defaultInjectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 import { storeMemoryInternal } from './memory.js';
@@ -304,6 +305,11 @@ export async function handleUnifiedTasksRoute(
       }
 
       const ts = now();
+
+      // Reject before the row is written if work_notes carries a live
+      // credential — the caller (creating this task) gets a 400 it can act
+      // on. See security/credential-guard.ts.
+      assertRecordSafe('tasks', { work_notes: workNotes });
 
       exec(
         `INSERT INTO tasks (
@@ -1212,6 +1218,11 @@ export async function handleUnifiedTasksRoute(
         updates.acknowledged_at = typeof body.acknowledged_at === 'string' ? body.acknowledged_at : null;
       }
 
+      // Reject before the row is written if result/error/work_notes carries
+      // a live credential — the caller gets a 400 it can act on. See
+      // security/credential-guard.ts.
+      assertRecordSafe('tasks', updates);
+
       // ── Build and execute UPDATE ───────────────────────────
       const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
       const values = Object.values(updates);
@@ -1327,6 +1338,10 @@ export async function handleUnifiedTasksRoute(
 
     return false;
   } catch (err) {
+    if (err instanceof CredentialLeakError) {
+      json(res, 400, withTimestamp({ error: err.message }));
+      return true;
+    }
     if (err instanceof Error) {
       if (err.message === 'Request body too large') {
         json(res, 413, withTimestamp({ error: 'Request body too large' }));
