@@ -22,7 +22,7 @@ import {
   _setDeliveryDepsForTesting,
   _deliverMessagesForTesting,
 } from '../message-delivery.js';
-import { _getCommsSession, _getOrchestratorSession } from '../../../agents/tmux.js';
+import { _getCommsSession, _getOrchestratorSession, MAX_INJECT_LENGTH } from '../../../agents/tmux.js';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -295,5 +295,109 @@ describe('message-delivery: orchestrator injection (bug fix)', () => {
     // Message stays pending (not yet at MAX_RETRIES)
     const rows = query<MsgRow>('SELECT processed_at FROM messages WHERE id = ?', msgId);
     assert.equal(rows[0].processed_at, null, 'message should remain pending on first dead-state miss');
+  });
+});
+
+// ── Batch-overflow tests ────────────────────────────────────────
+//
+// Reproduces the message-loss defect: a batch of undelivered messages whose
+// concatenated content exceeds the tmux inject cap (MAX_INJECT_LENGTH) used
+// to be joined into ONE string, injected as a single unit, and then EVERY
+// message in the batch was marked processed_at/read_at/notified_at —
+// including messages whose content never actually landed in the injected
+// text because the tmux layer's own cap silently sliced it off.
+//
+// THE TRAP: asserting only on messages.body (which is always complete —
+// storage never truncates) proves nothing about delivery. These tests
+// assert on processed_at/read_at (must stay NULL for anything not actually
+// injected) and on the injected text's length against the cap — the only
+// signals that actually distinguish "delivered" from "dropped but marked
+// delivered anyway".
+describe('message-delivery: batch overflow does not mark undelivered messages as delivered', () => {
+  beforeEach(setupDb);
+  afterEach(teardownDb);
+
+  it('withholds messages that do not fit in the batch, and redelivers them on the next cycle', async () => {
+    // Three messages whose combined content overflows MAX_INJECT_LENGTH once
+    // batched: two fit together, the third does not.
+    const bigBody = 'x'.repeat(1500);
+    const msg1 = insertMessage({ to: 'comms', body: bigBody });
+    const msg2 = insertMessage({ to: 'comms', body: bigBody });
+    const msg3 = insertMessage({ to: 'comms', body: bigBody });
+
+    const injected: Array<{ agentId: string; text: string }> = [];
+
+    _setDeliveryDepsForTesting({
+      listSessions: () => [_getCommsSession(), _getOrchestratorSession()],
+      injectMessage: (agentId, text) => {
+        injected.push({ agentId, text });
+        return true; // simulate a successful tmux injection of whatever text we were given
+      },
+    });
+
+    await _deliverMessagesForTesting();
+
+    const commsCalls = injected.filter(c => c.agentId === 'comms');
+    assert.equal(commsCalls.length, 1, 'exactly one batch injection to comms this cycle');
+
+    // The text actually sent to the injection layer must respect the cap —
+    // the caller must have sized the batch BEFORE sending, not after.
+    assert.ok(
+      commsCalls[0].text.length <= MAX_INJECT_LENGTH,
+      `injected text (${commsCalls[0].text.length} chars) must not exceed MAX_INJECT_LENGTH (${MAX_INJECT_LENGTH})`,
+    );
+
+    const rows = query<MsgRow>(
+      'SELECT id, processed_at, read_at, notified_at FROM messages WHERE id IN (?, ?, ?) ORDER BY id ASC',
+      msg1, msg2, msg3,
+    );
+    const byId = new Map(rows.map(r => [r.id, r]));
+
+    // The withheld message must NOT be marked delivered — it was never in
+    // the injected text. This is the core assertion the defect violates.
+    const third = byId.get(msg3)!;
+    assert.equal(third.processed_at, null, 'withheld message must keep processed_at NULL');
+    assert.equal(third.read_at, null, 'withheld message must keep read_at NULL');
+    assert.equal(third.notified_at, null, 'withheld message must keep notified_at NULL');
+
+    // At least the first message (which always fits) must have been
+    // delivered — this batch isn't dropped wholesale, only the overflow.
+    const first = byId.get(msg1)!;
+    assert.ok(first.processed_at, 'first message that fits must be marked delivered');
+    assert.ok(first.read_at, 'first message that fits must be marked read');
+
+    // Next delivery cycle: the withheld message is still undelivered, so it
+    // must be picked up and actually delivered — proving it was queued for
+    // retry rather than silently lost.
+    await _deliverMessagesForTesting();
+    const rows2 = query<MsgRow>('SELECT processed_at FROM messages WHERE id = ?', msg3);
+    assert.ok(rows2[0].processed_at, 'withheld message must be delivered on the next cycle');
+  });
+
+  it('injects only a marker mentioning the withheld count, not the withheld content', async () => {
+    const bigBody = 'x'.repeat(1500);
+    const sentinel = 'WITHHELD-SENTINEL-CONTENT';
+    insertMessage({ to: 'comms', body: bigBody });
+    insertMessage({ to: 'comms', body: bigBody });
+    // Large enough (bigBody + sentinel) that it still can't fit alongside the
+    // first two — without this it'd be small enough to squeeze in and the
+    // batch wouldn't overflow at all, defeating the point of this test.
+    insertMessage({ to: 'comms', body: `${bigBody}-${sentinel}` });
+
+    const injected: Array<{ agentId: string; text: string }> = [];
+
+    _setDeliveryDepsForTesting({
+      listSessions: () => [_getCommsSession(), _getOrchestratorSession()],
+      injectMessage: (agentId, text) => {
+        injected.push({ agentId, text });
+        return true;
+      },
+    });
+
+    await _deliverMessagesForTesting();
+
+    const text = injected.find(c => c.agentId === 'comms')!.text;
+    assert.ok(!text.includes(sentinel), 'withheld message body must not appear in the injected text');
+    assert.match(text, /\b1\b.*withheld|withheld.*\b1\b/i, 'marker must report the withheld count (1)');
   });
 });

@@ -3,15 +3,20 @@
  *
  * 1. Messages arrive via POST /api/messages → stored as undelivered (processed_at IS NULL)
  * 2. This task runs on a short interval, pulls undelivered messages for persistent agents
- * 3. Injects the FULL MESSAGE CONTENT into the target tmux session
- * 4. Marks as delivered (processed_at + read_at + notified_at set) — no re-pinging
+ * 3. Injects the FULL MESSAGE CONTENT into the target tmux session, sized against
+ *    the injection cap up front (see buildDeliverableBatch) — a batch that would
+ *    overflow the cap is split, not silently sliced
+ * 4. Marks as delivered (processed_at + read_at + notified_at set) — but ONLY for
+ *    messages that actually fit in what was injected; anything withheld this cycle
+ *    is left pending for the next one
  * 5. Expires undelivered messages after TTL hours using created_at (age-based, restart-resilient)
  *
- * Deliver-once: each message is notified exactly once. No re-ping phase.
+ * Deliver-once: each message that is actually delivered is notified exactly once.
+ * No re-ping phase.
  */
 
 import { query, exec, update } from '../../core/db.js';
-import { injectMessage, listSessions, getOrchestratorState, _getCommsSession, _getOrchestratorSession } from '../../agents/tmux.js';
+import { injectMessage, listSessions, getOrchestratorState, _getCommsSession, _getOrchestratorSession, MAX_INJECT_LENGTH } from '../../agents/tmux.js';
 import { createLogger } from '../../core/logger.js';
 import { loadConfig } from '../../core/config.js';
 import type { Scheduler } from '../scheduler.js';
@@ -192,10 +197,49 @@ function formatMessageContent(msg: Message): string {
 }
 
 /**
- * Format a batch of messages for a single tmux injection.
+ * Reserved room (chars) inside MAX_INJECT_LENGTH for the withheld-count
+ * marker appended by buildDeliverableBatch() when a batch overflows the cap.
+ * Sized generously for any realistic withheld count so the reservation
+ * itself never needs to be computed iteratively.
  */
-function formatBatchContent(messages: Message[]): string {
-  return messages.map(formatMessageContent).join('\n');
+const MARKER_RESERVE = 150;
+
+/**
+ * Build the text to inject for a batch of undelivered messages, respecting
+ * the tmux inject cap (MAX_INJECT_LENGTH) up front — BEFORE anything is
+ * marked delivered.
+ *
+ * Messages are appended in order until the next one would overflow the cap;
+ * everything from that point on is returned as `withheld` and must be left
+ * untouched in the DB (processed_at stays NULL) so the next delivery cycle
+ * redelivers it. This replaces the previous concatenate-then-let-tmux-slice
+ * approach, which cut whole messages out of the batch without the caller
+ * ever knowing which ones were lost — they were then marked delivered anyway.
+ *
+ * A single message that alone exceeds the cap is still included by itself
+ * (tmux's own per-injection truncation/marker handles that internal
+ * overflow) rather than starving it indefinitely.
+ */
+function buildDeliverableBatch(messages: Message[]): { included: Message[]; withheld: Message[]; text: string } {
+  const capacity = MAX_INJECT_LENGTH - MARKER_RESERVE;
+  const included: Message[] = [];
+  let text = '';
+  for (const msg of messages) {
+    const line = formatMessageContent(msg);
+    const candidate = included.length === 0 ? line : `${text}\n${line}`;
+    if (candidate.length > capacity) {
+      if (included.length === 0) {
+        // Lone oversized message — include it alone rather than block forever.
+        text = line;
+        included.push(msg);
+      }
+      break;
+    }
+    text = candidate;
+    included.push(msg);
+  }
+  const withheld = messages.slice(included.length);
+  return { included, withheld, text };
 }
 
 /**
@@ -213,11 +257,12 @@ function formatBatchContent(messages: Message[]): string {
  * before delivery is attempted. Expiry uses created_at (persisted in DB), so the
  * clock survives daemon restarts — no in-memory counter needed.
  */
-async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: Set<string>): Promise<{ delivered: number; failed: number; expired: number; deferred: number }> {
+async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: Set<string>): Promise<{ delivered: number; failed: number; expired: number; deferred: number; withheld: number }> {
   let delivered = 0;
   let failed = 0;
   let expired = 0;
   let deferred = 0;
+  let withheldTotal = 0;
 
   const ttlHours = getTtlHours();
 
@@ -247,7 +292,7 @@ async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: S
      ORDER BY created_at ASC`,
   );
 
-  if (undelivered.length === 0) return { delivered, failed, expired, deferred };
+  if (undelivered.length === 0) return { delivered, failed, expired, deferred, withheld: withheldTotal };
 
   // Group by target agent to send a single ping per agent
   const byAgent = new Map<string, Message[]>();
@@ -325,21 +370,36 @@ async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: S
 
     if (deliverable.length === 0) continue;
 
-    // Inject the full message content into the tmux session
-    const contentText = formatBatchContent(deliverable);
+    // Size the batch against the inject cap BEFORE sending anything, so we
+    // know exactly which messages will actually land in the session and
+    // which won't fit this cycle (see buildDeliverableBatch doc).
+    const { included, withheld, text: batchBody } = buildDeliverableBatch(deliverable);
+    const contentText = withheld.length > 0
+      ? `${batchBody}\n\n[System] ${withheld.length} message(s) withheld from this batch (over the ${MAX_INJECT_LENGTH}-char inject cap) — will redeliver next cycle.`
+      : batchBody;
+
     const success = await _injectMessageImpl(agentId, contentText);
     injectsThisCycle++;
 
     if (success) {
       const now = new Date().toISOString();
       const nowMs = Date.now();
-      for (const msg of deliverable) {
+      for (const msg of included) {
         const existingMeta = msg.metadata ? JSON.parse(msg.metadata) : {};
         const updatedMeta = JSON.stringify({ ...existingMeta, last_notified_at: now });
-        // Set both processed_at AND read_at — the agent already has the content
-        // in their session, so no follow-up notification is needed.
+        // Only mark delivered the messages that actually fit inside the
+        // injected text (`included`). Messages left in `withheld` are NOT
+        // touched here — processed_at stays NULL so the next delivery
+        // cycle picks them up and redelivers them; they were never part
+        // of what landed in the agent's session.
         exec('UPDATE messages SET processed_at = ?, read_at = ?, notified_at = ?, metadata = ? WHERE id = ?', now, now, now, updatedMeta, msg.id);
         delivered++;
+      }
+      if (withheld.length > 0) {
+        withheldTotal += withheld.length;
+        log.warn('Batch overflowed inject cap — some messages withheld this cycle, will retry next tick', {
+          to: agentId, included: included.length, withheld: withheld.length,
+        });
       }
       // If we just delivered to the orchestrator, touch last_activity so the
       // idle checker knows it received work and resets its idle clock.
@@ -350,14 +410,14 @@ async function deliverNewMessages(liveSessions: Set<string>, deferredSessions: S
         });
       }
       _lastAgentNotificationTime.set(agentId, nowMs);
-      log.debug('Message content delivered', { to: agentId, count: deliverable.length });
+      log.debug('Message content delivered', { to: agentId, count: included.length });
     } else {
       failed += deliverable.length;
       log.warn('Failed to inject message content', { to: agentId });
     }
   }
 
-  return { delivered, failed, expired, deferred };
+  return { delivered, failed, expired, deferred, withheld: withheldTotal };
 }
 
 // ── Phase 3: Worker completion notifications ─────────────────
@@ -434,13 +494,13 @@ async function deliverMessages(): Promise<void> {
   const { live: liveSessions, deferred: deferredSessions } = getLiveSessions();
 
   // Phase 1: Deliver new messages (inject content, mark processed + read)
-  const { delivered, failed, expired, deferred } = await deliverNewMessages(liveSessions, deferredSessions);
+  const { delivered, failed, expired, deferred, withheld } = await deliverNewMessages(liveSessions, deferredSessions);
 
   // Phase 2: Notify spawning agents of worker completions
   const workerNotified = await notifyWorkerCompletions(liveSessions);
 
-  if (delivered > 0 || failed > 0 || expired > 0 || deferred > 0 || workerNotified > 0) {
-    log.info('Delivery cycle complete', { delivered, failed, expired, deferred, workerNotified });
+  if (delivered > 0 || failed > 0 || expired > 0 || deferred > 0 || withheld > 0 || workerNotified > 0) {
+    log.info('Delivery cycle complete', { delivered, failed, expired, deferred, withheld, workerNotified });
   }
 }
 
@@ -481,7 +541,7 @@ export function _getRetryCount(messageId: number): number {
 export async function _deliverNewMessagesForTesting(opts: {
   liveSessions: Set<string>;
   deferredSessions?: Set<string>;
-}): Promise<{ delivered: number; failed: number; expired: number; deferred: number }> {
+}): Promise<{ delivered: number; failed: number; expired: number; deferred: number; withheld: number }> {
   return deliverNewMessages(opts.liveSessions, opts.deferredSessions ?? new Set());
 }
 

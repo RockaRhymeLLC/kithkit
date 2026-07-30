@@ -37,7 +37,11 @@ export const ORCH_SESSION_PATTERN = /^orch\d*$/;
 
 /** Maximum characters allowed in a single tmux send-keys injection. */
 // A2A sender-side guard against this cap: a2a/router.ts MAX_A2A_TEXT_LENGTH.
-const MAX_INJECT_LENGTH = 4000;
+// Exported so callers that batch multiple logical messages into one injection
+// (e.g. automation/tasks/message-delivery.ts) can size batches against the
+// same cap up front, instead of guessing and letting this layer's own
+// truncation silently cut whole messages out of a multi-message batch.
+export const MAX_INJECT_LENGTH = 4000;
 
 let projectDir = process.cwd();
 
