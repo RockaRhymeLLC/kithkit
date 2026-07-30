@@ -292,3 +292,129 @@ describe('credential-guard: placeholder (guardOrPlaceholder / sanitizeRecordOrPl
     assert.doesNotThrow(() => sanitizeRecordOrPlaceholder('worker_jobs', { result: token, error: null }));
   });
 });
+
+// ── New write-path chokepoints ───────────────────────────────────
+//
+// WATCHED_FIELDS.tasks was expanded to cover description, plan,
+// plan_rejected_reason, outcome_reason, and comms_corrections (in addition
+// to the pre-existing work_notes/result/error), and WATCHED_FIELDS.task_activity
+// now covers message. Each field below gets a positive control (a live
+// issued token must be rejected) and a prose-negative control (ordinary
+// text that names auth mechanisms/fingerprints/hex-looking IDs must NOT
+// fire) — the same false-positive class the top-of-file prose-negative
+// suite guards against, applied to each new field individually.
+
+describe('credential-guard: new tasks fields (description, plan, plan_rejected_reason, outcome_reason, comms_corrections)', () => {
+  beforeEach(setupDb);
+  afterEach(teardownDb);
+
+  const newTasksFields = ['description', 'plan', 'plan_rejected_reason', 'outcome_reason', 'comms_corrections'] as const;
+
+  for (const field of newTasksFields) {
+    it(`assertRecordSafe rejects a live token in tasks.${field}`, () => {
+      const token = issueToken('orchestrator');
+      try {
+        assertRecordSafe('tasks', { [field]: `see: ${token}`, title: 'ok' });
+        assert.fail(`expected CredentialLeakError to be thrown for ${field}`);
+      } catch (err) {
+        assert.ok(err instanceof CredentialLeakError);
+        assert.equal(err.table, 'tasks');
+        assert.equal(err.field, field);
+        assert.equal(err.matchType, 'oracle');
+      }
+    });
+
+    it(`does not fire on ordinary prose in tasks.${field} (prose negative control)`, () => {
+      issueToken('comms');
+      const prose =
+        'Reviewed the change: auth now checks the X-Agent-Token header and validated the request ' +
+        'fingerprint 4aa9c619 against the record with sys_id 7c3e1a90b2f4471aa9c6198bd2e4f011. ' +
+        'No further action needed.';
+      assert.doesNotThrow(() => assertRecordSafe('tasks', { [field]: prose, title: 'ok' }));
+    });
+  }
+
+  it('assertRecordSafe rejects a GitHub-token-shaped value in tasks.plan', () => {
+    const bait = 'ghp_' + 'SYNTHETICTESTVALUE0123456789ABCDEFGHIJK';
+    try {
+      assertRecordSafe('tasks', { plan: `step 1: authenticate with ${bait}` });
+      assert.fail('expected CredentialLeakError to be thrown');
+    } catch (err) {
+      assert.ok(err instanceof CredentialLeakError);
+      assert.equal(err.field, 'plan');
+      assert.equal(err.matchType, 'shape');
+    }
+  });
+
+  it('nothing is persisted when a plan-submit-shaped write is rejected', () => {
+    const token = issueToken('worker', { jobId: 'job-plan-reject-1' });
+    const taskId = 'task-plan-reject-test-1';
+    assert.throws(() => {
+      assertRecordSafe('tasks', { plan: `plan step: run with ${token}` });
+      insert('tasks', { id: taskId, kind: 'todo', title: 'unreachable', plan: `plan step: run with ${token}` });
+    }, CredentialLeakError);
+    assert.equal(get('tasks', taskId), undefined);
+  });
+});
+
+describe('credential-guard: new task_activity.message field', () => {
+  beforeEach(setupDb);
+  afterEach(teardownDb);
+
+  it('assertRecordSafe rejects a live token in task_activity.message', () => {
+    const token = issueToken('worker', { jobId: 'job-activity-1' });
+    try {
+      assertRecordSafe('task_activity', { message: `activity note: ${token}` });
+      assert.fail('expected CredentialLeakError to be thrown');
+    } catch (err) {
+      assert.ok(err instanceof CredentialLeakError);
+      assert.equal(err.table, 'task_activity');
+      assert.equal(err.field, 'message');
+      assert.equal(err.matchType, 'oracle');
+    }
+  });
+
+  it('does not fire on ordinary activity prose (prose negative control)', () => {
+    issueToken('orchestrator');
+    const prose =
+      'Worker completed. Verified the response carried a valid Bearer token via X-Agent-Token ' +
+      'and the agent fingerprint a1b2c3d4 matched the expected sys_id e4f5a6b7c8d940102030405060708090.';
+    assert.doesNotThrow(() => assertRecordSafe('task_activity', { message: prose }));
+  });
+
+  it('assertRecordSafe is a no-op for task_activity fields other than message', () => {
+    assert.doesNotThrow(() => assertRecordSafe('task_activity', { stage: 'cleanup', type: 'note', agent: 'daemon' }));
+  });
+});
+
+describe('credential-guard: worker_jobs.verification_report (placeholder path)', () => {
+  beforeEach(setupDb);
+  afterEach(teardownDb);
+
+  it('sanitizeRecordOrPlaceholder replaces a leaking verification_report with a labelled placeholder', () => {
+    const token = issueToken('worker', { jobId: 'job-verify-1' });
+    const record = {
+      status: 'completed',
+      verification_report: JSON.stringify({ notes: `checked with ${token}` }),
+    };
+    const out = sanitizeRecordOrPlaceholder('worker_jobs', record);
+    assert.match(out.verification_report as string, /^\[CREDENTIAL-GUARD-BLOCKED\]/);
+    assert.equal((out.verification_report as string).includes(token), false);
+    assert.equal(out.status, 'completed');
+  });
+
+  it('sanitizeRecordOrPlaceholder leaves a clean verification_report untouched', () => {
+    const record = { verification_report: JSON.stringify({ notes: 'all claims verified against source' }) };
+    const out = sanitizeRecordOrPlaceholder('worker_jobs', record);
+    assert.equal(out.verification_report, record.verification_report);
+  });
+
+  it('does not fire on ordinary prose in verification_report (prose negative control)', () => {
+    issueToken('comms');
+    const report = JSON.stringify({
+      notes: 'Confirmed the handler checks X-Agent-Token and rejected a request with fingerprint 4aa9c619.',
+    });
+    const out = sanitizeRecordOrPlaceholder('worker_jobs', { verification_report: report });
+    assert.equal(out.verification_report, report);
+  });
+});

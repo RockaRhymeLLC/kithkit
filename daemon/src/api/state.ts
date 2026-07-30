@@ -245,6 +245,11 @@ export async function handleStateRoute(
         if (todosConfig?.default_source) data.source = todosConfig.default_source;
       }
 
+      // Reject before the row is written if description carries a live
+      // credential — the caller (creating this todo) gets a 400 it can act
+      // on. See security/credential-guard.ts.
+      assertRecordSafe('tasks', data);
+
       const todo = insert<Todo>('tasks', data);
       // Native-first: do NOT stamp external_id on new todos — native tasks.id is the
       // display id from here on.  Existing migrated todos retain their external_id

@@ -178,10 +178,39 @@ export function checkForCredentialLeak(value: string): CredentialCheckResult {
  * result. tasks.error is included too — same risk shape (agent-authored
  * free text served to unauthenticated LAN callers), guarding it is a
  * one-line addition once the mechanism exists.
+ *
+ * Extended coverage (field-class sweep, follow-up to the original incident):
+ * the original list was built by naming columns from memory, which is a
+ * denylist by construction — it missed worker_jobs.verification_report, a
+ * fact-verifier write with the exact same shape (agent-authored prose,
+ * served to unauthenticated LAN callers). Rather than add that one field
+ * and stop, every prose column across worker_jobs/tasks that a live HTTP
+ * write path accepts from a request body was audited. Added here:
+ *   worker_jobs.verification_report — fact-verifier's persisted claim
+ *     report; the report JSON embeds claim.reason strings derived from
+ *     job.result, so it inherits that field's leak risk.
+ *   tasks.description — task/todo body text, set at creation and via PUT.
+ *   tasks.plan — orchestrator/worker plan text (plan-approval workflow).
+ *   tasks.plan_rejected_reason — human/comms plan-rejection feedback.
+ *   tasks.outcome_reason — orchestrator's free-text outcome explanation.
+ *   tasks.comms_corrections — comms-authored correction notes on a task.
+ * Deliberately NOT added here (enum/machine-generated columns carry no
+ * transcription risk): tasks.status/priority/outcome/comms_outcome/
+ * plan_status/last_retry_reason (CHECK-constrained), tasks.requesting_peer
+ * (regex-validated short identifier), worker_jobs.verification_status
+ * (enum) and verification_flagged_at/resolved_model/turns_used (timestamp/
+ * machine values). See the PR description for the full field-class sweep,
+ * including tables outside this guard's current reach (task_activity.message
+ * gained its own guard at the two live-request-body write sites; other
+ * tables — messages, memories, conversation_messages, wiki_articles,
+ * task_results — were reviewed and left for a dedicated follow-up, since
+ * their write paths have many callers with mixed sync/fire-and-forget
+ * semantics that a single-PR sweep can't safely convert wholesale).
  */
 export const WATCHED_FIELDS: Readonly<Record<string, readonly string[]>> = {
-  worker_jobs: ['prompt', 'result', 'error'],
-  tasks: ['work_notes', 'result', 'error'],
+  worker_jobs: ['prompt', 'result', 'error', 'verification_report'],
+  tasks: ['work_notes', 'result', 'error', 'description', 'plan', 'plan_rejected_reason', 'outcome_reason', 'comms_corrections'],
+  task_activity: ['message'],
 };
 
 // ── Enforcement: reject ──────────────────────────────────────

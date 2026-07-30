@@ -29,6 +29,7 @@ import { injectText } from '../core/session-bridge.js';
 import { addOnJobComplete } from './lifecycle.js';
 import type { JobRecord } from './lifecycle.js';
 import { createLogger } from '../core/logger.js';
+import { sanitizeRecordOrPlaceholder } from '../security/credential-guard.js';
 
 const log = createLogger('fact-verifier');
 
@@ -758,7 +759,16 @@ function persistReport(jobId: string, report: VerificationReport): void {
     fields['verification_flagged_at'] = report.timestamp;
   }
 
-  update('worker_jobs', jobId, fields);
+  // verifyJob() runs fire-and-forget off the job-complete listener chain —
+  // there is no live caller to hand a rejection to (the worker process that
+  // produced job.result has already exited). Claim reasons in the report
+  // are derived from job.result text, so they inherit its leak risk.
+  // Sanitize to a placeholder instead of throwing, same posture as
+  // finishJob()'s handling of worker_jobs.result/error — see
+  // security/credential-guard.ts.
+  const safeFields = sanitizeRecordOrPlaceholder('worker_jobs', fields);
+
+  update('worker_jobs', jobId, safeFields);
 }
 
 function notifyComms(jobId: string, report: VerificationReport): void {
