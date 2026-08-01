@@ -438,6 +438,29 @@ describe('Task Queue API', { concurrency: 1 }, () => {
       const res = await request('GET', '/api/orchestrator/tasks/bad-id/activity');
       assert.equal(res.status, 404);
     });
+
+    it('POST /activity bumps parent task updated_at (wedge-detector liveness signal)', async () => {
+      const task = await createTask();
+      const initialUpdatedAt = task.updated_at as string;
+
+      // Small sleep so the timestamp is measurably newer.
+      await new Promise<void>((resolve) => setTimeout(resolve, 5));
+
+      const actRes = await request('POST', `/api/orchestrator/tasks/${task.id}/activity`, {
+        type: 'note',
+        message: 'Waiting on human input',
+        agent: 'orchestrator',
+      });
+      assert.equal(actRes.status, 201);
+
+      const detail = await request('GET', `/api/orchestrator/tasks/${task.id}`);
+      assert.equal(detail.status, 200);
+      const updated = JSON.parse(detail.body);
+      assert.ok(
+        updated.updated_at > initialUpdatedAt,
+        `POST /activity must bump tasks.updated_at so the wedge detector treats the orch as healthy; got updated_at=${updated.updated_at} which is not > initial=${initialUpdatedAt}`,
+      );
+    });
   });
 
   // ── Worker Assignment ──────────────────────────────────────
