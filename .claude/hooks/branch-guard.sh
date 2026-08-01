@@ -11,14 +11,16 @@
 set -euo pipefail
 
 # Workers run inside .kithkit/worktrees/ (current convention) or .claude/worktrees/
-# (legacy) — exempt from the guard. Belt-and-suspenders: any linked worktree (where
-# .git is a file pointing at the real gitdir, not a directory) is exempt too, in case
-# a worker worktree ever lives outside those two paths.
+# (legacy) — exempt from the guard. Belt-and-suspenders: any git-native linked worktree
+# is also exempt. The predicate uses --absolute-git-dir (CWD-independent) rather than
+# testing whether .git is a file — the file test was TRUE at a worktree root but FALSE
+# from any subdirectory, causing spurious blocks when a worker cd'd into a subproject.
 if [[ "$PWD" == */.kithkit/worktrees/* || "$PWD" == */.claude/worktrees/* ]]; then
   exit 0
 fi
-if [[ -f .git ]]; then
-  exit 0
+if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  GITDIR=$(git rev-parse --absolute-git-dir 2>/dev/null || true)
+  if [[ "$GITDIR" == */worktrees/* ]]; then exit 0; fi
 fi
 
 # Read stdin (may be empty for SessionStart, or JSON for PreToolUse)
