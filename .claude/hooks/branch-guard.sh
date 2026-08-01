@@ -10,17 +10,29 @@
 
 set -euo pipefail
 
-# Workers run inside .kithkit/worktrees/ (current convention) or .claude/worktrees/
-# (legacy) — exempt from the guard. Belt-and-suspenders: any git-native linked worktree
-# is also exempt. The predicate uses --absolute-git-dir (CWD-independent) rather than
-# testing whether .git is a file — the file test was TRUE at a worktree root but FALSE
-# from any subdirectory, causing spurious blocks when a worker cd'd into a subproject.
-if [[ "$PWD" == */.kithkit/worktrees/* || "$PWD" == */.claude/worktrees/* ]]; then
+# Topology test: a genuine linked worktree has --git-common-dir pointing to the
+# shared .git of the main repo, while --git-dir points to the worktree-specific
+# subdirectory inside .git/worktrees/. When both are non-empty AND different, this
+# CWD is inside a linked worktree. Two path-substring approaches were rejected:
+# (1) testing GITDIR against */worktrees/* fails when the main repo itself lives
+# under a path containing "worktrees"; (2) testing $PWD with a path-glob exempts
+# any non-worktree directory whose path happens to contain the substring. Both
+# infer topology from directory names rather than from what git actually knows.
+a=""
+b=""
+if a=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+   && b=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null) \
+   && [ -n "$a" ] && [ "$a" != "$b" ]; then
   exit 0
 fi
-if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  GITDIR=$(git rev-parse --absolute-git-dir 2>/dev/null || true)
-  if [[ "$GITDIR" == */worktrees/* ]]; then exit 0; fi
+# Degrade loudly: when both calls return empty, --path-format is unsupported
+# (git < 2.31) or the worktree registration is broken. Fall through to blocked,
+# but emit one diagnostic so the next person debugs git or the registration, not
+# this hook. The -n "$a" guard is required: in the old glob form empty-vs-glob
+# failed safe by construction; with !=, empty-vs-empty is FALSE, landing on
+# blocked by accident not by design.
+if [ -z "$a" ] && [ -z "$b" ]; then
+  echo "branch-guard: git rev-parse --path-format unsupported (needs git >= 2.31); worktree exemption disabled" >&2
 fi
 
 # Read stdin (may be empty for SessionStart, or JSON for PreToolUse)
