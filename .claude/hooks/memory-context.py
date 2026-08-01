@@ -233,6 +233,21 @@ def _todo_cache_path(project_dir: str) -> str:
     return os.path.join(tempfile.gettempdir(), f"kkit-todo-cache-{h}.json")
 
 
+def _project_ticket(t: dict) -> dict:
+    """Retain only the five fields used by scoring and formatting.
+
+    Stores description and work_notes truncated to 300 chars — score-identical
+    because _score_ticket only reads (d + " " + w)[:300].
+    """
+    return {
+        "id": t.get("id"),
+        "status": t.get("status"),
+        "title": t.get("title"),
+        "description": (t.get("description") or "")[:300],
+        "work_notes": (t.get("work_notes") or "")[:300],
+    }
+
+
 def _load_todos(project_dir: str) -> tuple[list, str | None]:
     """Load todos from cache or HTTP.  Returns (todos, err_msg).
 
@@ -256,10 +271,17 @@ def _load_todos(project_dir: str) -> tuple[list, str | None]:
             req = urllib.request.Request(TODOS_URL)
             with urllib.request.urlopen(req, timeout=TICKET_TIMEOUT) as resp:
                 data = json.loads(resp.read())
-                todos = data.get("data") or []
-            # Persist to cache (best-effort; failure is non-fatal)
+                todos = [_project_ticket(t) for t in (data.get("data") or [])]
+            # Persist to cache (best-effort; failure is non-fatal).
+            # chmod pre-existing file BEFORE write to avoid world-readable window.
+            # os.open with 0o600 ensures new files are created owner-only.
             try:
-                with open(cache, "w") as f:
+                try:
+                    os.chmod(cache, 0o600)
+                except OSError:
+                    pass
+                fd = os.open(cache, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+                with os.fdopen(fd, "w") as f:
                     json.dump(todos, f)
             except OSError:
                 pass
