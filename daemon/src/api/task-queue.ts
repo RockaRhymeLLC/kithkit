@@ -504,6 +504,16 @@ export async function handleTaskQueueRoute(
         task.id, agent, type, stage, body.message, ts,
       );
 
+      // Bump the parent task's updated_at so activity posts count as a liveness
+      // signal. Without this, the wedge detector (which reads MAX(tasks.updated_at))
+      // treats a healthy orchestrator that's heartbeating via activity posts
+      // (e.g. while waiting on a human) as stale and force-restarts it, resetting
+      // in_progress tasks even though real progress was happening.
+      exec(
+        `UPDATE tasks SET updated_at = ? WHERE id = ?`,
+        ts, task.id,
+      );
+
       // For progress updates, forward to comms session immediately
       if (type === 'progress') {
         const prefix = stage ? `${stage}: ` : '';
