@@ -259,6 +259,12 @@ export function exec(sql: string, ...params: unknown[]): Database.RunResult {
   return db.prepare(sql).run(...params);
 }
 
+/** Minimal logger shape accepted by resolveDbPath — avoids a circular import with logger.ts. */
+interface DbPathLog {
+  info: (msg: string, meta?: Record<string, unknown>) => void;
+  warn: (msg: string, meta?: Record<string, unknown>) => void;
+}
+
 /**
  * Resolve the database file path from config or platform default.
  * Expands ~ to homedir. Creates parent directory if needed.
@@ -268,8 +274,14 @@ export function exec(sql: string, ...params: unknown[]): Database.RunResult {
  *   darwin → ~/Library/Application Support/kithkit/kithkit.db
  *   linux  → $XDG_DATA_HOME/kithkit/kithkit.db (fallback ~/.local/share/...)
  *   other  → ~/.kithkit/data/kithkit.db
+ *
+ * When no configPath is given, the platform-default path is a *machine-global*
+ * database shared by every kithkit install on the box — not scoped to
+ * projectDir. If `log` is passed, this is surfaced at WARN so the fallback is
+ * never silent. See assertSafeDbPathConfig() for the startup guard that
+ * refuses to boot into this fallback when it's clearly unintended.
  */
-export function resolveDbPath(projectDir: string, configPath?: string): string {
+export function resolveDbPath(projectDir: string, configPath?: string, log?: DbPathLog): string {
   let resolved: string;
 
   if (configPath) {
@@ -281,6 +293,7 @@ export function resolveDbPath(projectDir: string, configPath?: string): string {
       // Relative path — resolve against projectDir (backward compat)
       resolved = path.resolve(projectDir, configPath);
     }
+    log?.info('Using configured db_path', { path: resolved });
   } else {
     // Platform default
     const home = os.homedir();
@@ -292,12 +305,54 @@ export function resolveDbPath(projectDir: string, configPath?: string): string {
     } else {
       resolved = path.join(home, '.kithkit', 'data', 'kithkit.db');
     }
+    log?.warn(
+      'No db_path configured — falling back to the platform-default database location. ' +
+      'This database is shared by every kithkit install on this machine. Set daemon.db_path ' +
+      'in kithkit.config.yaml to use a database scoped to this project.',
+      { path: resolved, platform: process.platform },
+    );
   }
 
   // Ensure parent directory exists
   fs.mkdirSync(path.dirname(resolved), { recursive: true });
 
   return resolved;
+}
+
+/**
+ * Thrown by assertSafeDbPathConfig() when an explicit project directory is
+ * combined with no configured db_path — see that function for why this
+ * combination is refused rather than silently resolved.
+ */
+export class UnsafeDbPathConfigError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'UnsafeDbPathConfigError';
+  }
+}
+
+/**
+ * Fail-closed startup guard for the one combination that has actually caused
+ * a test/scratch daemon to attach to the live, shared database: an explicit
+ * project directory was passed on the command line (the operator clearly
+ * meant "use THIS project"), but db_path is not set in kithkit.config.yaml,
+ * so resolveDbPath() would silently fall back to the machine-global
+ * platform-default database instead.
+ *
+ * Normal boots — no explicit project-directory argument — are unaffected:
+ * this only throws when both conditions hold. It does not fire merely
+ * because db_path is unset.
+ */
+export function assertSafeDbPathConfig(opts: { explicitProjectDir: boolean; configPath?: string }): void {
+  if (opts.explicitProjectDir && !opts.configPath) {
+    throw new UnsafeDbPathConfigError(
+      'Refusing to start: an explicit project directory was given but daemon.db_path is not set in ' +
+      'kithkit.config.yaml. Without db_path, this daemon would silently attach to the machine-global ' +
+      'database shared by every kithkit install on this machine, instead of a database scoped to this ' +
+      'project. Set daemon.db_path explicitly in kithkit.config.yaml (e.g. a path inside the project ' +
+      'directory) and restart.',
+    );
+  }
 }
 
 /**
