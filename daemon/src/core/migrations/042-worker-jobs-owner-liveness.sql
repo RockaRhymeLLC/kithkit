@@ -1,0 +1,35 @@
+-- Add owner_pid / owner_started_at to worker_jobs so orphan-cleanup can tell
+-- a genuinely orphaned job apart from one whose owning daemon process is
+-- still alive.
+--
+-- Background: cleanupOrphanedResources() (core/orphan-cleanup.ts) used to
+-- claim EVERY 'running'/'queued' worker_jobs row unconditionally, with no
+-- ownership or liveness check. If a second daemon process ever attached to
+-- the same database, it would mark the first daemon's genuinely-live workers
+-- as failed. The worker_jobs table had no column recording which process
+-- owned a job, so there was nothing to check liveness against.
+--
+-- owner_pid          — process.pid of the daemon process that spawned this
+--                      job, recorded at INSERT time (agents/lifecycle.ts).
+-- owner_started_at   — that process's start time (`ps -o lstart=`), recorded
+--                      alongside owner_pid. Used to detect PID reuse: a live
+--                      process at owner_pid whose start time no longer
+--                      matches is a *different* process that happens to have
+--                      the same PID, not the original owner.
+--
+-- Rows written before this migration have owner_pid = NULL — orphan-cleanup
+-- treats NULL as "no ownership info recorded" and claims them (matching the
+-- old behavior). This is a deliberate choice, not a proven-safe one: for a
+-- legacy row there is no owner_pid/owner_started_at to check, so liveness
+-- genuinely cannot be determined either way.
+--
+-- Residual risk (bounded): during an upgrade window, a daemon process
+-- running the new build (which records owner info) can still claim a
+-- legacy NULL-owner row that belongs to a daemon process still running the
+-- OLD build — because the old build never stamped an owner, there is
+-- nothing to distinguish "legacy and dead" from "legacy but currently
+-- alive". This exposure is bounded in time: once every daemon in the
+-- deployment is running a build that stamps owner_pid/owner_started_at, no
+-- new NULL-owner rows are created and the ambiguity cannot recur.
+--safe-alter: worker_jobs ADD COLUMN owner_pid INTEGER
+--safe-alter: worker_jobs ADD COLUMN owner_started_at TEXT

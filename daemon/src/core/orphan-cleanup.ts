@@ -9,12 +9,14 @@
  *     the existing recoverFromRestart() also does this, but that function runs
  *     before migrations and has no session-awareness)
  *
- * Session liveness check:
+ * Liveness check:
  *   - Persistent agents (comms, orchestrator) — verified via
  *     `tmux has-session -t =<session>` (exit 0 = alive).
- *   - Worker processes — no persistent session; any running/queued worker
- *     record after a restart is definitionally orphaned (the SDK process died
- *     with the daemon).
+ *   - Worker jobs — each row records the pid/start-time of the daemon
+ *     process that spawned it (owner_pid/owner_started_at). A row is only
+ *     claimed if that owning process is verifiably gone (see
+ *     core/process-liveness.ts) — never claimed unconditionally, since a
+ *     second daemon process attached to the same database may still own it.
  *
  * This function is synchronous (uses better-sqlite3 + execFileSync), safe to
  * call multiple times (all DB updates are idempotent), and designed to run
@@ -31,6 +33,7 @@ import {
   getOrchestratorState as _getOrchestratorState,
   killOrchestratorSession as _killOrchestratorSession,
 } from '../agents/tmux.js';
+import { isProcessAlive as _isProcessAliveReal } from './process-liveness.js';
 
 const log = createLogger('orphan-cleanup');
 
@@ -50,12 +53,14 @@ let _isTmuxSessionAlive = (sessionName: string): boolean => {
 
 let _orchStateFn: () => 'active' | 'waiting' | 'dead' = _getOrchestratorState;
 let _killOrchFn: () => boolean = _killOrchestratorSession;
+let _isProcessAlive: (pid: number, startedAt: string | null) => boolean = _isProcessAliveReal;
 
 /** @internal Override injectable deps for testing. Pass null to restore originals. */
 export function _setDepsForTesting(deps: {
   isTmuxSessionAlive?: (sessionName: string) => boolean;
   getOrchestratorState?: () => 'active' | 'waiting' | 'dead';
   killOrchestratorSession?: () => boolean;
+  isProcessAlive?: (pid: number, startedAt: string | null) => boolean;
 } | null): void {
   if (deps === null) {
     _isTmuxSessionAlive = (sessionName: string): boolean => {
@@ -71,11 +76,13 @@ export function _setDepsForTesting(deps: {
     };
     _orchStateFn = _getOrchestratorState;
     _killOrchFn = _killOrchestratorSession;
+    _isProcessAlive = _isProcessAliveReal;
     return;
   }
   if (deps.isTmuxSessionAlive !== undefined) _isTmuxSessionAlive = deps.isTmuxSessionAlive;
   if (deps.getOrchestratorState !== undefined) _orchStateFn = deps.getOrchestratorState;
   if (deps.killOrchestratorSession !== undefined) _killOrchFn = deps.killOrchestratorSession;
+  if (deps.isProcessAlive !== undefined) _isProcessAlive = deps.isProcessAlive;
 }
 
 // ── Types ────────────────────────────────────────────────────
@@ -125,6 +132,8 @@ interface JobRow {
   id: string;
   profile: string;
   status: string;
+  owner_pid: number | null;
+  owner_started_at: string | null;
 }
 
 // ── Main cleanup function ────────────────────────────────────
@@ -227,10 +236,19 @@ export function cleanupOrphanedResources(): OrphanCleanupReport {
 
   // ── 3. Worker jobs ───────────────────────────────────────
   //
-  // Worker jobs run as SDK sub-processes inside the daemon process.
-  // When the daemon exits, all worker processes die with it.
-  // Any 'running' or 'queued' worker_jobs after a restart are definitionally
-  // orphaned — there is no live process to check.
+  // Worker jobs are owned by whichever daemon process spawned them
+  // (agents/lifecycle.ts stamps owner_pid/owner_started_at at INSERT time).
+  // A 'running'/'queued' row is only safe to claim if its owning process is
+  // actually gone — checked via a real liveness probe (process-liveness.ts),
+  // not assumed. If a second daemon process ever attaches to the same
+  // database, this stops the sweep from claiming the first daemon's
+  // genuinely-live workers out from under it.
+  //
+  // Rows with no owner_pid recorded predate ownership tracking (written
+  // before this column existed) — there is no liveness info to check, so
+  // they are claimed as orphaned, matching the old behavior for that legacy
+  // case only. Every row written from this point forward always carries an
+  // owner_pid.
   //
   // Note: recoverFromRestart() in agents/recovery.ts already does a similar
   // sweep, but it's belt-and-suspenders here as well.  The check is
@@ -239,20 +257,34 @@ export function cleanupOrphanedResources(): OrphanCleanupReport {
   // normal flow but can occur during testing or unusual restart sequences).
 
   const stuckJobs = query<JobRow>(
-    `SELECT id, profile, status FROM worker_jobs WHERE status IN ('running', 'queued') AND finished_at IS NULL`,
+    `SELECT id, profile, status, owner_pid, owner_started_at FROM worker_jobs WHERE status IN ('running', 'queued') AND finished_at IS NULL`,
   );
 
   for (const job of stuckJobs) {
+    let orphanReason: string | null = null;
+
+    if (job.owner_pid == null) {
+      orphanReason = 'orphaned — no owner process recorded for this job (predates ownership tracking)';
+    } else if (!_isProcessAlive(job.owner_pid, job.owner_started_at)) {
+      orphanReason = `orphaned — owning process (pid ${job.owner_pid}) is no longer running`;
+    }
+
+    if (orphanReason === null) {
+      // Owner process is still alive — this job is not orphaned, leave it.
+      continue;
+    }
+
     exec(
       `UPDATE worker_jobs SET status = 'failed', error = ?, finished_at = ? WHERE id = ?`,
-      'orphaned — daemon restarted while job was active',
-      ts, job.id,
+      orphanReason, ts, job.id,
     );
     report.jobsFailedOrphaned++;
-    log.info('Worker job failed (orphaned on restart)', {
+    log.info('Worker job failed (orphaned)', {
       id: job.id,
       profile: job.profile,
       previousStatus: job.status,
+      ownerPid: job.owner_pid,
+      reason: orphanReason,
     });
   }
 

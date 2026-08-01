@@ -27,6 +27,7 @@ import { resolveProjectPath } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
 import { injectLearnings } from '../self-improvement/pre-task-injector.js';
 import { assertRecordSafe, sanitizeRecordOrPlaceholder } from '../security/credential-guard.js';
+import { getSelfProcessIdentity } from '../core/process-liveness.js';
 
 const log = createLogger('agents:lifecycle');
 
@@ -233,11 +234,15 @@ export async function spawnWorkerJob(req: SpawnRequest): Promise<{ jobId: string
     jobId, req.profile.name, ts, ts,
   );
 
-  // Insert job record
+  // Insert job record — owner_pid/owner_started_at record which daemon
+  // process spawned this job, so a future orphan-cleanup sweep (possibly run
+  // by a different daemon process attached to the same DB) can check real
+  // liveness instead of unconditionally claiming every stuck row.
+  const owner = getSelfProcessIdentity();
   exec(
-    `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, spawned_by, created_at)
-     VALUES (?, ?, ?, ?, 'queued', ?, ?)`,
-    jobId, jobId, req.profile.name, req.prompt, req.spawned_by ?? null, ts,
+    `INSERT INTO worker_jobs (id, agent_id, profile, prompt, status, spawned_by, owner_pid, owner_started_at, created_at)
+     VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?)`,
+    jobId, jobId, req.profile.name, req.prompt, req.spawned_by ?? null, owner.pid, owner.startedAt, ts,
   );
 
   // Try to start immediately or queue
