@@ -10,15 +10,33 @@
 
 set -euo pipefail
 
-# Workers run inside .kithkit/worktrees/ (current convention) or .claude/worktrees/
-# (legacy) — exempt from the guard. Belt-and-suspenders: any linked worktree (where
-# .git is a file pointing at the real gitdir, not a directory) is exempt too, in case
-# a worker worktree ever lives outside those two paths.
-if [[ "$PWD" == */.kithkit/worktrees/* || "$PWD" == */.claude/worktrees/* ]]; then
+# Topology test: a genuine linked worktree has --git-common-dir pointing to the
+# shared .git of the main repo, while --git-dir points to the worktree-specific
+# subdirectory inside .git/worktrees/. When both are non-empty AND different, this
+# CWD is inside a linked worktree. Two path-substring approaches were rejected:
+# (1) testing GITDIR against */worktrees/* fails when the main repo itself lives
+# under a path containing "worktrees"; (2) testing $PWD with a path-glob exempts
+# any non-worktree directory whose path happens to contain the substring. Both
+# infer topology from directory names rather than from what git actually knows.
+a=""
+b=""
+if a=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
+   && b=$(git rev-parse --path-format=absolute --git-dir 2>/dev/null) \
+   && [ -n "$a" ] && [ "$a" != "$b" ]; then
   exit 0
 fi
-if [[ -f .git ]]; then
-  exit 0
+# Degrade loudly when the rev-parse pair returned no usable answer.
+# The OR covers two distinct failure modes:
+#   (1) both calls failed (git < 2.31, --path-format unsupported; or totally outside git)
+#   (2) only the second call failed — previously silent fall-through, now diagnosed.
+# Branch (B) is decided by --is-inside-work-tree exit status, NOT by .git file/dir
+# presence: a dangling-pointer worktree has a .git file but is not in a work tree.
+if [ -z "$a" ] || [ -z "$b" ]; then
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "branch-guard: git rev-parse --path-format returned nothing; worktree exemption disabled (requires git >= 2.31, or the worktree registration is broken)" >&2
+  else
+    echo "branch-guard: not a git repository; worktree exemption not applicable" >&2
+  fi
 fi
 
 # Read stdin (may be empty for SessionStart, or JSON for PreToolUse)
