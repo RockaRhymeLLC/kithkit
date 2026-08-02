@@ -427,6 +427,16 @@ jobs:
 
           echo "A2A group UUID check passed — no real-looking group UUIDs in added lines."
 
+  branch-guard-self-test:
+    # Self-test the branch-guard hook's worktree-predicate matrix.
+    # Runs on both push and pull_request so hook correctness is verified on every change.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Self-test branch-guard hook
+        run: bash scripts/test-branch-guard.sh
+
   commit-identity:
     # Guard: fail if any commit in this PR has a .local or empty author/committer
     # email. Only meaningful on pull_request — push events have no useful range.

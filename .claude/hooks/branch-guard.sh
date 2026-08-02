@@ -25,14 +25,18 @@ if a=$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null) \
    && [ -n "$a" ] && [ "$a" != "$b" ]; then
   exit 0
 fi
-# Degrade loudly: when both calls return empty, --path-format is unsupported
-# (git < 2.31) or the worktree registration is broken. Fall through to blocked,
-# but emit one diagnostic so the next person debugs git or the registration, not
-# this hook. The -n "$a" guard is required: in the old glob form empty-vs-glob
-# failed safe by construction; with !=, empty-vs-empty is FALSE, landing on
-# blocked by accident not by design.
-if [ -z "$a" ] && [ -z "$b" ]; then
-  echo "branch-guard: git rev-parse --path-format unsupported (needs git >= 2.31); worktree exemption disabled" >&2
+# Degrade loudly when the rev-parse pair returned no usable answer.
+# The OR covers two distinct failure modes:
+#   (1) both calls failed (git < 2.31, --path-format unsupported; or totally outside git)
+#   (2) only the second call failed — previously silent fall-through, now diagnosed.
+# Branch (B) is decided by --is-inside-work-tree exit status, NOT by .git file/dir
+# presence: a dangling-pointer worktree has a .git file but is not in a work tree.
+if [ -z "$a" ] || [ -z "$b" ]; then
+  if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    echo "branch-guard: git rev-parse --path-format returned nothing; worktree exemption disabled (requires git >= 2.31, or the worktree registration is broken)" >&2
+  else
+    echo "branch-guard: not a git repository; worktree exemption not applicable" >&2
+  fi
 fi
 
 # Read stdin (may be empty for SessionStart, or JSON for PreToolUse)
