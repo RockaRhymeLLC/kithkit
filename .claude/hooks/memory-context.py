@@ -225,7 +225,7 @@ def format_wiki_hint(article: dict) -> str:
     return hint
 
 
-# ── Ticket prior-art (todos/tasks) ────────────────────────────────────────────
+# ── Ticket prior-art (todos) ──────────────────────────────────────────────────
 
 def _todo_cache_path(project_dir: str) -> str:
     """Per-project temp file for the cached ticket list."""
