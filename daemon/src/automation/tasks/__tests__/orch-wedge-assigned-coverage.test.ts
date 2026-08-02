@@ -27,7 +27,9 @@ import {
   _runForTesting as runWatchdog,
   _setWedgeDepsForTesting as setWedgeDeps,
   _resetForTesting as resetWatchdog,
+  _getWedgeRestartStateForTesting as getWedgeRestartState,
   WEDGE_DEBOUNCE_THRESHOLD,
+  WEDGE_RESTART_CAP,
 } from '../context-watchdog.js';
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -201,13 +203,19 @@ describe('orch-wedge assigned-coverage: T2 — assigned+recent does NOT trigger 
   });
 });
 
-// ── T3: in_progress + STALE → STILL detected (regression guard) ───────────────
+// ── T3: in_progress + STALE → STILL detected (behaviour-preservation) ────────
+//
+// BEHAVIOUR-PRESERVATION TEST — stale in_progress detection existed before this diff and
+// must not regress. This test does NOT kill the mutation of widening the status predicate
+// from status='in_progress' to status IN ('in_progress','assigned'): reverting to the narrow
+// predicate still catches a stale in_progress task, so this test stays GREEN on reversion.
+// T6 is the mutation-killing regression guard for the two-query masking fix.
 
-describe('orch-wedge assigned-coverage: T3 — in_progress+stale still triggers (regression guard)', () => {
+describe('orch-wedge assigned-coverage: T3 — in_progress+stale still triggers (behaviour-preservation)', () => {
   beforeEach(setup);
   afterEach(teardown);
 
-  it('STILL detects and restarts when in_progress task is frozen (regression guard) [T3]', async () => {
+  it('STILL detects and restarts when in_progress task is frozen (behaviour-preservation, not mutation-kill) [T3]', async () => {
     insertOrchAgent(5);
     insertInProgressTask('task-ip-stale-regression', 20);
 
@@ -326,9 +334,13 @@ describe('orch-wedge assigned-coverage: T5 — exemptions still suppress signal(
   }
 
   it('running-worker exemption (#462) suppresses signal(i) when the task is assigned+stale [T5a]', async () => {
-    // Stale assigned task — would trigger signal(i) without the exemption.
-    // A running worker means the orch is healthy-waiting; restart must be suppressed.
+    // Stale in_progress + stale assigned — signal(i) fires under BOTH the old predicate
+    // (status='in_progress') and the new one (IN('in_progress','assigned')). The running-worker
+    // exemption must suppress the restart in either case. This ensures the test cannot pass for
+    // the wrong reason: without the fix the assigned task was invisible but the in_progress task
+    // still fires signal(i), so the exemption is genuinely exercised in both code paths.
     insertOrchAgent(5);
+    insertInProgressTask('task-t5a-ip-stale', 20);
     insertAssignedTask('task-t5a-assigned', 20, 10);
     insertRunningWorker('worker-t5a-running');
 
@@ -355,9 +367,13 @@ describe('orch-wedge assigned-coverage: T5 — exemptions still suppress signal(
   });
 
   it('synthesis-grace exemption (#940) suppresses signal(i) for assigned+stale when worker completed recently [T5b]', async () => {
-    // Stale assigned task. Worker completed 5 min ago (within default 15-min grace).
-    // Orch is in its synthesis phase — restart must be suppressed.
+    // Stale in_progress + stale assigned — signal(i) fires under BOTH the old predicate
+    // (status='in_progress') and the new one (IN('in_progress','assigned')). The synthesis-grace
+    // exemption must suppress the restart in either case. This ensures T5b cannot pass for the
+    // wrong reason: without the fix the assigned task was invisible but the in_progress task
+    // still fires signal(i), so the exemption is genuinely exercised on both code paths.
     insertOrchAgent(5);
+    insertInProgressTask('task-t5b-ip-stale', 20);
     insertAssignedTask('task-t5b-assigned', 20, 10);
     insertCompletedWorkerJob('worker-t5b-completed', 5);
 
@@ -380,5 +396,162 @@ describe('orch-wedge assigned-coverage: T5 — exemptions still suppress signal(
     const taskRows = query<{ status: string }>(`SELECT status FROM tasks WHERE external_id = 'task-t5b-assigned'`);
     assert.equal(taskRows[0]?.status, 'assigned',
       'T5b: assigned task must remain assigned during synthesis grace window');
+  });
+});
+
+// ── T6: Mixed population — stale in_progress NOT masked by recent assigned ────
+//
+// MUTATION-KILL PROOF for the two-query fix (Defect 1 — masking regression):
+//
+// Under single-MAX (current bug in HEAD):
+//   SELECT MAX(updated_at) FROM tasks WHERE status IN ('in_progress','assigned')
+//   → MAX = 2min ago (recent assigned raises the combined MAX)
+//   → signalI = false (2min ago is NOT older than cutoff 15min ago)
+//   → killCalled = false → TEST GOES RED
+//
+// After two-query fix (separate queries per population):
+//   in_progress population: MAX = 20min ago → stale → signalI = true
+//   → killCalled = true → TEST GOES GREEN
+//
+// This test is the primary mutation-killing guard for the masking-regression fix.
+
+describe('orch-wedge assigned-coverage: T6 — stale in_progress NOT masked by recent assigned (masking-regression guard)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('fires signal(i) even when a recent assigned task raises the combined MAX [T6 — MUTATION-KILL: two-query fix]', async () => {
+    // One stale in_progress (20min) + one recent assigned (2min), no running workers.
+    // Single-MAX: MAX(updated_at across both) = 2min ago → not stale → signalI=false → RED.
+    // Two-query: in_progress population fires independently (MAX=20min ago) → signalI=true → GREEN.
+    insertOrchAgent(5);
+    insertInProgressTask('task-t6-ip-stale', 20);
+    insertAssignedTask('task-t6-as-recent', 2, 2);
+
+    let killCalled = false;
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCalled = true; return true; },
+      spawnOrchestratorSession: () => 'orch-t6-respawn',
+      captureOrchestratorPane: () => '> ',
+      sendMessage: () => ({ messageId: 1, delivered: false }),
+    });
+
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCalled, true,
+      'T6: a stale in_progress task must NOT be masked by a recent assigned task — ' +
+      'goes RED under single-MAX (the masking regression), GREEN after two-query fix');
+
+    // GATE 2: stale in_progress must be reset; recent assigned must be left untouched.
+    const ipRows = query<{ status: string }>(`SELECT status FROM tasks WHERE external_id = 'task-t6-ip-stale'`);
+    assert.equal(ipRows[0]?.status, 'pending',
+      'T6: GATE 2 must reset the stale in_progress task to pending');
+
+    const asRows = query<{ status: string }>(`SELECT status FROM tasks WHERE external_id = 'task-t6-as-recent'`);
+    assert.equal(asRows[0]?.status, 'assigned',
+      'T6: the recent assigned task must remain assigned — GATE 2 only touches stale tasks');
+  });
+});
+
+// ── T7: Gate 3 — perpetually-frozen assigned task is eventually marked FAILED ─
+//
+// MUTATION-KILL PROOF for Gate 3 widening (Defect 2):
+//
+// Under current HEAD (Gate 3 only marks in_progress tasks FAILED):
+//   Kth run: Gate 3 fires → SELECT in_progress stale → 0 rows (task is 'assigned') → nothing failed
+//   → counter reset → cycle continues → task never marked FAILED → TEST GOES RED
+//
+// After Gate 3 widening (includes assigned):
+//   Kth run: Gate 3 fires → SELECT in_progress/assigned stale → finds task → marks FAILED
+//   → TEST GOES GREEN
+
+describe('orch-wedge assigned-coverage: T7 — Gate 3 marks perpetually-frozen assigned task FAILED (cap-exhaustion guard)', () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it('marks a perpetually-frozen assigned task FAILED once restart cap is exhausted [T7 — MUTATION-KILL: Gate 3 widening]', async () => {
+    const TASK_ID = 'task-t7-gate3-assigned';
+    // Fixed timestamp — isoMinutesAgo() drifts per call (millisecond resolution), which would
+    // make ipMaxUpdated differ on every run and reset the cap counter to 1 each time.
+    const FROZEN_TS = isoMinutesAgo(20);
+
+    function reInsertFrozenAssigned(): void {
+      exec(`DELETE FROM tasks WHERE external_id = ?`, TASK_ID);
+      exec(
+        `INSERT INTO tasks (external_id, kind, title, status, created_at, updated_at)
+         VALUES (?, 'orchestrator', 'Assigned gate3 task', 'assigned', ?, ?)`,
+        TASK_ID, isoMinutesAgo(60), FROZEN_TS,
+      );
+    }
+
+    insertOrchAgent(5);
+    reInsertFrozenAssigned();
+
+    let killCallCount = 0;
+    const commsAlerts: Array<{ alert: string; taskIds?: string[] }> = [];
+
+    setWedgeDeps({
+      isOrchestratorAlive: () => true,
+      killOrchestratorSession: () => { killCallCount++; return true; },
+      spawnOrchestratorSession: () => `orch-t7-respawn-${killCallCount}`,
+      captureOrchestratorPane: () => '> ',
+      sendMessage: (msg) => {
+        try {
+          const body = JSON.parse(msg.body);
+          if (body.alert) commsAlerts.push(body);
+        } catch { /* ignore */ }
+        return { messageId: 1, delivered: false };
+      },
+    });
+
+    // Runs 1 through (CAP - 1): signal(i) fires and restarts are allowed.
+    // Re-insert with the SAME frozen timestamp after each restart so ipMaxUpdated stays
+    // constant across runs and the cap counter increments (no progress made).
+    for (let run = 1; run < WEDGE_RESTART_CAP; run++) {
+      reInsertFrozenAssigned();
+      exec(
+        `UPDATE agents SET last_activity = ?, updated_at = ? WHERE id = 'orchestrator'`,
+        isoMinutesAgo(5), isoMinutesAgo(5),
+      );
+
+      await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
+
+      assert.equal(killCallCount, run,
+        `T7 run ${run}: kill must be called (restart ${run} of ${WEDGE_RESTART_CAP - 1} allowed — ` +
+        'if this fails, Gate 3 is firing too early)');
+    }
+
+    // Kth run: cap is exhausted — must FAIL the task, NOT restart.
+    reInsertFrozenAssigned();
+    exec(
+      `UPDATE agents SET last_activity = ?, updated_at = ? WHERE id = 'orchestrator'`,
+      isoMinutesAgo(5), isoMinutesAgo(5),
+    );
+
+    const killBeforeFinal = killCallCount;
+    await runWatchdogUntilFires({ wedge_timeout_minutes: 15 });
+
+    assert.equal(killCallCount, killBeforeFinal,
+      'T7: Kth run must NOT call kill — cap exhausted means FAIL the task, not another restart');
+
+    const taskRows = query<{ status: string; error: string | null }>(
+      `SELECT status, error FROM tasks WHERE external_id = ?`, TASK_ID,
+    );
+    assert.equal(taskRows[0]?.status, 'failed',
+      'T7: perpetually-frozen assigned task must be marked FAILED when cap is exhausted — ' +
+      'goes RED under current HEAD (Gate 3 only checks in_progress), GREEN after Gate 3 widening');
+    assert.equal(taskRows[0]?.error, 'wedge_restart_cap_exceeded',
+      'T7: error field must be wedge_restart_cap_exceeded');
+
+    const capAlert = commsAlerts.find(a => a.alert === 'orchestrator_wedge_cap_exceeded');
+    assert.ok(capAlert,
+      'T7: comms must receive orchestrator_wedge_cap_exceeded alert when cap is exhausted');
+    assert.ok(capAlert?.taskIds?.includes(TASK_ID),
+      'T7: cap alert must include the failed task ID');
+
+    const state = getWedgeRestartState();
+    assert.equal(state.count, 0, 'T7: wedgeRestartCount must be reset to 0 after Gate 3 fires');
+    assert.equal(state.lastIpMaxUpdatedAt, null, 'T7: lastWedgeIpMaxUpdatedAt must be null after reset');
   });
 });

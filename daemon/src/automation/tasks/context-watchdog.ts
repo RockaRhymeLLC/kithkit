@@ -489,13 +489,39 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
   let signalI = false;
   let ipMaxUpdated: string | null = null;
   try {
-    const inProgressRows = query<{ count: number; max_updated_at: string | null }>(
+    // Two separate queries — one per status population — so a recently-updated 'assigned' row
+    // cannot raise the combined MAX and mask a genuinely frozen 'in_progress' task (and vice
+    // versa). signalI fires when EITHER population's MAX is older than the cutoff.
+    const ipRows = query<{ count: number; max_updated_at: string | null }>(
       `SELECT COUNT(*) as count, MAX(updated_at) as max_updated_at
-       FROM tasks WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned')`,
+       FROM tasks WHERE kind = 'orchestrator' AND status = 'in_progress'`,
     );
-    const ipCount = inProgressRows[0]?.count ?? 0;
-    ipMaxUpdated = inProgressRows[0]?.max_updated_at ?? null;
-    signalI = ipCount > 0 && ipMaxUpdated !== null && ipMaxUpdated < cutoffIso;
+    const asRows = query<{ count: number; max_updated_at: string | null }>(
+      `SELECT COUNT(*) as count, MAX(updated_at) as max_updated_at
+       FROM tasks WHERE kind = 'orchestrator' AND status = 'assigned'`,
+    );
+
+    const ipCount = ipRows[0]?.count ?? 0;
+    const ipMax   = ipRows[0]?.max_updated_at ?? null;
+    const asCount = asRows[0]?.count ?? 0;
+    const asMax   = asRows[0]?.max_updated_at ?? null;
+
+    const ipStale = ipCount > 0 && ipMax !== null && ipMax < cutoffIso;
+    const asStale = asCount > 0 && asMax !== null && asMax < cutoffIso;
+
+    signalI = ipStale || asStale;
+
+    // ipMaxUpdated: the MIN (oldest) of the two stale maxes, used by the restart-cap recurrence
+    // check to detect "same frozen state" across restarts. MIN is correct: if either stale
+    // population advances the MIN shifts → cap resets (some progress made); if neither advances
+    // both maxes are unchanged → MIN is unchanged → cap increments (no progress).
+    if (ipStale && asStale) {
+      ipMaxUpdated = ipMax! < asMax! ? ipMax : asMax;
+    } else if (ipStale) {
+      ipMaxUpdated = ipMax;
+    } else if (asStale) {
+      ipMaxUpdated = asMax;
+    }
   } catch (err) {
     log.debug('Wedge detector: could not query in_progress/assigned tasks', { error: String(err) });
   }
@@ -705,7 +731,7 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
 
   if (signalI || signalII || signalIII) {
     const reasons: string[] = [];
-    if (signalI) reasons.push(`in_progress task frozen since ${ipMaxUpdated} (>${timeoutMinutes}m, cutoff ${cutoffIso})`);
+    if (signalI) reasons.push(`in_progress/assigned task frozen since ${ipMaxUpdated} (>${timeoutMinutes}m, cutoff ${cutoffIso})`);
     if (signalII) reasons.push(`agents.last_activity frozen since ${lastActivity} (>${timeoutMinutes}m)`);
     if (signalIII) reasons.push('pane shows feedback prompt or garbled XML');
 
@@ -748,14 +774,14 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
         try {
           const frozenTasks = query<{ ext_id: string }>(
             `SELECT external_id AS ext_id FROM tasks
-             WHERE kind = 'orchestrator' AND status = 'in_progress' AND updated_at < ?`,
+             WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned') AND updated_at < ?`,
             cutoffIso,
           );
           if (frozenTasks.length > 0) {
             const placeholders = frozenTasks.map(() => '?').join(', ');
             exec(
               `UPDATE tasks SET status = 'failed', error = 'wedge_restart_cap_exceeded', completed_at = ?, updated_at = ?
-               WHERE external_id IN (${placeholders}) AND status = 'in_progress'`,
+               WHERE external_id IN (${placeholders}) AND status IN ('in_progress', 'assigned')`,
               capTs, capTs, ...frozenTasks.map(t => t.ext_id),
             );
             for (const task of frozenTasks) {
@@ -778,7 +804,7 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
               }),
             });
           } else {
-            log.info('Wedge detector GATE 3: cap reached but no in_progress task(s) matched staleness criteria — nothing failed', { cutoffIso });
+            log.info('Wedge detector GATE 3: cap reached but no in_progress/assigned task(s) matched staleness criteria — nothing failed', { cutoffIso });
           }
         } catch (err) {
           log.warn('Wedge detector GATE 3: failed to fail task(s) or alert comms', { error: String(err) });
