@@ -24,6 +24,9 @@ HOOK="$SCRIPT_DIR/../.claude/hooks/branch-guard.sh"
 WORK_DIR=$(mktemp -d)
 trap 'rm -rf "$WORK_DIR"' EXIT
 
+# Capture real git once, before any PATH change, so shims cannot recurse into themselves.
+REAL_GIT=$(command -v git)
+
 PASS_COUNT=0
 FAIL_COUNT=0
 SKIP_COUNT=0
@@ -243,24 +246,45 @@ fi
 
 # ── Degrade message rows ──────────────────────────────────────────────────────
 
+# Git shims used by rows 13 and 15 only.  Every other row continues to see real
+# git via the unmodified PATH.  Both shims live inside WORK_DIR and are cleaned
+# up by the existing trap.
+#
+# Shim r13: simulates git < 2.31 — any rev-parse call that includes
+# --path-format=absolute exits 1 with no output; all other calls reach real git.
+mkdir -p "$WORK_DIR/shim-r13"
+cat > "$WORK_DIR/shim-r13/git" << SHIM_R13
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  [ "\$arg" = "--path-format=absolute" ] && exit 1
+done
+exec "$REAL_GIT" "\$@"
+SHIM_R13
+chmod +x "$WORK_DIR/shim-r13/git"
+
+# Shim r15: lets --git-common-dir reach real git but exits 1 on --git-dir,
+# reproducing the state where only the second rev-parse fails.
+mkdir -p "$WORK_DIR/shim-r15"
+cat > "$WORK_DIR/shim-r15/git" << SHIM_R15
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  [ "\$arg" = "--git-dir" ] && exit 1
+done
+exec "$REAL_GIT" "\$@"
+SHIM_R15
+chmod +x "$WORK_DIR/shim-r15/git"
+
 # Row 13: degrade branch A fires, branch B absent.
-# Branch A fires only when --path-format returns nothing (git < 2.31) while
-# still inside a git work tree. On git >= 2.31 the path-format pair always
-# succeeds in valid repos, making this state unreachable without stubbing git.
-GIT_VER=$(git --version | awk '{print $3}')
-GIT_MAJOR=$(echo "$GIT_VER" | cut -d. -f1)
-GIT_MINOR=$(echo "$GIT_VER" | cut -d. -f2)
-if [ "$GIT_MAJOR" -lt 2 ] || { [ "$GIT_MAJOR" -eq 2 ] && [ "$GIT_MINOR" -lt 31 ]; }; then
-  # On git < 2.31 the path-format commands fail; run from a main repo (not a
-  # worktree) so --is-inside-work-tree still returns true → branch A fires.
-  err=$(run_hook_err "$MAIN_R4")
-  if echo "$err" | grep -q "returned nothing" && ! echo "$err" | grep -q "not a git repository"; then
-    pass "Row 13: degrade branch A fires, branch B absent (git < 2.31)"
-  else
-    fail "Row 13: expected branch A message only (git < 2.31 path)"
-  fi
+# The shim-r13 PATH prefix intercepts any rev-parse call that includes
+# --path-format=absolute and exits 1 with no output (simulating git < 2.31).
+# --is-inside-work-tree is NOT intercepted: it reaches real git, which exits 0
+# because MAIN_R4 is a genuine repository.  With a="" and b="" the hook's ||
+# guard triggers; --is-inside-work-tree exits 0 → branch A message emitted.
+err=$(printf '%s' "$PAYLOAD" | (cd "$MAIN_R4" && PATH="$WORK_DIR/shim-r13:$PATH" bash "$HOOK" 2>&1 >/dev/null) || true)
+if echo "$err" | grep -q "returned nothing" && ! echo "$err" | grep -q "not a git repository"; then
+  pass "Row 13: degrade branch A fires, branch B absent (--path-format shimmed away)"
 else
-  skip "Row 13" "branch A requires git < 2.31; current git $GIT_VER supports --path-format, making branch A unreachable without stubbing"
+  fail "Row 13: expected branch A message only (got: '$err')"
 fi
 
 # Row 14: degrade branch B fires, branch A absent.
@@ -274,13 +298,17 @@ else
 fi
 
 # Row 15: only the SECOND rev-parse fails → diagnostic emitted, dir not exempted.
-# The first command (--git-common-dir) exits 0 setting a; the second (--git-dir)
-# exits non-zero leaving b="". On git >= 2.31 with intact repos both commands
-# always succeed; cannot construct this failure without stubbing git.
-if [ "$GIT_MAJOR" -lt 2 ] || { [ "$GIT_MAJOR" -eq 2 ] && [ "$GIT_MINOR" -lt 31 ]; }; then
-  skip "Row 15" "git < 2.31 makes BOTH commands fail, not just the second; unreachable without stubbing"
+# The shim-r15 PATH prefix passes --git-common-dir through to real git (so a is
+# set to a real path) but exits 1 on --git-dir (so b="").  With a non-empty and
+# b empty the hook's || guard fires; --is-inside-work-tree exits 0 in MAIN_R4
+# → branch A diagnostic on stderr.  The hook does NOT exit 0 (no exemption) →
+# the PreToolUse payload produces a block decision on stdout.
+err_r15=$(printf '%s' "$PAYLOAD" | (cd "$MAIN_R4" && PATH="$WORK_DIR/shim-r15:$PATH" bash "$HOOK" 2>&1 >/dev/null) || true)
+out_r15=$(printf '%s' "$PAYLOAD" | (cd "$MAIN_R4" && PATH="$WORK_DIR/shim-r15:$PATH" bash "$HOOK" 2>/dev/null) || true)
+if echo "$err_r15" | grep -q "returned nothing" && is_blocked "$out_r15"; then
+  pass "Row 15: second rev-parse fails → diagnostic emitted and dir not exempted"
 else
-  skip "Row 15" "git $GIT_VER: both rev-parse commands always succeed in valid repos; only-second-fails state unreachable without stubbing"
+  fail "Row 15: expected branch-A diagnostic on stderr and block JSON on stdout (stderr='$err_r15' stdout='$out_r15')"
 fi
 
 # Row 16: stale worktree variant B → branch B fires, branch A absent.
