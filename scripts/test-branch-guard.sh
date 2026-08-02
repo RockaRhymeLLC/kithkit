@@ -42,6 +42,33 @@ is_blocked() {
   echo "$1" | grep -q '"decision"' && echo "$1" | grep -q '"block"'
 }
 
+# Run hook from dir $1 with explicit stdin $2.
+# Populates globals _out (stdout), _err (stderr), _st (exit status).
+# Uses if/then/else so a non-zero hook exit does not abort the script
+# under set -euo pipefail, and is safe on both bash 3.2 and 5.x.
+run_hook_full() {
+  local dir="$1" input="$2"
+  local err_file="$WORK_DIR/_hook_stderr"
+  if _out=$(printf '%s' "$input" | (cd "$dir" && bash "$HOOK" 2>"$err_file")); then
+    _st=0
+  else
+    _st=$?
+  fi
+  _err=$(cat "$err_file" 2>/dev/null || true)
+}
+
+# Returns 0 if the hook ran cleanly: exit status 0 AND no crash signature on stderr.
+# DO NOT remove this in favour of content-only assertions.  A dead hook (exit N,
+# syntax error, command not found, etc.) also produces empty stdout, and empty
+# stdout passes every EXEMPT / no-op content check.  The exit-status check answers
+# "did the hook run at all"; the content check answers "was the result correct".
+# Both must hold; the row passes only when both hold.
+is_live() {
+  local st="$1" stderr="$2"
+  [ "$st" -eq 0 ] || return 1
+  ! printf '%s\n' "$stderr" | grep -Eqi "syntax error|command not found|No such file or directory"
+}
+
 # Run hook from $1, capture stdout only.
 run_hook() {
   printf '%s' "$PAYLOAD" | (cd "$1" && bash "$HOOK" 2>/dev/null)
@@ -147,25 +174,37 @@ echo ""
 
 # ── EXEMPT rows ───────────────────────────────────────────────────────────────
 
-out=$(run_hook "$WT_R1")
-if ! is_blocked "$out"; then
+run_hook_full "$WT_R1" "$PAYLOAD"
+# Exit status guards liveness; content guards exemption.  Both must hold:
+# a dead hook also produces empty stdout and would pass the content check alone.
+if ! is_live "$_st" "$_err"; then
+  fail "Row 1:  linked worktree at root → LIVENESS FAIL (exit=$_st stderr='$_err')"
+elif ! is_blocked "$_out"; then
   pass "Row 1:  linked worktree at root → EXEMPT"
 else
-  fail "Row 1:  linked worktree at root should be EXEMPT"
+  fail "Row 1:  linked worktree at root should be EXEMPT (content check: got '$_out')"
 fi
 
-out=$(run_hook "$WT_R1/sub/deep")
-if ! is_blocked "$out"; then
+run_hook_full "$WT_R1/sub/deep" "$PAYLOAD"
+# Exit status guards liveness; content guards exemption.  Both must hold:
+# a dead hook also produces empty stdout and would pass the content check alone.
+if ! is_live "$_st" "$_err"; then
+  fail "Row 2:  linked worktree in subdir → LIVENESS FAIL (exit=$_st stderr='$_err')"
+elif ! is_blocked "$_out"; then
   pass "Row 2:  linked worktree in subdir → EXEMPT"
 else
-  fail "Row 2:  linked worktree in subdir should be EXEMPT"
+  fail "Row 2:  linked worktree in subdir should be EXEMPT (content check: got '$_out')"
 fi
 
-out=$(run_hook "$WT_R3")
-if ! is_blocked "$out"; then
+run_hook_full "$WT_R3" "$PAYLOAD"
+# Exit status guards liveness; content guards exemption.  Both must hold:
+# a dead hook also produces empty stdout and would pass the content check alone.
+if ! is_live "$_st" "$_err"; then
+  fail "Row 3:  linked worktree at neutral path (no 'worktrees'/.kithkit) → LIVENESS FAIL (exit=$_st stderr='$_err')"
+elif ! is_blocked "$_out"; then
   pass "Row 3:  linked worktree at neutral path (no 'worktrees'/.kithkit) → EXEMPT"
 else
-  fail "Row 3:  linked worktree at neutral path should be EXEMPT"
+  fail "Row 3:  linked worktree at neutral path should be EXEMPT (content check: got '$_out')"
 fi
 
 # ── BLOCKED rows ──────────────────────────────────────────────────────────────
@@ -230,18 +269,26 @@ else
   fail "Row 10: SessionStart should warn and restore main (got stderr='$hook_err', branch='$branch_after')"
 fi
 
-out=$(printf '' | (cd "$MAIN_R4" && bash "$HOOK" 2>/dev/null) || true)
-if ! is_blocked "$out"; then
+run_hook_full "$MAIN_R4" ""
+# Exit status guards liveness; content guards no-op behavior.  Both must hold:
+# a dead hook also produces empty stdout and would pass the content check alone.
+if ! is_live "$_st" "$_err"; then
+  fail "Row 11: empty stdin → LIVENESS FAIL (exit=$_st stderr='$_err')"
+elif ! is_blocked "$_out"; then
   pass "Row 11: empty stdin → no-op, no block"
 else
-  fail "Row 11: empty stdin should be no-op"
+  fail "Row 11: empty stdin should be no-op (content check: got '$_out')"
 fi
 
-out=$(printf '{"broken json' | (cd "$MAIN_R4" && bash "$HOOK" 2>/dev/null) || true)
-if ! is_blocked "$out"; then
+run_hook_full "$MAIN_R4" '{"broken json'
+# Exit status guards liveness; content guards no-op behavior.  Both must hold:
+# a dead hook also produces empty stdout and would pass the content check alone.
+if ! is_live "$_st" "$_err"; then
+  fail "Row 12: malformed JSON → LIVENESS FAIL (exit=$_st stderr='$_err')"
+elif ! is_blocked "$_out"; then
   pass "Row 12: malformed JSON → no-op, no block"
 else
-  fail "Row 12: malformed JSON should be no-op"
+  fail "Row 12: malformed JSON should be no-op (content check: got '$_out')"
 fi
 
 # ── Degrade message rows ──────────────────────────────────────────────────────
