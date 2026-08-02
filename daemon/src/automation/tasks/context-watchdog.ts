@@ -395,24 +395,24 @@ function restartWedgedOrchestrator(reason: string, cutoffIso: string): void {
     const gateTs = new Date().toISOString();
     const frozenTasks = query<{ ext_id: string }>(
       `SELECT external_id AS ext_id FROM tasks
-       WHERE kind = 'orchestrator' AND status = 'in_progress' AND updated_at < ?`,
+       WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned') AND updated_at < ?`,
       cutoffIso,
     );
     if (frozenTasks.length > 0) {
       const placeholders = frozenTasks.map(() => '?').join(', ');
       exec(
         `UPDATE tasks SET status = 'pending', error = NULL, updated_at = ?
-         WHERE external_id IN (${placeholders}) AND status = 'in_progress'`,
+         WHERE external_id IN (${placeholders}) AND status IN ('in_progress', 'assigned')`,
         gateTs, ...frozenTasks.map(t => t.ext_id),
       );
-      log.info('Wedge detector GATE 2: reset frozen in_progress task(s) to pending for fresh orch pick-up', {
+      log.info('Wedge detector GATE 2: reset frozen in_progress/assigned task(s) to pending for fresh orch pick-up', {
         taskIds: frozenTasks.map(t => t.ext_id),
       });
     } else {
-      log.info('Wedge detector GATE 2: no in_progress task(s) matched staleness criteria — nothing reset', { cutoffIso });
+      log.info('Wedge detector GATE 2: no in_progress/assigned task(s) matched staleness criteria — nothing reset', { cutoffIso });
     }
   } catch (err) {
-    log.warn('Wedge detector GATE 2: failed to reset in_progress task(s) to pending', { error: String(err) });
+    log.warn('Wedge detector GATE 2: failed to reset in_progress/assigned task(s) to pending', { error: String(err) });
   }
 
   const session = spawnOrchestratorSession();
@@ -479,19 +479,25 @@ function monitorOrchestratorWedge(config: Record<string, unknown>): void {
     : DEFAULT_WEDGE_TIMEOUT_MINUTES;
   const cutoffIso = new Date(Date.now() - timeoutMinutes * 60 * 1000).toISOString();
 
-  // Signal (i): any in_progress task with MAX(updated_at) older than threshold
+  // Signal (i): any in_progress or assigned task with MAX(updated_at) older than threshold.
+  // 'assigned' is included because a live orchestrator stamps assigned_at > orchStartedAt by
+  // construction (task-state-machine.ts:122, task-queue.ts:954-955: assigned_at set only when
+  // null), so a stranded 'assigned' task is invisible to the orphan sweep in orchestrator-idle.ts
+  // (which binds orchStartedAt and only catches tasks predating the current orch's start).
+  // Allow-list only: 'pending' and 'awaiting_approval' are legitimately long-lived and must
+  // not be included.
   let signalI = false;
   let ipMaxUpdated: string | null = null;
   try {
     const inProgressRows = query<{ count: number; max_updated_at: string | null }>(
       `SELECT COUNT(*) as count, MAX(updated_at) as max_updated_at
-       FROM tasks WHERE kind = 'orchestrator' AND status = 'in_progress'`,
+       FROM tasks WHERE kind = 'orchestrator' AND status IN ('in_progress', 'assigned')`,
     );
     const ipCount = inProgressRows[0]?.count ?? 0;
     ipMaxUpdated = inProgressRows[0]?.max_updated_at ?? null;
     signalI = ipCount > 0 && ipMaxUpdated !== null && ipMaxUpdated < cutoffIso;
   } catch (err) {
-    log.debug('Wedge detector: could not query in_progress tasks', { error: String(err) });
+    log.debug('Wedge detector: could not query in_progress/assigned tasks', { error: String(err) });
   }
 
   // Signal (i) synthesis-grace exemption (#940):
