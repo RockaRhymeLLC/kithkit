@@ -4,7 +4,7 @@ UserPromptSubmit Hook: Memory-assisted context injection
 
 Extracts keywords from user input, does a fast keyword search against
 the daemon memory API, and injects 2-3 brief memory hints into context.
-Also surfaces prior-art tickets (todos/tasks) and local report files
+Also surfaces prior-art todos and local report files
 so that completed work and filed issues reach the model automatically.
 
 Skips short/generic inputs (<10 chars). Keyword-only for speed.
@@ -318,12 +318,14 @@ def _score_ticket(ticket: dict, kw_set: set[str]) -> int:
 
 
 def search_tickets(keywords: list[str], project_dir: str) -> tuple[list, str | None]:
-    """Match keywords against ALL todos/tasks (no status filter).
+    """Match keywords against todo rows only, at every status.
 
-    Returns (results, err_msg).  All statuses and both kinds (todo/orchestrator)
-    are included — a completed ticket is often the most informative prior art.
-    Ranked by weighted score (title×2, desc/notes×1), then by id descending
-    so that newer tickets break ties.
+    Returns (results, err_msg).  Source is GET /api/todos, which returns todo
+    rows only - orchestrator tasks are a separate endpoint and are NOT searched,
+    so a '(none matched)' result does not rule out prior art in an orchestrator
+    task.  No status filter is applied; a completed ticket is often the most
+    informative prior art.  Ranked by weighted score (title x2, desc/notes x1),
+    then by id descending so that newer tickets break ties.
     """
     todos, err = _load_todos(project_dir)
     if err:
@@ -491,14 +493,14 @@ def main():
     # prompts where nothing is relevant except a ticket query that found nothing).
     other_sections_before_tickets = bool(memories or wiki_results)
     if ticket_err:
-        print(f"Prior-art tickets: UNDETERMINED (query failed: {ticket_err})")
+        print(f"Prior-art todos: UNDETERMINED (query failed: {ticket_err})")
     elif tickets:
-        print("Prior-art tickets (todos/tasks):")
+        print("Prior-art todos:")
         for t in tickets:
             print(format_ticket_hint(t))
         print(f"  ({len(tickets)} matched; all statuses included)")
     elif other_sections_before_tickets or reports or report_err:
-        print("Prior-art tickets: (none matched)")
+        print("Prior-art todos: (none matched)")
 
     # ── Emit report prior-art ─────────────────────────────────────────────────
     other_sections_for_reports = bool(memories or wiki_results or tickets)
