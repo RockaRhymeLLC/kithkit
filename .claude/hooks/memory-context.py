@@ -279,8 +279,8 @@ def _project_orch_task(t: dict) -> dict:
     """
     title = (t.get("title") or "")[:300]
     desc_raw = (t.get("description") or "")[:300]
-    # Strip title echo: compare first 100 chars (avoids truncation edge cases).
-    title_prefix = title.lower()[:100]
+    # Strip title echo: compare full stored title so long-titled rows are covered.
+    title_prefix = title.lower()
     if title_prefix and desc_raw.lower().startswith(title_prefix):
         desc_clean = desc_raw[len(title_prefix):].strip()
     else:
@@ -318,8 +318,8 @@ def _load_tickets(project_dir: str) -> tuple[list, str | None]:
                 cached = json.load(f)
                 if cached.get("_v") == TICKET_CACHE_VERSION:
                     return cached["tickets"], None
-    except (OSError, json.JSONDecodeError, ValueError, KeyError):
-        pass  # absent, corrupt, or pre-widening cache — fall through
+    except (OSError, json.JSONDecodeError, ValueError, KeyError, AttributeError, TypeError):
+        pass  # absent, corrupt, or pre-widening cache (including non-dict JSON) — fall through
 
     # Concurrent fetch: todos + orch default + per extra-status.
     raw: dict[str, list] = {}
@@ -626,7 +626,7 @@ def main():
         print("Prior-art tickets (todos + orch tasks):")
         for t in tickets:
             print(format_ticket_hint(t))
-        print(f"  ({len(tickets)} matched; all statuses, todos + orch tasks)")
+        print(f"  ({len(tickets)} matched; all statuses, todos + orch tasks — also check commits, code, GitHub, docs)")
     elif other_sections_before_tickets or reports or report_err:
         print("Prior-art tickets (todos + orch tasks): (none matched — also check commits, code, GitHub, docs)")
 
