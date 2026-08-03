@@ -434,8 +434,20 @@ def search_tickets(keywords: list[str], project_dir: str) -> tuple[list, str | N
     This tool COMPLEMENTS a prior-art procedure but does NOT constitute one.
     It searches only the daemon's task tables (todos + orchestrator tasks).
     Unreachable classes: commit messages, source code, GitHub issues/PRs,
-    and filesystem docs (.kithkit/docs, reports/).  A '(none matched)'
+    MEMORY, and filesystem docs (.kithkit/docs, reports/).  A '(none matched)'
     result means no task record matched — not that no prior art exists.
+
+    THE RUNTIME STRINGS IN main() ARE THE LOAD-BEARING COPY OF THIS LIMIT,
+    NOT THIS DOCSTRING.  A docstring is never injected into an agent's
+    context, so a caveat that lives only here is present but unreachable —
+    which is the defect this hook exists to fix.  Every emit path (hit,
+    miss, partial) must carry "not a prior-art clearance" and must name
+    memory among the classes it does not search.  Do not weaken those
+    strings to a suggestion ("also check X"): the requirement is a LIMIT on
+    what a result MEANS, not advice about what else an agent MAY do.
+    Memory is named deliberately and is not optional — a clause that
+    determined an entire fix (PR#221) lived in a memory row and in ZERO
+    todos, so no ticket search at any corpus width would have surfaced it.
 
     Coverage: todos (all statuses) + orchestrator tasks (all statuses,
     including cancelled/pending/assigned/awaiting_approval via explicit
@@ -619,16 +631,16 @@ def main():
         print(f"Prior-art tickets (todos + orch tasks) [PARTIAL — {ticket_err}]:")
         for t in tickets:
             print(format_ticket_hint(t))
-        print(f"  ({len(tickets)} matched; corpus incomplete — also check commits, code, GitHub, docs)")
+        print(f"  ({len(tickets)} matched; corpus incomplete — NOT commits, code, issues/PRs, memory, or docs. A result here is not a prior-art clearance.)")
     elif ticket_err:
         print(f"Prior-art tickets (todos + orch tasks): UNDETERMINED (query failed: {ticket_err})")
     elif tickets:
         print("Prior-art tickets (todos + orch tasks):")
         for t in tickets:
             print(format_ticket_hint(t))
-        print(f"  ({len(tickets)} matched; all statuses, todos + orch tasks — also check commits, code, GitHub, docs)")
+        print(f"  ({len(tickets)} matched; todos + orch tasks, all statuses — NOT commits, code, issues/PRs, memory, or docs. A result here is not a prior-art clearance.)")
     elif other_sections_before_tickets or reports or report_err:
-        print("Prior-art tickets (todos + orch tasks): (none matched — also check commits, code, GitHub, docs)")
+        print("Prior-art tickets (todos + orch tasks): (none matched — todos + orch tasks, all statuses; NOT commits, code, issues/PRs, memory, or docs. A result here is not a prior-art clearance.)")
 
     # ── Emit report prior-art ─────────────────────────────────────────────────
     other_sections_for_reports = bool(memories or wiki_results or tickets)
