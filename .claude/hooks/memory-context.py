@@ -645,15 +645,15 @@ def main():
     # ── Emit report prior-art ─────────────────────────────────────────────────
     other_sections_for_reports = bool(memories or wiki_results or tickets)
     if report_err:
-        print(f"Prior-art reports: UNDETERMINED (scan failed: {report_err}) — nothing was scanned here, and this scan never covers commits, code, issues/PRs, memory, or the task tables.")
+        print(f"Prior-art reports: UNDETERMINED (scan failed: {report_err}) — nothing was scanned here, and this scanner never covers commits, code, issues/PRs, memory, or task tables.")
     elif reports:
         active_dirs = ", ".join(REPORT_DIRS)
         print("Prior-art reports:")
         for rel, fp in reports:
             print(format_report_hint(rel, fp))
-        print(f"  ({len(reports)} matched in {active_dirs})")
+        print(f"  ({len(reports)} matched in {active_dirs} — NOT commits, code, issues/PRs, memory, or task tables. A result here is not a prior-art clearance.)")
     elif other_sections_for_reports or ticket_err:
-        print("Prior-art reports: (none matched)")
+        print(f"Prior-art reports: (none matched — {', '.join(REPORT_DIRS)}; NOT commits, code, issues/PRs, memory, or task tables. A result here is not a prior-art clearance.)")
 
 
 if __name__ == "__main__":
