@@ -633,7 +633,7 @@ def main():
             print(format_ticket_hint(t))
         print(f"  ({len(tickets)} matched; corpus incomplete — NOT commits, code, issues/PRs, memory, or docs. A result here is not a prior-art clearance.)")
     elif ticket_err:
-        print(f"Prior-art tickets (todos + orch tasks): UNDETERMINED (query failed: {ticket_err})")
+        print(f"Prior-art tickets (todos + orch tasks): UNDETERMINED (query failed: {ticket_err}) — nothing was searched here, and this tool never covers commits, code, issues/PRs, memory, or docs.")
     elif tickets:
         print("Prior-art tickets (todos + orch tasks):")
         for t in tickets:
@@ -645,7 +645,7 @@ def main():
     # ── Emit report prior-art ─────────────────────────────────────────────────
     other_sections_for_reports = bool(memories or wiki_results or tickets)
     if report_err:
-        print(f"Prior-art reports: UNDETERMINED (scan failed: {report_err})")
+        print(f"Prior-art reports: UNDETERMINED (scan failed: {report_err}) — nothing was scanned here, and this scan never covers commits, code, issues/PRs, memory, or the task tables.")
     elif reports:
         active_dirs = ", ".join(REPORT_DIRS)
         print("Prior-art reports:")
