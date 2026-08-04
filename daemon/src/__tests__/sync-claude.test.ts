@@ -9,7 +9,14 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mergeSettings } from '../api/sync-claude.js';
+
+// Repo root: compiled output is daemon/dist/__tests__/, repo root is 3 levels up
+const __filename = fileURLToPath(import.meta.url);
+const REPO_ROOT = path.resolve(path.dirname(__filename), '..', '..', '..');
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
@@ -194,4 +201,49 @@ describe('mergeSettings', () => {
     // UserPromptSubmit: dst-only event preserved (both hooks)
     assert.strictEqual(hooks['UserPromptSubmit'].length, 2);
   });
+});
+
+// ── section-parity guard ───────────────────────────────────────────────────
+//
+// POST /api/sync/claude (sync-claude.ts line 50) is a one-directional,
+// whole-file overwrite: .kithkit/CLAUDE.md → .claude/CLAUDE.md.
+// .kithkit is the SOURCE; .claude is what Claude Code LOADS.
+// Any ### ...Rule section absent from .kithkit gets silently deleted from the
+// loaded manual on the next sync — this test catches that before it ships.
+
+describe('sync-claude section parity', () => {
+  it(
+    'every ### ...Rule section header in .claude/CLAUDE.md must also appear in ' +
+      '.kithkit/CLAUDE.md (.kithkit is the sync SOURCE; absent sections get ' +
+      'deleted from the loaded manual on POST /api/sync/claude)',
+    () => {
+      const claudeContent = fs.readFileSync(
+        path.join(REPO_ROOT, '.claude', 'CLAUDE.md'),
+        'utf8',
+      );
+      const kithkitContent = fs.readFileSync(
+        path.join(REPO_ROOT, '.kithkit', 'CLAUDE.md'),
+        'utf8',
+      );
+
+      const ruleHeaderRe = /^### .+Rule.*$/gm;
+      const claudeHeaders = Array.from(claudeContent.matchAll(ruleHeaderRe), m => m[0]);
+      const kithkitHeaderSet = new Set(
+        Array.from(kithkitContent.matchAll(ruleHeaderRe), m => m[0]),
+      );
+
+      const missing = claudeHeaders.filter(h => !kithkitHeaderSet.has(h));
+
+      assert.deepStrictEqual(
+        missing,
+        [],
+        `These ### ...Rule section headers are present in .claude/CLAUDE.md but ABSENT from .kithkit/CLAUDE.md:\n` +
+          missing.map(h => `  ${h}`).join('\n') +
+          `\n\n` +
+          `WHY THIS MATTERS: .kithkit/CLAUDE.md is the SOURCE for POST /api/sync/claude ` +
+          `(sync-claude.ts line 50, whole-file overwrite). .claude/CLAUDE.md is what Claude Code LOADS. ` +
+          `A section missing from .kithkit gets DELETED from the loaded manual on the next sync.`,
+      );
+    },
+  );
 });
