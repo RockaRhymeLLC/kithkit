@@ -42,6 +42,11 @@
       "id": "GHSA-F88M-G3JW-G9CJ",
       "expires": "2027-01-24",
       "reason": "Transitive sharp/libvips advisory (CVE-2026-33327, CVE-2026-33328, CVE-2026-35590, CVE-2026-35591 - heap overflow / OOB read family in libvips image decoders), pulled via @huggingface/transformers -> sharp@0.34.5. sharp is a direct dependency of @huggingface/transformers's own package.json ('sharp': '^0.34.1'), which excludes the fixed >=0.35.0 line under semver - this is why npm audit reports fixAvailable:false; the fix exists upstream on npm (sharp 0.35.1+) but is blocked by @huggingface/transformers's own caret pin, not by kithkit. Unreachable in kithkit: daemon/src/memory/embed-worker.ts (the only importer of @huggingface/transformers) exclusively creates a 'feature-extraction' text pipeline (Xenova/all-MiniLM-L6-v2) and calls it only with plain strings; no image-classification/vision pipeline is ever instantiated. sharp's image-loading path (node_modules/@huggingface/transformers/src/utils/image.js: sharp(await blob.arrayBuffer()) / RawImage.read, lines ~182, 410, 534, 599, 820) is therefore never invoked - the native libvips decoder never parses any image bytes, attacker-controlled or otherwise. Accepted as unreachable until @huggingface/transformers widens its sharp dependency range past 0.35.0. Re-evaluate by 2027-01-24."
+    },
+    {
+      "id": "GHSA-RGW5-RVV9-X895",
+      "expires": "2027-02-04",
+      "reason": "Transitive brace-expansion advisory (DoS via unbounded intermediate arrays, bypassing the CVE-2026-14257 mitigation), pulled via devDependency minimatch@10.2.4 -> brace-expansion@5.0.8. Dev-only: package.json declares minimatch under devDependencies and the lockfile marks both packages dev=true; the root package has zero runtime dependencies. The only source consumer is scripts/divergence-check.ts, a repo-maintenance script run by hand or in CI; daemon/src imports neither package. The running daemon never loads the library, so it never parses attacker-controlled brace patterns - unreachable. Accepted as unreachable until the minimatch transitive bumps brace-expansion. Re-evaluate by 2027-02-04."
     }
   ]
 }
