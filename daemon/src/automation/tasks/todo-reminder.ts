@@ -46,22 +46,16 @@ export interface TodoRow {
 }
 
 /**
- * Compute the user-facing display id for a todo row.
+ * Compute the display id for a todo row.
  *
- * The tasks table uses an internal auto-increment id that diverges from the
- * legacy external_id once rows from multiple sources share the same sequence.
- * All API responses (mapTodoResponse in state.ts) expose external_id as the
- * public id, falling back to the internal id only when external_id is null.
- * This function mirrors that logic so reminders cite the same id the human sees
- * in /api/todos and the /todo skill.
+ * Returns the native tasks.id — the same value mapTodoResponse() in state.ts
+ * returns as `id` and what /api/todos/:id resolves against (native-first).
+ * Using external_id here diverged from the resolution path: where external_id
+ * != tasks.id, following the displayed id addressed a different row.
  *
  * Exported for unit testing.
  */
 export function getDisplayId(row: Pick<TodoRow, 'id' | 'external_id'>): number {
-  if (row.external_id != null) {
-    const parsed = parseInt(row.external_id, 10);
-    if (!isNaN(parsed)) return parsed;
-  }
   return Number(row.id);
 }
 
@@ -102,8 +96,6 @@ async function run(config: Record<string, unknown> = {}): Promise<void> {
   }
 
   // Query all non-done todos from the database.
-  // external_id is selected so getDisplayId() can return the user-facing id
-  // (the same value /api/todos exposes) rather than the internal tasks.id.
   const todos = query<TodoRow>(
     `SELECT id, external_id, title, status, priority, snooze_until FROM tasks WHERE kind = 'todo'
      AND status NOT IN ('done', 'completed', 'cancelled')

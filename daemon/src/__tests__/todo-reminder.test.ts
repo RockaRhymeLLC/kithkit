@@ -122,7 +122,52 @@ describe('classifyTodos (t-225)', () => {
   });
 });
 
-// ── t-1811 regression: getDisplayId must return external_id-based id ──────────
+// ── regression (fix/543): displayId must route back to the source row ─────────
+//
+// The resolution path used by /api/todos/:id is NATIVE-FIRST: it finds the row
+// whose tasks.id equals the caller-supplied N; it only falls back to external_id
+// when no native row matches.  If getDisplayId returns external_id (e.g. 67) and
+// a different row has tasks.id=67, following the reminder's "[67]" lands on the
+// wrong row.  After fix/543 getDisplayId returns the native tasks.id so the
+// displayed token matches what the API addresses.
+
+describe('getDisplayId (fix/543 regression): displayed id must resolve to source row', () => {
+  /**
+   * Models resolveLegacyTodoId() from state.ts: native-first lookup, then
+   * external_id fallback.  When the reminder shows "[N]", an agent calling
+   * /api/todos/N gets the row this helper returns.
+   */
+  function simulateResolve(displayId: number, allRows: TodoRow[]): TodoRow | null {
+    const nativeMatch = allRows.find(r => Number(r.id) === displayId);
+    if (nativeMatch) return nativeMatch;
+    return allRows.find(r => r.external_id === String(displayId)) ?? null;
+  }
+
+  it('regression (id=63 external_id=67): displayId resolves to the source row, not the row whose tasks.id=67', () => {
+    // Concrete drift pattern from real data: id=63, external_id=67.
+    // A second row whose native id equals targetRow.external_id creates the collision.
+    const targetRow = makeTodo({ id: '63', external_id: '67', title: 'Target todo' });
+    const collisionRow = makeTodo({ id: '67', external_id: '71', title: 'Collision todo' });
+    const allRows = [targetRow, collisionRow];
+
+    const displayId = getDisplayId(targetRow);
+    const resolved = simulateResolve(displayId, allRows);
+
+    assert.strictEqual(
+      resolved?.id,
+      targetRow.id,
+      `displayId ${displayId} resolved to row id=${resolved?.id} ("${resolved?.title}"), expected id=${targetRow.id} ("${targetRow.title}") — the reminder is reporting the wrong row`,
+    );
+  });
+});
+
+// ── t-1811: getDisplayId returns the native tasks.id (updated for fix/543) ────
+//
+// These assertions previously tested the external_id-first path; they are
+// updated here to follow the corrected behaviour (native tasks.id).  This is a
+// TEST UPDATE, NOT A WEAKENED TEST: the property under test was wrong — it
+// validated the defective path — and the assertions now capture the intended
+// invariant.
 
 describe('getDisplayId (t-1811: id-space mismatch regression)', () => {
   /**
@@ -130,64 +175,61 @@ describe('getDisplayId (t-1811: id-space mismatch regression)', () => {
    *   tasks.id=272, external_id='286' → "Build Servos internal AI roadmap" (in_progress)
    *   external_id='272' → tasks.id=258 → "Jason Longsjo offboarding" (completed)
    *
-   * Old code: displayed `[272]` (internal id) → user looked up id 272 in
-   *   /api/todos → saw "Jason Longsjo offboarding" (wrong, different, completed todo).
-   * Fixed code: displays `[286]` (from external_id) → matches /api/todos response.
+   * Corrected behaviour: getDisplayId returns tasks.id=272 so following "[272]"
+   * in a reminder addresses the correct native row, matching what /api/todos
+   * returns for that row (mapTodoResponse exposes id=tasks.id).
    */
 
-  it('returns external_id integer when external_id is set (primary case)', () => {
+  it('returns native tasks.id regardless of external_id', () => {
     // Reproduces the exact diverged row: tasks.id=272, external_id='286'
     const row = makeTodo({ id: '272', external_id: '286' });
-    assert.equal(getDisplayId(row), 286);
+    assert.equal(getDisplayId(row), 272);
   });
 
-  it('does NOT return internal tasks.id when external_id is set (old-code failure mode)', () => {
-    // This assertion would have FAILED with the old code (which returned Number(top.id) = 272)
+  it('returns internal tasks.id even when external_id is set (corrected from external_id-first)', () => {
+    // After fix/543: the native tasks.id is always the display id
     const row = makeTodo({ id: '272', external_id: '286' });
     const displayId = getDisplayId(row);
-    assert.notEqual(displayId, 272, 'must not display internal tasks.id 272 — that resolves to a different todo');
-    assert.equal(displayId, 286);
+    assert.equal(displayId, 272);
+    assert.notEqual(displayId, 286, 'must not display external_id 286 — callers address by native tasks.id');
   });
 
-  it('falls back to internal id when external_id is null (new todos created post-migration)', () => {
-    // New todos get external_id = String(tasks.id) immediately on create, but
-    // during the brief window before the UPDATE, external_id may be null.
-    // Also covers any edge case where external_id is absent.
+  it('returns internal id when external_id is null', () => {
     const row = makeTodo({ id: '1831', external_id: null });
     assert.equal(getDisplayId(row), 1831);
   });
 
   it('handles numeric external_id equal to internal id (no divergence case)', () => {
-    // New todos eventually get external_id = tasks.id — should be consistent either way
+    // When the two are equal the result is the same either way
     const row = makeTodo({ id: '500', external_id: '500' });
     assert.equal(getDisplayId(row), 500);
   });
 
-  it('divergence scenario: proves old code would show wrong id for migrated todo', () => {
-    // Simulate the real incident data for the three affected todos
+  it('divergence scenario: returns native tasks.id for each migrated todo (not external_id)', () => {
+    // The incident rows — correctDisplayId is now the NATIVE tasks.id in each case
     const incidentRows: Array<{ id: string; external_id: string | null; title: string; correctDisplayId: number }> = [
-      { id: '272', external_id: '286', title: 'Build Servos internal AI and portfolio/practice roadmap', correctDisplayId: 286 },
-      { id: '258', external_id: '272', title: 'Figure out Jason Longsjo offboarding', correctDisplayId: 272 },
-      { id: '286', external_id: '300', title: 'Build a Today in Review daily digest generator', correctDisplayId: 300 },
+      { id: '272', external_id: '286', title: 'Build Servos internal AI and portfolio/practice roadmap', correctDisplayId: 272 },
+      { id: '258', external_id: '272', title: 'Figure out Jason Longsjo offboarding', correctDisplayId: 258 },
+      { id: '286', external_id: '300', title: 'Build a Today in Review daily digest generator', correctDisplayId: 286 },
     ];
 
     for (const row of incidentRows) {
       const todo = makeTodo({ id: row.id, external_id: row.external_id, title: row.title });
       const displayId = getDisplayId(todo);
 
-      // Fixed: display id matches the external_id-based user-facing id
+      // Corrected: display id is the native tasks.id — what the API addresses
       assert.equal(
         displayId,
         row.correctDisplayId,
         `${row.title}: expected display id ${row.correctDisplayId}, got ${displayId}`,
       );
 
-      // Old code failure mode: would have returned Number(row.id) — which differs for all three
+      // Old code failure mode: would have returned external_id — which differs for all three
       if (row.external_id !== null && row.external_id !== row.id) {
         assert.notEqual(
           displayId,
-          Number(row.id),
-          `${row.title}: must not display internal id ${row.id}`,
+          parseInt(row.external_id, 10),
+          `${row.title}: must not display external_id ${row.external_id}`,
         );
       }
     }
