@@ -260,7 +260,7 @@ Tasks move through four semantic stages:
 
 ### Memory-First Context (Comms + Orchestrator)
 
-Before asking the human for additional context, **search memory first**. Use `POST /api/memory/search` (hybrid mode if available, keyword as fallback) with terms relevant to what you need. Review the results, then re-evaluate whether you still need to ask. Often the answer is already stored — asking the human for something they've already told you wastes their time and erodes trust.
+Before asking the human for additional context, **search memory first**. Use `POST /api/memory/search` with `mode: "keyword"` whenever the question is whether something is already recorded — hybrid and vector modes return nearest-neighbor results and pad up to `limit` rows regardless of whether anything truly matches, so they cannot represent "nothing found," and a non-empty hybrid/vector result is not evidence that prior art exists. Hybrid/vector remain the right tool for exploratory or semantic recall — surfacing related material when you're not trying to establish absence. Review the results, then re-evaluate whether you still need to ask. Often the answer is already stored — asking the human for something they've already told you wastes their time and erodes trust.
 
 This applies to both comms (before asking the human directly) and orchestrator (before sending a clarification request back to comms).
 
