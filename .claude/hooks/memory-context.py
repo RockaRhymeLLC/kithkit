@@ -2,12 +2,12 @@
 """
 UserPromptSubmit Hook: Memory-assisted context injection
 
-Extracts keywords from user input, does a fast keyword search against
+Extracts keywords from user input, does a fast hybrid (keyword + vector) search against
 the daemon memory API, and injects 2-3 brief memory hints into context.
 Also surfaces prior-art todos and local report files
 so that completed work and filed issues reach the model automatically.
 
-Skips short/generic inputs (<10 chars). Keyword-only for speed.
+Skips short/generic inputs (<10 chars). Tuned for speed, not for establishing absence.
 """
 
 import hashlib
@@ -125,10 +125,14 @@ def extract_keywords(text: str) -> list[str]:
 
 
 def search_memories(keywords: list[str]) -> list:
-    """Fast keyword search against daemon memory API.
+    """Fast hybrid (keyword + vector) search against daemon memory API.
 
     AND matching can be too strict, so we try progressively fewer keywords
     until we get results: all keywords, then first 3, then first 2.
+
+    Uses ``mode: "hybrid"`` — results are nearest-neighbour and padded up to
+    ``limit`` regardless of match quality, so a hit is not evidence of a true
+    match. Correct for recall; never use this call to establish absence.
     """
     attempts = [keywords]
     if len(keywords) > 3:
@@ -612,7 +616,7 @@ def main():
     # ── Emit memory hints ─────────────────────────────────────────────────────
     if memories:
         hints = [format_hint(m) for m in memories]
-        print("Memory hints (from hybrid search):")
+        print("Memory hints (nearest memories from hybrid search — may not be relevant):")
         print("\n".join(hints))
         print("  (Search daemon memory for deeper context if needed)")
 
