@@ -8,7 +8,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadConfig, type KithkitConfig } from './core/config.js';
-import { openDatabase, closeDatabase, resolveDbPath, migrateDbIfNeeded, query } from './core/db.js';
+import { openDatabase, closeDatabase, resolveDbPath, migrateDbIfNeeded, query, assertSafeDbPathConfig } from './core/db.js';
 import { initLogger, createLogger } from './core/logger.js';
 import { getHealth } from './core/health.js';
 import { getDistStaleBuildState } from './automation/tasks/dist-staleness.js';
@@ -103,6 +103,9 @@ export {
 
 // ── Bootstrap ────────────────────────────────────────────────
 
+// Captured before projectDir falls back to cwd() below — this is the only
+// point where "was a project directory explicitly given" is still knowable.
+const explicitProjectDirArg = process.argv[2] !== undefined;
 const projectDir = path.resolve(process.argv[2] ?? process.cwd());
 const config = loadConfig(projectDir);
 
@@ -117,9 +120,20 @@ const log = createLogger('main');
 
 // ── Database ─────────────────────────────────────────────────
 
+// Fail-closed guard: an explicit project directory + no configured db_path
+// is the combination that has silently attached a scratch/test daemon to the
+// machine-global, shared database. Refuse to start rather than guess.
+// Normal boots (no explicit project dir) are unaffected.
+try {
+  assertSafeDbPathConfig({ explicitProjectDir: explicitProjectDirArg, configPath: config.daemon.db_path });
+} catch (err) {
+  log.error(err instanceof Error ? err.message : String(err));
+  process.exit(1);
+}
+
 // Resolve DB path from config (or platform default), then migrate if needed.
 // Migration MUST run before openDatabase() to avoid WAL lock on the source.
-const resolvedDbPath = resolveDbPath(projectDir, config.daemon.db_path);
+const resolvedDbPath = resolveDbPath(projectDir, config.daemon.db_path, log);
 await migrateDbIfNeeded(projectDir, resolvedDbPath, log);
 openDatabase(projectDir, resolvedDbPath);
 log.info('Database opened', { path: resolvedDbPath });

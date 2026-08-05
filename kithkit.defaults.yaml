@@ -20,6 +20,15 @@ daemon:
   #   Other  → ~/.kithkit/data/kithkit.db
   # Supports ~ expansion. Relative paths resolve from projectDir (not recommended).
   # Changing db_path requires a daemon restart — hot-reload is rejected.
+  #
+  # WARNING: the platform-default path above is machine-global, not scoped to
+  # any one project — every kithkit install on this machine that omits
+  # db_path shares that same database file. If you run more than one daemon
+  # on this machine (e.g. a scratch/test instance alongside a real one), set
+  # db_path explicitly for each so they don't write to the same file. The
+  # daemon logs a WARN at startup whenever it falls back to this default, and
+  # refuses to start if launched with an explicit project directory and no
+  # db_path configured.
   lan:
     enabled: false
     bind_host: "127.0.0.1"

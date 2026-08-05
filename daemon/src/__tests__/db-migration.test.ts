@@ -3,7 +3,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { describe, it, beforeEach, afterEach } from 'node:test';
+import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -75,6 +75,122 @@ describe('resolveDbPath', () => {
     const nestedPath = path.join(tmpDir, 'a', 'b', 'c', 'test.db');
     resolveDbPathLocal(tmpDir, nestedPath);
     assert.ok(fs.existsSync(path.dirname(nestedPath)), 'Parent directory should be created');
+  });
+});
+
+// ── resolveDbPath tests against the real implementation ──────
+//
+// These import the actual exported resolveDbPath/assertSafeDbPathConfig from
+// core/db.ts (unlike the block above, which tests a local reimplementation
+// of the pre-fix logic). os.homedir() is mocked to tmpDir for every case
+// that touches the platform-default branch or "~" expansion, so these tests
+// never create or read anything under the real
+// ~/Library/Application Support/kithkit path.
+
+describe('resolveDbPath (real implementation, fail-loud fallback)', () => {
+  function makeLog() {
+    const messages: { level: string; msg: string; meta?: Record<string, unknown> }[] = [];
+    return {
+      log: {
+        info: (msg: string, meta?: Record<string, unknown>) => messages.push({ level: 'info', msg, meta }),
+        warn: (msg: string, meta?: Record<string, unknown>) => messages.push({ level: 'warn', msg, meta }),
+      },
+      messages,
+    };
+  }
+
+  it('with an explicit absolute configPath: unchanged behaviour', async () => {
+    const { resolveDbPath } = await import('../core/db.js');
+    const absPath = path.join(tmpDir, 'custom', 'data.db');
+    const result = resolveDbPath(tmpDir, absPath);
+    assert.equal(result, absPath);
+    assert.ok(fs.existsSync(path.dirname(absPath)));
+  });
+
+  it('with an explicit relative configPath: resolves against projectDir, unchanged', async () => {
+    const { resolveDbPath } = await import('../core/db.js');
+    const result = resolveDbPath(tmpDir, 'data/kithkit.db');
+    assert.equal(result, path.join(tmpDir, 'data', 'kithkit.db'));
+  });
+
+  it('with an explicit "~/" configPath: still expands against homedir, unchanged', async () => {
+    const { resolveDbPath } = await import('../core/db.js');
+    const homedirMock = mock.method(os, 'homedir', () => tmpDir);
+    try {
+      const result = resolveDbPath(tmpDir, '~/mydata/kithkit.db');
+      assert.equal(result, path.join(tmpDir, 'mydata', 'kithkit.db'));
+    } finally {
+      homedirMock.mock.restore();
+    }
+  });
+
+  it('with an explicit configPath: logs INFO (not WARN), confirming the configured path is distinguished', async () => {
+    const { resolveDbPath } = await import('../core/db.js');
+    const { log, messages } = makeLog();
+    resolveDbPath(tmpDir, path.join(tmpDir, 'explicit.db'), log);
+    assert.ok(messages.some(m => m.level === 'info'), 'Expected an info log for a configured db_path');
+    assert.ok(!messages.some(m => m.level === 'warn'), 'Should not warn when db_path is configured');
+  });
+
+  it('with no configPath: still returns the platform default (deliberate feature preserved)', async () => {
+    const { resolveDbPath } = await import('../core/db.js');
+    const homedirMock = mock.method(os, 'homedir', () => tmpDir);
+    try {
+      const result = resolveDbPath(tmpDir);
+      assert.ok(result.startsWith(tmpDir), `Expected path under mocked homedir ${tmpDir}, got: ${result}`);
+      assert.ok(result.endsWith(path.join('kithkit', 'kithkit.db')), `Expected .../kithkit/kithkit.db, got: ${result}`);
+    } finally {
+      homedirMock.mock.restore();
+    }
+  });
+
+  it('with no configPath: emits a WARN naming the resolved path and the reason (this is the fix)', async () => {
+    const { resolveDbPath } = await import('../core/db.js');
+    const homedirMock = mock.method(os, 'homedir', () => tmpDir);
+    const { log, messages } = makeLog();
+    try {
+      const result = resolveDbPath(tmpDir, undefined, log);
+      const warnMsg = messages.find(m => m.level === 'warn');
+      assert.ok(warnMsg, 'Expected a WARN log when falling back to the platform default');
+      assert.ok(!messages.some(m => m.level === 'info'), 'Should not log info on the fallback path');
+      assert.equal(warnMsg?.meta?.['path'], result, 'WARN should carry the resolved fallback path in its metadata');
+      assert.match(warnMsg!.msg, /no db_path configured/i, 'WARN message should state the reason, not just the path');
+    } finally {
+      homedirMock.mock.restore();
+    }
+  });
+});
+
+// ── assertSafeDbPathConfig — fail-closed startup guard ────────
+
+describe('assertSafeDbPathConfig', () => {
+  it('throws when an explicit project directory is given and db_path is unset (the dangerous combination)', async () => {
+    const { assertSafeDbPathConfig, UnsafeDbPathConfigError } = await import('../core/db.js');
+    assert.throws(
+      () => assertSafeDbPathConfig({ explicitProjectDir: true, configPath: undefined }),
+      UnsafeDbPathConfigError,
+    );
+  });
+
+  it('does NOT throw when an explicit project directory is given but db_path IS set', async () => {
+    const { assertSafeDbPathConfig } = await import('../core/db.js');
+    assert.doesNotThrow(() =>
+      assertSafeDbPathConfig({ explicitProjectDir: true, configPath: '/some/explicit/path.db' }),
+    );
+  });
+
+  it('does NOT throw on a normal boot — no explicit project directory, db_path unset (narrowness test)', async () => {
+    const { assertSafeDbPathConfig } = await import('../core/db.js');
+    assert.doesNotThrow(() =>
+      assertSafeDbPathConfig({ explicitProjectDir: false, configPath: undefined }),
+    );
+  });
+
+  it('does NOT throw on a normal boot with db_path also set', async () => {
+    const { assertSafeDbPathConfig } = await import('../core/db.js');
+    assert.doesNotThrow(() =>
+      assertSafeDbPathConfig({ explicitProjectDir: false, configPath: '/some/explicit/path.db' }),
+    );
   });
 });
 
