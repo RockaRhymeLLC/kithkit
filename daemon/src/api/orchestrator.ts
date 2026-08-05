@@ -190,7 +190,7 @@ export async function handleOrchestratorRoute(
     // instead of adding a route-wide handler in main.ts, which is out of
     // scope for this change.
     try {
-      assertRecordSafe('tasks', { work_notes: workNotes, description: descriptionText });
+      assertRecordSafe('tasks', { work_notes: workNotes, description: descriptionText, title: titleText });
     } catch (err) {
       if (err instanceof CredentialLeakError) {
         json(res, 400, withTimestamp({ error: err.message }));

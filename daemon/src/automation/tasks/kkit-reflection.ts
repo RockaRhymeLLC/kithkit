@@ -556,7 +556,7 @@ async function executeActions(
             // row is written — the per-action try/catch above turns this into
             // a normal 'failed' result and the loop continues with the next
             // action. See security/credential-guard.ts.
-            assertRecordSafe('tasks', { description });
+            assertRecordSafe('tasks', { description, title });
             exec(
               "INSERT INTO tasks (kind, title, description, priority, status) VALUES ('todo', ?, ?, ?, ?)",
               title,

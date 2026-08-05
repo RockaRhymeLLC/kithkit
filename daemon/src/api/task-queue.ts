@@ -386,10 +386,10 @@ export async function handleTaskQueueRoute(
         ? complexityToInt(body.complexity as Complexity)
         : null;
 
-      // Reject before the row is written if work_notes/description carries a
-      // live credential — the caller (creating this task) gets a 400 it can
-      // act on. See security/credential-guard.ts.
-      assertRecordSafe('tasks', { work_notes: body.work_notes, description: body.description });
+      // Reject before the row is written if work_notes/description/title
+      // carries a live credential — the caller (creating this task) gets a
+      // 400 it can act on. See security/credential-guard.ts.
+      assertRecordSafe('tasks', { work_notes: body.work_notes, description: body.description, title: body.title });
 
       exec(
         `INSERT INTO tasks (external_id, kind, title, description, status, priority, source, work_notes, timeout_seconds, complexity, canonical_task_external_id, requesting_peer, created_at, updated_at)

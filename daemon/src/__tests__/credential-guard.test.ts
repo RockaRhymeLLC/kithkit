@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { openDatabase, _resetDbForTesting, insert, get, getDatabase } from '../core/db.js';
+import { openDatabase, _resetDbForTesting, insert, get, query, getDatabase } from '../core/db.js';
 import { issueToken } from '../auth/agent-tokens.js';
 import {
   checkForCredentialLeak,
@@ -211,6 +211,19 @@ describe('credential-guard: oracle cache', () => {
     assert.equal(sawQuery, true, 'expected a reload after explicit invalidation');
     assert.equal(result.blocked, true);
   });
+
+  it('issueToken() invalidates the cache on mint — a fresh token is recognized without waiting for the TTL', () => {
+    // Prime the cache so a stale cache object exists before minting.
+    checkForCredentialLeak('warm the cache before minting a new token');
+
+    const token = issueToken('worker', { jobId: 'job-immediate-mint-1' });
+    // Deliberately no explicit invalidateCredentialGuardCache() call here.
+    // If issueToken() did not invalidate on mint, this check would run
+    // against the pre-mint cached set (still within the 10s TTL window) and
+    // miss the just-issued token.
+    const result = checkForCredentialLeak(`fresh mint, no manual invalidation: ${token}`);
+    assert.equal(result.blocked, true, 'issueToken() must invalidate the credential-guard oracle cache on every mint');
+  });
 });
 
 // ── Reject vs placeholder behavior ───────────────────────────────
@@ -384,6 +397,47 @@ describe('credential-guard: new task_activity.message field', () => {
 
   it('assertRecordSafe is a no-op for task_activity fields other than message', () => {
     assert.doesNotThrow(() => assertRecordSafe('task_activity', { stage: 'cleanup', type: 'note', agent: 'daemon' }));
+  });
+});
+
+describe('credential-guard: tasks.title write-path coverage', () => {
+  beforeEach(setupDb);
+  afterEach(teardownDb);
+
+  it('assertRecordSafe rejects a live token in tasks.title, and the write path blocks it before persistence', () => {
+    const token = issueToken('orchestrator');
+    const titleValue = `Recurring issue: ${token}`;
+    assert.throws(() => {
+      assertRecordSafe('tasks', { title: titleValue });
+      // Mirrors a real call site: the INSERT only runs if assertRecordSafe did
+      // not throw. Reaching this line and having it persist is exactly the bug
+      // this test exists to catch — assert on what actually landed in the DB
+      // via a direct readback query, not on the thrown error alone. (tasks.id
+      // is INTEGER PRIMARY KEY AUTOINCREMENT, so the row is located by the
+      // title value rather than a pre-assigned id.)
+      insert('tasks', { kind: 'todo', title: titleValue, description: 'x' });
+    }, CredentialLeakError);
+
+    const rows = query<{ id: number }>('SELECT id FROM tasks WHERE title = ?', titleValue);
+    assert.equal(rows.length, 0, 'a title carrying a live agent token must never reach the database');
+  });
+
+  it('positive control: tasks.work_notes still blocks a live token (guard is not disabled wholesale)', () => {
+    const token = issueToken('worker', { jobId: 'job-title-control-1' });
+    const taskId = 'task-title-reject-test-2';
+    assert.throws(() => {
+      assertRecordSafe('tasks', { title: 'clean title', work_notes: `progress: ${token}` });
+      insert('tasks', { id: taskId, kind: 'todo', title: 'clean title', work_notes: `progress: ${token}` });
+    }, CredentialLeakError);
+    const row = get('tasks', taskId);
+    assert.equal(row, undefined, 'work_notes must still be guarded regardless of the title fix');
+  });
+
+  it('does not fire on an ordinary task title (prose negative control)', () => {
+    issueToken('comms');
+    assert.doesNotThrow(() =>
+      assertRecordSafe('tasks', { title: 'Recurring issue: daemon restart flakiness (3 occurrences in 7 days)' }),
+    );
   });
 });
 

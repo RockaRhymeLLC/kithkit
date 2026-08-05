@@ -306,10 +306,10 @@ export async function handleUnifiedTasksRoute(
 
       const ts = now();
 
-      // Reject before the row is written if work_notes/description carries a
-      // live credential — the caller (creating this task) gets a 400 it can
-      // act on. See security/credential-guard.ts.
-      assertRecordSafe('tasks', { work_notes: workNotes, description: desc });
+      // Reject before the row is written if work_notes/description/title
+      // carries a live credential — the caller (creating this task) gets a
+      // 400 it can act on. See security/credential-guard.ts.
+      assertRecordSafe('tasks', { work_notes: workNotes, description: desc, title: body.title });
 
       exec(
         `INSERT INTO tasks (

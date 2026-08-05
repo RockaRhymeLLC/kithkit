@@ -70,11 +70,12 @@ interface TokenCache {
 // The active set is tiny (5 of 679 rows on the box this was built for) and
 // changes rarely (mint/revoke), so an in-process cache with a short TTL
 // avoids a DB round trip on every write while staying acceptably fresh.
-// agent-tokens.ts (mint/revoke) is out of scope for this change — it's
-// mid-flight in another open PR — so this cache cannot hook an explicit
-// invalidation call into issueToken()/revokeToken(). TTL-based refresh is
-// the pragmatic substitute; invalidateCredentialGuardCache() is exposed for
-// callers (tests, and a future integration) that want to force a reload.
+// issueToken() (agent-tokens.ts) calls invalidateCredentialGuardCache() on
+// every mint, so a just-issued token is visible to the oracle immediately —
+// TTL-based refresh below is a backstop for revocation and cross-process
+// staleness, not the primary freshness mechanism for new tokens.
+// invalidateCredentialGuardCache() remains exported for tests and any other
+// caller that needs to force a reload.
 const ORACLE_CACHE_TTL_MS = 10_000;
 
 // Design call: match against ACTIVE tokens (revoked_at IS NULL), not all 679
@@ -194,6 +195,14 @@ export function checkForCredentialLeak(value: string): CredentialCheckResult {
  *   tasks.plan_rejected_reason — human/comms plan-rejection feedback.
  *   tasks.outcome_reason — orchestrator's free-text outcome explanation.
  *   tasks.comms_corrections — comms-authored correction notes on a task.
+ *   tasks.title — same risk shape as description: set at creation (derived
+ *     from free text at /api/orchestrator/escalate and kkit-reflection's
+ *     LLM-authored todo-create action) and via PUT. Adding the field name
+ *     here is necessary but not sufficient — assertRecordSafe only inspects
+ *     keys present in the object it is handed, so every call site that
+ *     builds title from caller/LLM-authored text must also include it in
+ *     the object passed to assertRecordSafe/assertFieldSafe, not just bind
+ *     it directly into the INSERT/UPDATE. See each call site.
  * Deliberately NOT added here (enum/machine-generated columns carry no
  * transcription risk): tasks.status/priority/outcome/comms_outcome/
  * plan_status/last_retry_reason (CHECK-constrained), tasks.requesting_peer
@@ -209,7 +218,7 @@ export function checkForCredentialLeak(value: string): CredentialCheckResult {
  */
 export const WATCHED_FIELDS: Readonly<Record<string, readonly string[]>> = {
   worker_jobs: ['prompt', 'result', 'error', 'verification_report'],
-  tasks: ['work_notes', 'result', 'error', 'description', 'plan', 'plan_rejected_reason', 'outcome_reason', 'comms_corrections'],
+  tasks: ['work_notes', 'result', 'error', 'description', 'plan', 'plan_rejected_reason', 'outcome_reason', 'comms_corrections', 'title'],
   task_activity: ['message'],
 };
 

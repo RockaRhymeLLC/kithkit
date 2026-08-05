@@ -11,6 +11,7 @@
 
 import { randomBytes } from 'node:crypto';
 import { getDatabase } from '../core/db.js';
+import { invalidateCredentialGuardCache } from '../security/credential-guard.js';
 
 // ── Types ────────────────────────────────────────────────────
 
@@ -35,6 +36,12 @@ export function issueToken(
     `INSERT INTO agent_tokens (token, role, job_id, created_at)
      VALUES (?, ?, ?, datetime('now'))`,
   ).run(token, role, metadata?.jobId ?? null);
+  // The write-path credential guard's oracle cache (security/credential-guard.ts)
+  // has a short TTL, not an invalidation hook — force a reload so this
+  // just-minted token is recognized immediately rather than after the TTL
+  // window, in case something (mistakenly) tries to write it to a watched
+  // field right after issuance.
+  invalidateCredentialGuardCache();
   return token;
 }
 
