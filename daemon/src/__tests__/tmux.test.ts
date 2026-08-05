@@ -27,6 +27,7 @@ import {
   SUBMIT_LANDED_INDICATORS,
   spawnOrchestratorSession,
   _findCurrentInputLineForTesting,
+  sanitizeInjectText,
 } from '../agents/tmux.js';
 
 // ── Realistic pane-capture fixture (todo #2807) ────────────────
@@ -1426,4 +1427,116 @@ describe('injectMessage — bracketed paste delivery (mutation-kill)', { concurr
       );
     });
   }
+});
+
+// ── sanitizeInjectText — truncation marker (fail-loud observability fix) ──
+//
+// injectMessage previously truncated overflowing text with NO marker: the
+// receiver (comms pane) could not tell a truncated inject from a complete
+// one, even though the full body is durably stored (tasks.result / messages
+// row). sanitizeInjectText is the pure extraction of the truncate+sanitize
+// step (no tmux I/O), so this marker/cap behavior is testable directly
+// without mocking a live pane.
+describe('sanitizeInjectText — truncation marker (observability fix)', () => {
+  const MAX_INJECT_LENGTH = 4000;
+  const MARKER_TEXT =
+    '[!] injected copy truncated — full message is in the durable record (query the orchestrator task result / messages row).';
+
+  it('prepends a loud marker (no fabricated char count) when text overflows the cap', () => {
+    const oversized = 'x'.repeat(5000);
+    const result = sanitizeInjectText(oversized);
+
+    assert.ok(
+      result.startsWith(MARKER_TEXT),
+      `expected result to start with the truncation marker — got: ${JSON.stringify(result.slice(0, 200))}`,
+    );
+    assert.ok(
+      result.length <= MAX_INJECT_LENGTH,
+      `body + marker must respect MAX_INJECT_LENGTH (${MAX_INJECT_LENGTH}) — got ${result.length}`,
+    );
+  });
+
+  it('MUTATION-KILL: passes text at or under the cap through unchanged (no marker)', () => {
+    const atCap = 'y'.repeat(MAX_INJECT_LENGTH);
+    const result = sanitizeInjectText(atCap);
+    assert.equal(result, atCap, 'text at exactly MAX_INJECT_LENGTH must pass through byte-for-byte unchanged');
+    assert.ok(!result.includes('injected copy truncated'), 'no marker should be added when text does not overflow the cap');
+
+    const underCap = 'short text, well under the cap';
+    assert.equal(sanitizeInjectText(underCap), underCap, 'text under the cap must pass through unchanged');
+  });
+
+  it('RED-proof: a bare slice (no marker) fails the head-marker assertion — proves the test is non-vacuous', () => {
+    // Simulates reverting the fix to bare text.slice(0, MAX_INJECT_LENGTH), no
+    // marker, and confirms THAT output would fail the same assertion the fixed
+    // behavior passes above — i.e. the marker assertion actually discriminates
+    // fixed vs. unfixed behavior rather than passing vacuously either way.
+    const oversized = 'x'.repeat(5000);
+    const preFixBehavior = oversized.slice(0, MAX_INJECT_LENGTH); // old behavior: bare slice, no marker
+    assert.ok(
+      !preFixBehavior.startsWith(MARKER_TEXT),
+      'pre-fix bare-slice output must NOT satisfy the marker assertion (confirms the fixed test is non-vacuous)',
+    );
+  });
+
+  it('EMOJI-CELL-PROOF: a head-prepended marker survives a downstream display-cell truncation that would silently eat a tail-appended one', () => {
+    // Real-world measurement (see comment on MARKER_RESERVE_SAFETY_MARGIN):
+    // the cut that actually strips content before it reaches a pane is a
+    // terminal DISPLAY-CELL budget (~3962-3968 cells on two machines), not a
+    // character count -- and it measures BELOW MAX_INJECT_LENGTH.
+    //
+    // sanitizeInjectText slices using JS string .length, i.e. UTF-16 code
+    // units. Astral-plane emoji (e.g. U+1F600) are a surrogate pair -- 2
+    // UTF-16 units -- AND 2 display cells, so they don't actually diverge
+    // from a .length-based budget (1:1 ratio, no extra risk). The payload
+    // that genuinely breaks a .length-based reserve is a WIDE character
+    // that's a *single* UTF-16 unit but 2 display cells -- e.g. common BMP
+    // emoji like U+2B50 (star). Each one "costs" 1 toward .length but 2
+    // toward the real terminal budget, so a star-dense payload silently
+    // consumes cells twice as fast as .length-based slicing accounts for.
+    // A plain 'x'.repeat() payload (as used in the tests above) can NEVER
+    // exercise this because 1 char == 1 UTF-16 unit == 1 cell for ASCII.
+    const DOWNSTREAM_CELL_BUDGET = 3968; // worst-case measured budget
+    const WIDE_BMP_EMOJI = '⭐'; // ⭐ -- 1 UTF-16 unit, terminal-rendered as 2 cells
+
+    function cellWidthOf(ch: string): number {
+      const cp = ch.codePointAt(0)!;
+      if (cp > 0xffff) return 2; // astral-plane surrogate pairs
+      if (ch === WIDE_BMP_EMOJI) return 2; // known double-width BMP emoji used in this payload
+      return 1;
+    }
+
+    function truncateToCellBudget(str: string, budget: number): string {
+      let width = 0;
+      let out = '';
+      for (const ch of str) {
+        const w = cellWidthOf(ch);
+        if (width + w > budget) break;
+        out += ch;
+        width += w;
+      }
+      return out;
+    }
+
+    const oversized = WIDE_BMP_EMOJI.repeat(5000); // 5000 UTF-16 units — over MAX_INJECT_LENGTH, all wide
+
+    // NEW (fixed) behavior: marker prepended by sanitizeInjectText.
+    const fixedResult = sanitizeInjectText(oversized);
+    const fixedAfterDownstreamCut = truncateToCellBudget(fixedResult, DOWNSTREAM_CELL_BUDGET);
+    assert.ok(
+      fixedAfterDownstreamCut.startsWith('[!] injected copy truncated'),
+      'head-prepended marker must survive the downstream cell-budget cut',
+    );
+
+    // OLD (now-fixed) behavior, reproduced here since production code no
+    // longer appends the marker at the tail: same slice/reserve logic, but
+    // the marker is glued onto the END of the body instead of the front.
+    const oldMarker = `\n\n[!] injected copy truncated: showing first ~${MAX_INJECT_LENGTH} of ${oversized.length} chars. Full message is in the durable record (query the orchestrator task result / messages row).`;
+    const oldSafeText = oversized.slice(0, MAX_INJECT_LENGTH - oldMarker.length) + oldMarker;
+    const oldAfterDownstreamCut = truncateToCellBudget(oldSafeText, DOWNSTREAM_CELL_BUDGET);
+    assert.ok(
+      !oldAfterDownstreamCut.includes('injected copy truncated'),
+      'proves the point of this test: the OLD tail-appended marker does NOT survive the same downstream cut that the new head-prepended marker survives above',
+    );
+  });
 });
