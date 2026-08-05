@@ -137,3 +137,54 @@ describe('Config (t-116)', () => {
     assert.equal(config1, config2); // Same reference
   });
 });
+
+describe('loadConfig explicit-dir mismatch guard', () => {
+  let dirA: string;
+  let dirB: string;
+
+  beforeEach(() => {
+    _resetConfigForTesting();
+    dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-config-a-'));
+    dirB = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-config-b-'));
+  });
+
+  afterEach(() => {
+    _resetConfigForTesting();
+    fs.rmSync(dirA, { recursive: true, force: true });
+    fs.rmSync(dirB, { recursive: true, force: true });
+  });
+
+  it('throws when a later call passes a different explicit projectDir than the cached one', () => {
+    loadConfig(dirA);
+    assert.throws(() => loadConfig(dirB), /already cached/);
+  });
+
+  it('does not silently return the wrong config on mismatch (regression check)', () => {
+    fs.writeFileSync(path.join(dirA, 'kithkit.config.yaml'), 'agent:\n  name: AgentA\n');
+    fs.writeFileSync(path.join(dirB, 'kithkit.config.yaml'), 'agent:\n  name: AgentB\n');
+    const configA = loadConfig(dirA);
+    assert.equal(configA.agent.name, 'AgentA');
+    // Before the fix, this call silently returned configA (AgentA) instead of
+    // reading dirB's config or signalling that dirB was ignored.
+    assert.throws(() => loadConfig(dirB));
+  });
+
+  it('a bare no-arg call after priming still returns the cached config (guard stays narrow)', () => {
+    const primed = loadConfig(dirA);
+    const again = loadConfig(); // no projectDir — must not throw
+    assert.equal(again, primed);
+  });
+
+  it('a repeated call with the SAME explicit dir as cached does not throw', () => {
+    const first = loadConfig(dirA);
+    const second = loadConfig(dirA);
+    assert.equal(first, second);
+  });
+
+  it('normal boot pattern (bootstrap primes, main.ts re-passes same resolved dir) does not throw', () => {
+    // Mirrors bootstrap.ts / main.ts both computing path.resolve(argv[2] ?? cwd()).
+    const resolved = path.resolve(dirA);
+    loadConfig(resolved);
+    assert.doesNotThrow(() => loadConfig(path.resolve(dirA)));
+  });
+});

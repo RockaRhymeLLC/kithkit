@@ -382,9 +382,22 @@ export function parseInterval(interval: string): number {
  * Falls back to kithkit.defaults.yaml, then to hardcoded defaults.
  *
  * @throws ConfigValidationError if config values are invalid
+ * @throws Error if called with an explicit projectDir that differs from the
+ *   already-cached one. A later caller passing a different directory would
+ *   otherwise silently get the first caller's (wrong) config back.
+ *   Calls with no argument are unaffected and always return the cached config.
  */
 export function loadConfig(projectDir?: string): KithkitConfig {
-  if (_config) return _config;
+  if (_config) {
+    if (projectDir !== undefined && path.resolve(projectDir) !== path.resolve(_projectDir)) {
+      throw new Error(
+        `loadConfig() called with projectDir "${projectDir}" but config is already cached ` +
+        `for "${_projectDir}". The cached config would be silently reused, ignoring this ` +
+        `directory. Call _resetConfigForTesting() first if this is intentional (e.g. in tests).`,
+      );
+    }
+    return _config;
+  }
 
   const dir = projectDir ?? process.cwd();
   _projectDir = dir;
