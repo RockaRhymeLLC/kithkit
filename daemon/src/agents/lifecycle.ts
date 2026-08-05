@@ -26,6 +26,7 @@ import { get, update, query, exec, getDatabase } from '../core/db.js';
 import { resolveProjectPath } from '../core/config.js';
 import { createLogger } from '../core/logger.js';
 import { injectLearnings } from '../self-improvement/pre-task-injector.js';
+import { assertRecordSafe, sanitizeRecordOrPlaceholder } from '../security/credential-guard.js';
 
 const log = createLogger('agents:lifecycle');
 
@@ -217,6 +218,13 @@ export async function spawnWorkerJob(req: SpawnRequest): Promise<{ jobId: string
   } catch {
     // injection failure is non-fatal
   }
+
+  // Refuse to persist a prompt that contains a live credential, before any
+  // row is written. This has a live synchronous caller (POST /api/agents/
+  // spawn) that can turn the throw into a 400 and let the requester rewrite
+  // the prompt and retry — see security/credential-guard.ts for why reject
+  // (not a placeholder) is right here.
+  assertRecordSafe('worker_jobs', { prompt: req.prompt });
 
   // Insert agent record
   exec(
@@ -449,10 +457,22 @@ function finishJob(
     updated_at: ts,
   });
 
-  update('worker_jobs', jobId, {
-    status,
+  // The worker process has already exited by the time this write happens —
+  // there is no live caller waiting to receive/act on a rejection. Rejecting
+  // here would silently discard the whole job's legitimate result (status,
+  // tokens, cost) along with the secret, with nobody informed. Sanitize
+  // instead: a blocked result/error is replaced with a loud, logged
+  // placeholder so the rest of the job record survives and the block is
+  // still visible (see security/credential-guard.ts).
+  const safeFields = sanitizeRecordOrPlaceholder('worker_jobs', {
     result: result ?? null,
     error: error ?? null,
+  } as Record<string, unknown>);
+
+  update('worker_jobs', jobId, {
+    status,
+    result: safeFields.result,
+    error: safeFields.error,
     tokens_in: sdkState?.tokensIn ?? 0,
     tokens_out: sdkState?.tokensOut ?? 0,
     cost_usd: sdkState?.costUsd ?? 0,

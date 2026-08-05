@@ -22,6 +22,7 @@ import { loadContext } from '../core/context-loader.js';
 import { storeMemoryInternal } from './memory.js';
 import { createLogger } from '../core/logger.js';
 import { normalizeStatusAlias } from '../core/task-state-machine.js';
+import { assertRecordSafe, CredentialLeakError } from '../security/credential-guard.js';
 
 const log = createLogger('state-api');
 
@@ -244,6 +245,11 @@ export async function handleStateRoute(
         if (todosConfig?.default_source) data.source = todosConfig.default_source;
       }
 
+      // Reject before the row is written if description carries a live
+      // credential — the caller (creating this todo) gets a 400 it can act
+      // on. See security/credential-guard.ts.
+      assertRecordSafe('tasks', data);
+
       const todo = insert<Todo>('tasks', data);
       // Native-first: do NOT stamp external_id on new todos — native tasks.id is the
       // display id from here on.  Existing migrated todos retain their external_id
@@ -355,6 +361,7 @@ export async function handleStateRoute(
           logTodoAction(existing.id, 'priority_change', existing.priority, body.priority as string);
         }
 
+        assertRecordSafe('tasks', data);
         update('tasks', putInternalId, data);
         const updated = get<Todo>('tasks', putInternalId);
 
@@ -639,6 +646,10 @@ export async function handleStateRoute(
 
     return false;
   } catch (err) {
+    if (err instanceof CredentialLeakError) {
+      json(res, 400, withTimestamp({ error: err.message }));
+      return true;
+    }
     if (err instanceof Error) {
       if (err.message === 'Request body too large') {
         json(res, 413, withTimestamp({ error: 'Request body too large' }));

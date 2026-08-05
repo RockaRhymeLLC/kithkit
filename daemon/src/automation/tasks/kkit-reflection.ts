@@ -13,6 +13,7 @@ import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { query, exec } from '../../core/db.js';
 import { createLogger } from '../../core/logger.js';
+import { assertRecordSafe } from '../../security/credential-guard.js';
 import type { Scheduler } from '../scheduler.js';
 
 const log = createLogger('kkit-reflection');
@@ -550,6 +551,12 @@ async function executeActions(
             log.info(`[DRY RUN] todo-create: would create todo "${title}"`);
             results.push({ memory_id: action.memory_id, action: action.action, status: 'success', detail: `dry-run: would create "${title}"` });
           } else {
+            // title/description are LLM-authored, derived from memory content
+            // that may itself contain a pasted credential. Reject before the
+            // row is written — the per-action try/catch above turns this into
+            // a normal 'failed' result and the loop continues with the next
+            // action. See security/credential-guard.ts.
+            assertRecordSafe('tasks', { description, title });
             exec(
               "INSERT INTO tasks (kind, title, description, priority, status) VALUES ('todo', ?, ?, ?, ?)",
               title,

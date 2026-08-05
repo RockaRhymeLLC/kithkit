@@ -27,6 +27,7 @@ import type http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { json, withTimestamp, parseBody } from './helpers.js';
 import { query, exec, getDatabase } from '../core/db.js';
+import { assertRecordSafe, assertFieldSafe, CredentialLeakError } from '../security/credential-guard.js';
 import { injectMessage as defaultInjectMessage } from '../agents/tmux.js';
 import { createLogger } from '../core/logger.js';
 
@@ -385,6 +386,11 @@ export async function handleTaskQueueRoute(
         ? complexityToInt(body.complexity as Complexity)
         : null;
 
+      // Reject before the row is written if work_notes/description/title
+      // carries a live credential — the caller (creating this task) gets a
+      // 400 it can act on. See security/credential-guard.ts.
+      assertRecordSafe('tasks', { work_notes: body.work_notes, description: body.description, title: body.title });
+
       exec(
         `INSERT INTO tasks (external_id, kind, title, description, status, priority, source, work_notes, timeout_seconds, complexity, canonical_task_external_id, requesting_peer, created_at, updated_at)
          VALUES (?, 'orchestrator', ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -497,6 +503,12 @@ export async function handleTaskQueueRoute(
       const agent = typeof body.agent === 'string' ? body.agent : 'unknown';
       const stage = typeof body.stage === 'string' ? body.stage : null;
       const ts = now();
+
+      // Reject before the row is written — this is the one task_activity
+      // write site that accepts arbitrary caller-supplied prose (every
+      // other insert in this file uses a fixed template string). See
+      // security/credential-guard.ts.
+      assertFieldSafe('task_activity', 'message', body.message);
 
       exec(
         `INSERT INTO task_activity (task_id, agent, type, stage, message, created_at)
@@ -680,6 +692,12 @@ export async function handleTaskQueueRoute(
         return true;
       }
 
+      // Reject before the row is written if the plan carries a live
+      // credential — same rationale as work_notes/description above. This
+      // also prevents propagation into the comms notification below, which
+      // quotes the plan verbatim. See security/credential-guard.ts.
+      assertFieldSafe('tasks', 'plan', body.plan);
+
       const ts = now();
       const resolvedTaskId = task.external_id ?? String(task.id);
 
@@ -801,6 +819,11 @@ export async function handleTaskQueueRoute(
       const reason = typeof body.reason === 'string' && body.reason.trim()
         ? body.reason.trim()
         : 'No reason provided';
+
+      // Reject before the row is written — the rejection reason is quoted
+      // verbatim into task_activity and the orchestrator notification below.
+      // See security/credential-guard.ts.
+      assertFieldSafe('tasks', 'plan_rejected_reason', reason);
 
       const ts = now();
 
@@ -1056,6 +1079,11 @@ export async function handleTaskQueueRoute(
         return true;
       }
 
+      // Reject before the row is written if result/error/work_notes carries
+      // a live credential — the caller gets a 400 it can act on. See
+      // security/credential-guard.ts.
+      assertRecordSafe('tasks', updates);
+
       // Build UPDATE statement
       const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
       const values = Object.values(updates);
@@ -1172,6 +1200,10 @@ export async function handleTaskQueueRoute(
 
     return false;
   } catch (err) {
+    if (err instanceof CredentialLeakError) {
+      json(res, 400, withTimestamp({ error: err.message }));
+      return true;
+    }
     if (err instanceof Error) {
       if (err.message === 'Request body too large') {
         json(res, 413, withTimestamp({ error: 'Request body too large' }));
