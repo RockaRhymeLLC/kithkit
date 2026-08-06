@@ -39,6 +39,7 @@ interface Todo {
   tags: string; // JSON
   snooze_until: string | null;
   source: string | null;
+  work_notes: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -110,7 +111,7 @@ export function registerTodoUpdateHook(fn: TodoUpdateHookFn): void {
 // can diagnose partial-update surprises.  See kithkit-internal #1812.
 const KNOWN_TODO_PUT_FIELDS = new Set([
   'title', 'description', 'priority', 'status', 'due_date', 'tags',
-  'snooze_until', 'assigned_to', 'work_notes',
+  'snooze_until', 'assigned_to', 'work_notes', 'append_work_notes',
 ]);
 
 // ── Shim helpers ─────────────────────────────────────────────
@@ -352,7 +353,19 @@ export async function handleStateRoute(
         if (body.tags !== undefined) data.tags = JSON.stringify(body.tags);
         if (body.snooze_until !== undefined) data.snooze_until = body.snooze_until;
         if (body.assigned_to !== undefined) data.assigned_to = body.assigned_to;
-        if (body.work_notes !== undefined) data.work_notes = body.work_notes;
+        if (body.work_notes !== undefined) {
+          if (body.append_work_notes && existing.work_notes) {
+            // Append to existing notes with timestamp separator
+            const ts_note = new Date().toISOString().slice(0, 19).replace('T', ' ');
+            data.work_notes = `${existing.work_notes}\n\n[${ts_note}] ${body.work_notes}`;
+          } else if (body.append_work_notes && !existing.work_notes) {
+            // First note, no separator needed
+            const ts_note = new Date().toISOString().slice(0, 19).replace('T', ' ');
+            data.work_notes = `[${ts_note}] ${body.work_notes}`;
+          } else {
+            data.work_notes = body.work_notes;
+          }
+        }
         if (putStatus !== undefined) {
           data.status = putStatus;
           logTodoAction(existing.id, 'status_change', existing.status, putStatus);
