@@ -144,6 +144,36 @@
 #   cap for this invocation). Use `--all` or a raised `PRIOR_ART_LIMIT` any
 #   time a "no prior art" conclusion actually matters.
 #
+#   THERE ARE TWO SEPARATE LOSSES, AND --all ONLY RECOVERS ONE OF THEM. On
+#   surface 1 (gh issues/PRs), `gh api search/issues` returns one page of
+#   results (GitHub's default, 30 items) per call, REGARDLESS of DISPLAY_LIMIT
+#   - a term matching 71 PRs still only has 30 of them in hand before display
+#   truncation is even applied. `--all`/`PRIOR_ART_LIMIT` raise how many of
+#   the FETCHED rows are printed; they cannot raise how many rows were
+#   fetched, because that page was already the only page requested. Measured:
+#   `--all` on a term matching 71 PRs printed all 30 fetched and said nothing
+#   about the other 41 - the fetch loss produced total silence because the
+#   old notice fired only on display truncation (`fetched > shown`), and
+#   `--all` makes that condition false while the fetch loss is still present.
+#   Fixed: surface 1 now discloses `fetched < matched` unconditionally, in
+#   both default and `--all` modes, distinct from the `shown < fetched`
+#   display notice - they are different failures with different remedies (one
+#   is fixed by `--all`, the other is not fixed by anything short of paginating
+#   the GitHub call, which this script does not do to avoid its separate
+#   30 req/min search rate limit).
+#   The other six surfaces were audited for the same shape and are NOT
+#   affected today: surfaces 2/3/4 ask the daemon for up to FETCH_LIMIT/
+#   MEMORY_FETCH_LIMIT rows, but as of this writing `/api/todos`,
+#   `/api/orchestrator/tasks`, and `/api/memory/search` (keyword mode) all
+#   ignore the `limit` parameter entirely and return their complete result
+#   set regardless of what's requested (verified against the live daemon:
+#   limit=1 and limit=5000 returned the same row count on all three) - so
+#   TOTAL/MATCHED on those surfaces is a true corpus count today, not a
+#   fetch-capped one. That is a property of the current daemon, not a
+#   guarantee of this script; surfaces 5/6/7 have no fetch step at all
+#   (grep and `git log` return every match with no page size), so they were
+#   never exposed to this class of loss.
+#
 # READ-ONLY GUARANTEE
 #   Reads only: `curl` GETs/POSTs to the local daemon API, `gh api`/`gh repo
 #   view` (read endpoints), `git log`/`git ls-files`/`git rev-parse` (no
@@ -280,6 +310,30 @@ surface_gh() {
     [[ "$v" =~ ^[0-9]+$ ]] && echo "$v" || echo "ERR(non-numeric response - likely GH search rate limit, 30/min)"
   }
 
+  # Two INDEPENDENT losses can happen between "matched" and what's on screen,
+  # and --all/PRIOR_ART_LIMIT only ever recovers one of them:
+  #   (a) FETCH loss - the `gh api search/issues` call above returns one page
+  #       (GitHub's default, 30 items); $gt/$j.issue_lines and $gt/$j.pr_lines
+  #       never hold more than that no matter how high DISPLAY_LIMIT goes -
+  #       those rows were never retrieved, and --all cannot recover them.
+  #   (b) DISPLAY loss - of whatever WAS fetched, only DISPLAY_LIMIT lines are
+  #       printed below; --all/PRIOR_ART_LIMIT controls this one.
+  # Report both, and say which is which - `matched` is 1's true count from
+  # search/issues, `fetched` is what actually landed in the temp file (the
+  # ceiling --all can reach), `shown` is what's printed.
+  gh_truncation_notice() {
+    local matched="$1" fetched="$2" shown="$3"
+    local unfetched=$((matched - fetched))
+    local unshown=$((fetched - shown))
+    if [[ "$unfetched" -gt 0 && "$unshown" -gt 0 ]]; then
+      echo "    showing $shown of $fetched fetched; $matched matched, so $unfetched were never retrieved (GitHub search page cap) - PRIOR_ART_LIMIT or --all raises the display cap but CANNOT recover the unfetched rows"
+    elif [[ "$unshown" -gt 0 ]]; then
+      echo "    showing $shown of $fetched fetched (matched: $matched) - PRIOR_ART_LIMIT or --all to see the rest"
+    elif [[ "$unfetched" -gt 0 ]]; then
+      echo "    $fetched fetched; $matched matched, so $unfetched were never retrieved (GitHub search page cap) - PRIOR_ART_LIMIT or --all raises the display cap but CANNOT recover the unfetched rows"
+    fi
+  }
+
   {
     echo "Surface 1 - gh issues/PRs, all configured repos, all states (GitHub-native AND/search semantics)"
     for ((j=0; j<${#repo_of_idx[@]}; j++)); do
@@ -292,20 +346,28 @@ surface_gh() {
       echo "  $repo - issues searched: $issue_total  matched: $issue_hits"
       if [[ "$issue_hits" =~ ^[1-9] ]]; then
         head -n "$DISPLAY_LIMIT" "$gt/$j.issue_lines" 2>/dev/null
-        local issue_lines_n
+        local issue_lines_n issue_shown_n
         issue_lines_n="$(wc -l < "$gt/$j.issue_lines" 2>/dev/null | tr -d ' ')"
-        if [[ "${issue_lines_n:-0}" -gt "$DISPLAY_LIMIT" ]]; then
-          echo "    showing $DISPLAY_LIMIT of ${issue_lines_n} fetched (matched: $issue_hits) - PRIOR_ART_LIMIT or --all to see the rest"
+        issue_lines_n="${issue_lines_n:-0}"
+        if [[ "$issue_lines_n" -lt "$DISPLAY_LIMIT" ]]; then
+          issue_shown_n="$issue_lines_n"
+        else
+          issue_shown_n="$DISPLAY_LIMIT"
         fi
+        gh_truncation_notice "$issue_hits" "$issue_lines_n" "$issue_shown_n"
       fi
       echo "  $repo - PRs    searched: $pr_total  matched: $pr_hits"
       if [[ "$pr_hits" =~ ^[1-9] ]]; then
         head -n "$DISPLAY_LIMIT" "$gt/$j.pr_lines" 2>/dev/null
-        local pr_lines_n
+        local pr_lines_n pr_shown_n
         pr_lines_n="$(wc -l < "$gt/$j.pr_lines" 2>/dev/null | tr -d ' ')"
-        if [[ "${pr_lines_n:-0}" -gt "$DISPLAY_LIMIT" ]]; then
-          echo "    showing $DISPLAY_LIMIT of ${pr_lines_n} fetched (matched: $pr_hits) - PRIOR_ART_LIMIT or --all to see the rest"
+        pr_lines_n="${pr_lines_n:-0}"
+        if [[ "$pr_lines_n" -lt "$DISPLAY_LIMIT" ]]; then
+          pr_shown_n="$pr_lines_n"
+        else
+          pr_shown_n="$DISPLAY_LIMIT"
         fi
+        gh_truncation_notice "$pr_hits" "$pr_lines_n" "$pr_shown_n"
       fi
     done
   } > "$out" 2>&1
