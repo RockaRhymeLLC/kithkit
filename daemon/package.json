@@ -6,7 +6,9 @@
   "description": "Kithkit daemon — HTTP API, SQLite state, agent lifecycle, message routing.",
   "main": "dist/main.js",
   "scripts": {
-    "build": "rm -rf dist && tsc && cp -r src/core/migrations dist/core/",
+    "prebuild": "bash scripts/prebuild-guard.sh",
+    "build": "if [ -d dist ]; then rm -rf dist.prev && cp -Rp dist dist.prev || { echo \"FATAL: dist.prev snapshot failed - refusing to destroy dist\" >&2; exit 1; }; fi; rm -rf dist && tsc && cp -r src/core/migrations dist/core/",
+    "postbuild": "bash scripts/postbuild-info.sh",
     "start": "node dist/main.js",
     "dev": "tsc --watch",
     "test": "KITHKIT_SUPPRESS_NOTIFICATIONS=1 node --test --test-concurrency=1 $(find dist -name '*.test.js' -not -path '*/node_modules/*' -not -name 'plan-approval.test.js')",
