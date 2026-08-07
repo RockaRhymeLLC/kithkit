@@ -95,14 +95,19 @@ async function run(config: Record<string, unknown> = {}): Promise<void> {
     return;
   }
 
-  // Query all non-done todos from the database.
+  // Query all non-done todos from the database. No LIMIT here: classifyTodos
+  // must bucket the full candidate set before anything is taken for display,
+  // never the other way around. A LIMIT applied before bucketing can silently
+  // fill with non-actionable rows (e.g. many blocked todos sorting first) and
+  // leave the actionable bucket empty even when actionable todos exist further
+  // down the table, which falls through to the idle nudge and misreports "no
+  // work" while real work exists.
   const todos = query<TodoRow>(
     `SELECT id, external_id, title, status, priority, snooze_until FROM tasks WHERE kind = 'todo'
      AND status NOT IN ('done', 'completed', 'cancelled')
      ORDER BY
        CASE priority WHEN 'high' THEN 0 WHEN 'medium' THEN 1 WHEN 'low' THEN 2 ELSE 3 END,
-       created_at ASC
-     LIMIT 10`,
+       created_at ASC`,
   );
 
   const now = new Date();
