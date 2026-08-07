@@ -159,6 +159,43 @@ describe('State API', { concurrency: 1 }, () => {
     });
   });
 
+  describe('Todo work_notes append', () => {
+    beforeEach(setup);
+    afterEach(teardown);
+
+    it('replaces work_notes when append_work_notes is omitted', async () => {
+      const created = JSON.parse((await request('POST', '/api/todos', { title: 'Notes test' })).body);
+      const first = await request('PUT', `/api/todos/${created.id}`, { work_notes: 'FIRST NOTE' });
+      assert.equal(JSON.parse(first.body).work_notes, 'FIRST NOTE');
+
+      const second = await request('PUT', `/api/todos/${created.id}`, { work_notes: 'SECOND NOTE' });
+      assert.equal(JSON.parse(second.body).work_notes, 'SECOND NOTE', 'omitting the flag should still replace');
+    });
+
+    it('appends to existing work_notes with a timestamp when append_work_notes is true', async () => {
+      const created = JSON.parse((await request('POST', '/api/todos', { title: 'Notes test 2' })).body);
+      await request('PUT', `/api/todos/${created.id}`, { work_notes: 'FIRST NOTE' });
+      const second = await request('PUT', `/api/todos/${created.id}`, {
+        work_notes: 'SECOND NOTE',
+        append_work_notes: true,
+      });
+      const body = JSON.parse(second.body);
+      assert.ok(body.work_notes.includes('FIRST NOTE'), 'prior note must be preserved');
+      assert.ok(body.work_notes.includes('SECOND NOTE'), 'new note must be present');
+      assert.match(body.work_notes, /\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] SECOND NOTE/, 'appended note should carry a timestamp');
+    });
+
+    it('first append with no prior work_notes omits the separator', async () => {
+      const created = JSON.parse((await request('POST', '/api/todos', { title: 'Notes test 3' })).body);
+      const res = await request('PUT', `/api/todos/${created.id}`, {
+        work_notes: 'ONLY NOTE',
+        append_work_notes: true,
+      });
+      const body = JSON.parse(res.body);
+      assert.match(body.work_notes, /^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] ONLY NOTE$/);
+    });
+  });
+
   // ── t-123: Calendar CRUD via API ─────────────────────────────
 
   describe('Calendar CRUD (t-123)', () => {
