@@ -15,6 +15,7 @@ import {
   validateSkillWritePath,
   appendToSkillReference,
   SKILLS_REL_PATH,
+  DEFAULT_ENABLED_ACTIONS,
   register,
 } from '../automation/tasks/kkit-reflection.js';
 import { Scheduler } from '../automation/scheduler.js';
@@ -58,6 +59,20 @@ function seedMemory(opts: {
   );
   return result.lastInsertRowid as number;
 }
+
+// ── DEFAULT_ENABLED_ACTIONS ───────────────────────────────────
+
+describe('DEFAULT_ENABLED_ACTIONS', () => {
+  it('does not include memory-expire or todo-create', () => {
+    // enabled_actions REPLACES (does not merge with) the code default in
+    // resolveConfig(), so any install that sets enabled: true without also
+    // listing enabled_actions inherits this exact array. memory-expire
+    // deletes rows and todo-create writes rows; both must require an
+    // explicit, deliberate opt-in rather than being inherited by omission.
+    assert.ok(!DEFAULT_ENABLED_ACTIONS.includes('memory-expire'));
+    assert.ok(!DEFAULT_ENABLED_ACTIONS.includes('todo-create'));
+  });
+});
 
 // ── validateSkillWritePath ───────────────────────────────────
 

@@ -21,6 +21,15 @@ const log = createLogger('kkit-reflection');
 /** Base path for skill reference files, relative to project root. */
 export const SKILLS_REL_PATH = '.kithkit/skills';
 
+/**
+ * Shipped default for enabled_actions. memory-expire (deletes memories) and
+ * todo-create (auto-creates todos) are deliberately excluded. They are
+ * opt-in only and must be added explicitly in config, never inherited by an
+ * install that just sets enabled: true. See resolveConfig(): enabled_actions
+ * REPLACES rather than merges with this default.
+ */
+export const DEFAULT_ENABLED_ACTIONS = ['skill-update', 'memory-keep', 'memory-consolidate'];
+
 // ── Config ──────────────────────────────────────────────────
 
 interface ReflectionConfig {
@@ -47,7 +56,7 @@ const DEFAULTS: Required<Omit<ReflectionConfig, 'skill_mapping' | 'pattern_detec
   max_memories_per_run: 100,
   batch_size: 20,
   max_deletes_per_run: 10,
-  enabled_actions: ['skill-update', 'memory-keep', 'memory-consolidate', 'memory-expire', 'todo-create'],
+  enabled_actions: DEFAULT_ENABLED_ACTIONS,
   pattern_detection: { enabled: true, window_days: 7, threshold: 3 },
   skill_mapping: {
     'api-format': 'daemon-api',
@@ -789,6 +798,7 @@ async function run(rawConfig: Record<string, unknown>): Promise<string> {
     lookback_hours: config.lookback_hours,
     max_memories: config.max_memories_per_run,
     max_deletes: config.max_deletes_per_run,
+    enabled_actions: config.enabled_actions,
   });
 
   // Determine lookback window

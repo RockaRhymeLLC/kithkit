@@ -153,12 +153,15 @@ scheduler:
         max_memories_per_run: 100
         batch_size: 20
         max_deletes_per_run: 10
+        # This array REPLACES the code default rather than merging with it, so
+        # listing enabled_actions at all means listing every action you want.
+        # memory-expire (deletes memories) and todo-create (auto-creates todos)
+        # are opt-in and must be added deliberately, with a written rationale,
+        # never inherited by omission.
         enabled_actions:
           - skill-update
           - memory-keep
           - memory-consolidate
-          - memory-expire
-          - todo-create
         pattern_detection:
           enabled: true
           window_days: 7
