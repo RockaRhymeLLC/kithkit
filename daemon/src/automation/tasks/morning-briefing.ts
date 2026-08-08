@@ -1,7 +1,7 @@
 /**
  * Morning Briefing — daily summary task.
  *
- * Gathers calendar, weather, todos, overnight messages, and email status,
+ * Gathers calendar, weather, todos, and email status,
  * then delivers via the channel router (POST /api/send).
  *
  * This is a core task handler. Instance-specific customisation (weather
@@ -12,7 +12,6 @@
  * - Weather: Open-Meteo API with wttr.in fallback
  * - Todos: SQLite (open todos, priority-sorted)
  * - Email: task_results from the email-check task
- * - Overnight messages: daemon log scan
  */
 
 import { execFile } from 'node:child_process';
@@ -484,39 +483,6 @@ export function gatherEmailSummary(): string {
   }
 }
 
-// ── Overnight Messages ───────────────────────────────────────
-
-function gatherOvernightMessages(): string {
-  const logPath = path.join(getProjectDir(), 'logs/daemon.log');
-  try {
-    if (!fs.existsSync(logPath)) return 'No overnight messages.';
-
-    const eightHoursAgo = Date.now() - 8 * 60 * 60 * 1000;
-    const lines = fs.readFileSync(logPath, 'utf8').split('\n');
-    const messages: string[] = [];
-
-    for (const line of lines) {
-      if (!line) continue;
-      try {
-        const entry = JSON.parse(line);
-        if (new Date(entry.ts).getTime() < eightHoursAgo) continue;
-
-        if (entry.module === 'telegram' && entry.msg?.includes('Injected message from')) {
-          messages.push(`Telegram: ${escapeHtml(entry.msg)}`);
-        }
-        if (entry.module === 'agent-comms' && entry.msg?.includes('Received message from')) {
-          messages.push(`Agent: ${escapeHtml(entry.msg)}`);
-        }
-      } catch { /* skip non-JSON lines */ }
-    }
-
-    if (messages.length === 0) return 'No overnight messages.';
-    return [...new Set(messages)].slice(-10).join('\n');
-  } catch {
-    return 'Message log unavailable.';
-  }
-}
-
 // ── Delivery ─────────────────────────────────────────────────
 
 async function sendBriefing(
@@ -578,7 +544,6 @@ async function run(config: Record<string, unknown>): Promise<string> {
   // Synchronous DB/filesystem queries
   const internalCal = gatherInternalCalendar();
   const email = gatherEmailSummary();
-  const overnight = gatherOvernightMessages();
 
   // Audience-scoped todos: only include when todo_source is explicitly configured.
   // This prevents dumping unscoped todos into a briefing intended for a specific audience.
@@ -608,10 +573,6 @@ async function run(config: Record<string, unknown>): Promise<string> {
 
   if (email !== 'No recent email data.') {
     parts.push('', '<b>Email</b>', email);
-  }
-
-  if (overnight !== 'No overnight messages.') {
-    parts.push('', '<b>Overnight</b>', overnight);
   }
 
   const message = parts.join('\n').trim();
