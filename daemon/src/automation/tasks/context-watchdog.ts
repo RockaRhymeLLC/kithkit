@@ -401,7 +401,7 @@ function restartWedgedOrchestrator(reason: string, cutoffIso: string): void {
     if (frozenTasks.length > 0) {
       const placeholders = frozenTasks.map(() => '?').join(', ');
       exec(
-        `UPDATE tasks SET status = 'pending', error = NULL, updated_at = ?
+        `UPDATE tasks SET status = 'pending', assigned_to = NULL, error = NULL, updated_at = ?
          WHERE external_id IN (${placeholders}) AND status IN ('in_progress', 'assigned')`,
         gateTs, ...frozenTasks.map(t => t.ext_id),
       );
