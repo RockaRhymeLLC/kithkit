@@ -17,6 +17,7 @@ import {
   SKILLS_REL_PATH,
   DEFAULT_ENABLED_ACTIONS,
   register,
+  gatherMemories,
 } from '../automation/tasks/kkit-reflection.js';
 import { Scheduler } from '../automation/scheduler.js';
 import { loadConfig, _resetConfigForTesting } from '../core/config.js';
@@ -313,5 +314,46 @@ describe('kkit-reflection: action execution via DB', () => {
 
     const oldRow = query<{ id: number }>('SELECT id FROM memories WHERE id = ?', oldId);
     assert.strictEqual(oldRow.length, 0, 'old memory should be deleted');
+  });
+});
+
+// ── gatherMemories: mixed created_at formats ─────────────────
+
+describe('gatherMemories: mixed created_at formats', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = makeTmpDir();
+    _resetConfigForTesting();
+    _resetDbForTesting();
+    openDatabase(tmpDir);
+  });
+
+  afterEach(() => {
+    _resetConfigForTesting();
+    _resetDbForTesting();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('selects a space-format row that falls chronologically after an ISO cutoff on the same calendar day', () => {
+    // Reproduces the byte-ordering bug: ' ' (0x20) sorts before 'T' (0x54), so a
+    // plain `created_at > ?` TEXT comparison excludes a space-format row that is
+    // hours *after* an ISO cutoff on the same date. This is the exact shape seen
+    // on the live box: thousands of rows in SQLite's native 'YYYY-MM-DD HH:MM:SS'
+    // format, and only this task's own reflection-summary rows in ISO
+    // 'YYYY-MM-DDTHH:MM:SS.sssZ' format.
+    const cutoff = '2026-08-08T07:00:00.000Z';
+    const spaceFormatId = seedMemory({
+      content: 'space-format row, chronologically after cutoff, same calendar day',
+      trigger: 'retro',
+      createdAt: '2026-08-08 23:16:35',
+    });
+
+    const rows = gatherMemories(cutoff, 100);
+    const ids = rows.map(r => r.id);
+    assert.ok(
+      ids.includes(spaceFormatId),
+      `expected space-format row ${spaceFormatId} (23:16:35, after cutoff 07:00:00) to be selected; got ids ${JSON.stringify(ids)}`,
+    );
   });
 });

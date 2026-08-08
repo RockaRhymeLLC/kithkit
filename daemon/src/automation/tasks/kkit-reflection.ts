@@ -120,12 +120,21 @@ function getLastRunTimestamp(): string | null {
  * Gather retro memories since the given timestamp (or lookback window).
  * Filters client-side for trigger='retro' or self-improvement tags,
  * since the memory search API does not support server-side trigger filtering.
+ *
+ * `created_at` is stored in two TEXT formats: SQLite's `datetime('now')` default
+ * ('YYYY-MM-DD HH:MM:SS', space-separated, UTC) and ISO-8601 with a 'T' and 'Z'
+ * (only this task's own summary inserts use the latter). A plain `created_at > ?`
+ * TEXT comparison is byte-wise: ' ' (0x20) sorts before 'T' (0x54), so a space-format
+ * row can be lexicographically "less than" an ISO cutoff on the same calendar day
+ * even though it happened hours later. Wrapping both sides in `datetime()` normalizes
+ * them to a comparable form. This defeats any index on created_at, but at the row
+ * counts this table runs at (tens of thousands), a full scan is not a concern.
  */
-function gatherMemories(since: string, limit: number): MemoryRow[] {
+export function gatherMemories(since: string, limit: number): MemoryRow[] {
   const rows = query<MemoryRow>(
     `SELECT id, content, category, tags, trigger, source, importance, created_at
      FROM memories
-     WHERE created_at > ?
+     WHERE datetime(created_at) > datetime(?)
      ORDER BY created_at ASC
      LIMIT ?`,
     since,
@@ -317,6 +326,20 @@ const TRANSIENT_KEYWORDS = [
   'was down', 'fixed now', 'resolved', 'one-time', 'temporary',
 ];
 
+/**
+ * Parse a `created_at` value into epoch millis, treating a bare space-separated
+ * SQLite `datetime('now')` string as UTC. Without this, `new Date('YYYY-MM-DD
+ * HH:MM:SS')` (no timezone marker) is parsed as *local* time by the JS Date
+ * constructor, while the ISO ('...T...Z') rows this task itself writes are parsed
+ * as UTC. This is the same format split that breaks the SQL `created_at > ?` comparisons
+ * above, but manifesting as a local-timezone-offset error in JS instead of a
+ * byte-ordering error in SQL.
+ */
+function parseCreatedAt(ts: string): number {
+  const normalized = ts.includes('T') ? ts : `${ts.replace(' ', 'T')}Z`;
+  return new Date(normalized).getTime();
+}
+
 /** Parse a JSON tags string into an array. Returns [] on failure. */
 function parseTags(tags: string | null): string[] {
   if (!tags) return [];
@@ -387,7 +410,7 @@ function categorizeMemories(memories: MemoryRow[], config: ReflectionConfig & ty
 
     // Check for transient events → memory-expire
     const isTransient = TRANSIENT_KEYWORDS.some(kw => lower.includes(kw));
-    const ageMs = Date.now() - new Date(m.created_at).getTime();
+    const ageMs = Date.now() - parseCreatedAt(m.created_at);
     const isOld = ageMs > 7 * 24 * 3600_000; // older than 7 days
 
     if (isTransient && isOld) {
@@ -697,11 +720,13 @@ function detectPatterns(
   const { window_days, threshold } = config.pattern_detection;
   const windowStart = new Date(Date.now() - window_days * 24 * 3600_000).toISOString();
 
-  // Gather retro memories over the wider pattern window
+  // Gather retro memories over the wider pattern window.
+  // Same datetime() normalization as gatherMemories() above. See its comment
+  // for why a plain TEXT comparison against the ISO cutoff is unsafe here.
   const rows = query<MemoryRow>(
     `SELECT id, content, category, tags, trigger, source, importance, created_at
      FROM memories
-     WHERE created_at > ?
+     WHERE datetime(created_at) > datetime(?)
      ORDER BY created_at ASC
      LIMIT 1000`,
     windowStart,
