@@ -15,9 +15,20 @@
  *   worker → parent: {type:'ready'}
  *                  | {type:'result',id:string,data:number[]}     ← plain number[], NOT Float32Array
  *                  | {type:'error',id:string,message:string}
+ *                  | {type:'log',level:'debug'|'info'|'warn'|'error',message:string}
+ *
+ * stdio is fully 'ignore'd for this child (see embed-client.ts forkWorker()) to
+ * avoid pipe handles keeping the event loop alive, so this worker MUST NOT write
+ * diagnostics to stderr/stdout directly: they would be silently discarded
+ * (kithkit#515). Use sendLog() below to route them over the existing IPC channel
+ * instead, where embed-client.ts forwards them to the daemon logger.
  *
  * Fake mode: set KITHKIT_EMBED_FAKE=1 to return deterministic vectors without
  * loading the model. Used in IPC/lifecycle unit tests.
+ *
+ * Test seam: set KITHKIT_EMBED_FORCE_INIT_FAIL=1 to force ensureInitialized()
+ * to throw deterministically, exercising the init-failure log path without a
+ * real model load. Used in IPC/lifecycle unit tests.
  */
 
 // Serialization lock — defence in depth: even inside the worker we serialize
@@ -27,8 +38,30 @@ let _inferLock: Promise<unknown> = Promise.resolve();
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let _embedder: any = null;
 
+// ── Logging over IPC ─────────────────────────────────────────
+// stdio is ignored (see module doc above), so diagnostics must go over the
+// IPC channel rather than stderr/stdout.
+
+type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+
+function sendLog(level: LogLevel, message: string): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof process.send !== 'function') {
+      resolve();
+      return;
+    }
+    process.send({ type: 'log', level, message }, () => resolve());
+  });
+}
+
 async function ensureInitialized(): Promise<void> {
   if (_embedder) return;
+
+  if (process.env['KITHKIT_EMBED_FORCE_INIT_FAIL'] === '1') {
+    // Test seam: deterministically exercise the init-failure log path
+    // without needing a real model load.
+    throw new Error('forced init failure (test seam)');
+  }
 
   if (process.env['KITHKIT_EMBED_FAKE'] === '1') {
     // Fake embedder: return deterministic 384-dim unit vector
@@ -109,10 +142,11 @@ ensureInitialized()
   .then(() => {
     process.send!({ type: 'ready' });
   })
-  .catch((err: unknown) => {
-    // Report startup failure; parent will see early exit
-    process.stderr.write(
-      `embed-worker: init failed: ${err instanceof Error ? err.message : String(err)}\n`,
-    );
+  .catch(async (err: unknown) => {
+    // Report startup failure over IPC (stdio is ignored, see module doc).
+    // Await the send callback before exiting so the message isn't lost when
+    // the IPC channel closes (process.send() is asynchronous).
+    const message = `init failed: ${err instanceof Error ? err.message : String(err)}`;
+    await sendLog('error', message);
     process.exit(1);
   });

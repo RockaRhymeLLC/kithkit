@@ -11,10 +11,13 @@
  *   - Queue overflow: rejects when queue is full
  *   - Crash storm → cooldown (fast-reject)
  *   - Real-model smoke test (skipped if KITHKIT_SKIP_REAL_MODEL=1 or model absent)
+ *   - Worker init-failure diagnostics reach the daemon logger via IPC (kithkit#515)
  */
 
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -34,6 +37,7 @@ import {
   isEmbedWorkerReady,
   _resetForTesting,
 } from '../embed-client.js';
+import { _resetLoggerForTesting } from '../../core/logger.js';
 
 // ── Helpers ───────────────────────────────────────────────────
 
@@ -259,6 +263,53 @@ describe('embed-client: real-model smoke test', { concurrency: 1 }, () => {
       Math.abs(norm - 1.0) < 0.01,
       `expected L2 norm ≈ 1, got ${norm}`,
     );
+  });
+});
+
+// ── Suite 7: worker diagnostics reach the daemon logger (kithkit#515) ────
+//
+// The worker is forked with stdio fully ignored (embed-client.ts forkWorker()),
+// so a stderr write from embed-worker.ts goes nowhere. This suite proves the
+// init-failure diagnostic instead travels over the IPC channel and lands in
+// the daemon's log file, using the KITHKIT_EMBED_FORCE_INIT_FAIL test seam to
+// deterministically trigger the init-failure path without a real model load.
+
+describe('embed-client: worker init-failure diagnostic reaches the daemon logger', { concurrency: 1 }, () => {
+  let tmpLogDir: string;
+
+  beforeEach(() => {
+    tmpLogDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kithkit-embed-worker-log-'));
+    _resetLoggerForTesting({ logDir: tmpLogDir, minLevel: 'debug' });
+  });
+
+  afterEach(() => {
+    delete process.env['KITHKIT_EMBED_FORCE_INIT_FAIL'];
+    _resetForTesting();
+    fs.rmSync(tmpLogDir, { recursive: true, force: true });
+  });
+
+  it('logs "embed-worker: init failed: ..." to the daemon log file when the worker fails to initialize', async () => {
+    process.env['KITHKIT_EMBED_FORCE_INIT_FAIL'] = '1';
+    _resetForTesting();
+
+    const startErr = await startEmbedWorker(PROJECT_DIR).catch((e) => e);
+    assert.ok(startErr instanceof Error, 'startEmbedWorker() should reject when init fails');
+
+    const logFile = path.join(tmpLogDir, 'daemon.log');
+    assert.ok(fs.existsSync(logFile), 'daemon.log should exist');
+
+    const contents = fs.readFileSync(logFile, 'utf8');
+    const lines = contents.trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
+    const diagnostic = lines.find(
+      (l) => l.module === 'embed-client' && typeof l.msg === 'string' && l.msg.includes('init failed: forced init failure (test seam)'),
+    );
+
+    assert.ok(
+      diagnostic,
+      `expected a log entry with the worker's init-failure diagnostic, got entries: ${JSON.stringify(lines)}`,
+    );
+    assert.equal(diagnostic.level, 'error');
+    assert.ok(diagnostic.msg.startsWith('embed-worker: '), 'diagnostic should be prefixed with "embed-worker: "');
   });
 });
 

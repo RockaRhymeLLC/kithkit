@@ -22,6 +22,7 @@ import { fork } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import path from 'node:path';
 import { createLogger } from '../core/logger.js';
+import type { LogLevel } from '../core/logger.js';
 
 const log = createLogger('embed-client');
 
@@ -86,7 +87,8 @@ let _startupTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
 type WorkerMessage =
   | { type: 'ready' }
   | { type: 'result'; id: string; data: number[] | number[][] }
-  | { type: 'error'; id: string; message: string };
+  | { type: 'error'; id: string; message: string }
+  | { type: 'log'; level: LogLevel; message: string };
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -228,6 +230,13 @@ function forkWorker(): Promise<void> {
 
     child.on('message', (msg: WorkerMessage) => {
       if (!msg || typeof msg !== 'object') return;
+
+      if (msg.type === 'log') {
+        // Worker stdio is fully ignored (see fork() below), so this is the only
+        // channel worker diagnostics have to reach the daemon logger (#515).
+        log[msg.level](`embed-worker: ${msg.message}`);
+        return;
+      }
 
       if (msg.type === 'ready') {
         localReady = true;
