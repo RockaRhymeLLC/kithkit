@@ -32,6 +32,7 @@
     "typescript": "^5.9.3"
   },
   "overrides": {
-    "onnxruntime-node": "1.25.1"
+    "onnxruntime-node": "1.25.1",
+    "adm-zip": "0.6.0"
   }
 }
